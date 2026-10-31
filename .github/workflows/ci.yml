@@ -40,6 +40,8 @@ jobs:
       - run: uv run pytest tests/jit -v -rs
         env:
           W2PY_JIT_REQUIRE: "1"  # a missing tool fails the job instead of skipping (tests/jit)
+      # D24: every spec module and CoreMark compiled by jit-x86_64 has only x86-64-v1 instructions
+      - run: uv run python tools/isa_all.py
   spec:
     runs-on: ubuntu-latest
     steps:

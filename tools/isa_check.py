@@ -3,7 +3,7 @@
 tool) and fail on any instruction outside the x86-64-v1 allowlist. Data ranges inside the blob
 (jump tables) are skipped.
 
-    python3 tools/isa_check.py BLOB [--data START:END ...]    # offsets, decimal or 0x...
+    python3 tools/isa_check.py BLOB [--level v1|v2] [--data START:END ...]  # offsets
 
 Exit 0: every instruction is allowed; 1: some are not (listed); 2: usage or objdump error, an
 empty blob, or a disassembly that does not cover every code byte. Besides the closed mnemonic
@@ -33,6 +33,14 @@ _SSE = (
 V1 = frozenset(
     _INT + _SSE + [p + c for p in ("j", "set", "cmov") for c in _CC + _CC_ALIASES]
 )  # fmt: skip
+# x86-64-v2 adds SSE3, SSSE3, SSE4.1, SSE4.2, popcnt, cx16, lahf/sahf: the forms a declared-v2
+# variant would use (D24); extend deliberately, like V1.
+V2 = V1 | frozenset(
+    "roundss roundsd roundps roundpd popcnt pshufb palignr pmulld pminsd pmaxsd pminud pmaxud ptest"
+    " pextrd pextrq pinsrd pinsrq blendvps blendvpd pblendw crc32 cmpxchg16b lahf sahf haddps"
+    " haddpd movddup pcmpeqq pcmpgtq phaddd pabsd".split()
+)
+LEVELS = {"v1": V1, "v2": V2}
 
 
 def code_ranges(size: int, data: list[tuple[int, int]]) -> list[tuple[int, int]]:
@@ -54,10 +62,10 @@ _GPR = re.compile(r"(r[a-d]x|r[sd]i|r[sb]p|r[0-9]+|e[a-d]x|e[sd]i|e[sb]p|r[0-9]+
 _THREE_OK = {"shld", "shrd"}  # legacy forms with a third (cl) register operand
 
 
-def why_not(raw: bytes, text: str) -> str | None:
-    """None if the instruction is x86-64-v1, else the reason."""
+def why_not(raw: bytes, text: str, allowed: frozenset[str] = V1) -> str | None:
+    """None if the instruction is in the `allowed` level (default x86-64-v1), else the reason."""
     mnem, _, ops = text.partition(" ")
-    if mnem not in V1:
+    if mnem not in allowed:
         return "mnemonic"
     i = 0
     while i < len(raw) - 1 and raw[i] in _PREFIXES:
@@ -72,9 +80,9 @@ def why_not(raw: bytes, text: str) -> str | None:
     return None
 
 
-def check(path: str, size: int, data: list[tuple[int, int]]) -> list[str]:
-    """Lines of the disassembly that are not x86-64-v1. Raises ValueError if the disassembly does
-    not account for every code byte (empty blob, objdump output not understood)."""
+def check(path: str, size: int, data: list[tuple[int, int]], level: str = "v1") -> list[str]:
+    """Lines of the disassembly above the level (default x86-64-v1). Raises ValueError if the
+    disassembly does not account for every code byte (empty blob, objdump output not understood)."""
     if size == 0:
         raise ValueError("empty blob")
     bad: list[str] = []
@@ -97,7 +105,7 @@ def check(path: str, size: int, data: list[tuple[int, int]]) -> list[str]:
         if sum(len(r) for _, r, _ in insns) != end - start:
             raise ValueError(f"disassembly of {start:#x}..{end:#x} does not cover its bytes")
         for line, raw, text in insns:
-            why = why_not(bytes(raw), text)
+            why = why_not(bytes(raw), text, LEVELS[level])
             if why:
                 bad.append(f"{line}  ({why})")
     return bad
@@ -107,17 +115,18 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="x86-64-v1 ISA-level check of a code blob")
     ap.add_argument("blob")
     ap.add_argument("--data", action="append", default=[], help="START:END byte offsets")
+    ap.add_argument("--level", choices=sorted(LEVELS), default="v1", help="declared level")
     args = ap.parse_args()
     try:
         data = [tuple(int(x, 0) for x in d.split(":")) for d in args.data]
         with open(args.blob, "rb") as f:
             size = len(f.read())
-        bad = check(args.blob, size, [(d[0], d[1]) for d in data])
+        bad = check(args.blob, size, [(d[0], d[1]) for d in data], args.level)
     except (ValueError, IndexError, OSError, subprocess.CalledProcessError) as e:
         print(f"isa_check: {e}", file=sys.stderr)
         return 2
     for line in bad:
-        print(f"not x86-64-v1: {line}")
+        print(f"not x86-64-{args.level}: {line}")
     return 1 if bad else 0
 
 

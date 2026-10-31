@@ -380,3 +380,18 @@ def test_isa_check(tmp_path: Path) -> None:
         p = run_isa_check(tmp_path, bytes.fromhex(apx))
         assert p.returncode == 1, (apx, p.stdout + p.stderr)
     assert run_isa_check(tmp_path, b"").returncode == 2  # nothing disassembled is not a pass
+
+
+def test_isa_levels(tmp_path: Path) -> None:
+    """D24: an instruction above the baseline fails at v1 and passes once its level is declared;
+    VEX is above both."""
+    need(OBJDUMP, "GNU objdump")
+    popcnt = bytes.fromhex("f30fb8c1")  # popcnt eax, ecx (x86-64-v2)
+    vex = bytes.fromhex("c5f958c1")  # vaddpd xmm0, xmm0, xmm1 (AVX)
+    for blob, name in ((ROUNDSD, "roundsd"), (popcnt, "popcnt")):
+        p = run_isa_check(tmp_path, blob)
+        assert p.returncode == 1 and name in p.stdout, p.stdout + p.stderr
+        p = run_isa_check(tmp_path, blob, "--level", "v2")
+        assert p.returncode == 0, p.stdout + p.stderr
+    for level in ("v1", "v2"):
+        assert run_isa_check(tmp_path, vex, "--level", level).returncode == 1

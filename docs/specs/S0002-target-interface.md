@@ -167,6 +167,12 @@ Phase-3 steps, each one commit with its acceptance; the reviewer reads every JIT
    something; measured, not assumed). The ISA check: `objdump -D` of the code of every spec module
    and CoreMark, only code ranges (jump tables live in a data area, S0003), every mnemonic in the
    x86-64-v1 allowlist; it must fail on a planted `roundsd` and pass when v2 is declared.
+   Done: CoreMark 17 526 vs `w2jit2` 17 662 it/s (medians of 5 alternated rounds, 99.2 %), see
+   BENCHMARKS.md "JIT step 5 checkpoint". ISA: `tools/isa_all.py` (CI job `jit`) compiles every spec
+   module with `W2PY_JIT_DUMP` plus CoreMark and runs `tools/isa_check.py --data` on each non-empty
+   blob (379 blobs, 0 failures); `isa_check.py --level v2` declares the SSE3–SSE4.2/popcnt level;
+   `tests/jit/test_encoder.py::test_isa_levels` plants `roundsd`/`popcnt` (fail at v1, pass at v2)
+   and AVX (fails at both).
 6. **Reviewer pass** over steps 2–5 (fresh context), then S0002/S0003 → `implemented`.
 
 **Ported vs rewritten.** Ported (with tests): the encoder; pin choice by loop-depth weights; the lazy

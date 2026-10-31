@@ -96,6 +96,26 @@ alternated round by round in one session.
   14 837 / 15 069: noise). Code 45 396 → 45 579 bytes (a thunk per import, longer import call
   sites).
 
+### Package JIT checkpoint (JIT step 5)
+
+Conditions: 2026-10-31, Intel Xeon Processor @ 2.10 GHz (`/proc/cpuinfo`), 4 vCPU cloud machine,
+CPython 3.13.17, CoreMark self-check passed in all 10 runs (crcfinal 0x4983 / 0xcc42 by iteration
+count). Alternated round by round in one session: `python3 tools/run_coremark_jit.py
+poc/in/core.wasm`, then `cd poc && python3 run_jit2.py in/core.wasm`.
+
+| round | package `jit-x86_64` | `w2jit2` (PoC) |
+|---|---|---|
+| 1 | 17 663 | 17 662 |
+| 2 | 17 526 | 17 817 |
+| 3 | 17 648 | 18 053 |
+| 4 | 16 513 | 17 073 |
+| 5 | 17 231 | 17 324 |
+| median | **17 526** | 17 662 |
+
+* Ratio of medians **99.2 %** (target ≥ 95 %). Compile 58–69 ms (`w2jit2` 26–42 ms).
+* ISA gate (`tools/isa_all.py`, D24): 379 code blobs (every spec module of `jit-x86_64` plus
+  CoreMark), 0 instructions above x86-64-v1; about 32 s locally.
+
 ## Compile and load times (CoreMark)
 
 | step | time |

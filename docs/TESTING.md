@@ -92,6 +92,10 @@ JIT artifacts: run baseline artifacts on an emulated baseline CPU (e.g. QEMU `-c
 with plain ARMv8.0) and check that a higher-level artifact is refused there; load artifacts with the C
 reference loader as well as from Python; refuse artifacts with an unknown format or context ABI version.
 
+The `jit` job runs `tools/isa_all.py`: it compiles every spec module and CoreMark with
+`W2PY_JIT_DUMP` and disassembles each blob with `tools/isa_check.py` (code ranges only), failing on any
+instruction above x86-64-v1 (D24).
+
 The `spec` job also runs `--engine auto` with executable memory forbidden: `tools/no_exec.py` sets
 `PR_SET_MDWE` (`PR_MDWE_REFUSE_EXEC_GAIN`, Linux >= 6.3; the kernel then refuses `mprotect(PROT_EXEC)` on
 written memory, the JIT's W^X path) and `exec`s the runner. `auto` must warn once
