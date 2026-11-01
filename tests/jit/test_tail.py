@@ -14,7 +14,7 @@ from typing import Any, cast
 
 import pytest
 
-from tests.jit import need
+from tests.jit import native, need
 from tests.jit.test_compiler import ROOT, Inst, build, outcome, pins, trap_of, wat
 from tests.jit.test_float import Oracle
 from tests.jit.test_tables import provider
@@ -30,6 +30,11 @@ from w2py.targets.jit.x86_64.abi import bridge, entry, sp_stub, tail_switch, tra
 from w2py.targets.jit.x86_64.encoder import Asm
 
 __all__ = ["pins"]  # the fixture, used by name
+
+
+@pytest.fixture(autouse=True)
+def _jit() -> None:
+    native("jit-x86_64")  # x86-64 code: on another machine it must not run (SIGILL on arm64 CI)
 
 
 def _config() -> Any:
