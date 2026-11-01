@@ -37,6 +37,7 @@ crcfinal depends on the iteration count).
 | w2lua → Lua 5.4 / 5.5 | 271 / 246 | was 244 with `goto`-based loops |
 | warpy (RPython, meta-tracing JIT) | 186–193 | MVP-only; patched for 4 post-MVP ops |
 | w2py → CPython 3.13 | 78 → 86 → ~100 | first PoC → codegen optimisations → last run |
+| package `pyc` (step 5b: + SIMD, S0005) | 110.4 / 107.6 | 2026-11-01, alternated with the code before the step in one session: 107.6 / 107.0 (before) vs 110.4 / 107.6 (after); the generated source of CoreMark is byte-identical, so the change is noise |
 | w2py → CPython 3.8 / 3.9 / 3.10 | 86.6 / 81.9 / 82.6 | `--legacy` (no `:=`) on 3.8: 89 |
 | w2py → MicroPython 1.29 | .py 66 · .mpy 69 · `@native` 94 | native .mpy needs the big printf function left as bytecode |
 | w2py `--trust-align` (memoryview casts) | CPython 74 · PyPy 137 | rejected |
@@ -151,6 +152,14 @@ composed 253 · `Struct.pack_into` 84 · memoryview store 77 · `(a+v) & 0xFFFFF
 
 **Masking**: `l = l + 2` 31 ns · `l = (l + 2) & 0xFFFFFFFF` 64 ns · compare-and-adjust forms 45–51 ns
 (this is why "single wrap" normalisation replaced masks: 675 → 158 masks in CoreMark, +15 %).
+
+**v128 representation on `pyc`** (S0005, step 5b; `timeit` min of 5 × 100 000, CPython 3.13.17, Xeon 2.1 GHz,
+4 cores, one session, 2026-11-01), ns per operation on 16-byte operands: `i32x4.add` on an `int` through
+`struct` 976 (the package's generic helper `_i32x4_add`: 1 599) · on `bytes` through `struct` 726 · on a
+tuple of lanes 583 · on an `int` by SWAR (`((a & L) + (b & L)) ^ ((a ^ b) & H)`) 131; `v128.xor` on an
+`int` 44. `i8x16.add` through the helper 2 375 · `f32x4.add` through the helper 4 631 (each lane through
+`_f32_i32` / `_i32_f32`). Correct first: the package uses `struct` for every lane operator and the `int`
+for bitwise ones; SWAR for the integer lane operators is the measured optimisation for later.
 
 **mypyc** (ns per op): `Struct.unpack_from` 68 · bytearray composed 159 · `librt` `BytesWriter`
 load 11.5 / store 13.5 · `i64` arithmetic 1.8.

@@ -140,7 +140,7 @@ def test_drop_and_select_are_annotated_for_v128_only() -> None:
     assert (0x1A,) in m["insns"][0]
 
 
-@pytest.mark.parametrize("name", ["pyc", "jit-x86_64", "jit-aarch64"])
+@pytest.mark.parametrize("name", ["jit-x86_64", "jit-aarch64"])
 @pytest.mark.parametrize(
     "data",
     [
@@ -158,4 +158,4 @@ def test_targets_refuse_v128(name: str, data: bytes) -> None:
 def test_module_without_v128_is_not_refused() -> None:
     m = parse(mod(b"", I32, b"\x41\x00"))
     validate(m)
-    assert not simd.uses(m) and base.TARGETS["pyc"]().supports(m) is None
+    assert base.TARGETS["pyc"]().supports(m) is None

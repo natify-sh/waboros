@@ -65,7 +65,7 @@ directories (`test/core/<dir>/`) count only on a target that claims the feature
 | Non-trapping float-to-int Conversions (`saturatedFloatToInt`) | 5 | yes | yes 619/619 | yes 619/619 | yes 619/619 |
 | Shared-Everything Threads (`sharedEverythingThreads`) | 1 | - | - | - | - |
 | Sign-extension Operators (`signExtensions`) | 5 | yes | yes 876/876 | yes 876/876 | yes 876/876 |
-| Fixed-width SIMD (`simd`) | 5 | since 0.33 | - | - | - |
+| Fixed-width SIMD (`simd`) | 5 | since 0.33 | yes 25990/25990 | - | - |
 | Stack Switching (`stackSwitching`) | 3 | - | - | - | - |
 | Reference-Typed Strings (`stringref`) | 1 | - | - | - | - |
 | Tail Call (`tailCall`) | 5 | since 22 | yes 187/187 | yes 187/187 | yes 187/187 |

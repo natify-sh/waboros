@@ -45,4 +45,5 @@ testpaths = ["tests"]
 # Ported PoC code (pyright: basic in the files): keep its style findings out of the way for now.
 "src/w2py/frontend/binary.py" = ["E501", "UP031"]
 "src/w2py/targets/pyc/codegen.py" = ["E501", "B007", "B023", "B905", "UP031"]
+"src/w2py/targets/pyc/simd.py" = ["UP031"]  # generates source text like codegen.py
 "src/w2py/targets/pyc/runtime.py" = ["E401", "E501", "E701", "E702", "I001", "UP031"]

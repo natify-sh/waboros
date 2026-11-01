@@ -33,7 +33,13 @@ from w2py.runtime.store import StoreState
 from w2py.targets import base
 
 _PARSE_ERRORS = (AssertionError, IndexError, ValueError, struct.error, UnicodeDecodeError)
-_MASK = {I32: 0xFFFFFFFF, I64: 0xFFFFFFFFFFFFFFFF, F32: 0xFFFFFFFF, F64: 0xFFFFFFFFFFFFFFFF}
+_MASK = {
+    I32: 0xFFFFFFFF,
+    I64: 0xFFFFFFFFFFFFFFFF,
+    F32: 0xFFFFFFFF,
+    F64: 0xFFFFFFFFFFFFFFFF,
+    0x7B: (1 << 128) - 1,  # v128
+}
 
 
 class _Module:

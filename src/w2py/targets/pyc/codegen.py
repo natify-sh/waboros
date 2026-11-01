@@ -636,6 +636,11 @@ class FuncGen:
         push, pop = s.push, s.pop
         n, nb, sgn = s.n, s.nb, s.sgn
         mg = s.mg
+        if op >= 0xFD000:
+            # SIMD lives in its own module (S0005); imported here because simd imports codegen
+            from w2py.targets.pyc import simd
+
+            return simd.gen(s, x)
         if op == 0x1A:
             e = pop()
             if (e.m or e.x) and not e.k:  # a dropped load/div/trunc can still trap
@@ -1310,6 +1315,7 @@ class ModGen:
         s.fimports = [i for i in im if i[0] == "func"]
         s.nimp = len(s.fimports)
         s.gimports = [i for i in im if i[0] == "global"]
+        s.simd = False  # a SIMD instruction was compiled: the module imports simd's helpers
         s.dused = set()  # data segments that memory.init / data.drop name
         s.timports = [i for i in im if i[0] == "table"]
         s.mimports = [i for i in im if i[0] == "mem"]
@@ -1471,6 +1477,8 @@ class ModGen:
                 )
         L.append("    return {%s}" % ", ".join(ex))
         out.append("\n".join(L))
+        if s.simd:
+            out.insert(1, "from w2py.targets.pyc.simd import *")
         return "\n\n".join(out) + "\n"
 
 

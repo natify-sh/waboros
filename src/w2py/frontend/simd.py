@@ -197,12 +197,3 @@ def validate(ins, pop, push, need_mem):
         pop(t)
     if e.res:
         push(e.res)
-
-
-def uses(mod):
-    """True if the validated module has a v128 type or a SIMD operator: a target without SIMD
-    refuses it as `unsupported: simd`."""
-    ts = [t for ps, rs in mod["types"] for t in (*ps, *rs)]
-    ts += [g[0] for g in mod["globals"]] + [im[3][0] for im in mod["imports"] if im[0] == "global"]
-    ts += [t for locs, _ in mod["codes"] for t in locs]
-    return V in ts or any(ins[0] >= BASE for insns in mod["insns"] for ins in insns)
