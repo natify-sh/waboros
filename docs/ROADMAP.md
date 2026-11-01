@@ -117,16 +117,16 @@ lacks a feature reports it through `Target.supports` and the module runs on anot
 * Exit criterion: the spec suite passes on CPython and PyPy.
 
 ## Phase 3 — `jit-x86_64`: integer core and the backend interface
-*Status: done (2026-11-01; S0002 and S0003 implemented). Done: 3a ABI, 3b integer core, 3c SSE2 floats and `memory.grow`, 3d tables, `call_indirect`, reference types, bulk memory, 3e tail calls, typed function references and tags (validator), 3f function imports through records (D32), step 4 fallback to `pyc` with `JitUnavailableWarning` (D31), step 5 ISA gate in CI and the CoreMark checkpoint (17 526 it/s vs `w2jit2` 17 662, 99.2 %). Spec core: 20509 pass, the same expected failures as `pyc`; `auto` selects the JIT. Step 6: the final review, with its fixes (forged references, code areas unmapped, host-call status in context word 7, D34). The scope went beyond the integer core (floats, tables) because the goal is completeness (D25).*
+*Status: done (2026-11-01; S0002 and S0003 implemented). Done: 3a ABI, 3b integer core, 3c SSE2 floats and `memory.grow`, 3d tables, `call_indirect`, reference types, bulk memory, 3e tail calls, typed function references and tags (validator), 3f function imports through records (D32), step 4 fallback to `pyc` with `JitUnavailableWarning` (D31), step 5 ISA gate in CI and the CoreMark checkpoint (17 526 it/s vs `w2jit2` 17 662, 99.2 %). Spec core: 20509 pass, the same expected failures as `pyc`; `auto` selects the JIT. After phase 3: multi-memory on both targets (912/912, D37). Step 6: the final review, with its fixes (forged references, code areas unmapped, host-call status in context word 7, D34). The scope went beyond the integer core (floats, tables) because the goal is completeness (D25).*
 
 **Done in phase 3 beyond the original list below:** floats, `call_indirect` and tables, `memory.grow` on a 4 GiB reservation committed on grow, bulk memory, reference types, multi-value, tail calls, typed function references.
 
 * **Order of work (2026-10-30):** `pyc` has closed the core group and is frozen at that feature set
   (plus typed function references and tail calls); it only gets correctness fixes until the JIT catches up. **Multi-memory is the first proposal after that, on both
-  targets together**; the JIT now runs the `core` group, so it is next after step 6: fused WASI 0.2 needs it
-  (D7). S0003's context already indexes memories (`memory i: base, size` from word 16), so it needs no
-  ABI change; `pyc` needs a memory index on every memory operation. New
-  proposals (SIMD, GC, exceptions, memory64, multi-memory beyond memory 0, threads) land on `pyc`
+  targets together** (done 2026-11-01, D37: fused WASI 0.2 needs it, D7). S0003's context already
+  indexed memories; the `memory.grow`/`memory.init` libcalls gained a memory-index immediate for
+  modules with several memories (an amendment of context ABI v1, D37). New
+  proposals (SIMD, GC, exceptions, memory64, threads) land on `pyc`
   and the JIT together, or on the JIT first, so the gap between their expected-failure files stays
   small and is reported per directory on every run (D25).
 * **Decided (D26): one pass over the validated body driving a backend interface.** The options were: LIR with
@@ -173,7 +173,6 @@ lacks a feature reports it through `Target.supports` and the module runs on anot
 *Status: not started.*
 
 * What remains of the opcode set, in stages (TARGETS.md), on **every** JIT target in step:
-  multi-memory (planned before phase 4, on `pyc` and `jit-x86_64` together; moves here if it slips),
   memory64, SIMD and relaxed SIMD, exceptions, GC, then the later proposals. What a backend lacks is
   `unsupported` until it is written (D25). Floats, tables, `memory.grow`, bulk memory, reference types,
   multi-value and tail calls were done in phase 3.

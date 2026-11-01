@@ -483,13 +483,12 @@ def test_host_exception_and_trap_through_compiled_code() -> None:
 @pytest.mark.parametrize(
     "text,feature",
     [
-        ("(memory 1) (memory 1)", "multi-memory"),
+        ("(memory 1) (memory 1)", "module not fully validated"),  # several memories: compiled
     ],
 )
 def test_unsupported_names_the_feature(text: str, feature: str) -> None:
-    mod = parse(wat(f"(module {text})"))
-    validate(mod)
-    t = JitX86_64Target()
+    mod = parse(wat(f"(module {text})"))  # not validated: the frontend decodes nothing else
+    t = JitX86_64Target()  # the JIT refuses (v128, GC types, exceptions fail in the reader)
     assert t.supports(mod) == feature
     with pytest.raises(Unsupported) as e:
         t.compile(mod)

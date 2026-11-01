@@ -320,7 +320,7 @@ def test_claims(tmp_path: Path) -> None:
     assert claims.claimed("pyc", claims.CORE)
     assert claims.claimed("wasmtime", "gc") and claims.claimed("wasmtime", "simd")
     assert not claims.claimed("pyc", "simd")
-    assert not claims.claimed("pyc", "multi-memory") and not claims.claimed("nope", "gc")
+    assert not claims.claimed("pyc", "memory64") and not claims.claimed("nope", "gc")
 
 
 def _xfail_keys(engine: str, both: Sequence[str]) -> set[str]:

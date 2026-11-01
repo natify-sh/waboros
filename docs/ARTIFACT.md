@@ -149,11 +149,11 @@ the phase-3 meaning of each word and the register roles are in [S0003](specs/S00
 | 8 | `HOST_BRIDGE` | host → code | address of the host-call bridge for the host's calling convention |
 | 9 | `TAIL_SWITCH` | host → code | address of the cross-context tail-call trampoline (below; D30) |
 | 10–15 | reserved | | zero |
-| 16 … | per memory *i*: `base`, `size_bytes` (2 words) | host ↔ code | the base never moves (4 GiB reserved, committed on grow); the code reloads the size after every host call |
+| 16 … | per memory *i*: `base`, `size_bytes` (2 words) | host ↔ code | imported memories first; the base never moves (4 GiB reserved, committed on grow); code that keeps a memory in registers (x86-64: memory 0 in r13/r14) reloads them after every host call, any other memory is read here at each access |
 | … | per table *i*: `base`, `size` (2 words) | host ↔ code | `base`: the element words (one per element), `size`: elements; `table.grow` may move the elements, so code reads both words at each use and never keeps them across a host call. A `funcref` element (and value) is 0 (null) or the address of a function record (below); an `externref` element is a host handle (0 = null) |
 | … | per global *i*: 1 word (2 for v128) | both | imported globals: a pointer to the owner's word instead |
 | … | per function import *i*: 1 word | host → code | address of a host function (signature below) |
-| … | per libcall *j*: 1 word | host → code | a runtime service, same signature as an import, in a fixed order, all six words in every context: 0 `memory.grow`, 1 `table.grow`, 2 `table.init`, 3 `elem.drop`, 4 `memory.init`, 5 `data.drop`; never computation (D25). The operands are in the slots, the instruction's immediates (table, segment) after them |
+| … | per libcall *j*: 1 word | host → code | a runtime service, same signature as an import, in a fixed order, all six words in every context: 0 `memory.grow`, 1 `table.grow`, 2 `table.init`, 3 `elem.drop`, 4 `memory.init`, 5 `data.drop`; never computation (D25). The operands are in the slots, the instruction's immediates (table, segment) after them; the memory index of `memory.grow` and `memory.init` only when the module has more than one memory |
 | … | per signature *k*: 1 word | host → code | the canonical type id of a type the module's `call_indirect`s name (equal for equivalent types of every module of the process, never 0) |
 | … | per function record *r*: 3 words | host → code | `{code address, canonical type id, context address}` of every function import and of every function the module can take a reference to (`ref.func`, segments): a defined one; an import from another instance of the same store (its code and context: a direct call); a host function (the module's thunk, which calls the import's word through the bridge). `call_indirect` checks bounds, null and the type id, then calls `code` with r15 = `context` (and that context's memory words); `call` and `return_call` of an import go through the import's record the same way (D32) |
 
@@ -197,5 +197,5 @@ callee's status. Every return matches its call.
   know; the compiler can emit older versions while hosts migrate.
 * Any change here goes with: the version bump, this document, `DECISIONS.md`, and a test that loads an
   artifact of the old version and checks it is refused (or still runs, if supported).
-* A small reference loader in C is part of the test suite, to keep the contract honest outside
+* A small reference loader in C is part of the test suite and runs in CI from phase 5 (D36), to keep the contract honest outside
   Python.

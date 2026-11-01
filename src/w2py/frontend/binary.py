@@ -445,15 +445,14 @@ def decode(body):
             al = r.u()
             if al >= 0x80:
                 raise Malformed("malformed memop flags")
+            mi = 0
             if al & 0x40:
-                if r.u():
-                    raise NotImplementedError("multi-memory")
+                mi = r.u()
                 al &= 0x3F
             off = r.u64()
-            out.append((op, off, al))
+            out.append((op, off, al, mi))
         elif op in (0x3F, 0x40):
-            r.u8()
-            out.append((op,))
+            out.append((op, r.u()))
         elif op == 0x41:
             out.append((op, r.s(32) & M32))
         elif op == 0x42:
@@ -472,17 +471,14 @@ def decode(body):
                 out.append((0xFC00 + sub,))
             elif sub == 8:
                 seg = r.u()
-                r.u8()
-                out.append((0xFC08, seg))
+                out.append((0xFC08, seg, r.u()))
             elif sub == 9:
                 out.append((0xFC09, r.u()))
             elif sub == 10:
-                r.u8()
-                r.u8()
-                out.append((0xFC0A,))
+                d = r.u()
+                out.append((0xFC0A, d, r.u()))
             elif sub == 11:
-                r.u8()
-                out.append((0xFC0B,))
+                out.append((0xFC0B, r.u()))
             elif sub == 12:  # table.init elem table
                 e = r.u()
                 out.append((0xFC0C, e, r.u()))

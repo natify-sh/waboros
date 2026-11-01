@@ -669,24 +669,38 @@ class Backend:
             a.bt_imm("btc", d, 63, w=True)
         a.bind(done)
 
-    # ---------------------------------------------------------------- memory 0 and context
-    def memory_size(self, dst: Reg) -> None:
-        self.a.mov(dst.id, R14, w=True)
+    # ---------------------------------------------------------------- memories and context
+    def _mem(self, mem: int) -> tuple[int | Mem, int | Mem]:
+        """(base, size in bytes) of the memory whose base is context word `mem`: memory 0 is
+        pinned in r13/r14; another one is read from its context words at each use (as Wasmtime
+        does for a memory it keeps in no register), so it needs no reload after calls."""
+        if 8 * mem == MEM0:
+            return R13, R14
+        return Mem(R15, 8 * mem), Mem(R15, 8 * mem + 8)
+
+    def memory_size(self, dst: Reg, mem: int) -> None:
+        self.a.mov(dst.id, self._mem(mem)[1], w=True)
         self.a.shift("shr", dst.id, 16, w=True)
 
-    def _bounds(self, f: Frame, addr: Operand, offset: int, size: int) -> Mem:
+    def _bounds(self, f: Frame, addr: Operand, offset: int, size: int, mem: int) -> Mem:
         """The bounds check (R3: the one place memory safety rests on). The effective address
         addr + offset (< 2**33) and its end are computed in 64 bits, so nothing wraps; the end
-        must be <= memory size (r14) or the access traps. A register address is first copied
-        with a 32-bit move, so its upper half cannot matter."""
+        must be <= the memory's size (r14 for memory 0) or the access traps. A register address
+        is first copied with a 32-bit move, so its upper half cannot matter. The access is
+        [r13 + ...] for memory 0, [rcx + ...] with rcx = base (+ address) for another; rdx is
+        free afterwards."""
         a = self.a
+        base, limit = self._mem(mem)
         oob = self._stub(f, TrapCode.MEMORY_OUT_OF_BOUNDS)
         if isinstance(addr, Imm):
             ea = (addr.value & M32) + offset
             if ea + size < 1 << 31:
-                a.alu_imm("cmp", R14, ea + size, w=True)
+                a.alu_imm("cmp", limit, ea + size, w=True)
                 a.jcc("b", oob)
-                return Mem(R13, ea)
+                if isinstance(base, int):
+                    return Mem(base, ea)
+                a.mov(RCX, base, w=True)
+                return Mem(RCX, ea)
             a.mov_imm(RCX, ea, w=True)
             disp = 0
         else:
@@ -697,15 +711,19 @@ class Backend:
                 a.alu("add", RCX, RDX, w=True)
                 disp = 0
         a.lea(RDX, Mem(RCX, disp + size))
-        a.alu("cmp", RDX, R14, w=True)
+        a.alu("cmp", RDX, limit, w=True)
         a.jcc("a", oob)
-        return Mem(R13, disp, RCX)
+        if isinstance(base, int):
+            return Mem(base, disp, RCX)
+        a.alu("add", RCX, base, w=True)
+        return Mem(RCX, disp)
 
     def load(
-        self, f: Frame, size: int, signed: bool, wide: bool, dst: Reg, addr: Operand, offset: int
-    ) -> None:
+        self, f: Frame, size: int, signed: bool, wide: bool, dst: Reg, addr: Operand, offset: int,
+        mem: int,
+    ) -> None:  # fmt: skip
         a, d = self.a, dst.id
-        m = self._bounds(f, addr, offset, size)
+        m = self._bounds(f, addr, offset, size, mem)
         if size == 8:
             a.mov(d, m, w=True)
         elif size == 4:
@@ -718,9 +736,11 @@ class Backend:
         else:
             a.movzx(d, m, 8 * size)
 
-    def store(self, f: Frame, size: int, addr: Operand, offset: int, src: Operand) -> None:
+    def store(
+        self, f: Frame, size: int, addr: Operand, offset: int, src: Operand, mem: int
+    ) -> None:  # fmt: skip
         a = self.a
-        m = self._bounds(f, addr, offset, size)
+        m = self._bounds(f, addr, offset, size, mem)
         imm = _imm32(src, size == 8)
         if imm is not None and size >= 4:
             a.mov_imm(m, imm, w=size == 8)
@@ -854,21 +874,27 @@ class Backend:
         a.bind(done)
         a.pop(RSI)
 
-    def memory_copy(self, f: Frame, d: Operand, s: Operand, n: Operand) -> None:
-        """Both ranges are checked before any byte moves (bulk memory: no partial copy)."""
+    def memory_copy(
+        self, f: Frame, d: Operand, s: Operand, n: Operand, dmem: int, smem: int
+    ) -> None:  # fmt: skip
+        """Both ranges are checked before any byte moves (bulk memory: no partial copy). The two
+        memory indices may name the same memory (one imported twice), so the direction is chosen by
+        the real addresses in `_copy`, never by the indices."""
         a, oob = self.a, TrapCode.MEMORY_OUT_OF_BOUNDS
+        (dbase, dlimit), (sbase, slimit) = self._mem(dmem), self._mem(smem)
         self._three(d, s, n, False)
-        self._end_check(f, RAX, R14, oob)
-        self._end_check(f, RDX, R14, oob)
-        a.alu("add", RAX, R13, w=True)
-        a.alu("add", RDX, R13, w=True)
+        self._end_check(f, RAX, dlimit, oob)
+        self._end_check(f, RDX, slimit, oob)
+        a.alu("add", RAX, dbase, w=True)
+        a.alu("add", RDX, sbase, w=True)
         self._copy(1)
 
-    def memory_fill(self, f: Frame, d: Operand, v: Operand, n: Operand) -> None:
+    def memory_fill(self, f: Frame, d: Operand, v: Operand, n: Operand, mem: int) -> None:
         a = self.a
+        base, limit = self._mem(mem)
         self._three(d, v, n, False)
-        self._end_check(f, RAX, R14, TrapCode.MEMORY_OUT_OF_BOUNDS)
-        a.alu("add", RAX, R13, w=True)
+        self._end_check(f, RAX, limit, TrapCode.MEMORY_OUT_OF_BOUNDS)
+        a.alu("add", RAX, base, w=True)
         a.movzx(RDX, RDX, 8)
         a.push(RSI)
         a.mov_imm(RSI, 0x0101010101010101, w=True)

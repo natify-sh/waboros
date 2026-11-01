@@ -724,6 +724,7 @@ class FuncGen:
             a = pop()
             off = x[1]
             ad = n(a) if off == 0 else "%s+%d" % (n(a), off)
+            mn = mg.mname(x[3])
             d = dep(a, m=True, x=True)  # a load can trap on a bad address
             L = {
                 0x28: ("U32(M,%s)[0]", I32, M32),
@@ -741,40 +742,41 @@ class FuncGen:
                 0x34: ("S32(M,%s)[0]", I64, None),
                 0x35: ("U32(M,%s)[0]", I64, M32),
             }[op]
-            push(E(L[0] % ad, L[1], L[2], **d))
+            push(E(L[0].replace("M", mn) % ad, L[1], L[2], **d))
             return
         if 0x36 <= op <= 0x3E:
             v = pop()
             a = pop()
             off = x[1]
+            mn = mg.mname(x[3])
             s.flush_mem()
             ad = n(a) if off == 0 else "%s+%d" % (n(a), off)
             if op == 0x36:
-                s.emit("P32(M,%s,%s)" % (ad, n(v)))
+                s.emit("P32(%s,%s,%s)" % (mn, ad, n(v)))
             elif op == 0x37:
-                s.emit("P64(M,%s,%s)" % (ad, n(v)))
+                s.emit("P64(%s,%s,%s)" % (mn, ad, n(v)))
             elif op == 0x38:
-                s.emit("F32S(M,%s,%s)" % (ad, v.c))
+                s.emit("F32S(%s,%s,%s)" % (mn, ad, v.c))
             elif op == 0x39:
-                s.emit("F64S(M,%s,%s)" % (ad, v.c))
+                s.emit("F64S(%s,%s,%s)" % (mn, ad, v.c))
             elif op in (0x3A, 0x3C):
                 vc = v.c if v.b is not None and v.b <= 255 else "%s&255" % v.c
-                s.emit("M[%s] = %s" % (ad, vc))
+                s.emit("%s[%s] = %s" % (mn, ad, vc))
             elif op in (0x3B, 0x3D):
                 vc = v.c if v.b is not None and v.b <= 0xFFFF else "%s&0xFFFF" % v.c
-                s.emit("P16(M,%s,%s)" % (ad, vc))
+                s.emit("P16(%s,%s,%s)" % (mn, ad, vc))
             elif op == 0x3E:
                 vc = v.c if v.b is not None and v.b <= M32 else "%s&0xFFFFFFFF" % v.c
-                s.emit("P32(M,%s,%s)" % (ad, vc))
+                s.emit("P32(%s,%s,%s)" % (mn, ad, vc))
             return
         if op == 0x3F:
-            push(E("(len(M)>>16)", I32, 0xFFFF, m=True))
+            push(E("(len(%s)>>16)" % mg.mname(x[1]), I32, 0xFFFF, m=True))
             return
         if op == 0x40:
             v = pop()
             s.flush_call()
             t = s.newtmp(I32)
-            s.emit("%s = _grow(M,_MAXPAGES,%s)" % (t, n(v)))
+            s.emit("%s = _grow(%s,%s,%s)" % (t, mg.mname(x[1]), mg.mname(x[1], "_MAXPAGES"), n(v)))
             push(E(t, I32, M32, k=True))
             return
         if op in (0x10, 0x11, 0x12, 0x13, 0x14, 0x15):
@@ -1272,7 +1274,9 @@ class FuncGen:
             src = pop()
             dst = pop()
             s.flush_mem()
-            s.emit("_mcopy(M,%s,%s,%s)" % (n(dst), n(src), n(nn)))
+            s.emit(
+                "_mcopy(%s,%s,%s,%s,%s)" % (mg.mname(x[1]), mg.mname(x[2]), n(dst), n(src), n(nn))
+            )
             return
         if op == 0xFC08:
             nn = pop()
@@ -1280,7 +1284,7 @@ class FuncGen:
             dst = pop()
             mg.dused.add(x[1])
             s.flush_mem()
-            s.emit("_minit(M,D%d,%s,%s,%s)" % (x[1], n(dst), n(src), n(nn)))
+            s.emit("_minit(%s,D%d,%s,%s,%s)" % (mg.mname(x[2]), x[1], n(dst), n(src), n(nn)))
             return
         if op == 0xFC09:
             mg.dused.add(x[1])
@@ -1292,7 +1296,7 @@ class FuncGen:
             v = pop()
             dst = pop()
             s.flush_mem()
-            s.emit("_mfill(M,%s,%s,%s)" % (n(dst), n(v), n(nn)))
+            s.emit("_mfill(%s,%s,%s,%s)" % (mg.mname(x[1]), n(dst), n(v), n(nn)))
             return
         raise NotImplementedError("opcode 0x%x" % op)
 
@@ -1340,6 +1344,9 @@ class ModGen:
             return "I%d" % fi
         return "f%d" % fi
 
+    def mname(s, mi, base="M"):
+        return base if mi == 0 else "%s%d" % (base, mi)
+
     def gname(s, gi):
         return "C%d.v" % gi if gi in s.cells else "G%d" % gi
 
@@ -1362,15 +1369,18 @@ class ModGen:
 
     def gen(s):
         mod = s.mod
-        mem = mod["mems"][0] if mod["mems"] else (0, 0)
         ng = len(s.gimports)
         # D18: helpers live in w2py.targets.pyc.runtime and are imported, not pasted
         out = [
             "from w2py.targets.pyc.runtime import *",
-            "M = _Mem(%d * 65536)" % mem[0],
-            "M.max = %r" % mem[1],
-            "_MAXPAGES = %d" % (mem[1] if mem[1] is not None else 65536),
         ]
+        nmi = len(s.mimports)
+        for k, mem in enumerate(mod["mems"], nmi):
+            out.append("%s = _Mem(%d * 65536)" % (s.mname(k), mem[0]))
+            out.append("%s.max = %r" % (s.mname(k), mem[1]))
+            out.append(
+                "%s = %d" % (s.mname(k, "_MAXPAGES"), mem[1] if mem[1] is not None else 65536)
+            )
         L = ["def instantiate(imports):"]
         gl = []  # module globals that instantiate assigns
         gi = []  # global initializers: after the function imports (ref.func may name one)
@@ -1405,11 +1415,11 @@ class ModGen:
             L.append("    TX%d = imports[%r][%r]" % (i, im[1], im[2]))
             L.append("    T%d = TX%d.t" % (i, i))
             gl += ["TX%d" % i, "T%d" % i]
-        if s.mimports:
-            im = s.mimports[0]
-            L.append("    M = imports[%r][%r]" % (im[1], im[2]))
-            L.append("    _MAXPAGES = 65536 if M.max is None else M.max")
-            gl += ["M", "_MAXPAGES"]
+        for k, im in enumerate(s.mimports):
+            mn, mp = s.mname(k), s.mname(k, "_MAXPAGES")
+            L.append("    %s = imports[%r][%r]" % (mn, im[1], im[2]))
+            L.append("    %s = 65536 if %s.max is None else %s.max" % (mp, mn, mn))
+            gl += [mn, mp]
         for i in range(s.nimp):
             out.append("I%d = None" % i)
             gl.append("I%d" % i)
@@ -1439,7 +1449,7 @@ class ModGen:
         dg = []
         for i, (off, d) in enumerate(mod["datas"]):
             if off is not None:
-                L.append("    _dseg(M, %s, %r)" % (s.val(off), d))
+                L.append("    _dseg(%s, %s, %r)" % (s.mname(mod["data_mem"][i]), s.val(off), d))
             if i in s.dused:
                 dg.append("D%d" % i)
                 L.append("    D%d = %r" % (i, d if off is None else b""))
@@ -1454,7 +1464,7 @@ class ModGen:
             elif k == 1:
                 ex.append("%r: TX%d" % (n, i))
             elif k == 2:
-                ex.append("%r: M" % n)
+                ex.append("%r: %s" % (n, s.mname(i)))
             elif k == 3:
                 ex.append(
                     "%r: C%d" % (n, i) if i in s.cells else "%r: _Global(lambda: G%d)" % (n, i)

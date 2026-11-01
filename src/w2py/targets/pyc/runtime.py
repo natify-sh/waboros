@@ -49,10 +49,10 @@ def _grow(M, maxpages, n):
     return old
 
 
-def _mcopy(M, d, s, n):
-    if d + n > len(M) or s + n > len(M):
+def _mcopy(D, S, d, s, n):
+    if d + n > len(D) or s + n > len(S):
         raise Trap(TrapCode.MEMORY_OUT_OF_BOUNDS, "out of bounds memory access")
-    M[d : d + n] = M[s : s + n]
+    D[d : d + n] = S[s : s + n]
 
 
 def _mfill(M, d, v, n):

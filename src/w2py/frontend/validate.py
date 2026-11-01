@@ -403,8 +403,8 @@ def _body(c: _Ctx, lt: list, nparams: int, results: list, insns: list[tuple]) ->
             raise Invalid("unknown table")
         return ttypes[t]
 
-    def need_mem() -> None:
-        if c.nmems == 0:
+    def need_mem(mi: int = 0) -> None:
+        if mi >= c.nmems:
             raise Invalid("unknown memory")
 
     for ins in insns:
@@ -412,8 +412,7 @@ def _body(c: _Ctx, lt: list, nparams: int, results: list, insns: list[tuple]) ->
         sig = OPSIG.get(op)
         if sig is not None:
             if 0x28 <= op <= 0x3E:
-                if c.nmems == 0:
-                    raise Invalid("unknown memory")
+                need_mem(ins[3])
                 if ins[2] > ALIGN[op]:
                     raise Invalid("alignment must not be larger than natural")
                 if ins[1] > 0xFFFFFFFF:
@@ -563,10 +562,10 @@ def _body(c: _Ctx, lt: list, nparams: int, results: list, insns: list[tuple]) ->
             pop(t)
             pop(I32)
         elif op == 0x3F:
-            need_mem()
+            need_mem(ins[1])
             vals.append(I32)
         elif op == 0x40:
-            need_mem()
+            need_mem(ins[1])
             pop(I32)
             vals.append(I32)
         elif op == 0xD0:
@@ -631,10 +630,12 @@ def _body(c: _Ctx, lt: list, nparams: int, results: list, insns: list[tuple]) ->
             if ins[1] >= c.ndatas:
                 raise Invalid("unknown data segment")
             if op == 0xFC08:
-                need_mem()
+                need_mem(ins[2])
                 popn(list(BULK3))
         elif op in (0xFC0A, 0xFC0B):
-            need_mem()
+            need_mem(ins[1])
+            if op == 0xFC0A:
+                need_mem(ins[2])
             popn(list(BULK3))
         else:
             raise _Unsupported(f"opcode {op:#x}")

@@ -476,3 +476,21 @@ Go, Dart, LuaJIT, …) can load and run it, and that is now a supported use, not
 * `pyc` and `mpy` artifacts are interpreter bytecode and run only in their interpreter.
 Until phase 5 the contract may still change (D30, D32, D34 were amendments of v1); foreign hosts are
 supported from the first fixed version.
+
+### D37. Multi-memory: memory indices in the shared instruction tuples; libcall immediates only with several memories
+Status: accepted · Date: 2026-11-01 · Supersedes: — · Evidence: spec `test/core/multi-memory` 912/912 on `pyc` and `jit-x86_64`; code of every single-memory spec module and CoreMark byte-identical before and after (review of the step)
+
+Multi-memory (Wasm 3.0) on both targets together. **Frontend contract** (shared by every target): the
+memory index is appended at the end of each instruction tuple, so existing positions do not move —
+loads/stores `(op, offset, align, mem)`, `memory.size`/`memory.grow` `(op, mem)`, `memory.init`
+`(op, segment, mem)`, `memory.copy` `(op, dst, src)`, `memory.fill` `(op, mem)`; the validator
+checks `mem < number of memories`. Memories are numbered imported first, then defined. `pyc` names
+memory k `M<k>` (memory 0 stays `M`). The JIT keeps memory 0 in r13/r14; memory i > 0 reads base and
+size from its context words at each access, as Wasmtime does for memories it cannot keep in registers.
+**Context ABI:** the layout already indexed memories; the `memory.grow` and `memory.init` libcalls get
+the memory index as one more slot immediate **only when the module has more than one memory**, and
+the runtime decides by the same count — so single-memory code is byte-identical to before (measured).
+This is an amendment of context ABI v1 without a version bump, as D30, D32 and D34: no artifact can
+have contained more than one memory before, none is saved yet, and S0003 fixes v1 in phase 5 (D36:
+from then on such a change bumps the version). Rejected: always passing the index (simpler to state,
+one more `mov` at every grow/init site of every module, and every existing artifact's code changes).

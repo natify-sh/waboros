@@ -19,8 +19,8 @@ CLAIMS: dict[str, frozenset[str]] = {
     "wasmtime": frozenset(
         {"simd", "relaxedSimd", "multiMemory", "memory64", "bulkMemory", "exceptionsFinal", "gc"}
     ),
-    "pyc": frozenset({"bulkMemory"}),  # multi-memory, memory64: most of the directory fails
-    "jit-x86_64": frozenset({"bulkMemory"}),  # parity with pyc (D25)
+    "pyc": frozenset({"bulkMemory", "multiMemory"}),  # memory64: not implemented yet
+    "jit-x86_64": frozenset({"bulkMemory", "multiMemory"}),  # parity with pyc (D25)
 }
 
 

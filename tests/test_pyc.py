@@ -362,12 +362,6 @@ def test_discarded_values_that_may_trap_still_run(name: str, arg: int, ok: bool)
             ex[name](arg)
 
 
-def test_memory_index_in_memarg_is_not_implemented() -> None:
-    wasm = bytes.fromhex("0061736d010000000104016000000302010005030100010a0b0109004100284201001a0b")
-    with pytest.raises(NotImplementedError, match="multi-memory"):
-        load(wasm, {})
-
-
 def _effect_before_trap(wat: str, imports: dict[str, dict[str, object]] | None = None) -> object:
     from wasmtime import wat2wasm
 
@@ -486,3 +480,99 @@ def test_return_call_to_host_import_and_multi_value() -> None:
     with pytest.raises(KeyError):
         ex["f"](98)  # pyright: ignore[reportIndexIssue,reportCallIssue]
     assert ex["g"](1, 1.5, 2.0) == (7, 2, 1.5, 4.0)  # pyright: ignore[reportIndexIssue,reportCallIssue]
+
+
+def _sec(sid: int, body: bytes) -> bytes:
+    return bytes([sid, len(body)]) + body
+
+
+def _vec(items: list[bytes]) -> bytes:
+    return bytes([len(items)]) + b"".join(items)
+
+
+def _fn(code: bytes) -> bytes:
+    return bytes([len(code) + 1, 0]) + code
+
+
+def _mm_module(
+    imports: bytes,
+    mems: list[bytes],
+    funcs: list[tuple[str, int, bytes]],
+    rest: bytes = b"",
+    memex: tuple[tuple[str, int], ...] = (),
+):
+    """Types: 0 (i32)->i32, 1 (i32 i32)->(), 2 (i32 i32 i32)->(), 3 ()->i32."""
+    types = [b"\x60\x01\x7f\x01\x7f", b"\x60\x02\x7f\x7f\x00"]
+    types += [b"\x60\x03\x7f\x7f\x7f\x00", b"\x60\x00\x01\x7f"]
+    ex = [bytes([len(n)]) + n.encode() + b"\x00" + bytes([i]) for i, (n, _, _) in enumerate(funcs)]
+    ex += [bytes([len(n)]) + n.encode() + b"\x02" + bytes([i]) for n, i in memex]
+    return (
+        bytes.fromhex(HEAD)
+        + _sec(1, _vec(types))
+        + imports
+        + _sec(3, _vec([bytes([t]) for _, t, _ in funcs]))
+        + _sec(5, _vec(mems))
+        + _sec(7, _vec(ex))
+        + rest
+        + _sec(10, _vec([_fn(c) for _, _, c in funcs]))
+    )
+
+
+_G = b"\x20\x00"  # local.get 0
+_G3 = b"\x20\x00\x20\x01\x20\x02"
+# three memories: m0 1 page, m1 1 page (active data "xy" at 0), m2 1..3 pages; passive data "abcd"
+MULTI = _mm_module(
+    b"",
+    [b"\x00\x01", b"\x00\x01", b"\x01\x01\x03"],
+    [
+        ("cp", 2, _G3 + b"\xfc\x0a\x01\x02\x0b"),  # memory.copy dst m1, src m2
+        ("get1", 0, _G + b"\x28\x41\x01\x00\x0b"),
+        ("get2", 0, _G + b"\x28\x42\x02\x00\x0b"),
+        ("grow2", 0, _G + b"\x40\x02\x0b"),
+        ("size2", 3, b"\x3f\x02\x0b"),
+        ("fill2", 2, _G3 + b"\xfc\x0b\x02\x0b"),
+        ("init2", 2, _G3 + b"\xfc\x08\x01\x02\x0b"),
+        ("set2", 1, _G + b"\x20\x01\x36\x42\x02\x00\x0b"),
+    ],
+    _sec(12, b"\x02"),
+    (("m1", 1),),
+) + _sec(11, _vec([b"\x02\x01\x41\x00\x0b\x02xy", b"\x01\x04abcd"]))
+
+# imports A.m1 as memory 0 and defines its own memory 1; stores 7 into m0, 9 into m1, loads m1
+MULTI_B = _mm_module(
+    _sec(2, _vec([b"\x01A\x02m1\x02\x00\x01"])),
+    [b"\x00\x01"],
+    [
+        (
+            "w",
+            3,
+            b"\x41\x00\x41\x07\x3a\x40\x00\x00\x41\x00\x41\x09\x3a\x40\x01\x00"
+            b"\x41\x00\x2d\x40\x01\x00\x0b",
+        )
+    ],
+)
+
+
+def test_three_memories() -> None:
+    ex = load(MULTI, {})
+    assert ex["get1"](0) == 0x7978  # the active segment went to memory 1
+    ex["set2"](0, 0x11223344)
+    assert ex["get2"](0) == 0x11223344 and ex["get1"](0) == 0x7978
+    ex["cp"](0, 0, 4)
+    assert ex["get1"](0) == 0x11223344
+    assert ex["size2"]() == 1 and ex["grow2"](1) == 1 and ex["size2"]() == 2
+    assert ex["grow2"](5) & 0xFFFFFFFF == 0xFFFFFFFF  # past the maximum of 3
+    ex["fill2"](0, 0x55, 2)
+    assert ex["get2"](0) == 0x11225555
+    ex["init2"](8, 0, 4)
+    assert ex["get2"](8) == 0x64636261
+    with pytest.raises(Trap):
+        ex["cp"](0, 0x20000 - 2, 4)  # source beyond memory 2 (2 pages)
+
+
+def test_two_instances_share_an_imported_second_memory() -> None:
+    a = load(MULTI, {})
+    b = load(MULTI_B, {"A": {"m1": a["m1"]}})
+    assert b["w"]() == 9
+    assert a["get1"](0) == 0x7907  # B's store of 7 at address 0 of its memory 0 landed in A's m1
+    assert len(a["m1"]) == 65536

@@ -131,8 +131,6 @@ def unsupported(mod: ValidModule) -> str | None:
     if not mod.get("validated"):
         return "module not fully validated"
     imps: list[tuple[Any, ...]] = mod["imports"]
-    if len(mod["mems"]) + sum(im[0] == "mem" for im in imps) > 1:
-        return "multi-memory"
     vts: list[Any] = [t for ps, rs in mod["types"] for t in (*ps, *rs)]
     vts += [g[0] for g in mod["globals"]] + [im[3][0] for im in imps if im[0] == "global"]
     vts += [t for locs, _ in mod["codes"] for t in locs] + list(mod["ttypes"])
@@ -215,7 +213,7 @@ def compile_module(mod: ValidModule, b: Backend[Any, Any], target: str) -> Compi
     imps: list[tuple[Any, ...]] = mod["imports"]
     fimps = [im[3] for im in imps if im[0] == "func"]
     gimps = [im[3][0] for im in imps if im[0] == "global"]
-    has_mem = bool(mod["mems"]) or any(im[0] == "mem" for im in imps)
+    nmem = len(mod["mems"]) + sum(im[0] == "mem" for im in imps)
     # every function a reference can be taken to (the validator checks that ref.func names one
     # of them) and every function import (`call` goes through its record, D30) gets a record;
     # every type call_indirect names a signature word
@@ -225,7 +223,7 @@ def compile_module(mod: ValidModule, b: Backend[Any, Any], target: str) -> Compi
     refd |= {i[1] for insns in mod["insns"] for i in insns if i[0] == 0xD2}
     sigs = sorted({i[1] for insns in mod["insns"] for i in insns if i[0] in (0x11, 0x13)})
     layout = Layout(
-        memories=int(has_mem), tables=len(mod["ttypes"]),
+        memories=nmem, tables=len(mod["ttypes"]),
         globals=len(gimps) + len(mod["globals"]), imports=len(fimps), sigs=len(sigs),
         records=len(refd),
     )  # fmt: skip
@@ -569,6 +567,11 @@ class _Func:
         self.st += [SLOTE] * nres
         self.maxh = max(self.maxh, h0 + max(nargs + len(imms), nres))
 
+    def mem_imm(self, mi: int) -> list[int]:
+        """The memory immediate of memory.grow / memory.init: written only when the module has
+        several memories (a one-memory module's code stays as it was; S0003)."""
+        return [mi] if self.m.layout.memories > 1 else []
+
     def pop3(self) -> tuple[Operand, Operand, Operand]:
         """Three operands of a bulk operation; `tos` is free afterwards (the backend uses it)."""
         z = self.pop()
@@ -579,7 +582,7 @@ class _Func:
 
     # ------------------------------------------------------------------ the pass
     def run(self) -> None:
-        b, L = self.b, self.L
+        b, L, lay = self.b, self.L, self.m.layout
         self.f = f = b.func_begin(self.label, tuple(self.pins.values()))
         for j, r in self.pins.items():
             src = Slot(j) if j < self.nparams else Imm(0)
@@ -627,12 +630,12 @@ class _Func:
                 size, signed, w = LOADS[op]
                 addr = pop()
                 self.need_tos()
-                b.load(f, size, signed, w, tos, addr, ins[1])
+                b.load(f, size, signed, w, tos, addr, ins[1], lay.memory(ins[3]))
                 push((TOS, None))
             elif op in STORES:
                 v = pop()
                 addr = pop()
-                b.store(f, STORES[op], addr, ins[1], v)
+                b.store(f, STORES[op], addr, ins[1], v, lay.memory(ins[3]))
             elif op == 0x45 or op == 0x50:
                 if self.st[-1][0] == CMP:
                     cond, x, y, w = self.st[-1][1]
@@ -710,11 +713,10 @@ class _Func:
                 push((TOS, None))
             elif op == 0x3F:
                 self.need_tos()
-                b.memory_size(tos)
+                b.memory_size(tos, lay.memory(ins[1]))
                 push((TOS, None))
-            elif op == 0x40:  # a runtime service through the host bridge; the delta's slot
-                self.flush()  # receives the result
-                b.call_host(f, self.m.layout.libcall(MEMORY_GROW), self.L + len(self.st) - 1)
+            elif op == 0x40:  # delta (+ memory if several) -> old pages or -1
+                self.service(MEMORY_GROW, 1, self.mem_imm(ins[1]), 1)
             elif op == 0x00:
                 b.trap(f, TrapCode.UNREACHABLE)
                 self.dead = True
@@ -753,20 +755,19 @@ class _Func:
             elif op == 0xFC11:
                 b.table_fill(f, self.m.layout.table(ins[1]), *self.pop3())
             elif op == 0xFC0E:
-                lay = self.m.layout
                 b.table_copy(f, lay.table(ins[1]), lay.table(ins[2]), *self.pop3())
             elif op == 0xFC0B:
-                b.memory_fill(f, *self.pop3())
+                b.memory_fill(f, *self.pop3(), lay.memory(ins[1]))
             elif op == 0xFC0A:
-                b.memory_copy(f, *self.pop3())
+                b.memory_copy(f, *self.pop3(), lay.memory(ins[1]), lay.memory(ins[2]))
             elif op == 0xFC0F:  # (init, delta) + table -> old size or -1
                 self.service(TABLE_GROW, 2, [ins[1]], 1)
             elif op == 0xFC0C:  # (d, s, n) + segment, table
                 self.service(TABLE_INIT, 3, [ins[1], ins[2]], 0)
             elif op == 0xFC0D:
                 self.service(ELEM_DROP, 0, [ins[1]], 0)
-            elif op == 0xFC08:  # (d, s, n) + segment
-                self.service(MEMORY_INIT, 3, [ins[1]], 0)
+            elif op == 0xFC08:  # (d, s, n) + segment (+ memory if several)
+                self.service(MEMORY_INIT, 3, [ins[1], *self.mem_imm(ins[2])], 0)
             elif op == 0xFC09:
                 self.service(DATA_DROP, 0, [ins[1]], 0)
             elif op in REINTERPRET or op == 0x01:

@@ -84,12 +84,16 @@ class Backend(Protocol[L, F]):
     def fcmp_set(self, cond: str, dst: Reg, x: Operand, y: Operand, wide: bool) -> None: ...
     def convert(self, f: F, op: str, dst: Reg, x: Operand) -> None: ...
 
-    # memory 0 (explicit bounds checks) and context words (globals)
-    def memory_size(self, dst: Reg) -> None: ...  # in pages
+    # memories (`mem`: the memory's `base` word, `size_bytes` follows; explicit bounds checks)
+    # and context words (globals)
+    def memory_size(self, dst: Reg, mem: int) -> None: ...  # in pages
     def load(
-        self, f: F, size: int, signed: bool, wide: bool, dst: Reg, addr: Operand, offset: int
-    ) -> None: ...
-    def store(self, f: F, size: int, addr: Operand, offset: int, src: Operand) -> None: ...
+        self, f: F, size: int, signed: bool, wide: bool, dst: Reg, addr: Operand, offset: int,
+        mem: int,
+    ) -> None: ...  # fmt: skip
+    def store(
+        self, f: F, size: int, addr: Operand, offset: int, src: Operand, mem: int
+    ) -> None: ...  # fmt: skip
     def ctx_load(self, dst: Reg, word: int, indirect: bool) -> None: ...
     def ctx_store(self, word: int, src: Operand, indirect: bool) -> None: ...
 
@@ -103,8 +107,10 @@ class Backend(Protocol[L, F]):
     def table_copy(
         self, f: F, dst: int, src: int, d: Operand, s: Operand, n: Operand
     ) -> None: ...  # fmt: skip
-    def memory_fill(self, f: F, d: Operand, v: Operand, n: Operand) -> None: ...
-    def memory_copy(self, f: F, d: Operand, s: Operand, n: Operand) -> None: ...
+    def memory_fill(self, f: F, d: Operand, v: Operand, n: Operand, mem: int) -> None: ...
+    def memory_copy(
+        self, f: F, d: Operand, s: Operand, n: Operand, dmem: int, smem: int
+    ) -> None: ...  # fmt: skip
 
     # calls (a non-zero status unwinds the caller too)
     def call_direct(self, f: F, label: L, shift_slots: int) -> None: ...

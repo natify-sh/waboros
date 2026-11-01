@@ -78,7 +78,7 @@ def build(
         body(b, f, labels)
         b.ret_ok(f)
         b.func_end(f, nslots)
-    inst = Instance(store, tramp, b.a.finish(), table, imports, memory)
+    inst = Instance(store, tramp, b.a.finish(), table, imports, [memory] if memory else [])
     code = ctypes.string_at(inst.code.addr, len(b.a.buf))
     assert all(code[off : off + 4] == ENDBR64 for off, _ in table)
     return inst

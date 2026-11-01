@@ -22,7 +22,7 @@ it is not a new format. The runtime side is [S0002](S0002-target-interface.md).
 * Goals: every rule LESSONS.md 1–9 and RISKS.md R2/R3 ask for, stated once and testable; an ABI a
   second architecture can follow by filling in its own register table (D23).
 * Non-goals, deferred: the artifact file (ARTIFACT.md part 2: header, sections, `TRAPMAP`,
-  `RELOCS`, thin/fat files) and serialization — phase 5; v128 slots, multi-memory — stage 2 (tables, funcref and `call_indirect` are in step 3d, S0002); `FUEL`, `EPOCH_DEADLINE`; guard pages and the signal handler
+  `RELOCS`, thin/fat files) and serialization — phase 5; v128 slots — stage 2 (multi-memory: done, see Changes; tables, funcref and `call_indirect` are in step 3d, S0002); `FUEL`, `EPOCH_DEADLINE`; guard pages and the signal handler
   (R6) — phase 5; `Trap.frames`; CPU feature detection (phase 3 emits the baseline only); the C
   reference loader (optional, D18).
 
@@ -41,7 +41,7 @@ it is not a new format. The runtime side is [S0002](S0002-target-interface.md).
 | 8 | `HOST_BRIDGE` | address of the host-call bridge for the host's convention |
 | 9 | `TAIL_SWITCH` | address of the cross-context tail-call trampoline (step 3e, D30) |
 | 10–15 | reserved | zero |
-| 16 … | memory *i*: `base`, `size_bytes` | phase 3: at most one memory |
+| 16 … | memory *i*: `base`, `size_bytes` | memory 0 also in r13/r14; any other read here at each access |
 | … | table *i*: `base`, `size` | element words (record address / extern handle, 0 = null); step 3d |
 | … | global *i*: 1 word | defined: the value; imported: a pointer to the owner's word (same target, S0002) |
 | … | function import *i*: 1 word | address of a host function (signature below) |
@@ -347,3 +347,15 @@ uv run pytest tests/jit -k "entry or trap or reentry or host or interrupt or sta
   collected; a `FuncRef` is accepted only if the store handed it out; the `ready` guard is gone.
   The two-stacks bound is stated exactly (96 bytes per frame, + 16 per restore frame).
 * 2026-11-01: step 6 done (final review of steps 2–5, its fixes and D34 reviewed); status implemented.
+* 2026-11-01 (multi-memory, no layout change, same version 1): a module may have several memories
+  (imported first, then defined), each with its two words from word 16. Memory 0 keeps r13/r14 and
+  its code is byte-identical to before (all 1 594 single-memory spec modules and CoreMark); an access
+  to memory *i* > 0 compares its end with `[r15 + 8·(16+2i) + 8]` and addresses through rcx = the
+  base word + the address (as Wasmtime's heaps load base and bound from the memory's
+  `VMMemoryDefinition` through the vmctx, `make_heap` in crates/cranelift/src/func_environ.rs), so nothing is reloaded for
+  it after a call: a host call or another instance that grows it is seen at the next access.
+  `memory.size/fill/copy` take the memory (copy: destination and source may differ). Libcall
+  immediates: when the module has **more than one** memory, `memory.grow` gets the memory index in
+  the slot after the delta and `memory.init` after the segment index (a one-memory module writes
+  neither, so its code is unchanged); the runtime reads them by the same rule. memory64 stays
+  unsupported.

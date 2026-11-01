@@ -333,14 +333,14 @@ class Instance:
         code: bytes,
         funcs: Sequence[tuple[int, int]],
         imports: Sequence[tuple[HostFunc, int, Sequence[int]]] = (),
-        memory: Memory | None = None,
+        memories: Sequence[Memory] = (),
         nglobals: int = 0,
         layout: Layout | None = None,
     ) -> None:
         self.store, self.tramp, self.funcs = store, tramp, funcs
         self.nimports = len(imports)
         self.layout = layout or Layout(
-            memories=1 if memory else 0, globals=nglobals, imports=len(imports)
+            memories=len(memories), globals=nglobals, imports=len(imports)
         )
         self.ctx = (ctypes.c_uint64 * self.layout.words)()
         self.ctx[HOST_BRIDGE] = tramp.bridge
@@ -352,14 +352,19 @@ class Instance:
         self.callbacks = [HOST(self._host(*im)) for im in imports]  # kept alive here
         for i, cb in enumerate(self.callbacks):
             self.ctx[self.layout.import_(i)] = ctypes.cast(cb, ctypes.c_void_p).value or 0
-        if memory:
-            memory.bind(self.ctx, self.layout.memory(0))
-            grow = HOST(self._host(lambda args: [memory.grow(args[0])], 1, [M32]))
+        for i, mem in enumerate(memories):
+            mem.bind(self.ctx, self.layout.memory(i))
+        if memories:  # delta, then the memory index if there are several (S0003)
+            many = len(memories) > 1
+            grow = HOST(
+                self._host(lambda a: [memories[a[1] if many else 0].grow(a[0])], 1 + many, [M32])
+            )
             self.callbacks.append(grow)  # a runtime service (libcall), not a computation (D25)
             self.ctx[self.layout.libcall(MEMORY_GROW)] = (
                 ctypes.cast(grow, ctypes.c_void_p).value or 0
             )
-        self.memory = memory
+        self.memories = list(memories)
+        self.memory = self.memories[0] if memories else None  # memory 0
         # every libcall word is callable: one the instance does not provide reports an error
         # instead of the bridge calling address 0 (a subclass replaces the ones it serves)
         missing = HOST(self._host(_no_service, 0, []))
@@ -538,7 +543,7 @@ class JitInstance(Instance):
         st = _stacks(store)
         hosts: list[tuple[HostFunc, int, Sequence[int]]] = []
         self.hosts: list[HostFunc] = []
-        memory: Memory | None = None
+        memories: list[Memory] = []
         tables: list[Table] = []
         self.gaddr: list[int] = []
         self.cells: list[GlobalCell] = []  # keeps the owners of imported globals alive
@@ -552,19 +557,19 @@ class JitInstance(Instance):
                     f = _ref_host(st, f, ps, rs)
                 hosts.append((f, len(ps), [mask(t) for t in rs]))
             elif im[0] == "mem":
-                memory = cast(Memory, ext.value)
+                memories.append(cast(Memory, ext.value))
             elif im[0] == "table":
                 tables.append(cast(Table, ext.value))
             else:
                 self.cells.append(cast(GlobalCell, ext.value))
-        if mod["mems"]:
-            memory = Memory(*mod["mems"][0])
-            memory.store = store
+        for mt in mod["mems"]:
+            memories.append(Memory(*mt))
+            memories[-1].store = store
         self.ftypes: list[int] = [im[3] for im in mod["imports"] if im[0] == "func"] + mod["funcs"]
         self.gtypes = [im[3][0] for im in mod["imports"] if im[0] == "global"]
         self.gtypes += [g[0] for g in mod["globals"]]
         ng = len(self.gtypes)
-        super().__init__(store, tramp, c.code, c.funcs, hosts, memory, ng, c.layout)
+        super().__init__(store, tramp, c.code, c.funcs, hosts, memories, ng, c.layout)
         lay, ctx = self.layout, self.ctx
         base = ctypes.addressof(ctx)
         self.records = {f: base + 8 * lay.record(r) for r, f in enumerate(c.records)}
@@ -604,8 +609,8 @@ class JitInstance(Instance):
             services += [(TABLE_INIT, self._table_init, 5, 0), (ELEM_DROP, self._elem_drop, 1, 0)]
         if self.datas:  # data.drop needs no memory (a module may have passive data only)
             services.append((DATA_DROP, self._data_drop, 1, 0))
-        if self.datas and memory:
-            services.append((MEMORY_INIT, self._memory_init, 4, 0))
+        if self.datas and memories:
+            services.append((MEMORY_INIT, self._memory_init, 4 + (len(memories) > 1), 0))
         for j, fn, nargs, nres in services:  # runtime services (libcalls), not computation (D25)
             cb = HOST(self._host(fn, nargs, [M32] * nres))
             self.callbacks.append(cb)
@@ -619,10 +624,10 @@ class JitInstance(Instance):
         for i, ((off, data), mi) in enumerate(zip(mod["datas"], mod["data_mem"], strict=True)):
             if mi is None:
                 continue
-            o = self._const(off)
-            if memory is None or o + len(data) > memory.pages << 16:
+            o, mem = self._const(off), memories[cast(int, mi)]
+            if o + len(data) > mem.pages << 16:
                 raise Trap(TrapCode.MEMORY_OUT_OF_BOUNDS, "out of bounds memory access")
-            ctypes.memmove(memory.res.addr + o, bytes(data), len(data))
+            ctypes.memmove(mem.res.addr + o, bytes(data), len(data))
             self.datas[i] = b""
         if mod["start"] is not None:
             self.call(mod["start"], [])
@@ -663,8 +668,8 @@ class JitInstance(Instance):
         return []
 
     def _memory_init(self, a: Sequence[Raw]) -> list[Raw]:
-        d, s, n, seg = a
-        data, memory = self.datas[seg], cast(Memory, self.memory)
+        d, s, n, seg = a[:4]  # then the memory index if there are several (S0003)
+        data, memory = self.datas[seg], self.memories[a[4] if len(a) > 4 else 0]
         if s + n > len(data) or d + n > memory.pages << 16:
             raise Trap(TrapCode.MEMORY_OUT_OF_BOUNDS, "out of bounds memory access")
         ctypes.memmove(memory.res.addr + d, data[s : s + n], n)
@@ -705,7 +710,7 @@ class JitInstance(Instance):
             if kind == 1:
                 return Extern("table", self.owner, self.tables[idx])
             if kind == 2:
-                return Extern("memory", self.owner, self.memory)
+                return Extern("memory", self.owner, self.memories[idx])
             if kind == 3:
                 return Extern("global", self.owner, GlobalCell(self.gaddr[idx], self))
         raise LookupError(f"no export {name}")
@@ -715,8 +720,8 @@ class JitInstance(Instance):
         for n, k, idx in exports:
             if n == name and k == 1:
                 return self.tables[idx].size, self.tables[idx].declared
-            if n == name and k == 2 and self.memory is not None:
-                return self.memory.pages, self.memory.declared
+            if n == name and k == 2:
+                return self.memories[idx].pages, self.memories[idx].declared
         raise LookupError(f"no exported memory or table {name}")
 
     def global_get(self, global_index: int) -> Raw:

@@ -53,7 +53,7 @@ directories (`test/core/<dir>/`) count only on a target that claims the feature
 | Memory Control (`memoryControl`) | 1 | - | - | - |
 | More Array Constructors (`moreArrayConstructors`) | 1 | - | - | - |
 | Multibyte Array Access (`multibyteArrayAccess`) | 2 | - | - | - |
-| Multiple Memories (`multiMemory`) | 5 | since 15 | - | - |
+| Multiple Memories (`multiMemory`) | 5 | since 15 | yes 912/912 | yes 912/912 |
 | Multi-value (`multiValue`) | 5 | since 0.17 | yes 1253/1253 | yes 1253/1253 |
 | Import/Export of Mutable Globals (`mutableGlobals`) | 5 | yes | partial 431/439 | partial 431/439 |
 | Numeric Values in WAT Data Segments (`numericValuesInWat`) | 2 | - | - | - |
