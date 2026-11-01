@@ -165,7 +165,9 @@ lacks a feature reports it through `Target.supports` and the module runs on anot
   **freeze the interface**. Nothing in phase 5 starts before this.
 * Cross-compilation check (D35): the aarch64 code of the spec modules and CoreMark compiled on the
   x86-64 runner is byte-identical to the code compiled on the arm64 runner, and runs there.
-* After it, decide on copy-and-patch for further architectures with numbers for both approaches.
+* After it, decide how further architectures are written, with numbers: a backend in Python,
+  copy-and-patch, or a micro-compiler in wasm (open question 14; the maintainer's candidate for the
+  third architecture).
 * aarch64 on macOS (`MAP_JIT` + `pthread_jit_write_protect_np` via ctypes) and Windows on ARM follow
   in phase 5.
 
@@ -275,7 +277,11 @@ lacks a feature reports it through `Target.supports` and the module runs on anot
    reference: the wasm compiler's output must be byte-identical to the Python compiler's on every spec
    module and CoreMark, a strong and cheap correctness check. Timing: after phase 4 freezes the
    backend interface (a stable design to port, not a moving one), with a fixed artifact format
-   (phase 5); WASI (phase 6) only if the compiler needs it. Cost: the compiler written again in Rust,
+   (phase 5); WASI (phase 6) only if the compiler needs it. **First candidate (maintainer): the third
+   architecture.** With x86-64 and aarch64 in Python, the next one (riscv64, phase 8) is written as a
+   micro-compiler in wasm instead of a third Python backend — the core ported once plus the riscv64
+   backend; checked by the spec suite under QEMU against `pyc` and Wasmtime, and its core by
+   building an x86-64 backend module too and comparing it byte for byte with the Python JIT. Cost: the compiler written again in Rust,
    Zig or C, and harder debugging than Python. w2py stays a compiler in Python (CLAUDE.md, BRIEF.md):
    it remains the bootstrap, the reference and the path for MicroPython and small devices.
    Alternative considered, also open: run an existing compiler built for `wasm32-wasi` (Winch or
