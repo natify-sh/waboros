@@ -146,7 +146,8 @@ Language choice is about safety and ergonomics, not architecture: Zig (already i
   guest module. A pass-through target (`WebAssembly.compile` via Pyodide's `js`, imports as proxies,
   our Store and Linker) would give near-native guest speed. Main risk for D25 parity: mapping
   engine-specific `RuntimeError` / `RangeError` messages to trap codes; guest memory is a separate
-  `WebAssembly.Memory`, so host access copies. ROADMAP open question on Pyodide.
+  `WebAssembly.Memory`, so host access copies. ROADMAP open question on Pyodide; a better route, an
+  Emscripten side module sharing Pyodide's heap, is in [PYODIDE.md](PYODIDE.md).
 * **Microcontrollers**: not a target for running a micro-compiler on the device (memory). The path
   there is cross-compiling on a host (D35) and a minimal loader, or MicroPython's own emitters
   (`mpy`).

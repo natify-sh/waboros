@@ -245,7 +245,10 @@ lacks a feature reports it through `Target.supports` and the module runs on anot
    through `struct`); follow the spec's canonical/arithmetic NaN rules only, or carry bit patterns?
 6. **WASI on MicroPython**: a slim twin, or fusedwasi compiled to wasm and translated by w2py itself
    (then each language/target needs only a thin layer of OS primitives)?
-7. **Pyodide**: a target calling the browser's `WebAssembly` through `js`, or `pyc` only?
+7. **Pyodide**: `pyc` runs there today; a separate target later (maintainer). The experiment in
+   [PYODIDE.md](PYODIDE.md): the guest rewritten into an Emscripten side module and loaded with
+   `ctypes.CDLL` runs CoreMark at 92–95 % of direct `WebAssembly` in Node, sharing Pyodide's heap;
+   open: isolation (bounds checks), traps, grow, tables, D25 parity, browsers.
 8. **Free-threaded CPython (no GIL)**: shared memories and atomics in `pyc` need real synchronisation.
 9. **Name**: `w2py` grew beyond "wasm to Python" — keep it, or rename the runtime and keep `w2py` for
    the translator?
