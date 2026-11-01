@@ -530,3 +530,12 @@ architecture needs (Python backend, copy-and-patch or a wasm micro-compiler, ROA
 the opcode sets out of `common/compiler.py`. Measured for that decision (S0004 4d): backend+encoder+
 abi ~930 code lines on aarch64 (integer core) vs ~1490 on x86-64 (full); compile 0.19–0.22 vs
 0.14–0.18 ms per module.
+
+### D40. The project is renamed `waboros` (from `w2py`)
+Status: accepted (maintainer, 2026-11-01) · Date: 2026-11-01 · Supersedes: — · Evidence: the name `waboros` is free on PyPI (`https://pypi.org/pypi/waboros/json` -> 404 on 2026-11-01)
+
+`waboros` = "WASM Ouroboros": a compiler that can compile itself, the idea of the micro-compilers
+(ROADMAP q14, [MICRO-COMPILERS.md](MICRO-COMPILERS.md)), and close in spirit to Python (snakes).
+The rename is **one separate step after SIMD**, before guard pages: the package, the distribution and
+import names, the CLI, the docs, CI, the artifact's identifying strings if any. Until that step the
+code and docs keep `w2py`. Renaming the GitHub repository is the maintainer's action.

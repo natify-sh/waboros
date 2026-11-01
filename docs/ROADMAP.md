@@ -181,6 +181,9 @@ lacks a feature reports it through `Target.supports` and the module runs on anot
 ## Phase 5 — JIT completion
 *Status: not started.*
 
+Order (maintainer, 2026-11-01): SIMD (spec in progress) -> the rename to `waboros`
+as its own step (D40) -> guard pages (D29) -> the rest below.
+
 * What remains of the opcode set, in stages (TARGETS.md), on **every** JIT target in step:
   memory64, SIMD and relaxed SIMD, exceptions, GC, then the later proposals. What a backend lacks is
   `unsupported` until it is written (D25). Floats, tables, `memory.grow`, bulk memory, reference types,
