@@ -2,7 +2,7 @@
 title: Roadmap
 kind: reference
 status: current
-updated: 2026-10-30
+updated: 2026-11-01
 ---
 
 # Roadmap
@@ -77,8 +77,8 @@ lacks a feature reports it through `Target.supports` and the module runs on anot
 | phase | counters (TESTING.md) |
 |---|---|
 | 1 | `assert_invalid` / `assert_malformed` of the pinned spec suite pass (the validator) |
-| 2 | spec suite for features 1–2 above passes on `pyc` (CPython and PyPy); the rest are listed expected failures |
-| 3 | the integer-core spec commands (stage 1, TARGETS.md) pass on `jit-x86_64` exactly as on `pyc`; the backend interface is written down and the PoC's x86-64 code is split into the shared core and the backend; compile time and CoreMark are not worse than the PoC (BENCHMARKS.md) |
+| 2 | the `core` group (`test/core/*.wast`, the 2.0 features plus typed function references and tail calls) passes on `pyc` (CPython and PyPy), plus the `bulk-memory` directory; the rest are listed expected failures (`pyc`: 20509 pass in `core`, 89 expected failures) |
+| 3 | the `core` group passes on `jit-x86_64` exactly as on `pyc` (met: the same 20509 pass and the same 89 expected failures; the scope went past the integer core, D25); the backend interface is written down and the PoC's x86-64 code is split into the shared core and the backend (S0002; step 6 review pending); CoreMark not worse than the PoC (met: 17 526 vs `w2jit2` 17 662 it/s, 99.2 %, BENCHMARKS.md) |
 | 4 | the same integer-core spec commands pass on the second architecture (aarch64 on native arm64 CI runners); the size of its backend is recorded; the interface is changed where it leaked x86-64 and then frozen |
 | 5 | the same spec commands pass on every JIT target as on `pyc` for the stages it claims; differential fuzzing finds no divergence over an agreed number of hours |
 | 6 | the public API is covered by tests of its own plus differential runs against wasmtime (its API used as the oracle, not as a goal); the WASI testsuite (p1) passes; the CLI runs the commands of API.md |
@@ -103,7 +103,7 @@ lacks a feature reports it through `Target.supports` and the module runs on anot
   weights, effect order, trap points, call graph); documented in code.
 
 ## Phase 2 — `pyc` target complete
-*Status: done for the core group (spec core: `pyc` 20508 pass, wasmtime oracle 20556); frozen for new features, correctness fixes only.*
+*Status: done for the core group (spec core: `pyc` 20509 pass, 89 expected failures, same as `jit-x86_64`; the `bulk-memory` directory 7482 of 7485 also passes on `pyc`); frozen for new features, correctness fixes only.*
 
 * All core features of FEATURES.md, SIMD correct before fast; NaN rules settled against the oracle.
 * Trap conversion at the boundary; stack-depth counter and `STACK_OVERFLOW`; re-entrancy.
@@ -117,17 +117,19 @@ lacks a feature reports it through `Target.supports` and the module runs on anot
 * Exit criterion: the spec suite passes on CPython and PyPy.
 
 ## Phase 3 — `jit-x86_64`: integer core and the backend interface
-*Status: in progress, S0002 step 3: 3a ABI, 3b integer core, 3c SSE2 floats and `memory.grow`, 3d tables, `call_indirect`, reference types, bulk memory, 3e tail calls and typed function references done (spec core 20509 pass, the same xfail set as `pyc`; `auto` selects the JIT; CoreMark 16 299 it/s, `w2jit2` 16 411); then steps 4 (fallback test), 5 (speed and ISA), 6 (review). The scope went beyond the integer core (floats, tables) because the goal is completeness (D25).*
+*Status: in progress (S0002 step 3 is finished, step 6 is under way). Done: 3a ABI, 3b integer core, 3c SSE2 floats and `memory.grow`, 3d tables, `call_indirect`, reference types, bulk memory, 3e tail calls, typed function references and tags (validator), 3f function imports through records (D32), step 4 fallback to `pyc` with `JitUnavailableWarning` (D31), step 5 ISA gate in CI and the CoreMark checkpoint (17 526 it/s vs `w2jit2` 17 662, 99.2 %). Spec core: 20509 pass, the same expected failures as `pyc`; `auto` selects the JIT. Step 6: the final review. The scope went beyond the integer core (floats, tables) because the goal is completeness (D25).*
+
+**Done in phase 3 beyond the original list below:** floats, `call_indirect` and tables, `memory.grow` on a 4 GiB reservation committed on grow, bulk memory, reference types, multi-value, tail calls, typed function references.
 
 * **Order of work (2026-10-30):** `pyc` has closed the core group and is frozen at that feature set
   (plus typed function references and tail calls); it only gets correctness fixes until the JIT catches up. **Multi-memory is the first proposal after that, on both
-  targets together**, as soon as the JIT's integer core runs the `core` group: fused WASI 0.2 needs it
+  targets together**; the JIT now runs the `core` group, so it is next after step 6: fused WASI 0.2 needs it
   (D7). S0003's context already indexes memories (`memory i: base, size` from word 16), so it needs no
   ABI change; `pyc` needs a memory index on every memory operation. New
   proposals (SIMD, GC, exceptions, memory64, multi-memory beyond memory 0, threads) land on `pyc`
   and the JIT together, or on the JIT first, so the gap between their expected-failure files stays
   small and is reported per directory on every run (D25).
-* **Decide the shape of the shared JIT core before writing it** and record it in DECISIONS.md: LIR with
+* **Decided (D26): one pass over the validated body driving a backend interface.** The options were: LIR with
   virtual registers and an allocator (Cranelift style), or one pass over HIR driving a small
   `MacroAssembler`-like backend interface (Winch style; closest to what `w2jit2` already does with its
   lazy value stack, pinned locals and fused compare+branch). Judge by compile time in Python
@@ -136,8 +138,8 @@ lacks a feature reports it through `Target.supports` and the module runs on anot
   call bridge, value-stack frames, labels and fixups, trap stubs, interrupt and fuel polling, nested
   entries) and the x86-64 backend (encoder, ABI, register pools, instruction selection). Two axes
   stay separate from the start: the ISA and the OS ABI (System V now, Win64 later).
-* Stage 1 of TARGETS.md only: i32/i64, locals, globals, control flow, calls, memory with **explicit**
-  bounds checks, traps. Guard pages are an optional capability of a backend and come in phase 5.
+* Stage 1 of TARGETS.md was the plan: i32/i64, locals, globals, control flow, calls, memory with **explicit**
+  bounds checks, traps (done, then widened as the status line says). Guard pages are an optional capability of a backend and come in phase 5 (D29).
 * Mechanisms every architecture will need are built and tested here, not later: traps unwound by
   returning through frames (CET-safe, RISKS.md R2), re-entrant entry, host exceptions across the
   boundary, interrupt word, stack limits, the executable-memory probe and the engine-level fallback to `pyc` when the probe fails (D25).
@@ -168,21 +170,24 @@ lacks a feature reports it through `Target.supports` and the module runs on anot
 ## Phase 5 — JIT completion
 *Status: not started.*
 
-* The rest of the opcode set in stages (TARGETS.md) on **every** JIT target in step: floats, `call_indirect`
-  and tables, `memory.grow` on a reserved range, bulk memory, reference types, multi-value,
-  multi-memory, memory64, then SIMD and the later proposals. What a backend lacks is `unsupported` until it
-  is written (D25).
+* What remains of the opcode set, in stages (TARGETS.md), on **every** JIT target in step:
+  multi-memory (planned before phase 4, on `pyc` and `jit-x86_64` together; moves here if it slips),
+  memory64, SIMD and relaxed SIMD, exceptions, GC, then the later proposals. What a backend lacks is
+  `unsupported` until it is written (D25). Floats, tables, `memory.grow`, bulk memory, reference types,
+  multi-value and tail calls were done in phase 3.
 * **Guard pages with a JIT-emitted signal handler** (`poc/w2jit_guard.py`: +20–25 % on CoreMark, the gap
   to Cranelift was mostly the bounds checks), per OS and architecture (Linux/BSD `sigaction` +
   `ucontext` offsets, macOS also SIGBUS, Windows a vectored exception handler), `sigaltstack` per thread
   for stack overflow; the default where the handler is verified, explicit checks the fallback and the
   only mode of a new architecture (D29); bounds-check elimination where guard pages are not available.
-* Trap frames, fuel and epoch checks, the interrupt word polled at back-edges (Ctrl+C via the waiting
-  main thread).
+* Trap frames, fuel and epoch checks (the interrupt word is polled already, phase 3); Ctrl+C via the
+  waiting main thread.
 * The contract of ARTIFACT.md (format v1, context ABI v1, baseline-ISA sequences, CPU feature
   detection) is **fixed here**, after two architectures have shaped it, together with artifact
   serialization; the C reference loader stays optional (D18).
-* Win64 after System V (a second entry trampoline in the same artifact); macOS and Windows on ARM.
+* Win64 hardening (the second entry trampoline and `VirtualAlloc` exist; CI runs `tests/jit` on
+  `windows-latest` and `macos-26-intel` but the results are not yet recorded as verified); macOS arm64
+  and Windows on ARM.
 * Differential fuzzing against wasmtime (`wasm-smith`) from the first widened stage on.
 
 ## Phase 6 — runtime API, WASI, CLI
@@ -191,8 +196,8 @@ lacks a feature reports it through `Target.supports` and the module runs on anot
 * `Engine`, `Config`, `Store`, `Module`, `Linker`, `Instance`, externs, `Caller`, `Trap`/`TrapCode`,
   limits, in the shape of wasmtime-py (not a drop-in), over the internal engine interface the spec
   runner has used since phase 1.
-* Choose the WASI host (open question 2); WASI 0.1 and fused 0.2 through it (needs multi-memory from
-  phase 2).
+* Choose the WASI host (open question 2); WASI 0.1 and fused 0.2 through it (needs multi-memory, planned right after
+  phase 3 on both targets).
 * `Module.serialize`/`deserialize` and the thin/fat files (D18) on top of the cache of phase 2 and the
   artifacts of phase 5.
 * CLI: `run`, `compile`, `wast`, `settings`/`targets`, `cache`.
@@ -251,7 +256,8 @@ lacks a feature reports it through `Target.supports` and the module runs on anot
    core functions; Python values need our own canonical-ABI lift at the boundary.
 12. **Targets in one Store**: one shared representation of memories, tables and globals with
    per-module fallback, or one target per Store (ARCHITECTURE.md, "State shared across targets")?
-   Measure `pyc` on a reserved mapping against a `bytearray` first.
+   Settled by D25: one target per engine and store. Left: `pyc` on a reserved `mmap` against a
+   `bytearray`, to be decided by a measurement.
 13. **Lazy compilation**: compile each function on its first call (JIT: a stub that compiles and
    patches; `pyc`: translate and `exec` per function) so the first load costs what is used, not the
    whole module (QuickJS: ~1.5 s JIT / ~5.7 s `pyc` for everything; BENCHMARKS.md, "Compile time on

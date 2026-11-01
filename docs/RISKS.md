@@ -2,7 +2,7 @@
 title: Risks and possible solutions
 kind: log
 status: current
-updated: 2026-10-30
+updated: 2026-11-01
 ---
 
 # Risks and possible solutions
@@ -48,6 +48,12 @@ known-bad versions can force recompilation.
 
 ## R2. Platforms restricting run-time code generation
 
+**Status at HEAD: partly mitigated.** Mitigated on x86-64 Linux: the W^X executable-memory probe and the
+fallback to `pyc` with `JitUnavailableWarning` (D31; proved with executable memory forbidden by
+`tools/no_exec.py` in the CI `spec` job and `tests/test_fallback.py`); CET IBT (`endbr64` at every
+indirectly reachable entry, `backend.py`) and CET shadow stacks (traps return through frames, S0003). Open: macOS `MAP_JIT` and Windows ACG (no runner has shown them working;
+the Windows and macOS x64 CI jobs run `tests/jit`), aarch64 BTI/PAC (no aarch64 target yet).
+
 The direction is clear: more systems forbid writable-and-executable memory, and CPUs add control-flow
 integrity that hand-made code must respect.
 
@@ -66,6 +72,11 @@ General answers: W^X always (map writable, write, flip to executable; never both
 in TARGETS.md, CFI-compatible code from the first version, and `pyc` as the guaranteed fallback.
 
 ## R3. A hand-written JIT: correctness and safety
+
+**Status at HEAD: partly mitigated.** The encoder is checked form by form against `llvm-mc` in CI
+(`tests/jit/test_encoder.py`), the ISA gate disassembles every generated blob (`tools/isa_all.py`), and
+the spec core passes on `jit-x86_64` like on `pyc`. Open: differential fuzzing against wasmtime
+(phase 5), a second architecture, and an independent final review (S0002 step 6, in progress).
 
 **Risk.** Encoding mistakes, register-allocation mistakes and missed checks are not exceptions but
 wrong results or sandbox escapes. The PoC already met three silent bugs (LESSONS.md 1, 2, 5).
@@ -134,6 +145,9 @@ know, otherwise recompile" is the simplest robust rule. It needs the wasm at han
   shipped **without** their wasm.
 
 ## R6. A signal handler of our own (guard pages in the JIT)
+
+**Status at HEAD: open, not started in the package.** `jit-x86_64` uses explicit bounds checks only; guard
+pages and the handler are phase 5 (D29).
 
 Guard pages need a SIGSEGV handler in the process (ARCHITECTURE.md, "Memory"); the PoC emits it as
 machine code. Risks and possible answers:

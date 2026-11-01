@@ -136,6 +136,8 @@ uv run python tools/run_coremark_jit.py poc/in/core.wasm   # CoreMark on the pac
 python3 tools/check_docs.py                # documents follow docs/STANDARDS.md
 python3 tools/features.py --check          # feature table is consistent
 uv run python tools/stack_info.py          # thread stack bounds the JIT uses
+uv run python tools/isa_all.py             # ISA gate: every JIT blob has only x86-64-v1 instructions (needs GNU objdump)
+uv run python tools/no_exec.py -- <cmd>    # run <cmd> with executable memory forbidden (Linux >= 6.3, MDWE)
 ```
 
 PoC (for comparisons):

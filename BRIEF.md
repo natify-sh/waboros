@@ -2,7 +2,7 @@
 title: Briefing: read this first
 kind: guide
 status: current
-updated: 2026-10-30
+updated: 2026-11-01
 ---
 
 # Read this first
@@ -17,7 +17,8 @@ native dependency.** Python can map executable memory (`mmap`) and call into it 
 compiler written in Python can emit x86-64 (later AArch64, RISC-V, …) bytes for a wasm module and run
 them at native speed. The proof of concept already runs CoreMark at **86 % of Wasmtime/Cranelift with
 explicit bounds checks and ~91 % with guard pages**, from a `pip install` that contains only `.py`
-files. Where machine code is not allowed or no backend exists yet, the same front end translates wasm
+files. The package's `jit-x86_64` (explicit bounds checks) reaches 99.2 % of the PoC's JIT on CoreMark
+(17 526 vs 17 662 it/s, `docs/BENCHMARKS.md`); guard pages in the package are phase 5. Where machine code is not allowed or no backend exists yet, the same front end translates wasm
 to Python source (`pyc`), or to MicroPython code (`mpy`). Around the compiler sits a **thin runtime**
 (memories, tables, instances, traps, host calls, WASI) — necessary, but not the point.
 
@@ -30,7 +31,7 @@ to Python source (`pyc`), or to MicroPython code (`mpy`). Around the compiler si
 | WAMR AOT | ~120 % | `wamrc` (LLVM) per module per platform, a native runtime, `.aot` tied to the WAMR version; modules cannot share memories or tables |
 | wasm3 | ~13 % | a native extension |
 | pywasm (pure-Python interpreter) | ~0.003 % | nothing |
-| **this project** | **86–91 %** (JIT), ~0.8 % (`pyc` on CPython) | **nothing**: standard library only |
+| **this project** | **86–91 %** (JIT, PoC numbers; the package is at the PoC's level with explicit checks), ~0.8 % (`pyc` on CPython, PoC) | **nothing**: standard library only |
 
 Measured numbers and conditions: `docs/BENCHMARKS.md`. The niche: run wasm from Python fast,
 anywhere Python runs, without anyone building anything native.
@@ -73,7 +74,8 @@ only what its test programs needed.
   that the JIT emits as machine code (no Python in the signal path): ~19 000 it/s.
 * Compile speed of the JIT in Python: ~0.6–0.8 MB of wasm code per second (Cranelift on 2 cores is
   1.5–2.5× faster) — so a cache and, later, lazy per-function compilation matter.
-* Gaps the PoC does not cover: the validator, most of the opcode set in the JIT (`call_indirect`,
+* Gaps the PoC does not cover (the package has since closed the validator, the JIT opcode set of the
+  core group and the runtime objects it needs; see "Where to start"): the validator, most of the opcode set in the JIT (`call_indirect`,
   full i64, floats beyond CoreMark, bulk memory, `memory.grow`), block parameters, reference types,
   SIMD, the Wasm 3.0 features (GC, exceptions, tail calls, memory64, multi-memory, …); the runtime
   objects; WASI.
@@ -84,21 +86,24 @@ State on branch `phase0-skeleton` (not merged to `main`, the maintainer's choice
 
 * **Done, phases 0–2:** package layout, strict binary reader and validator (`src/w2py/frontend/`), the
   spec-suite runner (the metric), and the `pyc` target complete for the core group (spec core: `pyc`
-  20508 pass, wasmtime oracle 20556). `pyc` is now frozen for new features and gets correctness fixes
-  only; multi-memory is the first proposal after the freeze, on both targets.
-* **In progress, phase 3 (`jit-x86_64`, `docs/specs/S0002` step 3):** 3a ABI, 3b integer core and 3c
-  SSE2 floats with `memory.grow`, 3d tables, `call_indirect`, reference types and bulk memory, 3e tail
-  calls and typed function references are done: `jit-x86_64` fails exactly what `pyc` fails (spec core
-  20509 pass on both) and `auto` selects it; CoreMark ≈ PoC `w2jit2` (16 299 vs 16 411 it/s). Phase 3 already
-  goes beyond the "integer core" (floats, tables) because the goal is completeness (D25).
-* **Next, per `docs/ROADMAP.md`:** S0002 step 4 (fallback test), 5 (speed and ISA), 6 (review); then
-  multi-memory on both targets; the second architecture (phase 4) before the opcode set is widened
-  further; the public API only in phase 6.
+  20509 pass, 89 expected failures; wasmtime oracle 63 782 over all claimed directories). `pyc` is frozen
+  for new features and gets correctness fixes only.
+* **Phase 3 (`jit-x86_64`, `docs/specs/S0002` step 3) done; step 6, the final review, in progress:**
+  3a ABI, 3b integer core, 3c SSE2 floats with `memory.grow`, 3d tables, `call_indirect`, reference
+  types and bulk memory, 3e tail calls, typed function references and tags, 3f function imports
+  through records (D32), step 4 the fallback to `pyc` with `JitUnavailableWarning` (D31), step 5 the
+  ISA gate in CI. `jit-x86_64` fails exactly what `pyc` fails in the core group (20509 pass on both)
+  and `auto` selects it; CoreMark 17 526 vs PoC `w2jit2` 17 662 it/s (99.2 %). Phase 3 went beyond the
+  "integer core" (floats, tables) because the goal is completeness (D25).
+* **Next, per `docs/ROADMAP.md`, in order:** step 6; multi-memory on both targets; phase 4, the
+  `jit-aarch64` integer core on native arm64 runners; phase 5, guard pages (D29) and the rest of the
+  opcode set; the public API only in phase 6.
 
 1. **Read** this page, then `docs/BENCHMARKS.md`, then `docs/ARCHITECTURE.md` and the spec of the step
    in `docs/specs/`. Skip `docs/API.md` and `docs/FEATURES.md` until phase 6.
 2. **Set up and check** (commands in `CLAUDE.md`, "Commands"): `uv sync`, `uv run pytest -q`,
-   `uv run python tests/spec/fetch.py`, `uv run python -m tests.spec.run --engine jit-x86_64`.
+   `uv run python tests/spec/fetch.py`, `uv run python -m tests.spec.run --engine jit-x86_64`
+   (`auto` selects it on x86-64 where executable memory works).
 3. **The metric is the spec suite** (`WebAssembly/spec` `test/core` at a pinned commit) run through a tiny
    internal engine interface, with Wasmtime behind the same interface as the oracle. The work is a loop:
    take the largest group of failures for the current target, fix it, the number grows. `pyc` is the
@@ -131,7 +136,7 @@ a test. "Measure, do not estimate."
 | how it is built | `docs/ARCHITECTURE.md`, `docs/TARGETS.md` |
 | the order of work | `docs/ROADMAP.md` |
 | how it is tested | `docs/TESTING.md` |
-| why a choice was made | `docs/DECISIONS.md` (D1–D29) |
+| why a choice was made | `docs/DECISIONS.md` (D1–D32) |
 | what went wrong before | `docs/LESSONS.md` |
 | risks and possible answers | `docs/RISKS.md` |
 | the JIT artifact contract | `docs/ARTIFACT.md` |

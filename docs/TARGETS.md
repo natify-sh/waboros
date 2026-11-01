@@ -2,7 +2,7 @@
 title: Targets
 kind: reference
 status: current
-updated: 2026-10-30
+updated: 2026-11-01
 ---
 
 # Targets
@@ -12,7 +12,9 @@ at a time; each one passes the same tests before it is selectable.
 
 ## The interface
 
-A sketch (names to settle during phase 1); everything a target needs comes in, nothing global:
+A sketch of the idea; the interface as implemented is S0002 and `src/w2py/targets/base.py` (`probe()` and
+`supports(module)` without `config`; no `serialize`/`deserialize` yet). Everything a target needs comes in,
+nothing global:
 
 ```python
 class Target(Protocol):
@@ -25,7 +27,8 @@ class Target(Protocol):
 
     def supports(self, module: ModuleIR, config: Config) -> Support:
         """Can it compile *this* module? (features it uses: SIMD, memory64, threads, exceptions,
-        GC, ...). A target may support a subset; selection falls back per module."""
+        GC, ...). A target may support a subset; the engine's target is fixed (D25), so an
+        unsupported module is an `Unsupported` error, not a switch to another target."""
 
     def compile(self, module: ModuleIR, config: Config) -> Artifact: ...
     def serialize(self, artifact: Artifact) -> bytes: ...
@@ -67,8 +70,10 @@ For `"auto"`, the engine probes in this order and takes the first that is ok:
 Platforms that restrict run-time code (and CPU control-flow integrity: CET, BTI) are listed with
 possible answers in RISKS.md, R2.
 
-Per module: if the chosen target does not support a feature the module uses, the next target that
-does is taken (and the choice is logged), so adding a JIT never makes a module stop working.
+The choice depends on the environment only, never on a module's content (D25): one target per engine
+and store, no per-module fallback. A JIT is selected by `auto` only when its expected failures equal
+`pyc`'s in the claimed groups. When `auto` ends on `pyc` because no JIT can run here, it warns once
+with `JitUnavailableWarning` (D31); an explicit `jit-*` that cannot run is an `Unsupported` error.
 `W2PY_TARGET` (environment) overrides for testing.
 
 ## Adding an architecture step by step
@@ -88,7 +93,7 @@ grow:
 How others solved the same problems on each architecture (Winch, V8 Liftoff, TinyCC, asmjit, DynASM,
 MicroPython's emitters): REFERENCES.md — read to understand, then write our own.
 
-An architecture is added in stages, each one usable because of per-module fallback:
+An architecture is added in stages; until it is complete `auto` does not select it (D25):
 
 1. **Integer core**: i32/i64, locals, globals, control flow, calls, memory loads/stores with bounds
    checks, traps. (What `w2jit2` covers on x86-64, minus i64 arithmetic.)
@@ -96,7 +101,9 @@ An architecture is added in stages, each one usable because of per-module fallba
    bulk memory, reference types, multi-value, multi-memory, memory64.
 3. **SIMD** (and relaxed SIMD), then threads/atomics, exceptions, tail calls, GC/function references.
 
-A module using a stage the architecture does not have yet runs on `pyc` meanwhile.
+A feature of a later stage is `unsupported` on that architecture until written; the engine then runs
+on `pyc` (D25). `jit-x86_64` has stages 1 and 2 as far as the core group needs them and tail calls and
+typed function references of stage 3; multi-memory, memory64, SIMD, exceptions and GC are not done.
 
 **An alternative to evaluate for later architectures: copy-and-patch.** Each wasm operation becomes a
 small C "stencil" compiled by clang for every target triple on *our* CI and shipped as bytes in the
@@ -114,7 +121,7 @@ with real numbers for both.
 |---|---|---|---|
 | `pyc` | CPython ≥ 3.11 (D19; PoC measured down to 3.8), PyPy | package: core group complete, frozen for new features (spec core 20508 pass). PoC: CoreMark | floor for everything; artifact = code object; the fastest pure-Python option on PyPy (2 300–2 900 it/s) |
 | `mpy` | MicroPython (unix port tested, 1.29.0) | CoreMark | `.mpy` ahead of time or source on device; `@native` (94 it/s); next: viper code, i.e. MicroPython's own emitters as native back ends for every MCU architecture (below) |
-| `jit-x86_64` | Linux, macOS (Intel), BSDs, Windows | package: the core group at parity with `pyc` (spec core 20509 pass: integers, SSE2 floats, `memory.grow`, tables, `call_indirect`, references, bulk memory, tail calls; CoreMark 16 299 it/s); selected by `auto`. PoC: CoreMark (`w2jit2`, SysV only, 16 411 it/s) | SysV only so far; one artifact for every OS (D23): a Win64 entry trampoline (other argument registers, shadow space) next to the SysV one, `VirtualAlloc` in the loader |
+| `jit-x86_64` | Linux, macOS (Intel), BSDs, Windows | package: the core group at parity with `pyc` (spec core 20509 pass, same 89 expected failures: integers, SSE2 floats, `memory.grow`, tables, `call_indirect`, references, bulk memory, tail calls, function imports through records; CoreMark 17 526 it/s); selected by `auto`, which falls back to `pyc` with a warning (D31). PoC: CoreMark (`w2jit2`, SysV only, 17 662 it/s in the same session) | explicit bounds checks only; one artifact for every OS (D23): the Win64 entry trampoline and bridge and a `VirtualAlloc` loader are written and CI runs `tests/jit` on `windows-latest` and `macos-26-intel` and those jobs are green (e.g. run 41304018802); the code still marks `VirtualAlloc` UNTESTED, which the phase-3 final review checks |
 | `jit-aarch64` | Linux, macOS (Apple Silicon: `MAP_JIT`), Windows on ARM, Android (Termux) | — | the second architecture (or `jit-riscv64`, ROADMAP phase 4); its integer core proves the split before the opcode set is widened |
 | `jit-riscv64`, `jit-armv7`, `jit-mips32` (Ingenic X2000, little-endian), `jit-ppc64le`, `jit-loongarch64` | as available | — | QEMU user-mode in CI; candidates for copy-and-patch |
 | `lua` / `luajit` | Lua 5.4, LuaJIT | CoreMark | **not a w2py target** (D20, rejected; code stays in `poc/`): an experiment showing the IR serves other languages (271 / 1 873 it/s); the shared layers stay language-neutral so such backends remain possible (DECISIONS.md D17) |

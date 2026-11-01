@@ -2,7 +2,7 @@
 title: Architecture
 kind: reference
 status: current
-updated: 2026-10-30
+updated: 2026-11-01
 ---
 
 # Architecture
@@ -52,7 +52,7 @@ updated: 2026-10-30
    └─────────────────────────────┘
 ```
 
-Proposed package layout:
+Proposed package layout (the full target; what exists at HEAD is listed after it):
 
 ```
 w2py/
@@ -75,6 +75,14 @@ w2py/
   cli/           main.py (run, compile, wast, settings, cache)
   __main__.py
 ```
+
+At HEAD `src/w2py/` holds: `frontend/` (`binary.py` reader, `validate.py`), `runtime/` (`link.py`,
+`store.py`), `targets/base.py` (the `Target` protocol, registry, `auto` selection, `JitUnavailableWarning`),
+`targets/pyc/` (`codegen.py`, `runtime.py`), and `targets/jit/` with `common/` (`compiler.py` the one-pass
+core, `backend.py` the backend interface, `context.py`, `execmem.py`, `instance.py`) and `x86_64/`
+(`encoder.py`, `abi.py`, `backend.py`). There is no separate `ir/` yet: the JIT core reads the validated
+body directly (D26) and `pyc` has its own tree builder; HIR and its analyses wait for a measurement that
+needs them. `mpy`, `aarch64`, `cache/`, `wasi/`, `cli/` and the public runtime objects do not exist yet.
 
 The PoC files map onto this as follows: `w2py.py` holds the reader, the decoder, the stack-to-tree
 builder, the value-bounds analysis and the `pyc` code generator in one file; `w2jit.py`/`w2jit2.py`
@@ -135,8 +143,9 @@ Other languages are **not in scope** now; this only keeps the door open cheaply.
 after unconditional branches; compare + branch fusion; in-place updates of pinned locals (`x op= y`);
 loads straight into a pinned local; and, the one that matters most for JITs, **bounds-check
 elimination** — e.g. one check per loop for a pointer that advances monotonically, or for accesses with
-a common base and small constant offsets — because guard pages are not available to us and the
-explicit checks are a large part of the remaining ~20 % gap to Cranelift.
+a common base and small constant offsets — because the package's JIT uses explicit checks until guard
+pages arrive in phase 5 (D29), and where guard pages are unavailable these checks stay a large part of
+the ~20 % gap to Cranelift.
 
 ## The object model (after Wasmtime)
 
@@ -167,22 +176,24 @@ explicit checks are a large part of the remaining ~20 % gap to Cranelift.
 All targets must share one `Memory` facade, because hosts (WASI included) read and write guest
 memory without knowing the target.
 
-* `pyc`: a `bytearray` (grows in place with `extend`; struct `unpack_from`/`pack_into` on it).
+* `pyc`: a `bytearray` subclass (grows in place with `extend`; struct `unpack_from`/`pack_into` on it).
   Temporary `memoryview`s are fine; a long-lived export blocks `extend` on CPython (`BufferError`).
-* JIT: a raw mapping whose address the code holds in a register (r13 in the PoC). Growth must not
+* JIT: a raw mapping whose address the code holds in a register (r13). At HEAD it is a 4 GiB
+  reservation per 32-bit memory (`MEMORY_RESERVATION`, Wasmtime's default) committed on `memory.grow`,
+  which never moves the base; `memory.grow` is a libcall through the host bridge (S0003). Growth must not
   move it while code runs: reserve the maximum address range up front (wasm32: 4 GiB + slack on a
   64-bit host; less, with explicit checks, on 32-bit hosts) and commit pages on `memory.grow`
   (`mprotect` / `VirtualAlloc(MEM_COMMIT)` through ctypes). The Python `mmap` module cannot reserve
   without committing portably, so the reservation goes through ctypes.
 * `memory64`, `multi-memory`, shared memory (threads) and custom page sizes are properties of the
   facade and of the code generators, not of separate paths.
-* Bounds checks: explicit in `pyc`/`mpy`. **The JIT can use guard pages without a native dependency**
+* Bounds checks: explicit in `pyc`/`mpy`, and, at HEAD, in the JIT too. **The JIT can use guard pages without a native dependency**
   (measured, `poc/w2jit_guard.py`): an 8 GiB `PROT_NONE` reservation with only the wasm pages
   read/write, and a SIGSEGV handler that is **machine code emitted by the JIT** (a Python handler
   cannot run inside a signal) and installed with `sigaction` through ctypes. It resumes a fault at a
   reserved address raised by this module's code in the out-of-bounds trap stub (it rewrites RIP in the
   `ucontext`, as Wasmtime does), and passes everything else to the previous handler or restores the
-  default action. CoreMark: +20–25 % (91 % of Wasmtime instead of 78 %), 23 % less machine code
+  default action. In the package this is phase 5 (D29). CoreMark in the PoC: +20–25 % (91 % of Wasmtime instead of 78 %), 23 % less machine code
   (BENCHMARKS.md, "Guard pages"). Explicit checks stay the fallback (offsets ≥ 2 GiB, platforms
   without the handler yet, `memory64`); risks in RISKS.md, R6.
 
@@ -191,7 +202,9 @@ memory without knowing the target.
 In the PoC each code generator had its own mini-runtime (`pyc`: a `bytearray`, Python globals, a list
 of functions; the JIT: a raw mapping, context slots, code addresses). In the package one runtime owns
 the state and every target works on it, because modules compiled by different targets can meet in one
-`Store` (per-module fallback, TARGETS.md) and share a memory or a table:
+`Store` and share a memory or a table. D25 settled the other half: **one target per engine and store**,
+so at HEAD the two representations never meet in one store; the table is the shape the runtime keeps
+open for it:
 
 | state | one representation for all targets | `pyc` uses it as | JIT uses it as |
 |---|---|---|---|
@@ -204,7 +217,7 @@ Calls across the boundary work in both directions at the cost of a ctypes crossi
 host function through `CFUNCTYPE`, `pyc` → JIT through the entry). To measure before deciding: `pyc`
 on a reserved mapping instead of a `bytearray`. The alternative is one target per `Store` (fallback
 for the whole store): simpler, but a single unsupported feature then slows every module of the
-store. Open question 12 in ROADMAP.md.
+store: this is the chosen one (D25). Open question 12 in ROADMAP.md keeps only the `pyc` backing-store measurement.
 
 ## Calls, stack depth and recursion
 
@@ -231,9 +244,9 @@ limits (`sys.getrecursionlimit()`, 1000 by default, and the C stack). Plan:
   compares `frame + frame_size` against a limit in the context (the PoC does this) → trap 5;
 * the native stack (return addresses, saved registers): checked against a limit in the context taken
   from the entry `rsp` minus a budget, so the thread's C stack is never exhausted.
-* Re-entrancy: **the PoC entry trampoline stores one saved `rsp`**; a nested entry (wasm → host →
-  wasm) overwrites it. The real entry must push the previous saved `rsp` and restore it on exit and
-  on trap (see LESSONS.md).
+* Re-entrancy: **the PoC entry trampoline stored one saved `rsp`**, so a nested entry (wasm → host →
+  wasm) overwrote it (LESSONS.md). The package's entry keeps no saved `rsp`: a trap returns through the
+  frames (S0003), so nested entries are safe; stack bounds per thread come from the OS (D10).
 
 ## Long calls and the GIL
 
@@ -284,8 +297,9 @@ Targets report a numeric trap code that maps to Wasmtime's `TrapCode` (`UNREACHA
 
 * `pyc`: a `Trap` exception raised by the generated code or its helpers; Python errors that mean a
   trap (`struct.error`, `IndexError` on memory, `RecursionError`) are converted at the boundary.
-* JIT: trap stubs store the code in the context and unwind to the entry trampoline, which returns it
-  to Python; the runtime raises. A frame list for `Trap.frames` needs a code-address → function map
+* JIT: trap stubs store the code in the context and return it through every native frame (each call
+  site checks the status, CET-safe, S0003) to the entry trampoline, which returns it to Python; the
+  runtime raises. A frame list for `Trap.frames` needs a code-address → function map
   (kept in the artifact).
 * Host exceptions raised inside a host function called from wasm must cross back: `pyc` lets them
   propagate; a JIT callback catches them, stores them in the store and returns a "host error" code

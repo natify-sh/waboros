@@ -2,7 +2,7 @@
 title: Features
 kind: reference
 status: current
-updated: 2026-10-30
+updated: 2026-11-01
 ---
 
 # Features
@@ -18,7 +18,7 @@ the WebAssembly website's [features.json](https://webassembly.org/features/), pi
 run yet. Wasmtime's column is the upstream data. `pyc` is computed from `tests/spec/xfail/pyc.txt`
 and the command counts in `tests/spec/counts.json`; each cell shows `ok/total` commands. Proposal
 directories (`test/core/<dir>/`) count only on a target that claims the feature
-(`tests/spec/claims.py`); an unclaimed feature is "-". `jit-x86_64` has not started. `mpy` is not listed yet.
+(`tests/spec/claims.py`); an unclaimed feature is "-". `jit-x86_64` claims only the core group (no proposal directory yet), so its cells for directory proposals are "-". `mpy` is not listed yet.
 
 ## Proposals
 
@@ -116,5 +116,6 @@ directories (`test/core/<dir>/`) count only on a target that claims the feature
 * **`mpy` (MicroPython)** supports what its interpreter allows: no `SharedMemory`/threads in general,
   big-int i64 (slow on 32-bit MCUs), floats only on ports built with them. Unsupported features are
   reported by `Target.supports`, never mis-executed.
-* **JIT targets** may lag the `pyc` target feature by feature; per-module fallback keeps every module
-  runnable (TARGETS.md).
+* **JIT targets** may lag the `pyc` target feature by feature; `auto` selects a JIT only when its
+  expected failures equal `pyc`'s in the claimed groups, otherwise the engine runs on `pyc` (D25,
+  TARGETS.md).

@@ -2,7 +2,7 @@
 title: Benchmarks
 kind: log
 status: current
-updated: 2026-10-30
+updated: 2026-11-01
 ---
 
 # Benchmarks
@@ -28,6 +28,7 @@ crcfinal depends on the iteration count).
 | **w2jit2: stdlib JIT with registers, CPython 3.13 / 3.8** | 15 088, **15 337 / 15 437** | last session; ~80 % of wasmtime, 6.3× wasm3 |
 | **package `jit-x86_64`** (step 3c: one-pass core, explicit bounds checks, stack checks, interrupt polls, trap-by-return) | 16 299 / 16 315 / 15 100 | 2026-10-30, alternated with `w2jit2` in one session: 16 949 / 16 023 / 16 411 (medians 16 299 vs 16 411, −0.7 %, within noise); details below |
 | package `jit-x86_64` (step 3d: + tables, references, `call_indirect`, bulk memory) | 16 571 / 15 385 / 15 879 | 2026-10-30, alternated with `w2jit2` in one session: 16 058 / 15 819 / 16 569 (medians 15 879 vs 16 058, −1.1 %, within noise); details below |
+| package `jit-x86_64` (step 5: + tail calls, function records; the ISA gate) | 17 663 / 17 526 / 17 648 / 16 513 / 17 231 | 2026-10-31, alternated with `w2jit2` in one session: 17 662 / 17 817 / 18 053 / 17 073 / 17 324 (medians 17 526 vs 17 662, 99.2 %); details in "Package JIT checkpoint (JIT step 5)" |
 | w2jit: stdlib JIT, every value in memory | 3 874–3 898 (3.13), 3 882 (3.8) | |
 | w2py → PyPy 7.3.19 | 2 873; 2 300–2 900 later | noisy |
 | wasm3 (pywasm3) | 1 850–2 035 / **2 433** | first / last session |

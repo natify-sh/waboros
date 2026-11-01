@@ -2,7 +2,7 @@
 title: Testing
 kind: reference
 status: current
-updated: 2026-10-30
+updated: 2026-11-01
 ---
 
 # Testing
@@ -83,7 +83,7 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
 | axis | values |
 |---|---|
 | Python | CPython 3.11, 3.12, 3.13, 3.14, 3.15, 3.15t (free-threaded); PyPy 3.11 (D19) |
-| OS | Linux x86-64 (all jobs), Windows x64 (`windows-latest`) and macOS x64 (`macos-26-intel`) (`os` job: unit tests + the spec run for `pyc` and wasmtime); later Linux aarch64, macOS arm64 (MAP_JIT) |
+| OS | Linux x86-64 (all jobs), Windows x64 (`windows-latest`) and macOS x64 (`macos-26-intel`) (`os` job: `pytest` including `tests/jit`, the stack bounds, and the spec run for wasmtime and `pyc`, not for `jit-x86_64`); later Linux aarch64, macOS arm64 (MAP_JIT) |
 | target | `pyc` everywhere; `jit-*` where the machine matches; `mpy` with the MicroPython unix port |
 | native arm64 | `jit-aarch64` on GitHub's arm64 runners: `ubuntu-24.04-arm`, `macos-latest` (macOS arm64, `MAP_JIT`), `windows-11-arm` (labels per actions/runner-images) |
 | emulated | QEMU user-mode only for architectures without native runners (riscv64, armv7, mips32el) as JIT targets appear |
@@ -92,7 +92,12 @@ JIT artifacts: run baseline artifacts on an emulated baseline CPU (e.g. QEMU `-c
 with plain ARMv8.0) and check that a higher-level artifact is refused there; load artifacts with the C
 reference loader as well as from Python; refuse artifacts with an unknown format or context ABI version.
 
-The `jit` job runs `tools/isa_all.py`: it compiles every spec module and CoreMark with
+Jobs of `.github/workflows/ci.yml`: `lint` (ruff, pyright, `check_docs.py`, `features.py --check`); `test`
+(`pytest -q` on the seven Pythons; `tools/stack_info.py` on 3.13, also in a musl container); `jit`
+(`tests/jit` with `W2PY_JIT_REQUIRE=1`, then `isa_all.py`); `spec` (the spec run on `wasmtime`, `pyc`,
+`jit-x86_64`, then `auto` under `no_exec.py`); `os`.
+
+The `jit` job runs `tools/isa_all.py` (locally: 379 blobs, about 32 s): it compiles every spec module and CoreMark with
 `W2PY_JIT_DUMP` and disassembles each blob with `tools/isa_check.py` (code ranges only), failing on any
 instruction above x86-64-v1 (D24).
 
