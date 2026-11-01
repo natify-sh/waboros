@@ -339,8 +339,31 @@ def _xfail_keys(engine: str, both: Sequence[str]) -> set[str]:
     return keys
 
 
-def test_the_jit_fails_exactly_what_pyc_fails() -> None:
+def _jits(complete: bool) -> list[str]:
+    from w2py.targets.base import TARGETS
+
+    jits = [n for n in TARGETS if n.startswith("jit-")]
+    return [n for n in jits if getattr(TARGETS[n](), "complete", True) == complete]
+
+
+@pytest.mark.parametrize("jit", _jits(True))
+def test_the_jit_fails_exactly_what_pyc_fails(jit: str) -> None:
     """D25: `auto` selects a JIT whose probe succeeds, so its expected failures must equal pyc's
     in the directories both claim."""
-    both = ("pyc", "jit-x86_64")
-    assert _xfail_keys("jit-x86_64", both) == _xfail_keys("pyc", both)
+    both = ("pyc", jit)
+    assert _xfail_keys(jit, both) == _xfail_keys("pyc", both)
+
+
+@pytest.mark.parametrize("jit", _jits(False))
+def test_an_incomplete_jit_fails_only_what_it_does_not_compile(jit: str) -> None:
+    """S0004: a JIT `auto` does not select yet expects pyc's failures plus `unsupported:` ones
+    only, so no real failure hides among them; a whole-file entry matches nothing else."""
+    both = ("pyc", jit)
+    pyc = _xfail_keys("pyc", both)
+    entries = run.read_xfail(Path(__file__).parent / "xfail" / f"{jit}.txt")
+    assert entries
+    for key, reason in entries.items():
+        if key.endswith(".wast:*"):
+            assert reason == "reason~=^unsupported:", key
+        else:
+            assert reason.startswith("unsupported: ") or key in pyc, key

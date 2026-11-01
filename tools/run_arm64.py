@@ -4,8 +4,9 @@
 
 Needs `apt-get install qemu-user libc6-arm64-cross libgcc-s1-arm64-cross` and
 `uv python install cpython-3.13-linux-aarch64-gnu` (or W2PY_ARM64_PYTHON=<its python3>); pytest
-for aarch64 goes to .cache/arm64-site on first use. QEMU does not model a stale I-cache: a missing
-flush passes here; only a native runner proves it."""
+and wasmtime (the tests' wat2wasm) for aarch64 go to .cache/arm64-site on first use. QEMU does not
+model a stale I-cache: a missing flush passes here; only a native runner proves it. Subprocesses
+cannot start the aarch64 interpreter (no binfmt): run the spec suite with `--in-process`."""
 
 import glob
 import os
@@ -24,11 +25,10 @@ if __name__ == "__main__":
     py = os.environ.get("W2PY_ARM64_PYTHON") or (sorted(found)[-1] if found else None)
     if not py:
         sys.exit("run_arm64: no aarch64 CPython (set W2PY_ARM64_PYTHON)")
-    if not (SITE / "pytest").exists():
+    if not (SITE / "wasmtime").exists():  # pytest; wasmtime for the tests' wat2wasm
         pip = ["uv", "pip", "install", "--target", str(SITE), "--python-version", "3.13"]
-        subprocess.run(
-            [*pip, "--python-platform", "aarch64-unknown-linux-gnu", "pytest"], check=True
-        )
+        plat = ["--python-platform", "aarch64-unknown-linux-gnu"]
+        subprocess.run([*pip, *plat, "pytest", "wasmtime==50.0.1"], check=True)
     env = {**os.environ, "PYTHONPATH": f"{SITE}{os.pathsep}{ROOT / 'src'}{os.pathsep}{ROOT}"}
     cmd = ["qemu-aarch64", "-L", "/usr/aarch64-linux-gnu", py, *sys.argv[1:]]
     sys.exit(subprocess.run(cmd, cwd=ROOT, env=env).returncode)

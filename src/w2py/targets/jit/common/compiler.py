@@ -108,6 +108,12 @@ SUPPORTED = frozenset(
     (*CONTROL, *range(0x20, 0x25), *range(0x41, 0x46), 0x50, *BINOPS, *CMPS, *UNOPS, *LOADS,
      *STORES, *REINTERPRET, *FCMPS, *FUNOPS, *FBINOPS, *CONVERTS, 0x3F, 0x40, *TABLES)
 )  # fmt: skip
+# the integer core (S0004, phase 4): control without tables and tail calls, variables, memories,
+# integer operators; floats only as bit patterns (constants, loads, stores, reinterprets)
+INTEGER_CORE = frozenset(
+    (*CONTROL[:14], *range(0x20, 0x25), *range(0x41, 0x46), 0x50, *BINOPS, *CMPS, *UNOPS,
+     *LOADS, *STORES, *REINTERPRET, 0x3F, 0x40)
+)  # fmt: skip
 # abstract heap types a reference may have here: func, extern and their bottom types nofunc,
 # noextern (all one word: a record address / host handle, 0 = null)
 HEAPS = (-16, -17, -13, -14)
@@ -126,8 +132,8 @@ def type_ok(t: Any) -> str | None:
     return "simd" if t == 0x7B else "GC types"
 
 
-def unsupported(mod: ValidModule) -> str | None:
-    """The first feature of `mod` this core cannot compile, or None."""
+def unsupported(mod: ValidModule, ops: frozenset[int]) -> str | None:
+    """The first feature of `mod` that a backend compiling the opcodes `ops` cannot, or None."""
     if not mod.get("validated"):
         return "module not fully validated"
     imps: list[tuple[Any, ...]] = mod["imports"]
@@ -140,7 +146,7 @@ def unsupported(mod: ValidModule) -> str | None:
     for insns in mod["insns"]:
         for ins in insns:
             op = ins[0]
-            if op not in SUPPORTED:
+            if op not in ops:
                 return feature(op)
             ts: Sequence[Any] = ()
             if op in (0x02, 0x03, 0x04) and ins[1][0] != "idx":
@@ -207,7 +213,7 @@ class _Mod:
 
 def compile_module(mod: ValidModule, b: Backend[Any, Any], target: str) -> Compiled:
     """Compile every function or raise Unsupported with the first missing feature."""
-    why = unsupported(mod)
+    why = unsupported(mod, b.supported)
     if why:
         raise Unsupported(target, why)
     imps: list[tuple[Any, ...]] = mod["imports"]
@@ -237,8 +243,13 @@ def compile_module(mod: ValidModule, b: Backend[Any, Any], target: str) -> Compi
     for k, ((locs, _), insns) in enumerate(zip(mod["codes"], mod["insns"], strict=True)):
         fidx = len(fimps) + k
         pin = not (nopin == "all" or str(fidx) in nopin.split(","))
-        funcs.append((b.here(), len(m.types[m.ftypes[fidx]][1])))
-        _Func(m, fidx, locs, insns, pin).run()
+        pos = b.here()
+        funcs.append((pos, len(m.types[m.ftypes[fidx]][1])))
+        if not _Func(m, fidx, locs, insns, pin).run(False):  # a branch does not reach
+            b.rewind(pos)
+            far_ok = _Func(m, fidx, locs, insns, pin).run(True)  # never inside an assert (-O)
+            if not far_ok:
+                raise Unsupported(target, "function too large for this architecture's branches")
     thunks = {i: b.host_thunk(layout.import_(i)) for i in sorted(refd) if i < len(fimps)}
     code, data = b.finish()
     return Compiled(mod, code, data, funcs, layout, sorted(refd), sigs, thunks)
@@ -581,9 +592,10 @@ class _Func:
         return x, y, z
 
     # ------------------------------------------------------------------ the pass
-    def run(self) -> None:
+    def run(self, far: bool) -> bool:
+        """Compile the function; False if the backend asks for far mode (S0004)."""
         b, L, lay = self.b, self.L, self.m.layout
-        self.f = f = b.func_begin(self.label, tuple(self.pins.values()))
+        self.f = f = b.func_begin(self.label, tuple(self.pins.values()), far)
         for j, r in self.pins.items():
             src = Slot(j) if j < self.nparams else Imm(0)
             b.move(Reg(r), src, self.ltypes[j] in WIDE)
@@ -775,4 +787,4 @@ class _Func:
             else:  # unsupported() already refused it
                 raise AssertionError(f"opcode {op:#x}")
         assert not self.ctl
-        b.func_end(f, L + self.maxh)
+        return b.func_end(f, L + self.maxh)

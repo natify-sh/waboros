@@ -1,6 +1,7 @@
 # pyright: reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false
-"""The one-pass core and the x86-64 backend (JIT step 3b): wasm modules compiled and run on
-`jit-x86_64`, results compared with `pyc` on the same module where convenient."""
+"""The one-pass core and a backend (JIT step 3b; S0004 step 4b): wasm modules compiled and run on
+the JIT target of this machine (`jit-x86_64`, `jit-aarch64`), results compared with `pyc` on the
+same module where convenient."""
 
 import subprocess
 import sys
@@ -12,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from tests.jit import native, need
+from tests.jit import native, native_jit, need
 from w2py.frontend.binary import parse
 from w2py.frontend.validate import validate
 from w2py.runtime import link
@@ -20,11 +21,10 @@ from w2py.runtime.store import StoreState
 from w2py.targets import base
 from w2py.targets.base import HostFunc, Raw, Trap, TrapCode, Unsupported
 from w2py.targets.jit.common.compiler import Compiled
-from w2py.targets.jit.x86_64 import JitX86_64Target
 
 ROOT = Path(__file__).resolve().parents[2]
 M32, M64 = 0xFFFFFFFF, (1 << 64) - 1
-JIT = "jit-x86_64"
+JIT = native_jit()
 
 
 def wat(text: str) -> bytes:
@@ -38,7 +38,7 @@ def wat(text: str) -> bytes:
 
 @pytest.fixture(autouse=True)
 def _jit() -> None:
-    native("jit-x86_64")
+    native(JIT)
 
 
 class Inst:
@@ -358,7 +358,7 @@ def test_globals_and_imported_globals() -> None:
         (global.set $g (i64.add (global.get $g) (i64.extend_i32_u (global.get $c))))
         (global.get $g)))"""),
         store=store)  # fmt: skip
-    t = JitX86_64Target()
+    t = base.TARGETS[JIT]()
     mod = parse(
         wat("""(module (import "a" "g" (global $g (mut i64)))
       (import "a" "f" (global $f (mut f32)))
@@ -488,7 +488,7 @@ def test_host_exception_and_trap_through_compiled_code() -> None:
 )
 def test_unsupported_names_the_feature(text: str, feature: str) -> None:
     mod = parse(wat(f"(module {text})"))  # not validated: the frontend decodes nothing else
-    t = JitX86_64Target()  # the JIT refuses (v128, GC types, exceptions fail in the reader)
+    t = base.TARGETS[JIT]()  # the JIT refuses (v128, GC types, exceptions fail in the reader)
     assert t.supports(mod) == feature
     with pytest.raises(Unsupported) as e:
         t.compile(mod)
@@ -499,12 +499,14 @@ def test_isa_check_on_compiled_code(tmp_path: Path) -> None:
     """D24: the compiled code (data area excluded) has only x86-64-v1 instructions."""
     from tests.jit.test_encoder import OBJDUMP
 
+    if JIT != "jit-x86_64":
+        pytest.skip("tools/isa_check.py checks x86-64 code (aarch64: step 4c)")
     need(OBJDUMP, "GNU objdump")
     mod = parse(
         wat(CONTROL[: CONTROL.rindex(")")] + "(memory 1)" + MEMORY[MEMORY.index("(func") :])
     )
     validate(mod)
-    c = JitX86_64Target().compile(mod)
+    c = base.TARGETS[JIT]().compile(mod)
     assert isinstance(c, Compiled) and c.data_start < len(c.code)  # a jump table is there
     blob = tmp_path / "code.bin"
     blob.write_bytes(c.code)

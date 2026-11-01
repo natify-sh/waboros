@@ -363,3 +363,35 @@ Resolved by the maintainer on 2026-11-01 (see Changes); none open.
   (run here under QEMU 8.2 with BTI enforced: `python3 tools/run_arm64.py -m pytest
   tests/jit/test_abi_aarch64.py`); x86-64-only tests skip on other machines (`tests.jit.native`)
   instead of failing under `W2PY_JIT_REQUIRE=1`.
+* 2026-11-01 (step 4b): the integer-core backend (`aarch64/backend.py`), every operation of the
+  Scope table, as specified above (division checks `cbz` + `cmn`/`ccmp`/`b.vs`; `ctz` = `rbit` +
+  `clz`; popcnt through `cnt`/`addv`; bounds checks in 64 bits; jump tables by `adrp` + `ldrsw`
+  with `bti j` pads; records called with x28 saved in a 16-byte frame). The leaks as fixed:
+  (1) `Backend.supported`, `unsupported(mod, ops)`; the sets are `compiler.SUPPORTED` (x86-64)
+  and `compiler.INTEGER_CORE` (aarch64); (2) `func_begin(..., far)`, `func_end` returns whether
+  every branch reached, `Backend.rewind(pos)`; the aarch64 backend checks its conditional-branch
+  fixups at `func_end` (`Asm.out_of_range`) and in far mode emits `b.!cond` over `b` (x86-64
+  always returns True); (3) and (4) were done in 4a; the aarch64 `supports`/`compile` stubs are
+  removed; (5) `claims.py`: `jit-aarch64` claims bulk memory and multi-memory like the other
+  targets (the orchestrator's brief; differs from "multiMemory only" above), bulk memory is
+  `unsupported` until 4e; (6) no change (`choose_pins` already takes the pool in order);
+  (7) `tests/jit/test_compiler.py` runs on the machine's JIT target (`tests.jit.native_jit`); the
+  float, table, tail-call and several-memories tests stay x86-64-only until 4e (they use
+  out-of-scope operations); (8) `tools/run_coremark_jit.py --target`; the ISA gate, `isa_all` and
+  `stack_info` are step 4c. Checked and not leaks: the core names no register beyond `b.tos`,
+  passes immediates whole (`Imm`), and the jump-table format lives in the backend's `finish`.
+  x86-64 code byte-identical (1 713 spec modules and CoreMark, sha256 before/after); aarch64
+  code compiled on x86-64 equals code compiled under QEMU (D35, 1 244 modules). Results under
+  QEMU 8.2 (`--in-process`: no child interpreters there): core 5 864 pass, 0 fail (`pyc`:
+  20 509; LESSONS 38), multi-memory 759, bulk memory 343; `tests/spec/xfail/jit-aarch64.txt` is
+  `pyc`'s 91 entries plus `unsupported:` ones (13 whole files as `reason~=^unsupported:`);
+  `spec_diff pyc jit-aarch64 --allow-unsupported` lists only `unsupported`. Difference from the
+  test plan: CoreMark does not compile on the integer core (13 distinct float opcodes in 5 of
+  its 29 functions), so it runs only after 4e; a bytecode VM
+  (`poc/bench/switch/vm.wasm`, integer-only) matches `pyc` instead
+  (`tests/jit/test_compiler_aarch64.py`, also the far-branch retry on a 1.4 MB function).
+* 2026-11-01 (step 4b review): the far-mode recompile is a statement, not inside an `assert` (under
+  `python -O` it was stripped and the next code ran in its place: a crash); a function that does
+  not fit even in far mode, and a module whose `b`/`bl` exceed ±128 MiB, raise `Unsupported` as
+  this spec says (`OutOfRange` mapped in the backend's `finish`); `tests/test_source_rules.py` keeps
+  compiling/emitting calls out of `assert`s in the JIT.

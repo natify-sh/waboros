@@ -17,6 +17,7 @@ from typing import cast
 
 from w2py.targets.base import TrapCode
 from w2py.targets.jit.common.backend import NEGATE, SWAP, Dst, Imm, Operand, Reg, Slot
+from w2py.targets.jit.common.compiler import SUPPORTED
 from w2py.targets.jit.common.context import (
     HOST_BRIDGE,
     INTERRUPT,
@@ -80,6 +81,7 @@ def _imm32(o: Operand, wide: bool) -> int | None:
 class Backend:
     pool = POOL
     tos = RAX
+    supported = SUPPORTED
 
     def __init__(self, check_align: bool = False) -> None:
         self.a = Asm()
@@ -99,7 +101,7 @@ class Backend:
     def here(self) -> int:
         return len(self.a.buf)
 
-    def func_begin(self, label: Label, pins: tuple[int, ...] = ()) -> Frame:
+    def func_begin(self, label: Label, pins: tuple[int, ...] = (), far: bool = False) -> Frame:
         a = self.a
         assert all(r in POOL for r in pins)
         a.bind(label)
@@ -119,8 +121,9 @@ class Backend:
         self.poll(f)
         return f
 
-    def func_end(self, f: Frame, frame_slots: int) -> None:
-        """Patch the value-stack check, emit the cold trap stubs and the epilogue."""
+    def func_end(self, f: Frame, frame_slots: int) -> bool:
+        """Patch the value-stack check, emit the cold trap stubs and the epilogue. Branches are
+        rel32: they always reach (no far mode)."""
         a = self.a
         struct.pack_into("<i", a.buf, f.vcheck, 8 * frame_slots)
         for code, label in f.traps.items():
@@ -133,6 +136,10 @@ class Backend:
         for r in reversed(f.pins):
             a.pop(r)
         a.ret()
+        return True
+
+    def rewind(self, pos: int) -> None:
+        raise AssertionError("x86-64 never asks for far mode")
 
     def _stub(self, f: Frame, code: int) -> Label:
         if code not in f.traps:

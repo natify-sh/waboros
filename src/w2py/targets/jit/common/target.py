@@ -63,7 +63,7 @@ class JitTarget:
     def supports(self, module: ValidModule) -> str | None:
         from w2py.targets.jit.common.compiler import unsupported
 
-        return unsupported(module)
+        return unsupported(module, self.backend().supported)
 
     def compile(self, module: ValidModule) -> object:
         from w2py.targets.jit.common.compiler import compile_module

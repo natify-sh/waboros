@@ -118,6 +118,27 @@ class Asm:
         self._fixups.append((len(self.buf), kind, label))
         self.emit(word)
 
+    def pos(self, label: Label) -> int:
+        at = self._labels[label.id]
+        assert at is not None, f"label {label.id} not bound"
+        return at
+
+    def out_of_range(self, start: int) -> bool:
+        """Does a conditional branch (b19, b14) emitted from `start` on miss its bound label?"""
+        for pos, kind, label in self._fixups:
+            target = self._labels[label.id]
+            if pos >= start and kind in ("b19", "b14") and target is not None:
+                bits = _FIELD[kind][0] + 1  # signed words -> bytes: field bits + 2 - 1
+                if not -(1 << bits) <= target - pos < 1 << bits:
+                    return True
+        return False
+
+    def rewind(self, start: int) -> None:
+        """Drop the code from `start` on: its bytes, its fixups and the labels bound there."""
+        del self.buf[start:]
+        self._fixups = [x for x in self._fixups if x[0] < start]
+        self._labels = [None if p is not None and p >= start else p for p in self._labels]
+
     def finish(self) -> bytes:
         """Resolve every fixup. `adrp` assumes the code is loaded at an address = 0 mod 4096."""
         for pos, kind, label in self._fixups:

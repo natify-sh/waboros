@@ -181,3 +181,13 @@ What went wrong or surprised us while building the PoC, so it is not found again
     counted that as the expected failure. Rule: a test that expects a crash first runs the same
     child with the bug removed and requires success (`test_bti_is_enforced_where_the_cpu_has_it`),
     and skips with the reason when no child starts. Found: JIT step 4a, 2026-11-01.
+38. **A partial backend measured per module covers less than it compiles.** `Unsupported` is
+    decided per module (D25: no mixing of targets per function), so one float or `call_indirect`
+    function takes a whole spec file out: on `jit-aarch64` with the integer core, `br.wast`,
+    `br_table.wast`, `call.wast`, `loop.wast` and `memory_grow.wast` failed `unsupported`
+    entirely because of one `f32.neg` or a `call_indirect`, and only 5 864 of `pyc`'s 20 509
+    core commands ran. Symptom: a spec run of a new backend that is green but small. Rule: report
+    a partial backend's pass count next to the reference target's, and test what the spec files
+    cannot reach with integer-only modules of our own (`tests/jit/test_compiler.py` runs on every
+    native JIT target; a real integer program, `poc/bench/switch/vm.wasm`). Found: JIT step 4b,
+    2026-11-01.
