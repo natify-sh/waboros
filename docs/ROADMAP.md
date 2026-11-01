@@ -264,17 +264,23 @@ lacks a feature reports it through `Target.supports` and the module runs on anot
    whole module (QuickJS: ~1.5 s JIT / ~5.7 s `pyc` for everything; BENCHMARKS.md, "Compile time on
    large modules"). Costs: a patchable call path, compilation in the middle of a call (re-entrancy,
    the GIL, executable-memory growth). Compare with eager compilation + cache before deciding.
-14. **A compiler in wasm (research, after phases 5–6).** Run an existing compiler built for
-   `wasm32-wasi` — Winch or Cranelift — on w2py: first on `pyc` (or the JIT), then compiled by our JIT
-   into a native artifact of the compiler itself (bootstrapping). It would give an optimising second
-   tier without writing one, a compiler that hosts in other languages can use with only a loader
-   (D36), and the strongest test of our runtime (a large real program). Not a change of course: w2py
-   stays a compiler in Python (CLAUDE.md, BRIEF.md), which remains the bootstrap and the path for
-   MicroPython and small devices. Rewriting our own JIT in a language compiled to wasm is not taken
-   now (a rewrite of all of it, harder debugging, the same per-language runtime services) but stays
-   open: the maintainer may revisit it, e.g. with the results of this experiment.
-   Needs a fixed artifact format (phase 5) and WASI (phase 6). Experiment: build Winch/Cranelift for
-   wasm, run it on w2py, measure the size of the module, the first run on `pyc`, the self-compilation
-   time, memory, and the code quality on CoreMark against our one-pass JIT; check how its output
-   would meet our context ABI. A shipped pre-compiled compiler artifact would need a reproducible
-   build (byte-identical with a self-built one, D35) to keep the package auditable.
+14. **A self-hosting compiler in wasm, one module per architecture (research, after phases 4–6).**
+   The maintainer's idea: our own compiler written in a language that compiles to wasm, shipped as one
+   module per architecture — `x64.wasm`, `arm64.wasm`, … (or a shared `core.wasm` plus a backend
+   module per architecture, linked by imports). Each runs on any wasm runtime (`pyc` first), compiles
+   itself into a native artifact for its architecture, then compiles everything else natively; run on
+   another architecture it is a cross-compiler (D35). It emits our context ABI directly (S0003,
+   D30–D37), stays small (the core and one backend), and a host in another language needs only a
+   loader and the runtime services to compile as well as run (D36). Our Python JIT stays the
+   reference: the wasm compiler's output must be byte-identical to the Python compiler's on every spec
+   module and CoreMark, a strong and cheap correctness check. Timing: after phase 4 freezes the
+   backend interface (a stable design to port, not a moving one), with a fixed artifact format
+   (phase 5); WASI (phase 6) only if the compiler needs it. Cost: the compiler written again in Rust,
+   Zig or C, and harder debugging than Python. w2py stays a compiler in Python (CLAUDE.md, BRIEF.md):
+   it remains the bootstrap, the reference and the path for MicroPython and small devices.
+   Alternative considered, also open: run an existing compiler built for `wasm32-wasi` (Winch or
+   Cranelift) on w2py — an optimising tier without writing one, but several MB, its output has to be
+   adapted to our ABI, and it needs WASI. Experiments: for either, the module size, the first run on
+   `pyc`, the self-compilation time, memory, and code quality on CoreMark against the Python JIT. A
+   shipped pre-compiled compiler artifact needs a reproducible build (byte-identical with a self-built
+   one, D35) to keep the package auditable.
