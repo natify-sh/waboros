@@ -23,12 +23,12 @@ def test_probe_refuses_other_architectures(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 def test_registered_and_selected_by_auto() -> None:
-    """Ready since step 3e (expected failures equal pyc's, tests/spec/test_runner.py): `auto`
-    selects it where its probe succeeds."""
+    """Ready since step 3e, jit-aarch64 since 4e (expected failures equal pyc's,
+    tests/spec/test_runner.py): `auto` selects the JIT whose probe succeeds."""
     target = TARGETS["jit-x86_64"]()
     assert target.name == "jit-x86_64"
-    want = "jit-x86_64" if target.probe() is None else "pyc"
-    assert target_order("auto") == [want]
+    ready = [n for n in TARGETS if n.startswith("jit-") and TARGETS[n]().probe() is None]
+    assert target_order("auto") == (ready[:1] or ["pyc"])
     assert target.supports({}) is not None
     with pytest.raises(Unsupported):
         target.compile({})
@@ -50,7 +50,11 @@ def test_aarch64_probe_here_or_refused(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_auto_skips_an_incomplete_jit(monkeypatch: pytest.MonkeyPatch) -> None:
     """S0004: `complete = False` keeps `auto` on pyc with the third D31 message, even where the
-    probe succeeds; an explicit choice still gives the target."""
+    probe succeeds; an explicit choice still gives the target (every JIT is complete since 4e:
+    the guard is tested on a patched one)."""
+    from w2py.targets.jit.aarch64 import JitAarch64Target
+
+    monkeypatch.setattr(JitAarch64Target, "complete", False)
 
     def probe(name: str) -> str | None:
         return None if name == "jit-aarch64" else "no"

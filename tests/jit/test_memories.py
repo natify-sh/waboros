@@ -1,7 +1,7 @@
 # pyright: reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false
-"""Several memories on `jit-x86_64`: memory 0 stays in r13/r14, any other is read from its
-context words at each access (S0003). Results and traps are compared with Wasmtime; the sharing
-case checks exact expectations."""
+"""Several memories on the machine's JIT target: memory 0 stays in registers (x86-64: r13/r14,
+aarch64: x26/x25), any other is read from its context words at each access (S0003). Results and
+traps are compared with Wasmtime; the sharing case checks exact expectations."""
 
 import importlib.util
 import random
@@ -10,14 +10,14 @@ from typing import Any, cast
 import pytest
 
 from tests.jit import native, need, test_compiler
-from tests.jit.test_compiler import build, outcome, trap_of, wat
+from tests.jit.test_compiler import JIT, build, outcome, trap_of, wat
 from tests.jit.test_float import Oracle
 from tests.jit.test_tables import provider
 from w2py.frontend.binary import parse
 from w2py.frontend.validate import validate
 from w2py.runtime.store import StoreState
+from w2py.targets import base
 from w2py.targets.base import TrapCode
-from w2py.targets.jit.x86_64 import JitX86_64Target
 
 LOADS = ["i32.load", "i64.load", "f32.load", "f64.load", "i32.load8_s", "i32.load8_u",
          "i32.load16_s", "i32.load16_u", "i64.load8_s", "i64.load8_u", "i64.load16_s",
@@ -75,7 +75,7 @@ def _three() -> str:
 
 @pytest.fixture(autouse=True)
 def _jit() -> None:
-    native("jit-x86_64")
+    native(JIT)
     need(importlib.util.find_spec("wasmtime") is not None, "wasmtime")
 
 
@@ -177,7 +177,7 @@ def test_two_instances_share_an_imported_second_memory() -> None:
 
 
 def test_memory_0_code_does_not_depend_on_other_memories() -> None:
-    """Memory 0's accesses, size, fill and copy stay on r13/r14: a module compiles to the same
+    """Memory 0's accesses, size, fill and copy stay in its registers: a module compiles to the same
     bytes whether or not it declares a second (unused) memory."""
     body = """(func (export "f") (param i32 i32) (result i32)
       (i32.store (local.get 0) (i32.load offset=4 (local.get 1)))
@@ -189,5 +189,5 @@ def test_memory_0_code_does_not_depend_on_other_memories() -> None:
     for mems in ("(memory 1)", "(memory 1) (memory 2)"):
         mod = parse(wat(f"(module {mems} {body})"))
         validate(mod)
-        codes.append(JitX86_64Target().compile(mod).code)  # pyright: ignore[reportAttributeAccessIssue]
+        codes.append(base.TARGETS[JIT]().compile(mod).code)  # pyright: ignore[reportAttributeAccessIssue]
     assert codes[0] == codes[1]

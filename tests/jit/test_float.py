@@ -1,8 +1,8 @@
 # pyright: reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false
-"""Floats and memory.size/grow on `jit-x86_64` (JIT step 3c). Float operators are compared bit by
-bit with Wasmtime, the oracle (values cross as i32/i64 bit patterns, so f32 NaN payloads survive);
-a NaN result only has to be a NaN of the kind the spec allows. Conversions are also checked
-against exact expectations at every trapping boundary."""
+"""Floats and memory.size/grow on the machine's JIT target (JIT step 3c; aarch64: step 4e). Float
+operators are compared bit by bit with Wasmtime, the oracle (values cross as i32/i64 bit patterns,
+so f32 NaN payloads survive); a NaN result only has to be a NaN of the kind the spec allows.
+Conversions are also checked against exact expectations at every trapping boundary."""
 
 import math
 import re
@@ -16,7 +16,7 @@ from typing import Any
 import pytest
 
 from tests.jit import native, need
-from tests.jit.test_compiler import M32, M64, ROOT, build, outcome, trap_of, wat
+from tests.jit.test_compiler import JIT, M32, M64, ROOT, build, outcome, trap_of, wat
 from w2py.frontend.binary import parse
 from w2py.frontend.validate import validate
 from w2py.runtime import link
@@ -28,7 +28,7 @@ from w2py.targets.jit.x86_64 import JitX86_64Target
 
 @pytest.fixture(autouse=True)
 def _jit() -> None:
-    native("jit-x86_64")
+    native(JIT)
 
 
 @pytest.fixture(params=["pinned", "nopin"])
@@ -173,6 +173,7 @@ def test_float_operators_match_wasmtime(t: str, pins: None) -> None:
 def test_operands_in_high_registers(t: str) -> None:
     """Float operands straight from pinned integer locals 6 and 7 (r10/r11): REX bits of movd/movq
     with r8-r15 (review of 3c). Equal use counts pin in order of first use."""
+    native("jit-x86_64")
     pytest.importorskip("wasmtime")
     i = "i32" if t == "f32" else "i64"
     ps = " ".join([i] * 8)
@@ -420,6 +421,7 @@ def test_grow_failure_is_not_a_trap() -> None:
 
 def test_isa_check_on_float_code(tmp_path: Path) -> None:
     """D24: rounding, min/max and conversions are SSE2 sequences (no roundss/roundsd)."""
+    native("jit-x86_64")
     from tests.jit.test_encoder import OBJDUMP
 
     need(OBJDUMP, "GNU objdump")

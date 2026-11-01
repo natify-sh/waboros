@@ -1,7 +1,8 @@
 # pyright: reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false
-"""Tables, references, call_indirect and bulk memory on `jit-x86_64` (JIT step 3d). Trap codes
-and results are compared with Wasmtime (the oracle) where the module stands alone; linking cases
-(shared tables, host functions in tables, nested entries) check exact expectations."""
+"""Tables, references, call_indirect and bulk memory on the machine's JIT target (JIT step 3d;
+aarch64: step 4e). Trap codes and results are compared with Wasmtime (the oracle) where the module
+stands alone; linking cases (shared tables, host functions in tables, nested entries) check exact
+expectations."""
 
 import importlib.util
 import random
@@ -16,7 +17,7 @@ from typing import Any, cast
 import pytest
 
 from tests.jit import native, need
-from tests.jit.test_compiler import ROOT, Inst, build, outcome, trap_of, wat
+from tests.jit.test_compiler import JIT, ROOT, Inst, build, outcome, trap_of, wat
 from tests.jit.test_float import Oracle
 from w2py.runtime import link
 from w2py.runtime.store import StoreState
@@ -29,7 +30,7 @@ from w2py.targets.jit.x86_64 import JitX86_64Target
 
 @pytest.fixture(autouse=True)
 def _jit() -> None:
-    native("jit-x86_64")
+    native(JIT)
 
 
 def provider(i: Inst) -> link.Provider:
@@ -322,9 +323,9 @@ def test_bulk_memory_matches_wasmtime() -> None:
 
 
 def test_operands_in_pinned_registers() -> None:
-    """Eight hot i32 locals are pinned to rbx rbp rsi rdi r8-r11: table and bulk-memory operands
-    come from rsi/rdi (which the copy loop uses as its temporary) and r8-r11, and every pinned
-    local survives."""
+    """Eight hot i32 locals are pinned (x86-64: rbx rbp rsi rdi r8-r11, aarch64: x19-x24 x2 x3):
+    table and bulk-memory operands come from pool registers (on x86-64 rsi/rdi, which the copy
+    loop uses as its temporary), and every pinned local survives."""
     locs = " ".join(f"(local.set {i} (i32.add (local.get {i}) (i32.const 0)))" for i in range(8))
     jit = build(
         wat(f"""(module (memory 1)
@@ -353,6 +354,7 @@ def test_operands_in_pinned_registers() -> None:
 def test_isa_check_on_table_code(tmp_path: Path) -> None:
     """D24: call_indirect, the table operations, the bulk-memory loops and host thunks are
     x86-64-v1."""
+    native("jit-x86_64")
     from tests.jit.test_encoder import OBJDUMP
     from w2py.frontend.binary import parse
     from w2py.frontend.validate import validate
@@ -549,7 +551,10 @@ def test_exit_with_a_daemon_thread_in_jit_code() -> None:
         time.sleep(0.3)
     """)
     for _ in range(3):
-        p = subprocess.run([sys.executable, "-c", src], capture_output=True, text=True)
+        try:
+            p = subprocess.run([sys.executable, "-c", src], capture_output=True, text=True)
+        except OSError as e:  # QEMU user mode without binfmt cannot start a child interpreter
+            pytest.skip(f"no child interpreter: {e}")
         assert p.returncode == 0, (p.returncode, p.stderr[-500:])
 
 

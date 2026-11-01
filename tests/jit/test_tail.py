@@ -1,7 +1,7 @@
 # pyright: reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false
-"""Tail calls and typed function references on `jit-x86_64` (JIT step 3e). Results and trap
-codes are compared with Wasmtime where the module stands alone; linking cases (another
-instance, host functions) check exact expectations."""
+"""Tail calls and typed function references on the machine's JIT target (JIT step 3e; aarch64:
+step 4e). Results and trap codes are compared with Wasmtime where the module stands alone;
+linking cases (another instance, host functions) check exact expectations."""
 
 import importlib.util
 import subprocess
@@ -15,18 +15,19 @@ from typing import Any, cast
 import pytest
 
 from tests.jit import native, need
-from tests.jit.test_compiler import ROOT, Inst, build, outcome, pins, trap_of, wat
+from tests.jit.test_compiler import JIT, ROOT, Inst, build, outcome, pins, trap_of, wat
 from tests.jit.test_float import Oracle
 from tests.jit.test_tables import provider
 from w2py.frontend.binary import parse
 from w2py.frontend.validate import validate
 from w2py.runtime.store import StoreState
+from w2py.targets import base
 from w2py.targets.base import Raw, Trap, TrapCode
 from w2py.targets.jit.common.compiler import Compiled
 from w2py.targets.jit.common.context import TAIL_SWITCH
 from w2py.targets.jit.common.instance import JitFunc
 from w2py.targets.jit.x86_64 import JitX86_64Target
-from w2py.targets.jit.x86_64.abi import bridge, entry, sp_stub, tail_switch, trampolines
+from w2py.targets.jit.x86_64.abi import bridge, entry, sp_stub, tail_switch
 from w2py.targets.jit.x86_64.encoder import Asm
 
 __all__ = ["pins"]  # the fixture, used by name
@@ -34,7 +35,7 @@ __all__ = ["pins"]  # the fixture, used by name
 
 @pytest.fixture(autouse=True)
 def _jit() -> None:
-    native("jit-x86_64")  # x86-64 code: on another machine it must not run (SIGILL on arm64 CI)
+    native(JIT)  # only this machine's code may run (x86-64 code is a SIGILL on arm64)
 
 
 def _config() -> Any:
@@ -228,8 +229,9 @@ def test_tail_calls_across_instances() -> None:
         store = StoreState()
         a = build(wat(CROSS_A), store=store)
         b = build(wat(CROSS_B), imports={"a": provider(a), "env": {"boom": boom}}, store=store)
+        tramp = cast(Any, base.TARGETS[JIT]()).trampolines()
         for i in (a, b):
-            assert cast(Any, i.inst).ctx[TAIL_SWITCH] == trampolines().tail_switch
+            assert cast(Any, i.inst).ctx[TAIL_SWITCH] == tramp.tail_switch
         mine, theirs = 10 + 1000, 100 + 5000
         for n in (0, 1, 2, 3, 100_000, 100_001):
             end = mine if n % 2 == 0 else theirs
@@ -458,6 +460,7 @@ def test_typed_function_references_match_wasmtime(pins: None) -> None:
 
 def test_isa_check_on_tail_call_code(tmp_path: Path) -> None:
     """D24: tail calls and typed references emit x86-64-v1 only; so does the trampoline area."""
+    native("jit-x86_64")
     from tests.jit.test_encoder import OBJDUMP
 
     need(OBJDUMP, "GNU objdump")
@@ -488,6 +491,7 @@ def test_real_modules_with_alignment_checks(monkeypatch: pytest.MonkeyPatch) -> 
     """A `check_align` build checks rsp % 16 at every call site, the host thunk's included:
     compiled modules with host thunks, tail calls, cross-instance switches and nested entries run
     with it on."""
+    native("jit-x86_64")
     from tests.jit import test_tables
     from w2py.targets.jit.x86_64 import backend
 

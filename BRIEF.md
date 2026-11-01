@@ -95,8 +95,7 @@ State on branch `phase0-skeleton` (not merged to `main`, the maintainer's choice
   ISA gate in CI. `jit-x86_64` fails exactly what `pyc` fails in the core group (20509 pass on both)
   and `auto` selects it; CoreMark 17 526 vs PoC `w2jit2` 17 662 it/s (99.2 %). Phase 3 went beyond the
   "integer core" (floats, tables) because the goal is completeness (D25).
-* **Next, per `docs/ROADMAP.md`, in order:** multi-memory on both targets; phase 4, the
-  `jit-aarch64` integer core on native arm64 runners; phase 5, guard pages (D29) and the rest of the
+* **Next, per `docs/ROADMAP.md`, in order:** multi-memory on both targets (done); phase 4, `jit-aarch64` on native arm64 runners (done: parity with `pyc`, interface frozen, D39); the macOS arm64 follow-ups; phase 5, guard pages (D29) and the rest of the
   opcode set; the public API only in phase 6.
 
 1. **Read** this page, then `docs/BENCHMARKS.md`, then `docs/ARCHITECTURE.md` and the spec of the step

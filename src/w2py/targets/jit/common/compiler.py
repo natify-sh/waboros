@@ -108,12 +108,6 @@ SUPPORTED = frozenset(
     (*CONTROL, *range(0x20, 0x25), *range(0x41, 0x46), 0x50, *BINOPS, *CMPS, *UNOPS, *LOADS,
      *STORES, *REINTERPRET, *FCMPS, *FUNOPS, *FBINOPS, *CONVERTS, 0x3F, 0x40, *TABLES)
 )  # fmt: skip
-# the integer core (S0004, phase 4): control without tables and tail calls, variables, memories,
-# integer operators; floats only as bit patterns (constants, loads, stores, reinterprets)
-INTEGER_CORE = frozenset(
-    (*CONTROL[:14], *range(0x20, 0x25), *range(0x41, 0x46), 0x50, *BINOPS, *CMPS, *UNOPS,
-     *LOADS, *STORES, *REINTERPRET, 0x3F, 0x40)
-)  # fmt: skip
 # abstract heap types a reference may have here: func, extern and their bottom types nofunc,
 # noextern (all one word: a record address / host handle, 0 = null)
 HEAPS = (-16, -17, -13, -14)

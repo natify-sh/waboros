@@ -155,10 +155,10 @@ lacks a feature reports it through `Target.supports` and the module runs on anot
   declared level.
 
 ## Phase 4 — the second architecture (integer core) proves the interface
-*Status: in progress. Done: 4a encoder, trampolines and executable memory, 4b integer-core backend, 4c spec suite, cross-compilation check and CI on arm64, 4d review. Freeze pending the maintainer's approval; 4e (parity with `jit-x86_64`) is next.*
+*Status: done except the macOS follow-ups below. 4a encoder, trampolines and executable memory; 4b integer-core backend; 4c ISA gate, spec, cross-compilation check and CI on arm64; 4d review and the interface freeze (D39); 4e parity: `jit-aarch64` fails exactly what `pyc` and `jit-x86_64` fail (28903 pass) and `auto` selects it on arm64; CoreMark passes its self-check (speed from the arm64 runners in BENCHMARKS.md).*
 
-* `jit-aarch64`, tested natively on GitHub's arm64 runners (Linux, macOS arm64 with `MAP_JIT`, Windows on Arm), integer
-  core only: the same stage 1, the same spec commands as phase 3. QEMU user-mode is only for
+* `jit-aarch64`, tested natively on GitHub's arm64 runners (Linux, macOS arm64 with `MAP_JIT`, Windows on Arm), first the integer
+  core (then parity, step 4e): the same stage 1, the same spec commands as phase 3. QEMU user-mode is only for
   architectures without native runners (riscv64 and later ones).
 * Record the size of the new backend and what in the shared core or the interface had to change; fix the
   places where x86-64 leaked (flags, two-operand forms, fixed registers for division and shifts) and

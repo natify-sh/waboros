@@ -1,15 +1,17 @@
-"""The aarch64 backend (S0004): the D26 interface for the integer core of phase 4 (`supported`;
-floats only as bit patterns). Register roles in abi.py; x0 = tos (and the status); x9-x13 scratch
-inside one method, x16/x17 for indirect branches and offsets no immediate takes, v0 for popcnt;
-pool x19-x24 (callee-saved for a host) first, then x2-x8 (saved by the bridge).
+"""The aarch64 backend (S0004): the D26 interface, the same opcode set as x86-64 (`supported`,
+step 4e). Register roles in abi.py; x0 = tos (and the status); x9-x15 scratch inside one method,
+x16/x17 for indirect branches and offsets no immediate takes, v0/v1 for popcnt and floats
+(values stay bit patterns in x registers and slots); pool x19-x24 (callee-saved for a host)
+first, then x2-x8 (saved by the bridge).
 
 i32 values stay zero-extended: 32-bit (w) forms write the whole register (LESSONS 5). Only
-`cmp/cmn/ccmp` write the flags, and each compare is emitted right before its consumer (LESSONS 1).
-ARMv8.0 only (D24): division checked explicitly (sdiv/udiv do not trap), popcnt through NEON.
+`cmp/cmn/ccmp/fcmp` write the flags, and each compare is emitted right before its consumer
+(LESSONS 1). ARMv8.0 only (D24): division checked explicitly (sdiv/udiv do not trap), popcnt
+through NEON, trapping float truncations checked before `fcvtz*`.
 
 Far mode (S0004): a conditional branch reaches ±1 MiB. `func_end` reports a function in which one
 does not; compiled again with `far`, every conditional branch to a label becomes `b.!cond` over
-an unconditional `b` (±128 MiB)."""
+an unconditional `b` (±128 MiB). Loops inside one method branch locally and always reach."""
 
 import struct
 from collections.abc import Sequence
@@ -20,12 +22,13 @@ from w2py.targets.jit.aarch64 import abi
 from w2py.targets.jit.aarch64.abi import CTX, FRAME, MBASE, MEM0, MSIZE
 from w2py.targets.jit.aarch64.encoder import FP, LR, SP, ZR, Asm, Label, OutOfRange, bitmask, invert
 from w2py.targets.jit.common.backend import SWAP, Dst, Imm, Operand, Reg, Slot
-from w2py.targets.jit.common.compiler import INTEGER_CORE
+from w2py.targets.jit.common.compiler import SUPPORTED
 from w2py.targets.jit.common.context import (
     HOST_BRIDGE,
     INTERRUPT,
     NSTACK_LIMIT,
     STATUS_INTERRUPT,
+    TAIL_SWITCH,
     VSTACK_LIMIT,
 )
 
@@ -55,7 +58,7 @@ class Frame:
 class Backend:
     pool = POOL
     tos = 0
-    supported = INTEGER_CORE
+    supported = SUPPORTED
 
     def __init__(self) -> None:
         self.a = Asm()
@@ -215,20 +218,24 @@ class Backend:
         """A function import, through its record in context word `word` (D30): the callee runs
         on the record's context; x28 is saved on the native stack (16 bytes, sp stays aligned),
         x26/x25 come from the callee's context and are reloaded from ours after (as x86-64)."""
-        a = self.a
         if shift_slots:
             self._add_k(FRAME, FRAME, 8 * shift_slots)
         self._add_k(16, CTX, 8 * word)
-        a.pair(False, CTX, ZR, SP, -16, "pre")
-        a.ld(CTX, 16, 16)
-        abi.reload_memory(a)
-        a.ld(17, 16)
-        a.blr(17)
-        a.pair(True, CTX, ZR, SP, 16, "post")
-        abi.reload_memory(a)
+        self._enter_record(16)
         if shift_slots:
             self._add_k(FRAME, FRAME, -8 * shift_slots)
         self._cbz(0, f.unwind, wide=False, nz=True)
+
+    def _enter_record(self, r: int) -> None:
+        """Call the function record at x<r> on its context (x28 saved in a 16-byte frame)."""
+        a = self.a
+        a.pair(False, CTX, ZR, SP, -16, "pre")
+        a.ld(CTX, r, 16)
+        abi.reload_memory(a)
+        a.ld(17, r)
+        a.blr(17)
+        a.pair(True, CTX, ZR, SP, 16, "post")
+        abi.reload_memory(a)
 
     # ---------------------------------------------------------------- data
     def _word(self, load: bool, t: int, base: int, off: int, size: int = 8) -> None:
@@ -503,3 +510,343 @@ class Backend:
             self.a.st(r, 9)
         else:
             self._word(False, r, CTX, 8 * word)
+
+    def ctx_addr(self, dst: Reg, word: int) -> None:
+        """dst = the address of context word `word` (a function record: `ref.func`)."""
+        self._add_k(dst.id, CTX, 8 * word)
+
+    # ---------------------------------------------------------------- floats
+    # Values stay bit patterns in x registers and slots; v0/v1 are scratch inside one method, so
+    # no v register is live across a call (v8-v15 never touched: AAPCS64 callee-saved). FP and
+    # Advanced SIMD are ARMv8.0 (D24); FPCR is the process's default (round to nearest, no
+    # flush-to-zero, NaNs propagated), which is what wasm needs.
+    def _v(self, v: int, o: Operand, wide: bool) -> None:
+        """v<v> = the bits of `o` (through x9)."""
+        self.a.fmov_to(v, self._r(o, 9, wide), wide)
+
+    def fbinop(self, op: str, dst: Reg, x: Operand, y: Operand, wide: bool) -> None:
+        a, d, w = self.a, dst.id, wide
+        sign = 1 << (63 if w else 31)
+        if op == "copysign":  # bit operations: NaN payloads stay exact; y is read first
+            a.logic_imm("and", 11, self._r(y, 10, w), sign, w)
+            a.logic_imm("and", d, self._r(x, 9, w), sign - 1, w)
+            a.logic("orr", d, d, 11, w)
+            return
+        # fmin/fmax are wasm's min/max: NaN if either is NaN, -0 < +0 (Arm ARM FPMin/FPMax;
+        # Cranelift's and Liftoff's arm64 lowering use them directly; fminnm/fmaxnm are not)
+        self._v(0, x, w)
+        self._v(1, y, w)
+        a.fp2(op, 0, 0, 1, w)
+        a.fmov_from(d, 0, w)
+
+    def funop(self, op: str, dst: Reg, x: Operand, wide: bool) -> None:
+        a, d, w = self.a, dst.id, wide
+        sign = 1 << (63 if w else 31)
+        if op in ("abs", "neg"):  # bit operations: NaN payloads stay exact
+            xr = self._r(x, 9, w)
+            if op == "abs":
+                a.logic_imm("and", d, xr, sign - 1, w)
+            else:
+                a.logic_imm("eor", d, xr, sign, w)
+            return
+        self._v(0, x, w)
+        rnd = {"ceil": "frintp", "floor": "frintm", "trunc": "frintz", "nearest": "frintn"}
+        a.fp1(rnd.get(op, op), 0, 0, w)
+        a.fmov_from(d, 0, w)
+
+    def fcmp_set(self, cond: str, dst: Reg, x: Operand, y: Operand, wide: bool) -> None:
+        """fcmp: unordered sets C and V, so mi/ls/gt/ge/eq are false and ne true on NaN."""
+        self._v(0, x, wide)
+        self._v(1, y, wide)
+        self.a.fcmp(0, 1, wide)
+        self.a.cset(dst.id, {"eq": "eq", "ne": "ne", "lt": "mi", "le": "ls", "gt": "gt",
+                             "ge": "ge"}[cond])  # fmt: skip
+
+    def convert(self, f: Frame, op: str, dst: Reg, x: Operand) -> None:
+        a, d = self.a, dst.id
+        rt, name = op.split(".")
+        parts = name.split("_")
+        if parts[0] == "trunc":
+            sat, signed = parts[1] == "sat", parts[-1] == "s"
+            self._trunc(f, d, x, parts[-2] == "f64", rt == "i64", signed, sat)
+            return
+        double = rt == "f64"
+        if parts[0] in ("demote", "promote"):
+            self._v(0, x, not double)
+            a.fp1("fcvt", 0, 0, not double)
+        else:  # scvtf/ucvtf round once, from the 32- or 64-bit register
+            src64, cvt = parts[1] == "i64", "scvtf" if parts[2] == "s" else "ucvtf"
+            a.fcvt_int(cvt, self._r(x, 9, src64), 0, src64, double)
+        a.fmov_from(d, 0, double)
+
+    def _trunc(
+        self, f: Frame, d: int, x: Operand, double: bool, w: bool, signed: bool, sat: bool
+    ) -> None:
+        """Float -> int. fcvtzs/fcvtzu saturate and give 0 for NaN, which is trunc_sat; the
+        trapping forms check first: NaN (BAD_CONVERSION_TO_INTEGER), then the two bounds, both
+        exact in either format (INTEGER_OVERFLOW). The shape of Cranelift's aarch64
+        `fcvt_to_sint`/`fcvt_to_uint` lowering, written anew."""
+        a = self.a
+        self._v(0, x, double)
+        if not sat:
+            a.fcmp(0, 0, double)
+            self._bcc("vs", self._stub(f, TrapCode.BAD_CONVERSION_TO_INTEGER))
+            n = 64 if w else 32
+            # valid: lo < x (exclusive) or lo <= x (inclusive), and x < hi
+            if not signed:
+                lo, strict = -1.0, True
+            elif double and not w:
+                lo, strict = -(2.0**31) - 1, True
+            else:
+                lo, strict = -(2.0 ** (n - 1)), False
+            hi = 2.0 ** (n - 1 if signed else n)
+            ovf = self._stub(f, TrapCode.INTEGER_OVERFLOW)
+            for bound, cond in ((lo, "le" if strict else "lt"), (hi, "ge")):
+                fmt = ("<d", "<Q") if double else ("<f", "<I")
+                bits = struct.unpack(fmt[1], struct.pack(fmt[0], bound))[0]
+                a.mov_imm(9, bits, double)
+                a.fmov_to(1, 9, double)
+                a.fcmp(0, 1, double)
+                self._bcc(cond, ovf)
+        a.fcvt_int("fcvtzs" if signed else "fcvtzu", d, 0, w, double)
+
+    # ---------------------------------------------------------------- tables and bulk memory
+    # A table is `base` (element words) and `size` in context words `word`, `word + 1`, read at
+    # every use: table.grow may move the elements, and runs only through the host bridge.
+    # Operands are read into x9 / x13-x15 before anything is written (LESSONS 32).
+    def _u32(self, r: int, o: Operand) -> None:
+        """x<r> = the i32 operand, zero-extended (a 32-bit move even from a register)."""
+        if isinstance(o, Reg):
+            self.a.mov(r, o.id, False)
+        else:
+            self.move(Reg(r), o, False)
+
+    def _element(self, f: Frame, word: int, index: Operand) -> None:
+        """x9 = index, bounds-checked against the table's size; x10 = the elements' base."""
+        self._u32(9, index)
+        self._word(True, 10, CTX, 8 * word + 8)
+        self.a.cmp(9, 10)
+        self._bcc("hs", self._stub(f, TrapCode.TABLE_OUT_OF_BOUNDS))
+        self._word(True, 10, CTX, 8 * word)
+
+    def table_get(self, f: Frame, dst: Reg, word: int, index: Operand) -> None:
+        self._element(f, word, index)
+        self.a.ld_idx(dst.id, 10, 9, 8, scaled=True)
+
+    def table_set(self, f: Frame, word: int, index: Operand, value: Operand) -> None:
+        self._element(f, word, index)
+        self.a.st_idx(self._r(value, 11, True), 10, 9, 8, scaled=True)
+
+    def _three(self, x: Operand, y: Operand, z: Operand, wy: bool) -> None:
+        """x13 = x, x14 = y, x15 = z (i32 zero-extended; y 64-bit if `wy`)."""
+        self._u32(13, x)
+        if wy:
+            self.move(Reg(14), y, True)
+        else:
+            self._u32(14, y)
+        self._u32(15, z)
+
+    def _end_check(self, f: Frame, r: int, limit: int, code: int) -> None:
+        """x<r> + x15 (both < 2**35, no wrap in 64 bits) must not exceed x<limit>."""
+        self.a.addsub("add", 9, r, 15)
+        self.a.cmp(9, limit)
+        self._bcc("hi", self._stub(f, code))
+
+    def _copy(self, unit: int) -> None:
+        """Copy x15 bytes from [x14] to [x13] as memmove does: backwards when the destination is
+        above the source; 8 bytes at a time, then single bytes (`unit` 1); x9 the temporary."""
+        a = self.a
+        fwd, f1, b8, b1, done = (a.label() for _ in range(5))
+        a.cmp(13, 14)
+        a.bcc("ls", fwd)
+        a.bind(b8)
+        a.addsub_imm("subs", ZR, 15, 8)
+        a.bcc("lo", b1 if unit == 1 else done)
+        a.addsub_imm("sub", 15, 15, 8)
+        a.ld_idx(9, 14, 15)
+        a.st_idx(9, 13, 15)
+        a.b(b8)
+        if unit == 1:
+            a.bind(b1)
+            a.cbz(15, done)
+            a.addsub_imm("sub", 15, 15, 1)
+            a.ld_idx(9, 14, 15, 1)
+            a.st_idx(9, 13, 15, 1)
+            a.b(b1)
+        a.bind(fwd)
+        a.addsub_imm("subs", ZR, 15, 8)
+        a.bcc("lo", f1 if unit == 1 else done)
+        a.ld(9, 14)
+        a.st(9, 13)
+        for r in (13, 14, 15):
+            a.addsub_imm("sub" if r == 15 else "add", r, r, 8)
+        a.b(fwd)
+        if unit == 1:
+            a.bind(f1)
+            a.cbz(15, done)
+            a.ld(9, 14, 0, 1)
+            a.st(9, 13, 0, 1)
+            for r in (13, 14, 15):
+                a.addsub_imm("sub" if r == 15 else "add", r, r, 1)
+            a.b(f1)
+        a.bind(done)
+
+    def memory_copy(
+        self, f: Frame, d: Operand, s: Operand, n: Operand, dmem: int, smem: int
+    ) -> None:  # fmt: skip
+        """Both ranges are checked before any byte moves (no partial copy); the direction is
+        chosen by the real addresses (the two indices may name one memory)."""
+        a, oob = self.a, TrapCode.MEMORY_OUT_OF_BOUNDS
+        self._three(d, s, n, False)
+        base, limit = self._mem(dmem)  # another memory than 0: x11/x12, read again below
+        self._end_check(f, 13, limit, oob)
+        a.addsub("add", 13, 13, base)
+        base, limit = self._mem(smem)
+        self._end_check(f, 14, limit, oob)
+        a.addsub("add", 14, 14, base)
+        self._copy(1)
+
+    def memory_fill(self, f: Frame, d: Operand, v: Operand, n: Operand, mem: int) -> None:
+        a = self.a
+        self._three(d, v, n, False)
+        base, limit = self._mem(mem)
+        self._end_check(f, 13, limit, TrapCode.MEMORY_OUT_OF_BOUNDS)
+        a.addsub("add", 13, 13, base)
+        a.logic_imm("and", 14, 14, 0xFF, False)
+        a.mov_imm(9, 0x0101010101010101)
+        a.madd(14, 14, 9, ZR)  # the byte in all eight
+        f8, f1, done = a.label(), a.label(), a.label()
+        a.bind(f8)
+        a.addsub_imm("subs", ZR, 15, 8)
+        a.bcc("lo", f1)
+        a.st(14, 13)
+        a.addsub_imm("add", 13, 13, 8)
+        a.addsub_imm("sub", 15, 15, 8)
+        a.b(f8)
+        a.bind(f1)
+        a.cbz(15, done)
+        a.st(14, 13, 0, 1)
+        a.addsub_imm("add", 13, 13, 1)
+        a.addsub_imm("sub", 15, 15, 1)
+        a.b(f1)
+        a.bind(done)
+
+    def table_fill(self, f: Frame, word: int, i: Operand, v: Operand, n: Operand) -> None:
+        a = self.a
+        self._three(i, v, n, True)
+        self._word(True, 10, CTX, 8 * word + 8)
+        self._end_check(f, 13, 10, TrapCode.TABLE_OUT_OF_BOUNDS)
+        self._word(True, 10, CTX, 8 * word)
+        a.addsub("add", 13, 10, 13, sh="lsl", amount=3)
+        loop, done = a.label(), a.label()
+        a.bind(loop)
+        a.cbz(15, done)
+        a.st(14, 13)
+        a.addsub_imm("add", 13, 13, 8)
+        a.addsub_imm("sub", 15, 15, 1)
+        a.b(loop)
+        a.bind(done)
+
+    def table_copy(
+        self, f: Frame, dst: int, src: int, d: Operand, s: Operand, n: Operand
+    ) -> None:  # fmt: skip
+        a, oob = self.a, TrapCode.TABLE_OUT_OF_BOUNDS
+        self._three(d, s, n, False)
+        for r, word in ((13, dst), (14, src)):
+            self._word(True, 10, CTX, 8 * word + 8)
+            self._end_check(f, r, 10, oob)
+        for r, word in ((13, dst), (14, src)):
+            self._word(True, 10, CTX, 8 * word)
+            a.addsub("add", r, 10, r, sh="lsl", amount=3)
+        a.bfm("ubfm", 15, 15, 61, 60)  # lsl #3
+        self._copy(8)
+
+    # ---------------------------------------------------------------- indirect calls
+    def _table_record(self, f: Frame, table: int, sig: int, index: Operand) -> None:
+        """x15 = the function record of element `index`: bounds (TABLE_OUT_OF_BOUNDS), null
+        (INDIRECT_CALL_TO_NULL), its canonical type id against the signature word (BAD_SIGNATURE),
+        in the spec's order (Wasmtime's codes)."""
+        a = self.a
+        self._element(f, table, index)
+        a.ld_idx(15, 10, 9, 8, scaled=True)
+        self._cbz(15, self._stub(f, TrapCode.INDIRECT_CALL_TO_NULL))
+        self._word(True, 9, CTX, 8 * sig)
+        a.ld(10, 15, 8)
+        a.cmp(9, 10)
+        self._bcc("ne", self._stub(f, TrapCode.BAD_SIGNATURE))
+
+    def _ref_record(self, f: Frame, ref: Operand) -> None:
+        """x15 = a function reference (call_ref); null traps with NULL_REFERENCE."""
+        self.move(Reg(15), ref, True)
+        self._cbz(15, self._stub(f, TrapCode.NULL_REFERENCE))
+
+    def _call_x15(self, f: Frame, shift_slots: int) -> None:
+        if shift_slots:
+            self._add_k(FRAME, FRAME, 8 * shift_slots)  # x16 at most: the record is in x15
+        self._enter_record(15)
+        if shift_slots:
+            self._add_k(FRAME, FRAME, -8 * shift_slots)
+        self._cbz(0, f.unwind, wide=False, nz=True)
+
+    def call_indirect(
+        self, f: Frame, table: int, sig: int, index: Operand, shift_slots: int
+    ) -> None:  # fmt: skip
+        self._table_record(f, table, sig, index)  # the index is read before x27 moves
+        self._call_x15(f, shift_slots)
+
+    def call_ref(self, f: Frame, ref: Operand, shift_slots: int) -> None:
+        self._ref_record(f, ref)
+        self._call_x15(f, shift_slots)
+
+    def null_check(self, f: Frame, x: Operand, code: int) -> None:
+        """Trap with `code` if the reference x is null; nothing but x9 is written."""
+        self._cbz(self._r(x, 9, True), self._stub(f, code))
+
+    # ---------------------------------------------------------------- tail calls
+    # The arguments move down to the frame base, the frame is torn down as by the epilogue (pins
+    # and {x29, x30} restored: x30 is our caller's return address again, sp as on entry), then a
+    # branch: both stacks stay constant and the callee returns to our caller. Every trap check
+    # comes before the teardown; the callee's prologue checks the stack limits and polls.
+    def _tail(self, f: Frame, src: int, n: int) -> None:
+        """Slots src.. -> 0..n (ascending is safe under overlap; x16/x17 only), teardown."""
+        for j in range(n):
+            if src:
+                self.move(Slot(j), Slot(src + j), True)
+        self._pins(f, True)
+        self.a.pair(True, FP, LR, SP, f.size, "post")
+
+    def tail_direct(self, f: Frame, label: Label, src: int, n: int) -> None:
+        self._tail(f, src, n)
+        self.a.b(label)
+
+    def _tail_record(self) -> None:
+        """Branch to the record in x16: directly on our context, else through tail_switch
+        (abi.py, D30), entered by `br x17` with x16 = the record and x30 = the return address."""
+        a, other = self.a, self.a.label()
+        a.ld(17, 16, 16)
+        a.cmp(CTX, 17)
+        a.bcc("ne", other)
+        a.ld(17, 16)
+        a.br(17)
+        a.bind(other)
+        self._word(True, 17, CTX, 8 * TAIL_SWITCH)
+        a.br(17)
+
+    def tail_indirect(
+        self, f: Frame, table: int, sig: int, index: Operand, src: int, n: int
+    ) -> None:  # fmt: skip
+        self._table_record(f, table, sig, index)
+        self._tail(f, src, n)
+        self.a.mov(16, 15)
+        self._tail_record()
+
+    def tail_ref(self, f: Frame, ref: Operand, src: int, n: int) -> None:
+        self._ref_record(f, ref)
+        self._tail(f, src, n)
+        self.a.mov(16, 15)
+        self._tail_record()
+
+    def tail_record(self, f: Frame, word: int, src: int, n: int) -> None:
+        self._tail(f, src, n)
+        self._add_k(16, CTX, 8 * word)
+        self._tail_record()

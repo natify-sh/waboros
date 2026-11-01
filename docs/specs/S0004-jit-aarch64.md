@@ -428,3 +428,34 @@ Resolved by the maintainer on 2026-11-01 (see Changes); none open.
   (code, data start, functions, records, signatures, thunks, layout), not only the code. The xfail
   reader now accepts an `unsupported: <feature>` entry only for exactly that failure (LESSONS 39).
 * 2026-11-01 (step 4d): reviewed; the backend interface is frozen (D39, maintainer). Step 4e (parity) adds opcodes and methods only.
+* 2026-11-01 (step 4e, parity): `jit-aarch64` compiles the x86-64 opcode set (`supported =
+  compiler.SUPPORTED`; `INTEGER_CORE` removed) with the frozen interface (D39): only methods were
+  added, no signature or contract changed, x86-64 code byte-identical (1 714 modules and CoreMark,
+  `jit_dump` before/after). Floats: bit patterns in x registers and slots, `fmov` into `v0`/`v1`
+  inside one method (`v8`-`v15` never used); `fadd/fsub/fmul/fdiv/fsqrt`; `fmin/fmax` directly
+  (Arm's FPMin/FPMax are wasm's min/max: NaN if either is NaN, -0 < +0; `fminnm` is not);
+  `frintp/frintm/frintz/frintn` for ceil/floor/trunc/nearest; `fcmp` + `cset` with `mi`/`ls` for
+  lt/le (false when unordered); `scvtf/ucvtf` (one rounding), `fcvt` for promote/demote;
+  abs/neg/copysign as `and/eor/orr` with bitmask immediates (bits exact). `trunc_sat` is
+  `fcvtzs/fcvtzu` alone; the trapping truncations check NaN (`fcmp v0, v0; b.vs` →
+  BAD_CONVERSION_TO_INTEGER), then both bounds, exact in either format (→ INTEGER_OVERFLOW), as
+  Cranelift's aarch64 lowering. Tables, `call_indirect` (bounds → null → signature, Wasmtime's
+  order), `call_ref`, `null_check`, `ctx_addr`, `table.get/set/fill/copy`, `memory.fill/copy`
+  (both ranges checked before the first write; memmove direction by the real addresses) in the
+  x86-64 shapes with x9-x15 as scratch; the record of an indirect call is kept in x15 so frame and
+  slot moves (x16/x17) cannot clobber it. Tail calls: arguments to slots 0.., pins and `{x29, x30}`
+  restored (x30 is the caller's return address again), then `b label`, or `br x17` to the record's
+  code when its context is ours, else `br x17` to `tail_switch` with x16 = the record (D30, as
+  specified above). Encoder: `fp2`, `fp1`, `fcmp`, `fcvt_int`, checked against `llvm-mc` with the
+  other forms. Results under QEMU 8.2 (`--in-process`): core 20 509, bulk memory 7 482,
+  multi-memory 912 pass, 0 fail, 92 expected failures, exactly `pyc`'s and `jit-x86_64`'s
+  (`tests/spec/xfail/jit-aarch64.txt` = `jit-x86_64.txt`); CoreMark passes its self-check; ISA
+  gate 561 blobs, 0 failed; D35 lists equal on x86-64 and under QEMU for both targets. So
+  `complete = True` (decision 1): `auto` selects `jit-aarch64` on arm64, and the D25 parity test
+  covers it. The third D31 message stays for a future incomplete target (no target has it now;
+  `test_auto_skips_an_incomplete_jit` patches `complete`). The float, table, tail-call and
+  several-memories tests run on the machine's JIT (x86-64 register and objdump tests stay
+  x86-only). CI: the x86-64 `jit` job runs the spec suite and `test_tail.py` under QEMU (BTI
+  enforced); the `arm64` job runs CoreMark (self-check required) and the spec suite on all three
+  OSes, and fails unless `auto` selects `jit-aarch64`.
+* 2026-11-01 (step 4e review): no correctness issue (differential float fuzz, bulk/table overlap, tail-call traps, far mode vs Wasmtime aarch64 under QEMU). The float code assumes the default FPCR (round to nearest, FZ=0, DN=0) and never sets it, as the x86-64 code assumes the default MXCSR (S0003); a host import that changes FPCR changes results.

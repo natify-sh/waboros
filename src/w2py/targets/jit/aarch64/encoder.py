@@ -7,8 +7,9 @@ search follows the description there (as Cranelift's `ImmLogic::maybe_from_u64` 
 
 Registers are numbers: 0-30 general purpose, `ZR` (31: xzr/wzr) where the field means the zero
 register and `SP` (encoded as 31) where it means the stack pointer; passing one where the other is
-meant raises. SIMD&FP registers (`fmov`, `cnt`, `addv`) are 0-31. `wide=True` selects the 64-bit
-(x) form, else the 32-bit (w) form, whose result is zero-extended into the x register."""
+meant raises. SIMD&FP registers (`fmov`, `cnt`, `addv`, the FP forms) are 0-31. `wide=True`
+selects the 64-bit (x) form, else the 32-bit (w) form, whose result is zero-extended into the x
+register; `double` selects d (else s) registers."""
 
 import struct
 from dataclasses import dataclass
@@ -22,6 +23,8 @@ ADDSUB = {"add": 0, "adds": 1, "sub": 2, "subs": 3}  # op:S
 LOGIC = {"and": 0, "orr": 1, "eor": 2, "ands": 3}
 DP2 = {"udiv": 2, "sdiv": 3, "lslv": 8, "lsrv": 9, "asrv": 10, "rorv": 11}
 CSEL = {"csel": 0, "csinc": 1, "csinv": 2, "csneg": 3}  # op:o2
+FP2 = {"mul": 0, "div": 1, "add": 2, "sub": 3, "max": 4, "min": 5}
+FP1 = {"sqrt": 3, "frintn": 8, "frintp": 9, "frintm": 10, "frintz": 11}
 # branch fixup kinds: (bits of the field, its shift in the word, scale of the offset)
 _FIELD = {"b26": (26, 0, 4), "b19": (19, 5, 4), "b14": (14, 5, 4), "adr": (21, 0, 1)}
 
@@ -382,6 +385,25 @@ class Asm:
 
     def addv8b(self, d: int, n: int) -> None:
         self.emit(0x0E31B800 | _u(n, 5, "v") << 5 | _u(d, 5, "v"))
+
+    def fp2(self, op: str, d: int, n: int, m: int, double: bool) -> None:
+        """fadd fsub fmul fdiv fmin fmax d, n, m (s or d registers)."""
+        top = 0x1E200800 | double << 22 | FP2[op] << 12
+        self._rr(top, _u(m, 5, "v"), 0, _u(n, 5, "v"), _u(d, 5, "v"))
+
+    def fp1(self, op: str, d: int, n: int, double: bool) -> None:
+        """fsqrt, frintn/p/m/z d, n; `fcvt` converts n (of the `double` type) to the other type."""
+        code = (4 if double else 5) if op == "fcvt" else FP1[op]
+        self.emit(0x1E204000 | double << 22 | code << 15 | _u(n, 5, "v") << 5 | _u(d, 5, "v"))
+
+    def fcmp(self, n: int, m: int, double: bool) -> None:
+        self.emit(0x1E202000 | double << 22 | _u(m, 5, "v") << 16 | _u(n, 5, "v") << 5)
+
+    def fcvt_int(self, op: str, r: int, v: int, wide: bool, double: bool) -> None:
+        """fcvtzs/fcvtzu r, v (saturating, NaN -> 0); scvtf/ucvtf v, r (one rounding)."""
+        rmode, code = {"fcvtzs": (3, 0), "fcvtzu": (3, 1), "scvtf": (0, 2), "ucvtf": (0, 3)}[op]
+        d, n = (_rz(r), _u(v, 5, "v")) if rmode else (_u(v, 5, "v"), _rz(r))
+        self.emit(wide << 31 | 0x1E200000 | double << 22 | rmode << 19 | code << 16 | n << 5 | d)
 
 
 def invert(cond: str) -> str:

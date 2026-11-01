@@ -17,6 +17,8 @@ from w2py.targets.jit.aarch64.encoder import (
     CSEL,
     DP2,
     EXTEND,
+    FP1,
+    FP2,
     LOGIC,
     SP,
     ZR,
@@ -230,6 +232,25 @@ def forms() -> list[Form]:
         add(f"fmov w{n}, s{n}", lambda a, n=n: a.fmov_from(n, n, False))
         add(f"cnt v{n}.8b, v{31 - n}.8b", lambda a, n=n: a.cnt8b(n, 31 - n))
         add(f"addv b{n + 1}, v{n}.8b", lambda a, n=n: a.addv8b(n + 1, n))
+    for dbl in (False, True):
+        v = "d" if dbl else "s"
+        for n in (0, 1, 31):
+            for op in FP2:
+                add(f"f{op} {v}{n}, {v}{31 - n}, {v}{n // 2}",
+                    lambda a, op=op, n=n, dbl=dbl: a.fp2(op, n, 31 - n, n // 2, dbl))  # fmt: skip
+            for op in FP1:
+                mn = op if op.startswith("frint") else f"f{op}"
+                add(f"{mn} {v}{n}, {v}{31 - n}",
+                    lambda a, op=op, n=n, dbl=dbl: a.fp1(op, n, 31 - n, dbl))  # fmt: skip
+            add(f"fcvt {'s' if dbl else 'd'}{n}, {v}{31 - n}",
+                lambda a, n=n, dbl=dbl: a.fp1("fcvt", n, 31 - n, dbl))  # fmt: skip
+            add(f"fcmp {v}{n}, {v}{31 - n}", lambda a, n=n, dbl=dbl: a.fcmp(n, 31 - n, dbl))
+            for w in (False, True):
+                g = r(30 - n if n < 31 else ZR, w)
+                for op in ("fcvtzs", "fcvtzu", "scvtf", "ucvtf"):
+                    text = f"{op} {g}, {v}{n}" if op.startswith("fcvt") else f"{op} {v}{n}, {g}"
+                    add(text, lambda a, op=op, n=n, w=w, dbl=dbl: a.fcvt_int(
+                        op, 30 - n if n < 31 else ZR, n, w, dbl))  # fmt: skip
     add("bti c", lambda a: a.bti("c"))
     add("bti j", lambda a: a.bti("j"))
     return out

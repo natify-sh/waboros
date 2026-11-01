@@ -1,7 +1,6 @@
 """The `jit-aarch64` target (S0004): ARMv8.0-A on Linux, macOS and Windows (one code for all,
-D23), glue in common/target.py. Phase 4 compiles the integer core (the backend's `supported`); a
-module using anything else is `Unsupported`, and `complete` is False: `auto` keeps `pyc` (D25,
-D31) until step 4e."""
+D23), glue in common/target.py. Since step 4e it compiles what `jit-x86_64` compiles and fails
+exactly what `pyc` fails, so it is `complete`: `auto` selects it on arm64 machines (D25)."""
 
 from typing import TYPE_CHECKING, Any
 
@@ -15,7 +14,7 @@ class JitAarch64Target(JitTarget):
     name = "jit-aarch64"
     arch = "aarch64"
     machines = ("aarch64", "arm64")
-    complete = False
+    complete = True
 
     def probe_code(self) -> bytes:
         from w2py.targets.jit.aarch64.encoder import Asm

@@ -117,6 +117,15 @@ poc/in/core.wasm`, then `cd poc && python3 run_jit2.py in/core.wasm`.
 * ISA gate (`tools/isa_all.py`, D24): 379 code blobs (every spec module of `jit-x86_64` plus
   CoreMark), 0 instructions above x86-64-v1; about 32 s locally.
 
+### Package JIT on aarch64 (step 4e): no number yet
+
+CoreMark compiles on `jit-aarch64` since step 4e and passes its self-check under QEMU 8.2 user
+mode (`python3 tools/run_arm64.py tools/run_coremark_jit.py poc/in/core.wasm --target
+jit-aarch64`: "Correct operation validated", crcfinal 0x5275 at 30 000 iterations). QEMU speed
+says nothing about the hardware, so no row is recorded here. The number comes from the `arm64` CI
+job (`ubuntu-24.04-arm`, also macOS and Windows arm64), which runs and prints the same command;
+it goes here, alternated with Wasmtime and `pyc` on the same runner, when it is read from a run.
+
 ## Compile and load times (CoreMark)
 
 | step | time |
