@@ -164,7 +164,7 @@ jobs:
       # its self-check
       - run: |
           uv run python tools/run_coremark_jit.py poc/in/core.wasm --target jit-aarch64 | tee coremark.txt
-          grep -q "Correct operation validated" coremark.txt
+          uv run python tools/run_coremark_jit.py --check coremark.txt
       # S0004 4c/4e: the spec suite on jit-aarch64 (0 unexpected) and with `auto` (selects
       # jit-aarch64 since 4e) on every arm64 OS (wasm-tools and wasmtime have wheels for all
       # three); Linux: MDWE (`auto` falls back to pyc), the ISA gate on the runner's own compile,

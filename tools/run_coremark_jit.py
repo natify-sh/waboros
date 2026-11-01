@@ -15,8 +15,33 @@ from w2py.runtime.store import StoreState
 from w2py.targets import base
 from w2py.targets.base import HostFunc, Raw
 
+GOOD_CRCS = {
+    "seedcrc": "0xe9f5",
+    "[0]crclist": "0xe714",
+    "[0]crcmatrix": "0x1fd7",
+    "[0]crcstate": "0x8e3a",
+}
+
+
+def valid(text: str) -> bool:
+    """Valid: CoreMark validated, or only its "at least 10 secs" rule failed (the iteration count is
+    calibrated, a fast runner can undershoot) and the 2K-performance CRCs are the known ones."""
+    if "Correct operation validated" in text:
+        return True
+    errors = [ln for ln in text.splitlines() if "ERROR!" in ln]
+    if len(errors) != 1 or "at least 10 secs" not in errors[0]:
+        return False
+    got: dict[str, str] = {}
+    for ln in text.splitlines():
+        k, _, v = ln.partition(":")
+        got[k.strip()] = v.strip()
+    return all(got.get(k) == v for k, v in GOOD_CRCS.items())
+
 
 def main() -> None:
+    if sys.argv[1] == "--check":  # CI: run_coremark_jit.py --check coremark.txt
+        with open(sys.argv[2]) as f:
+            sys.exit(0 if valid(f.read()) else 1)
     name = sys.argv[sys.argv.index("--target") + 1] if "--target" in sys.argv else "jit-x86_64"
     with open(sys.argv[1], "rb") as f:
         wasm = f.read()
@@ -47,4 +72,5 @@ def main() -> None:
     print(f"\n[w2py {name}] wall {time.perf_counter() - t:.2f}s")
 
 
-main()
+if __name__ == "__main__":
+    main()

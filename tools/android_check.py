@@ -16,6 +16,7 @@ import warnings
 
 import pytest
 
+from tools.run_coremark_jit import valid
 from w2py.targets.base import TARGETS, JitUnavailableWarning, target_order
 
 
@@ -44,7 +45,7 @@ def main() -> int:
         with contextlib.redirect_stdout(out):
             runpy.run_path("tools/run_coremark_jit.py", run_name="__main__")
         print(out.getvalue()[-700:], flush=True)
-        ok = ok and "Correct operation validated" in out.getvalue()
+        ok = ok and valid(out.getvalue())
     else:
         print(f"RESULT: the JIT is REFUSED ({why}); auto falls back to pyc")
         ok = order == ["pyc"] and len(msgs) == 1 and why in msgs[0]
