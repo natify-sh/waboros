@@ -65,7 +65,7 @@ def test_malformed_body(body: bytes) -> None:
 
 def test_unsupported_encoding_is_not_malformed() -> None:
     with pytest.raises(NotImplementedError):
-        decode(b"\xfd\x0b")
+        decode(b"\xfe\x0b")  # the atomics prefix (0xFD, SIMD, is decoded since S0005)
 
 
 def test_too_many_locals() -> None:

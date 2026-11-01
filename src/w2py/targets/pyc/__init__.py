@@ -6,6 +6,7 @@ from collections.abc import Callable, Mapping, Sequence
 from types import CodeType
 from typing import Any, Literal, cast
 
+from w2py.frontend import simd
 from w2py.frontend.binary import F32, F64, parse
 from w2py.frontend.validate import validate, valtype_key
 from w2py.runtime.link import func_type, global_type
@@ -154,6 +155,8 @@ class PycTarget:
         return None
 
     def supports(self, module: ValidModule) -> str | None:
+        if simd.uses(module):  # v128: S0005 step 5b
+            return "simd"
         return None  # a module the validator does not cover may run: a Python exception is safe
 
     def compile(self, module: ValidModule) -> object:

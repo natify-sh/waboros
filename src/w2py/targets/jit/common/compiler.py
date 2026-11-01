@@ -140,6 +140,8 @@ def unsupported(mod: ValidModule, ops: frozenset[int]) -> str | None:
     for insns in mod["insns"]:
         for ins in insns:
             op = ins[0]
+            if op >= 0xFD000:  # a SIMD operator (S0005 step 5c)
+                return "simd"
             if op not in ops:
                 return feature(op)
             ts: Sequence[Any] = ()

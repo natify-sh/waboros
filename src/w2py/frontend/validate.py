@@ -12,6 +12,7 @@ exceptions, 64-bit memories, some table instructions) are its `NotImplementedErr
 Basic pyright mode: the module dict and the instruction tuples are untyped data of the reader.
 """
 
+from w2py.frontend import simd
 from w2py.frontend.binary import decode
 
 I32, I64, F32, F64, FUNCREF, EXTERNREF = 0x7F, 0x7E, 0x7D, 0x7C, 0x70, 0x6F
@@ -227,6 +228,8 @@ def _const(c: _Ctx, e: tuple, nglobals: int):
         return F32
     if k == "f64":
         return F64
+    if k == "v128":
+        return simd.V
     if k == "func":
         if e[1] >= len(c.funcs):
             raise Invalid("unknown function")
@@ -407,7 +410,7 @@ def _body(c: _Ctx, lt: list, nparams: int, results: list, insns: list[tuple]) ->
         if mi >= c.nmems:
             raise Invalid("unknown memory")
 
-    for ins in insns:
+    for at, ins in enumerate(insns):
         op = ins[0]
         sig = OPSIG.get(op)
         if sig is not None:
@@ -529,7 +532,8 @@ def _body(c: _Ctx, lt: list, nparams: int, results: list, insns: list[tuple]) ->
             else:
                 unreachable()
         elif op == 0x1A:
-            pop()
+            if pop() == simd.V:
+                insns[at] = (0x1A, simd.V)  # S0005: a v128 drop is told apart for the JIT slots
         elif op == 0x1B:
             pop(I32)
             if len(ins) == 2:  # typed select
@@ -544,6 +548,8 @@ def _body(c: _Ctx, lt: list, nparams: int, results: list, insns: list[tuple]) ->
                 if _isref(a) or _isref(b) or (a and b and a != b):
                     raise Invalid("type mismatch")
                 vals.append(a or b)
+                if (a or b) == simd.V:
+                    insns[at] = (0x1B, [simd.V])  # the typed form, S0005
         elif op in (0x23, 0x24):
             if ins[1] >= len(gtypes):
                 raise Invalid("unknown global")
@@ -637,6 +643,8 @@ def _body(c: _Ctx, lt: list, nparams: int, results: list, insns: list[tuple]) ->
             if op == 0xFC0A:
                 need_mem(ins[2])
             popn(list(BULK3))
+        elif op >= simd.BASE:
+            simd.validate(ins, pop, vals.append, need_mem)
         else:
             raise _Unsupported(f"opcode {op:#x}")
     if ctl:
