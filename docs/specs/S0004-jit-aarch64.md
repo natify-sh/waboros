@@ -427,3 +427,4 @@ Resolved by the maintainer on 2026-11-01 (see Changes); none open.
   mode, which enforces BTI (about 70 s locally). `jit_dump.py` hashes the whole `Compiled`
   (code, data start, functions, records, signatures, thunks, layout), not only the code. The xfail
   reader now accepts an `unsupported: <feature>` entry only for exactly that failure (LESSONS 39).
+* 2026-11-01 (step 4d): reviewed; the backend interface is frozen (D39, maintainer). Step 4e (parity) adds opcodes and methods only.

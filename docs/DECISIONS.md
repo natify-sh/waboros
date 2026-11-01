@@ -507,3 +507,26 @@ alignment, I-cache maintenance — is a table in ARTIFACT.md part 3 with an x86-
 column; aarch64's register roles and trampolines are in S0004. This is an amendment of context ABI
 v1 without a version bump, as D30, D32, D34 and D37: no aarch64 artifact exists yet, and S0003 fixes
 v1 in phase 5 (D36). Rejected: an aarch64-specific copy of part 3 (two texts to keep equal).
+
+### D39. The JIT backend interface is frozen after phase 4
+Status: accepted (maintainer, 2026-11-01) · Date: 2026-11-01 · Supersedes: — · Evidence: S0004 step 4d review; two backends (x86-64 full, aarch64 integer core) on one core; x86-64 code and tables byte-identical across phase 4 (1714 modules); aarch64 spec core 5864 pass / 0 fail under QEMU and on ubuntu-24.04-arm
+
+The backend interface of D26 (`common/backend.py`: its methods, operand kinds, the `supported` opcode
+set, the far-mode retry `func_end -> bool` + `rewind`) and the `JitTarget` glue (`arch`, `machines`,
+`complete`, `probe_code`, `backend`, `trampolines`) are frozen as of commit f9addf2. The contract:
+the core passes `Imm` (unsigned at the operand's width), `Reg` (`tos` or a pinned pool register) or
+`Slot`; every value is zero-extended; `dst` is `tos`, with every other stack entry spilled out of it
+but a popped operand possibly still in it; at every edge and call the operand stack is in slots and
+only pins are live; no flags live between calls. A backend preserves its pool, frame, context and
+memory-0 registers in every method, preserves `tos` in every method that does not write it (except
+table/bulk operations and calls), and reads its operands before writing `dst`. "Frozen" means a
+change of a method, its operands or this contract needs an amendment of S0004 (or a successor spec)
+approved by the maintainer, the change in **both** backends in the same step, x86-64 code
+byte-identical unless the amendment says otherwise, and a `reviewer` pass. Adding an opcode to a
+backend's `supported` set, or a method only a new opcode reaches, is not a change of the interface.
+Deliberately open: a float/SIMD register class (floats are bit patterns in integer registers and
+slots today), guard pages instead of explicit bounds checks (D29), fuel/epoch words, what a third
+architecture needs (Python backend, copy-and-patch or a wasm micro-compiler, ROADMAP q14), and moving
+the opcode sets out of `common/compiler.py`. Measured for that decision (S0004 4d): backend+encoder+
+abi ~930 code lines on aarch64 (integer core) vs ~1490 on x86-64 (full); compile 0.19–0.22 vs
+0.14–0.18 ms per module.
