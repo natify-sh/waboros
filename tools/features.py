@@ -19,7 +19,7 @@ from tests.spec.claims import CLAIMS  # noqa: E402  (stdlib-only module, shared 
 
 UPSTREAM_URL = "https://raw.githubusercontent.com/WebAssembly/website/refs/heads/main/features.json"
 BEGIN, END = "<!-- features:begin -->", "<!-- features:end -->"
-TARGETS = ("pyc", "jit-x86_64")  # mpy (tier 3, D22) is left out until it exists
+TARGETS = ("pyc", "jit-x86_64", "jit-aarch64")  # mpy (tier 3, D22) is left out until it exists
 
 # feature key -> spec stems that exercise it: files of the top-level test/core, or "dir/" for a
 # proposal directory (only counted on a target that claims the feature, tests/spec/claims.py).
@@ -114,7 +114,10 @@ def table(upstream: dict[str, Any], ours: dict[str, Any]) -> str:
     bad, counts = {t: xfails(t) for t in TARGETS}, spec_counts()
     wt = upstream["browsers"]["Wasmtime"]["features"]
     rt = ours["runtimes"]
-    rows = ["| feature | phase | Wasmtime | pyc | jit-x86_64 |", "|---|---|---|---|---|"]
+    rows = [
+        "| feature | phase | Wasmtime | " + " | ".join(TARGETS) + " |",
+        "|---" * (3 + len(TARGETS)) + "|",
+    ]
     for k, f in upstream["features"].items():
         mine: list[str] = []
         for t in TARGETS:

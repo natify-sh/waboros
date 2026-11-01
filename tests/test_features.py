@@ -50,3 +50,16 @@ def test_stale_table_fails(tmp_path: Path) -> None:
     path = root / "docs/FEATURES.md"
     path.write_text(path.read_text().replace("| 5 |", "| 6 |", 1))
     assert run_check(root).returncode == 1
+
+
+def test_every_registered_target_has_a_column() -> None:
+    """A new target must not drop out of FEATURES.md silently (jit-aarch64 did, step 4e)."""
+    import importlib.util
+
+    from w2py.targets.base import TARGETS
+
+    spec = importlib.util.spec_from_file_location("features", ROOT / "tools" / "features.py")
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert set(TARGETS) == set(mod.TARGETS)

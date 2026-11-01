@@ -18,64 +18,64 @@ the WebAssembly website's [features.json](https://webassembly.org/features/), pi
 run yet. Wasmtime's column is the upstream data. `pyc` is computed from `tests/spec/xfail/pyc.txt`
 and the command counts in `tests/spec/counts.json`; each cell shows `ok/total` commands. Proposal
 directories (`test/core/<dir>/`) count only on a target that claims the feature
-(`tests/spec/claims.py`); an unclaimed feature is "-". `jit-x86_64` is computed the same way from `tests/spec/xfail/jit-x86_64.txt`; it claims the same directories as `pyc` (D25 parity). `mpy` is not listed yet.
+(`tests/spec/claims.py`); an unclaimed feature is "-". `jit-x86_64` and `jit-aarch64` are computed the same way from their `tests/spec/xfail/<target>.txt`; they claim the same directories as `pyc` (D25 parity). Every registered target has a column (`tests/test_features.py`). `mpy` is not listed yet.
 
 ## Proposals
 
 <!-- features:begin -->
-| feature | phase | Wasmtime | pyc | jit-x86_64 |
-|---|---|---|---|---|
-| Acquire-Release Atomics (`acquireReleaseAtomics`) | 2 | - | - | - |
-| JS BigInt to Wasm i64 Integration (`bigInt`) | 5 | - | - | - |
-| Branch Hinting (`branchHinting`) | 5 | flag | - | - |
-| Bulk Memory Operations (`bulkMemory`) | 5 | since 0.20 | partial 7482/7485 | partial 7482/7485 |
-| Compact Import Section (`compactImportSection`) | 4 | - | - | - |
-| Compilation Hints (`compilationHints`) | 2 | - | - | - |
-| Component Model (`componentModel`) | 1 | - | - | - |
-| Custom Text Format Annotations (`customAnnotationSyntaxInTheTextFormat`) | 5 | yes | - | - |
-| Custom Descriptors and JS Interop (`customDescriptors`) | 3 | - | - | - |
-| Custom Page Sizes (`customPageSizes`) | 3 | flag | - | - |
-| ESM Integration (`esmIntegration`) | 3 | - | - | - |
-| Legacy Exception Handling (`exceptions`) | inactive | - | - | - |
-| Exception Handling with exnref (`exceptionsFinal`) | 5 | since 47 | - | - |
-| Extended Constant Expressions (`extendedConst`) | 5 | since 25 | yes 346/346 | yes 346/346 |
-| Extended Name Section (`extendedNameSection`) | 2 | - | - | - |
-| Flexible Vectors (`flexibleVectors`) | 1 | - | - | - |
-| Frozen Values (`frozenValues`) | 1 | - | - | - |
-| Garbage Collection (`gc`) | 5 | since 47 | - | - |
-| Half Precision (`halfPrecision`) | 1 | - | - | - |
-| Instrument and Tracing Technology (`instrumentAndTracingTechnology`) | inactive | - | - | - |
-| JIT Interface (`jitInterface`) | 1 | - | - | - |
-| JS Primitive Builtins (`jsPrimitiveBuiltins`) | 2 | - | - | - |
-| JS String Builtins (`jsStringBuiltins`) | 5 | - | - | - |
-| JS Promise Integration (`jspi`) | 5 | - | - | - |
-| Memory64 (`memory64`) | 5 | since 30 | - | - |
-| Memory Control (`memoryControl`) | 1 | - | - | - |
-| More Array Constructors (`moreArrayConstructors`) | 1 | - | - | - |
-| Multibyte Array Access (`multibyteArrayAccess`) | 2 | - | - | - |
-| Multiple Memories (`multiMemory`) | 5 | since 15 | yes 912/912 | yes 912/912 |
-| Multi-value (`multiValue`) | 5 | since 0.17 | yes 1253/1253 | yes 1253/1253 |
-| Import/Export of Mutable Globals (`mutableGlobals`) | 5 | yes | partial 431/439 | partial 431/439 |
-| Numeric Values in WAT Data Segments (`numericValuesInWat`) | 2 | - | - | - |
-| Profiles (`profiles`) | 1 | yes | - | - |
-| Reference Types (`referenceTypes`) | 5 | since 0.20 | partial 397/431 | partial 397/431 |
-| Relaxed Dead Code Validation (`relaxedDeadCodeValidation`) | 2 | - | - | - |
-| Relaxed SIMD (`relaxedSimd`) | 5 | since 15 | - | - |
-| Rounding Variants (`roundingVariants`) | 2 | - | - | - |
-| Non-trapping float-to-int Conversions (`saturatedFloatToInt`) | 5 | yes | yes 619/619 | yes 619/619 |
-| Shared-Everything Threads (`sharedEverythingThreads`) | 1 | - | - | - |
-| Sign-extension Operators (`signExtensions`) | 5 | yes | yes 876/876 | yes 876/876 |
-| Fixed-width SIMD (`simd`) | 5 | since 0.33 | - | - |
-| Stack Switching (`stackSwitching`) | 3 | - | - | - |
-| Reference-Typed Strings (`stringref`) | 1 | - | - | - |
-| Tail Call (`tailCall`) | 5 | since 22 | yes 187/187 | yes 187/187 |
-| Threads (`threads`) | 4 | since 15 | - | - |
-| Type Imports (`typeImports`) | 1 | - | - | - |
-| Type Reflection for JS API (`typeReflection`) | 1 | - | - | - |
-| Typed Function References (`typedFunctionReferences`) | 5 | since 47 | yes 127/127 | yes 127/127 |
-| WebAssembly C and C++ API (`wasmCApi`) | 1 | - | - | - |
-| Web Content Security Policy (`webContentSecurityPolicy`) | 5 | - | - | - |
-| Wide Arithmetic (`wideArithmetic`) | 4 | flag | - | - |
+| feature | phase | Wasmtime | pyc | jit-x86_64 | jit-aarch64 |
+|---|---|---|---|---|---|
+| Acquire-Release Atomics (`acquireReleaseAtomics`) | 2 | - | - | - | - |
+| JS BigInt to Wasm i64 Integration (`bigInt`) | 5 | - | - | - | - |
+| Branch Hinting (`branchHinting`) | 5 | flag | - | - | - |
+| Bulk Memory Operations (`bulkMemory`) | 5 | since 0.20 | partial 7482/7485 | partial 7482/7485 | partial 7482/7485 |
+| Compact Import Section (`compactImportSection`) | 4 | - | - | - | - |
+| Compilation Hints (`compilationHints`) | 2 | - | - | - | - |
+| Component Model (`componentModel`) | 1 | - | - | - | - |
+| Custom Text Format Annotations (`customAnnotationSyntaxInTheTextFormat`) | 5 | yes | - | - | - |
+| Custom Descriptors and JS Interop (`customDescriptors`) | 3 | - | - | - | - |
+| Custom Page Sizes (`customPageSizes`) | 3 | flag | - | - | - |
+| ESM Integration (`esmIntegration`) | 3 | - | - | - | - |
+| Legacy Exception Handling (`exceptions`) | inactive | - | - | - | - |
+| Exception Handling with exnref (`exceptionsFinal`) | 5 | since 47 | - | - | - |
+| Extended Constant Expressions (`extendedConst`) | 5 | since 25 | yes 346/346 | yes 346/346 | yes 346/346 |
+| Extended Name Section (`extendedNameSection`) | 2 | - | - | - | - |
+| Flexible Vectors (`flexibleVectors`) | 1 | - | - | - | - |
+| Frozen Values (`frozenValues`) | 1 | - | - | - | - |
+| Garbage Collection (`gc`) | 5 | since 47 | - | - | - |
+| Half Precision (`halfPrecision`) | 1 | - | - | - | - |
+| Instrument and Tracing Technology (`instrumentAndTracingTechnology`) | inactive | - | - | - | - |
+| JIT Interface (`jitInterface`) | 1 | - | - | - | - |
+| JS Primitive Builtins (`jsPrimitiveBuiltins`) | 2 | - | - | - | - |
+| JS String Builtins (`jsStringBuiltins`) | 5 | - | - | - | - |
+| JS Promise Integration (`jspi`) | 5 | - | - | - | - |
+| Memory64 (`memory64`) | 5 | since 30 | - | - | - |
+| Memory Control (`memoryControl`) | 1 | - | - | - | - |
+| More Array Constructors (`moreArrayConstructors`) | 1 | - | - | - | - |
+| Multibyte Array Access (`multibyteArrayAccess`) | 2 | - | - | - | - |
+| Multiple Memories (`multiMemory`) | 5 | since 15 | yes 912/912 | yes 912/912 | yes 912/912 |
+| Multi-value (`multiValue`) | 5 | since 0.17 | yes 1253/1253 | yes 1253/1253 | yes 1253/1253 |
+| Import/Export of Mutable Globals (`mutableGlobals`) | 5 | yes | partial 431/439 | partial 431/439 | partial 431/439 |
+| Numeric Values in WAT Data Segments (`numericValuesInWat`) | 2 | - | - | - | - |
+| Profiles (`profiles`) | 1 | yes | - | - | - |
+| Reference Types (`referenceTypes`) | 5 | since 0.20 | partial 397/431 | partial 397/431 | partial 397/431 |
+| Relaxed Dead Code Validation (`relaxedDeadCodeValidation`) | 2 | - | - | - | - |
+| Relaxed SIMD (`relaxedSimd`) | 5 | since 15 | - | - | - |
+| Rounding Variants (`roundingVariants`) | 2 | - | - | - | - |
+| Non-trapping float-to-int Conversions (`saturatedFloatToInt`) | 5 | yes | yes 619/619 | yes 619/619 | yes 619/619 |
+| Shared-Everything Threads (`sharedEverythingThreads`) | 1 | - | - | - | - |
+| Sign-extension Operators (`signExtensions`) | 5 | yes | yes 876/876 | yes 876/876 | yes 876/876 |
+| Fixed-width SIMD (`simd`) | 5 | since 0.33 | - | - | - |
+| Stack Switching (`stackSwitching`) | 3 | - | - | - | - |
+| Reference-Typed Strings (`stringref`) | 1 | - | - | - | - |
+| Tail Call (`tailCall`) | 5 | since 22 | yes 187/187 | yes 187/187 | yes 187/187 |
+| Threads (`threads`) | 4 | since 15 | - | - | - |
+| Type Imports (`typeImports`) | 1 | - | - | - | - |
+| Type Reflection for JS API (`typeReflection`) | 1 | - | - | - | - |
+| Typed Function References (`typedFunctionReferences`) | 5 | since 47 | yes 127/127 | yes 127/127 | yes 127/127 |
+| WebAssembly C and C++ API (`wasmCApi`) | 1 | - | - | - | - |
+| Web Content Security Policy (`webContentSecurityPolicy`) | 5 | - | - | - | - |
+| Wide Arithmetic (`wideArithmetic`) | 4 | flag | - | - | - |
 <!-- features:end -->
 
 **Implementation notes per proposal** (hand-written; Wasmtime's `Config.wasm_*` switch in brackets):
