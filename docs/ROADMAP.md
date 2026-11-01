@@ -281,7 +281,17 @@ lacks a feature reports it through `Target.supports` and the module runs on anot
    architecture.** With x86-64 and aarch64 in Python, the next one (riscv64, phase 8) is written as a
    micro-compiler in wasm instead of a third Python backend — the core ported once plus the riscv64
    backend; checked by the spec suite under QEMU against `pyc` and Wasmtime, and its core by
-   building an x86-64 backend module too and comparing it byte for byte with the Python JIT. Cost: the compiler written again in Rust,
+   building an x86-64 backend module too and comparing it byte for byte with the Python JIT.
+   **How a micro-compiler starts on a machine** (`pyc` runs it; it never compiles): (1) bootstrap, once
+   per machine: `pyc` runs `riscv64.wasm` as an ordinary wasm program and feeds it its own wasm; it
+   emits a native artifact of itself — slow (`pyc` is ~150× slower than native code) but done once;
+   (2) cache: that artifact is kept like any cached artifact, keyed by w2py version, architecture and
+   ISA level; (3) from then on the runtime loads the native micro-compiler, which compiles every other
+   module in milliseconds. Short path where a Python backend exists (x86-64, aarch64): our JIT compiles
+   `x64.wasm` to native directly, no `pyc` step; the long path is only for architectures without a
+   Python backend. Cross variant (D35): on an x86-64 machine our JIT runs `riscv64.wasm` and emits a
+   native riscv64 artifact of the compiler, so a slow device can receive a ready compiler and skip
+   the bootstrap. Cost: the compiler written again in Rust,
    Zig or C, and harder debugging than Python. w2py stays a compiler in Python (CLAUDE.md, BRIEF.md):
    it remains the bootstrap, the reference and the path for MicroPython and small devices.
    Alternative considered, also open: run an existing compiler built for `wasm32-wasi` (Winch or
