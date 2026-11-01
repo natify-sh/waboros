@@ -226,8 +226,8 @@ jobs:
           "$PY_FW/bin/python3.13" -c "import platform, sys; print(sys.version, platform.machine())"
       - name: venv with that interpreter
         run: |
-          echo UV_PROJECT_ENVIRONMENT=$PWD/.venv-po >> "$GITHUB_ENV"
-          uv sync --python "$PY_FW/bin/python3.13"
+          echo UV_PROJECT_ENVIRONMENT=$PWD/.venv-po >> "$GITHUB_ENV"  # for the later steps
+          UV_PROJECT_ENVIRONMENT=$PWD/.venv-po uv sync --python "$PY_FW/bin/python3.13"
           .venv-po/bin/python -c "import sys; print(sys.executable, sys.base_prefix)"
       - name: probe and auto, then the behaviour check
         run: |
