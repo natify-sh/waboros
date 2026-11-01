@@ -291,7 +291,13 @@ lacks a feature reports it through `Target.supports` and the module runs on anot
    `x64.wasm` to native directly, no `pyc` step; the long path is only for architectures without a
    Python backend. Cross variant (D35): on an x86-64 machine our JIT runs `riscv64.wasm` and emits a
    native riscv64 artifact of the compiler, so a slow device can receive a ready compiler and skip
-   the bootstrap. Cost: the compiler written again in Rust,
+   the bootstrap. **The native micro-compiler is itself an ordinary JIT artifact**, so by D36 a host
+   in another language loads it with its loader and runtime services and compiles any wasm with no
+   Python and no bootstrap; the bootstrap is only how the artifact is first obtained or checked (a
+   shipped one is verified byte-identical with a self-built one, D35). Needs: the fixed artifact format
+   (phase 5); a small versioned contract of the compiler module itself (e.g. `compile(in_ptr, in_len)`
+   returning the artifact in its memory: no WASI, no file system); one compiler artifact per
+   architecture and ISA level. Cost: the compiler written again in Rust,
    Zig or C, and harder debugging than Python. w2py stays a compiler in Python (CLAUDE.md, BRIEF.md):
    it remains the bootstrap, the reference and the path for MicroPython and small devices.
    Alternative considered, also open: run an existing compiler built for `wasm32-wasi` (Winch or
