@@ -178,7 +178,8 @@ the output must carry its runtime). Consequences:
   windows and no versioned helper namespaces; the interface between generated code and the runtime is
   internal and may change between any two versions.
 * ARTIFACT.md stays the format of cache entries and serialized files; loaders in other languages and
-  the C reference loader become optional (D15 narrowed).
+  the C reference loader become optional (D15 narrowed). *Superseded by D36 for these points and the
+  two on running only on a w2py runtime and the internal interface.*
 * Possible exception, later and optional: a standalone export with minimal embedded helpers for
   MicroPython devices, where the runtime package costs flash.
 
@@ -452,3 +453,26 @@ assumed. Saving artifacts to files (format, `w2py compile`, `Module.serialize`) 
 until then cross-compilation exists inside a process only. `pyc` and `mpy` are not cross-compiled in
 this sense: a code object belongs to one Python version and implementation (marshal magic), an
 `.mpy` file to one `.mpy` format version, so their "target" is the interpreter, not the CPU.
+
+### D36. JIT artifacts are executable from other languages; the C reference loader is part of CI
+Status: accepted (maintainer, 2026-11-01) · Date: 2026-11-01 · Supersedes: D18 in part (the bullets "runs only on a w2py runtime", "the interface … is internal and may change between any two versions" and "loaders in other languages and the C reference loader become optional"), and the D15 narrowing · Evidence: —
+
+A JIT artifact talks to its host only through the context words and C-convention functions
+(ARTIFACT.md part 3: `entry(ctx, frame, code)`, `host(ctx, slots)` with the status in `ctx[7]` (D34),
+records, libcalls), with no Python in it (D15, D23). So a host written in another language (C, Rust,
+Go, Dart, LuaJIT, …) can load and run it, and that is now a supported use, not an accident:
+* **Versioned, not internal.** From phase 5 the artifact format and the context ABI are a stable,
+  versioned contract (`format_version`, `ctx_abi_version`): any change bumps the version (CLAUDE.md
+  "The JIT artifact is a contract"), and every loader — w2py's and others — refuses a version it does
+  not know. The w2py runtime keeps D18's behaviour on its own side (regenerate from the wasm on a
+  mismatch); a foreign host refuses.
+* **The runtime services are specified, not only implemented in Python**: `memory.grow`, `table.grow`,
+  segment init and drop, the canonical type-id registry and records, stack limits, the interrupt word,
+  trap codes — written down in ARTIFACT.md precisely enough to implement without reading our code.
+* **A C reference loader is part of the test suite and runs in CI** (phase 5, together with fixing the
+  format): it loads artifacts written by w2py, provides the services, runs a set of spec modules and
+  CoreMark, and must agree with the Python runtime; it also checks that unknown versions are refused.
+  It stays a test tool, not a shipped runtime.
+* `pyc` and `mpy` artifacts are interpreter bytecode and run only in their interpreter.
+Until phase 5 the contract may still change (D30, D32, D34 were amendments of v1); foreign hosts are
+supported from the first fixed version.

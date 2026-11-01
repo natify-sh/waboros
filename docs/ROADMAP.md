@@ -186,7 +186,7 @@ lacks a feature reports it through `Target.supports` and the module runs on anot
   waiting main thread.
 * The contract of ARTIFACT.md (format v1, context ABI v1, baseline-ISA sequences, CPU feature
   detection) is **fixed here**, after two architectures have shaped it, together with artifact
-  serialization; the C reference loader stays optional (D18).
+  serialization; the C reference loader runs in CI and the runtime services are specified (D36).
 * Win64 hardening (the second entry trampoline and `VirtualAlloc` exist; CI runs `tests/jit` on
   `windows-latest` and `macos-26-intel` but the results are not yet recorded as verified); macOS arm64
   and Windows on ARM.
