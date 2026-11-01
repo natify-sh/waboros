@@ -7,12 +7,7 @@ Alignment (LESSONS 3): rsp is 8 mod 16 on entry to any of these; each pads to 0 
 `call`, so wasm code always starts with rsp = 8 mod 16, as a C function does.
 """
 
-import sys
-from functools import cache
-
 from w2py.targets.jit.common.context import HOST_ERROR, STATUS_HOST_ERROR, TRAP_CODE, Layout
-from w2py.targets.jit.common.execmem import load
-from w2py.targets.jit.common.instance import Trampolines
 from w2py.targets.jit.x86_64.encoder import (
     R8,
     R9,
@@ -141,11 +136,10 @@ def tail_switch(a: Asm) -> None:
     a.jmp(Mem(RDX))
 
 
-@cache
-def trampolines() -> Trampolines:
-    """The trampolines for this process's convention, in one sealed code area (kept for the
-    process's lifetime). Both conventions are assembled everywhere (the encoder tests see both)."""
-    win64 = sys.platform == "win32"
+def assemble(win64: bool) -> tuple[bytes, list[int]]:
+    """The four trampolines for one convention in one blob and their offsets (entry, bridge, sp
+    stub, tail_switch). Both conventions assemble everywhere (the encoder tests see both); loading
+    the blob is the host's (common/instance.py), so this module stays portable."""
     a = Asm()
     offsets: list[int] = []
     for emit in (
@@ -156,5 +150,4 @@ def trampolines() -> Trampolines:
     ):
         offsets.append(len(a.buf))
         emit()
-    mem = load(a.finish())
-    return Trampolines(*(mem.addr + o for o in offsets), keep=mem)
+    return a.finish(), offsets

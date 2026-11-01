@@ -2,6 +2,7 @@
 D23), glue in common/target.py. Since step 4e it compiles what `jit-x86_64` compiles and fails
 exactly what `pyc` fails, so it is `complete`: `auto` selects it on arm64 machines (D25)."""
 
+from functools import cache
 from typing import TYPE_CHECKING, Any
 
 from w2py.targets.jit.common.target import JitTarget
@@ -31,6 +32,13 @@ class JitAarch64Target(JitTarget):
         return Backend()
 
     def trampolines(self) -> "Trampolines":
-        from w2py.targets.jit.aarch64.abi import trampolines
-
         return trampolines()
+
+
+@cache
+def trampolines() -> "Trampolines":
+    """This process's trampolines, assembled by abi.py and sealed once by the host side."""
+    from w2py.targets.jit.aarch64.abi import assemble
+    from w2py.targets.jit.common.instance import load_trampolines
+
+    return load_trampolines(*assemble())

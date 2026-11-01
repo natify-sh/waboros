@@ -138,6 +138,13 @@ class _StoreStacks:
         return ref
 
 
+def load_trampolines(code: bytes, offsets: Sequence[int]) -> Trampolines:
+    """Seal an architecture's trampoline blob (its abi.assemble) into one code area, kept for the
+    process's lifetime by the cache of the target that calls this."""
+    mem = load(code)
+    return Trampolines(*(mem.addr + o for o in offsets), keep=mem)
+
+
 def _stacks(store: StoreState) -> _StoreStacks:
     if not isinstance(store.target_state, _StoreStacks):
         store.target_state = _StoreStacks()

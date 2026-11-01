@@ -253,8 +253,7 @@ as its own step (D40) -> guard pages (D29) -> the rest below.
    `ctypes.CDLL` runs CoreMark at 92–95 % of direct `WebAssembly` in Node, sharing Pyodide's heap;
    open: isolation (bounds checks), traps, grow, tables, D25 parity, browsers.
 8. **Free-threaded CPython (no GIL)**: shared memories and atomics in `pyc` need real synchronisation.
-9. **Name**: `w2py` grew beyond "wasm to Python" — keep it, or rename the runtime and keep `w2py` for
-   the translator?
+9. **Name** — settled by D40: the project becomes `waboros`, renamed in its own step after SIMD.
 10. **Version skew** — settled by D18: no embedded runtime, exact match or regenerate; fat files carry
    the wasm. Left: the known-bad compiler list (where it lives, how it is updated).
 11. **Components on the fly**: accept a component and fuse it at load time (then compile and cache the

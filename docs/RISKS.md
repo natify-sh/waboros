@@ -51,7 +51,7 @@ known-bad versions can force recompilation.
 **Status at HEAD: partly mitigated.** Mitigated on x86-64 Linux: the W^X executable-memory probe and the
 fallback to `pyc` with `JitUnavailableWarning` (D31; proved with executable memory forbidden by
 `tools/no_exec.py` in the CI `spec` job and `tests/test_fallback.py`); CET IBT (`endbr64` at every
-indirectly reachable entry, `backend.py`) and CET shadow stacks (traps return through frames, S0003). Open: macOS `MAP_JIT` under a hardened runtime (see below) and Windows ACG (the Windows and macOS x64 CI jobs run `tests/jit`), aarch64 BTI/PAC (no aarch64 target yet).
+indirectly reachable entry, `backend.py`) and CET shadow stacks (traps return through frames, S0003). aarch64: `bti c` landing pads are emitted and the tests run under QEMU with BTI enforced; PAC is not used (S0004). macOS `MAP_JIT` under a hardened runtime: answered for python.org CPython (the JIT runs, row below). Open: Windows ACG (the Windows and macOS x64 CI jobs run `tests/jit`).
 
 The direction is clear: more systems forbid writable-and-executable memory, and CPUs add control-flow
 integrity that hand-made code must respect.

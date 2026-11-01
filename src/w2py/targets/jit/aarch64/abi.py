@@ -8,8 +8,6 @@ the context), w0 status. Every trampoline keeps sp 16-byte aligned at all times 
 record {x29, x30} (tail_switch: a {x28, x30} restore frame); every `ret` returns to its `bl`/`blr`.
 """
 
-from functools import cache
-
 from w2py.targets.jit.aarch64.encoder import FP, LR, SP, Asm
 from w2py.targets.jit.common.context import (
     HOST_BRIDGE,
@@ -18,8 +16,6 @@ from w2py.targets.jit.common.context import (
     TRAP_CODE,
     Layout,
 )
-from w2py.targets.jit.common.execmem import load
-from w2py.targets.jit.common.instance import Trampolines
 
 CTX, FRAME, MBASE, MSIZE = 28, 27, 26, 25
 MEM0 = 8 * Layout().memory(0)  # byte offset of memory 0's base word; its size word follows
@@ -147,11 +143,3 @@ def assemble() -> tuple[bytes, list[int]]:
         offsets.append(len(a.buf))
         emit(a)
     return a.finish(), offsets
-
-
-@cache
-def trampolines() -> Trampolines:
-    """The trampolines in one sealed code area (kept for the process's lifetime)."""
-    code, offsets = assemble()
-    mem = load(code)
-    return Trampolines(*(mem.addr + o for o in offsets), keep=mem)

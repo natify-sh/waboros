@@ -23,7 +23,8 @@ def test_no_side_effect_inside_assert() -> None:
 
 def test_compiler_side_has_no_host_specific_imports() -> None:
     """MICRO-COMPILERS.md, "Rules for now": the reader, validator, one-pass core and backends stay
-    free of ctypes, mmap and threads, so they can be ported into a wasm micro-compiler."""
+    free of ctypes, mmap and threads, and import nothing from the host side (execmem, instance,
+    target), so they can be ported into a wasm micro-compiler."""
     import ast
 
     files = [*(ROOT / "src/w2py/frontend").glob("*.py")]
@@ -36,9 +37,16 @@ def test_compiler_side_has_no_host_specific_imports() -> None:
         if p.stem in ("backend", "encoder", "abi")
     ]
     banned = {"ctypes", "mmap", "threading", "_thread"}
+    host = {"execmem", "instance", "target"}  # the package's host side (loader, probe, selection)
     for path in files:
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             names = [a.name for a in node.names] if isinstance(node, ast.Import) else []
-            if isinstance(node, ast.ImportFrom) and node.module:
-                names = [node.module]
-            assert not {n.split(".")[0] for n in names} & banned, (path, getattr(node, "lineno", 0))
+            parts: set[str] = set()
+            if isinstance(node, ast.ImportFrom):
+                names = [node.module] if node.module else []
+                parts = {a.name for a in node.names}
+            for n in names:
+                parts |= set(n.split("."))
+            at = (path, getattr(node, "lineno", 0))
+            assert not {n.split(".")[0] for n in names} & banned, at
+            assert not parts & host, at

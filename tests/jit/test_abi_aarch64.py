@@ -16,7 +16,8 @@ from tests.jit.test_abi import ODD_TRAP, counter, word
 from w2py.runtime.link import host_func
 from w2py.runtime.store import StoreState
 from w2py.targets.base import HostFunc, Raw, Trap, TrapCode
-from w2py.targets.jit.aarch64.abi import CTX, FRAME, MBASE, MSIZE, assemble, trampolines
+from w2py.targets.jit.aarch64 import trampolines
+from w2py.targets.jit.aarch64.abi import CTX, FRAME, MBASE, MSIZE, assemble
 from w2py.targets.jit.aarch64.backend import POOL, Backend, Frame
 from w2py.targets.jit.aarch64.encoder import FP, LR, SP, ZR, Asm, Label
 from w2py.targets.jit.common.context import HOST_ERROR, INTERRUPT, TAIL_SWITCH, TRAP_CODE, Layout

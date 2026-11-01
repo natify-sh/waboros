@@ -3,6 +3,8 @@ the x86-64 backend; the ABI in abi.py and common/instance.py; the glue in common
 module with anything the core does not compile yet is `Unsupported` with the first missing
 feature (D25)."""
 
+import sys
+from functools import cache
 from typing import TYPE_CHECKING, Any
 
 from w2py.targets.jit.common.target import JitTarget
@@ -31,6 +33,13 @@ class JitX86_64Target(JitTarget):
         return Backend()
 
     def trampolines(self) -> "Trampolines":
-        from w2py.targets.jit.x86_64.abi import trampolines
-
         return trampolines()
+
+
+@cache
+def trampolines() -> "Trampolines":
+    """This process's trampolines, assembled by abi.py and sealed once by the host side."""
+    from w2py.targets.jit.common.instance import load_trampolines
+    from w2py.targets.jit.x86_64.abi import assemble
+
+    return load_trampolines(*assemble(sys.platform == "win32"))

@@ -29,7 +29,8 @@ from w2py.targets.jit.common.instance import (
     linux_main_low,
     native_budget,
 )
-from w2py.targets.jit.x86_64.abi import bridge, entry, trampolines
+from w2py.targets.jit.x86_64 import trampolines
+from w2py.targets.jit.x86_64.abi import bridge, entry
 from w2py.targets.jit.x86_64.backend import Backend, Frame
 from w2py.targets.jit.x86_64.encoder import (
     R8,
@@ -366,7 +367,7 @@ from tests.jit.test_abi import build, recursion
 from w2py.runtime.store import StoreState
 from w2py.targets.base import Trap
 from w2py.targets.jit.common import instance
-from w2py.targets.jit.x86_64.abi import trampolines
+from w2py.targets.jit.x86_64 import trampolines
 depth, kib, jit = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3] == "jit"
 x = []
 for _ in range(depth):
