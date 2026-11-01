@@ -262,3 +262,45 @@ jobs:
         run: |
           .venv-po/bin/python tests/spec/fetch.py
           .venv-po/bin/python -m tests.spec.run --engine auto
+  android:
+    # Can jit-x86_64 map executable memory inside an Android app process (SELinux untrusted_app,
+    # our mmap RW, write, mprotect RX path), and does w2py behave either way? CPython's own
+    # testbed app (the python.org Android package; the recipe of cibuildwheel and CPython's CI)
+    # on a Gradle-managed emulator, x86_64 with KVM. Both answers pass this job as long as the
+    # behaviour is right (tools/android_check.py, same rule as macos-pythonorg). arm64: no job,
+    # GitHub has no arm64 runner that can run the Android emulator (docs/TARGETS.md). RISKS R2.
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      # python.org Android package, pinned (sha256 of the downloaded file; python.org lists none)
+      PY_ANDROID: "3.14.10"
+      PKG_SHA256: "6ebda1fc3f28efc5861cad397254e8ce5d81ba4f83a3cb6a0c124c3826a0e14c"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: the python.org Android package (it carries android.py, the testbed and libpython)
+        run: |
+          curl -fsSL -o pkg.tar.gz "https://www.python.org/ftp/python/$PY_ANDROID/python-$PY_ANDROID-x86_64-linux-android.tar.gz"
+          echo "$PKG_SHA256  pkg.tar.gz" | sha256sum -c -
+          mkdir pkg && tar -xzf pkg.tar.gz -C pkg
+          java -version && python3 --version && echo "ANDROID_HOME=$ANDROID_HOME"
+      - name: stage the app's site-packages (pytest, w2py) and working directory (tests, tools, CoreMark)
+        run: |
+          python3 -m pip install --quiet --target stage/site-packages pytest  # pure Python wheels
+          cp -r src/w2py stage/site-packages/
+          mkdir -p stage/cwd/tools stage/cwd/poc/in
+          cp tools/android_check.py tools/run_coremark_jit.py stage/cwd/tools/
+          cp poc/in/core.wasm stage/cwd/poc/in/
+          tar --exclude=spec --exclude=__pycache__ -cf - tests | tar -xf - -C stage/cwd
+      # android.py enables KVM for the emulator on GitHub Actions itself, installs the SDK
+      # packages and the system image through Gradle, boots the emulator, runs the app and
+      # returns the exit code of the Python command. -v adds Gradle and logcat (SELinux avc lines).
+      - name: run in the testbed app on the emulator (Android 15, API 35, x86_64)
+        run: |
+          set -o pipefail
+          python3 pkg/android.py test --managed maxVersion -v --site-packages "$PWD/stage/site-packages" \
+            --cwd "$PWD/stage/cwd" -- -m tools.android_check 2>&1 | tee android.log
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: android-log
+          path: android.log

@@ -86,6 +86,7 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
 | OS | Linux x86-64 (all jobs), Windows x64 (`windows-latest`) and macOS x64 (`macos-26-intel`) (`os` job: `pytest` including `tests/jit`, the stack bounds, and the spec run for wasmtime and `pyc`, not for `jit-x86_64`); later Linux aarch64, macOS arm64 (MAP_JIT) |
 | target | `pyc` everywhere; `jit-*` where the machine matches; `mpy` with the MicroPython unix port |
 | native arm64 | `jit-aarch64` on GitHub's arm64 runners: `ubuntu-24.04-arm`, `macos-latest` (macOS arm64, `MAP_JIT`), `windows-11-arm` (labels per actions/runner-images) |
+| Android | `android` job: the python.org CPython for Android in CPython's testbed app on a managed x86_64 emulator (KVM, `ubuntu-latest`); `tools/android_check.py` then `tests/jit/test_probe.py`, `test_execmem.py`, `test_abi.py`, `tests/test_fallback.py`, `tests/test_target_pyc.py` (no wasmtime there, so tests that compile WAT skip); either outcome of the probe passes if the behaviour is right (JIT runs, or `auto` gives `pyc` with one D31 warning); the log is the artifact `android-log`; no arm64 job (RISKS R2) |
 | emulated | QEMU user-mode only for architectures without native runners (riscv64, armv7, mips32el) as JIT targets appear |
 
 JIT artifacts: run baseline artifacts on an emulated baseline CPU (e.g. QEMU `-cpu` without SSE4.1 /
@@ -95,7 +96,7 @@ reference loader as well as from Python; refuse artifacts with an unknown format
 Jobs of `.github/workflows/ci.yml`: `lint` (ruff, pyright, `check_docs.py`, `features.py --check`); `test`
 (`pytest -q` on the seven Pythons; `tools/stack_info.py` on 3.13, also in a musl container); `jit`
 (`tests/jit` with `W2PY_JIT_REQUIRE=1`, then `isa_all.py`); `spec` (the spec run on `wasmtime`, `pyc`,
-`jit-x86_64`, then `auto` under `no_exec.py`); `os`.
+`jit-x86_64`, then `auto` under `no_exec.py`); `os`; `arm64`; `macos-pythonorg`; `android`.
 
 The `jit` job runs `tools/isa_all.py` (locally: 379 blobs, about 32 s): it compiles every spec module and CoreMark with
 `W2PY_JIT_DUMP` and disassembles each blob with `tools/isa_check.py` (code ranges only), failing on any

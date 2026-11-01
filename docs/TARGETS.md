@@ -153,7 +153,7 @@ the targets worth having). w2py itself has no wheels (pure Python); this says wh
 | platform (`archs`) | what w2py gives it |
 |---|---|
 | Linux / macOS / Windows `x86_64`/`AMD64`, `aarch64`/`arm64`/`ARM64` | JIT (`jit-x86_64`, `jit-aarch64`), CI on native runners |
-| Android `x86_64`, `arm64_v8a` | the same backends where the app may map executable memory (our W^X path: write, then switch to execute); checked on the emulator in CI |
+| Android `x86_64`, `arm64_v8a` | the same backends where the app may map executable memory (our W^X path: write, then switch to execute). CI job `android` (`x86_64` only): CPython's testbed app (python.org package 3.14.10, API 35 `aosp_atd` image, KVM) runs `tools/android_check.py`, which prints the SELinux context and the probe, then either runs CoreMark (self-check) and the JIT tests, or shows `auto` giving `pyc` with exactly one D31 warning naming the refusal. Not run yet when this was written: the answer is in the job log (docs/RISKS.md R2). `arm64_v8a`: no job, because the Android emulator has no Linux arm64 build and GitHub's arm64 runners cannot run it (CPython's own CI builds it there and skips the tests); Termux (a shell, a permissive environment, not an app process) would be the manual route |
 | iOS (`arm64_iphoneos`, simulators) | `pyc` only: third-party apps get no JIT (`MAP_JIT` needs an entitlement); `auto` falls back with the D31 warning |
 | Pyodide `wasm32` | `pyc` only (no machine code); worth a check that `pyc` runs there |
 | Linux `riscv64` | the most alive candidate for a third architecture — a wasm micro-compiler (ROADMAP q14) |
