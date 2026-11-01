@@ -130,8 +130,8 @@ int32_t entry(uint64_t *ctx, uint64_t *frame, const void *code_of_function);
   i64 as is; f32/f64 as bit patterns; v128 takes two slots; references as pointer-sized values).
 * The return value is `0` or a trap code (below). On a trap the machine stack is unwound to the
   trampoline, which returns normally: the host never sees a signal or a non-local jump.
-* **Re-entrant**: the trampoline saves the previous `ctx[SAVED_SP]` on its own stack and restores it on
-  return or trap, so wasm → host → wasm nesting works (the PoC lacked this; LESSONS.md).
+* **Re-entrant**: the trampoline keeps nothing in the context but `TRAP_CODE`, so wasm → host → wasm
+  nesting works (the PoC lacked this; LESSONS.md 4).
 
 **Context words** (`uint64_t ctx[]`, 8-byte aligned, at a stable address for the instance's lifetime;
 the phase-3 meaning of each word and the register roles are in [S0003](specs/S0003-jit-context-abi.md)):
@@ -145,7 +145,7 @@ the phase-3 meaning of each word and the register roles are in [S0003](specs/S00
 | 4 | `EPOCH_DEADLINE` | host → code | when compiled with epochs |
 | 5 | `VSTACK_LIMIT` | host → code | address the value stack must not cross → `STACK_OVERFLOW` |
 | 6 | `NSTACK_LIMIT` | host → code | lowest native stack address allowed → `STACK_OVERFLOW` |
-| 7 | `HOST_ERROR` | — | unused: a host call reports failure through its status (13) |
+| 7 | `HOST_ERROR` | host → code | the status of the current host call: the bridge presets 13, the host function writes its status last (D34) |
 | 8 | `HOST_BRIDGE` | host → code | address of the host-call bridge for the host's calling convention |
 | 9 | `TAIL_SWITCH` | host → code | address of the cross-context tail-call trampoline (below; D30) |
 | 10–15 | reserved | | zero |
@@ -161,9 +161,12 @@ Offsets of the variable part follow from the counts in the artifact, in exactly 
 
 **Host functions** (imports and libcalls) share one C signature in the host's calling convention:
 `int32_t f(uint64_t *ctx, uint64_t *slots)` — the arguments in `slots[0..n)`, one 64-bit slot per
-value as for entries; the function writes its results to `slots[0..m)` and returns `0`, a trap code,
-or `13` `HOST_ERROR` (the host keeps the actual exception). Compiled code calls it through the bridge
-(`ctx[HOST_BRIDGE]`), which saves the pool registers the host convention lets a callee clobber.
+value as for entries; the function writes its results to `slots[0..m)`, then, as its last action, its
+status to `ctx[HOST_ERROR]`: `0`, a trap code, or `13` `HOST_ERROR` (the host keeps the actual
+exception). Its C return value is ignored (D34). Compiled code calls it through the bridge
+(`ctx[HOST_BRIDGE]`), which saves the pool registers the host convention lets a callee clobber,
+presets `ctx[HOST_ERROR]` to 13, returns the word as the call's status and puts back the word's
+previous value (an enclosing host call's preset): a host function that does not finish fails the call.
 
 **Tail calls** (D30). A `return_call*` puts its arguments at its own frame base, drops its native
 frame and jumps, so both stacks stay constant. When the callee's function record names another

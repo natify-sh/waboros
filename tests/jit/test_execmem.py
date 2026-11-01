@@ -1,8 +1,10 @@
 """Executable memory is W^X (R2, S0003): never writable and executable at once."""
 
 import ctypes
+import gc
 import os
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -81,3 +83,20 @@ def test_generated_loop() -> None:
         assert f(1000, -(1 << 20)) == 1000 << 40
     finally:
         mem.free()
+
+
+def test_code_areas_are_unmapped_with_their_instances() -> None:
+    """A dropped store's instances unmap their code areas (before, each stayed mapped: +4 KiB of
+    address space per instance, never returned)."""
+    usable()
+    from tests.jit.test_compiler import build, wat
+
+    src = wat('(module (memory 1) (func (export "f") (result i32) (i32.const 1)))')
+    released: list[Any] = []
+    for _ in range(50):
+        i = build(src)
+        assert i("f") == [1]
+        released.append(cast(Any, i.inst).code._release)  # the finalizer that unmaps it
+        del i
+    gc.collect()  # a store and its instances form a cycle
+    assert not any(r.alive for r in released)

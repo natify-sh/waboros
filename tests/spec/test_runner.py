@@ -339,12 +339,8 @@ def _xfail_keys(engine: str, both: Sequence[str]) -> set[str]:
     return keys
 
 
-def test_a_ready_jit_fails_exactly_what_pyc_fails() -> None:
-    """D25: `auto` may select a JIT (`ready`) only while its expected failures equal pyc's in the
-    directories both claim."""
-    from w2py.targets.jit.x86_64 import JitX86_64Target
-
-    if not getattr(JitX86_64Target, "ready", True):
-        pytest.skip("jit-x86_64 is not ready")
+def test_the_jit_fails_exactly_what_pyc_fails() -> None:
+    """D25: `auto` selects a JIT whose probe succeeds, so its expected failures must equal pyc's
+    in the directories both claim."""
     both = ("pyc", "jit-x86_64")
     assert _xfail_keys("jit-x86_64", both) == _xfail_keys("pyc", both)

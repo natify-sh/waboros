@@ -7,6 +7,7 @@ import importlib.util
 import random
 import subprocess
 import sys
+import textwrap
 import threading
 from collections.abc import Sequence
 from pathlib import Path
@@ -502,6 +503,54 @@ def test_references_and_imports_of_another_store_are_refused() -> None:
     b1 = build(wat('(module (import "a" "t" (table 4 funcref)))'), imports={"a": provider(a)},
                store=s1)  # fmt: skip
     assert b1.inst is not None
+
+
+def test_a_forged_funcref_is_refused() -> None:
+    """Only a reference the store handed out crosses into it: a FuncRef made up by the host (any
+    address, the right store) is refused at the boundary; before, call_indirect jumped through it
+    (LESSONS 35)."""
+    st = StoreState()
+    i = build(wat("""(module (type $v (func)) (table 1 funcref) (elem declare func $f)
+      (func $f) (func (export "get") (result funcref) (ref.func $f))
+      (func (export "set") (param funcref) (table.set (i32.const 0) (local.get 0)))
+      (func (export "run") (call_indirect (type $v) (i32.const 0))))"""), store=st)  # fmt: skip
+    (real,) = call(i, "get")
+    for addr in (0x1000, real.addr + 8):
+        with pytest.raises(TypeError, match="this store"):
+            call(i, "set", FuncRef(addr, real.store))
+    with pytest.raises(TypeError, match="this store"):  # only the very object handed out
+        call(i, "set", FuncRef(real.addr, real.store))
+
+    class Evil(FuncRef):  # equality cannot be used to smuggle an address in
+        def __eq__(self, other: object) -> bool:
+            return True
+
+        def __ne__(self, other: object) -> bool:
+            return False
+
+        __hash__ = FuncRef.__hash__
+
+    with pytest.raises(TypeError, match="this store"):
+        call(i, "set", Evil(0x1000, real.store))
+    call(i, "set", real)
+    assert call(i, "run") == []
+
+
+def test_exit_with_a_daemon_thread_in_jit_code() -> None:
+    """Interpreter exit must not unmap code or memory a daemon thread still runs (atexit=False on
+    the finalizers); before, the process ended with SIGSEGV (review of step 6)."""
+    src = textwrap.dedent(f"""
+        import sys, threading, time
+        sys.path.insert(0, {str(ROOT)!r})
+        from tests.jit.test_compiler import build, wat
+        i = build(wat('(module (memory 1) (func (export "spin") (local i32)'
+                      ' (loop $l (local.set 0 (i32.load (i32.const 0))) (br $l))))'))
+        threading.Thread(target=lambda: i("spin"), daemon=True).start()
+        time.sleep(0.3)
+    """)
+    for _ in range(3):
+        p = subprocess.run([sys.executable, "-c", src], capture_output=True, text=True)
+        assert p.returncode == 0, (p.returncode, p.stderr[-500:])
 
 
 def test_type_ids_from_threads_are_distinct() -> None:

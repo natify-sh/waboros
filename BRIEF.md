@@ -88,14 +88,14 @@ State on branch `phase0-skeleton` (not merged to `main`, the maintainer's choice
   spec-suite runner (the metric), and the `pyc` target complete for the core group (spec core: `pyc`
   20509 pass, 89 expected failures; wasmtime oracle 63 782 over all claimed directories). `pyc` is frozen
   for new features and gets correctness fixes only.
-* **Phase 3 (`jit-x86_64`, `docs/specs/S0002` step 3) done; step 6, the final review, in progress:**
+* **Phase 3 (`jit-x86_64`, `docs/specs/S0002` step 3) done, including step 6, the final review (S0002, S0003 implemented):**
   3a ABI, 3b integer core, 3c SSE2 floats with `memory.grow`, 3d tables, `call_indirect`, reference
   types and bulk memory, 3e tail calls, typed function references and tags, 3f function imports
   through records (D32), step 4 the fallback to `pyc` with `JitUnavailableWarning` (D31), step 5 the
   ISA gate in CI. `jit-x86_64` fails exactly what `pyc` fails in the core group (20509 pass on both)
   and `auto` selects it; CoreMark 17 526 vs PoC `w2jit2` 17 662 it/s (99.2 %). Phase 3 went beyond the
   "integer core" (floats, tables) because the goal is completeness (D25).
-* **Next, per `docs/ROADMAP.md`, in order:** step 6; multi-memory on both targets; phase 4, the
+* **Next, per `docs/ROADMAP.md`, in order:** multi-memory on both targets; phase 4, the
   `jit-aarch64` integer core on native arm64 runners; phase 5, guard pages (D29) and the rest of the
   opcode set; the public API only in phase 6.
 
@@ -136,7 +136,7 @@ a test. "Measure, do not estimate."
 | how it is built | `docs/ARCHITECTURE.md`, `docs/TARGETS.md` |
 | the order of work | `docs/ROADMAP.md` |
 | how it is tested | `docs/TESTING.md` |
-| why a choice was made | `docs/DECISIONS.md` (D1–D33) |
+| why a choice was made | `docs/DECISIONS.md` (D1–D34) |
 | what went wrong before | `docs/LESSONS.md` |
 | risks and possible answers | `docs/RISKS.md` |
 | the JIT artifact contract | `docs/ARTIFACT.md` |

@@ -104,6 +104,10 @@ wrong results or sandbox escapes. The PoC already met three silent bugs (LESSONS
   new code generator per function to bisect failures (how the `printf` bug was found);
 * decide on copy-and-patch after `jit-aarch64` exists by hand, with numbers for both.
 
+JIT code registers no Win64 unwind information (`RtlAddFunctionTable`). Harmless today: traps return
+through frames (D10) and host exceptions are statuses, so no SEH unwind ever crosses JIT frames; a
+debugger or profiler walking the stack may stop there. Needed once a fault handler (R6) unwinds.
+
 ## R4. Version skew: output of one w2py version used by another
 
 > **Largely settled by DECISIONS.md D18** (the Wasmtime model): generated code is used only by the

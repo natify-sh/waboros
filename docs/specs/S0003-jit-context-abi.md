@@ -2,11 +2,11 @@
 title: JIT context ABI and entry (phase 3, x86-64)
 kind: spec
 id: S0003
-status: approved
+status: implemented
 superseded_by:
 related: [D10, D14, D15, D18, D23, D24, R2, R3, R6, S0002]
 owner: maintainer
-updated: 2026-10-30
+updated: 2026-11-01
 ---
 
 # S0003 JIT context ABI and entry (phase 3, x86-64)
@@ -37,15 +37,15 @@ it is not a new format. The runtime side is [S0002](S0002-target-interface.md).
 | 3, 4 | `FUEL`, `EPOCH_DEADLINE` | deferred, zero |
 | 5 | `VSTACK_LIMIT` | value-stack address a frame must not cross → `STACK_OVERFLOW` |
 | 6 | `NSTACK_LIMIT` | lowest native `rsp` allowed → `STACK_OVERFLOW`; written by the runtime before each entry |
-| 7 | `HOST_ERROR` | **unused**: replaced by the host call's status (below; proposed amendment) |
-| 8 | `HOST_BRIDGE` | **new (proposed)**: address of the host-call bridge for the host's convention |
+| 7 | `HOST_ERROR` | status of the current host call: preset to 13 by the bridge, written last by the host function (step 6, D34) |
+| 8 | `HOST_BRIDGE` | address of the host-call bridge for the host's convention |
 | 9 | `TAIL_SWITCH` | address of the cross-context tail-call trampoline (step 3e, D30) |
 | 10–15 | reserved | zero |
 | 16 … | memory *i*: `base`, `size_bytes` | phase 3: at most one memory |
 | … | table *i*: `base`, `size` | element words (record address / extern handle, 0 = null); step 3d |
 | … | global *i*: 1 word | defined: the value; imported: a pointer to the owner's word (same target, S0002) |
 | … | function import *i*: 1 word | address of a host function (signature below) |
-| … | libcall *j*: 1 word | **new (proposed)**: same signature; the runtime services the module uses (`memory.grow`, `table.grow`, segment init — never computation, D25), in a fixed order |
+| … | libcall *j*: 1 word | same signature; the runtime services the module uses (`memory.grow`, `table.grow`, segment init — never computation, D25), in a fixed order |
 | … | signature *k*, function record *r* | step 3d: canonical type ids for `call_indirect`; `{code, type id, context}` records (ARTIFACT.md part 3) |
 
 ### Calling conventions
@@ -55,8 +55,9 @@ int32_t host (uint64_t *ctx, uint64_t *slots);                     /* imports an
 ```
 * `frame[0..n)` holds the arguments, `frame[0..m)` the results after a 0 return: one slot per value,
   i32 zero-extended, i64 as is, f32/f64 bit patterns (ARTIFACT.md).
-* Return value (both): `0`, or a trap code of ARTIFACT.md part 3, or `13` `HOST_ERROR`.
-* **`host` is uniform (proposed amendment)**: the arguments are in `slots[0..n)`, the function writes
+* Status: `entry` returns `0`, or a trap code of ARTIFACT.md part 3, or `13` `HOST_ERROR`. `host`
+  writes the same set to `ctx[HOST_ERROR]` as its last action; its C return value is ignored (D34).
+* **`host` is uniform**: the arguments are in `slots[0..n)`, the function writes
   its results to `slots[0..m)`. One C signature for every import makes one bridge per convention
   possible, gives multi-value and a trap/exception status for free, and removes the C-ABI
   zero-extension hazard (LESSONS 5: results come back through slots the runtime masks). ARTIFACT.md
@@ -82,8 +83,9 @@ int32_t host (uint64_t *ctx, uint64_t *slots);                     /* imports an
 * **Bridge**: wasm code sets `eax` = context word index of the import or libcall, `rdx` = slot
   pointer of the arguments, then `call [r15 + 8*HOST_BRIDGE]`. SysV bridge: `endbr64`; push the pool
   registers SysV lets a callee clobber (`rsi rdi r8–r11`; all of them, not only the caller's pins:
-  frames above keep pins there too, LESSONS 2) + pad; `rdi ← r15`, `rsi ← rdx`; `call [r15+8*rax]`;
-  pop; `ret` with the status in `eax`. Win64 bridge: saves `r8–r11` only, passes `rcx`/`rdx`, and
+  frames above keep pins there too, LESSONS 2); push `ctx[HOST_ERROR]` (an enclosing host call's
+  preset); `ctx[HOST_ERROR] ← 13`; `rdi ← r15`, `rsi ← rdx`; `call [r15+8*rax]`; `eax ←
+  ctx[HOST_ERROR]`; pop it back into the word; pop; `ret` with the status in `eax`. Win64 bridge: saves `r8–r11` only, passes `rcx`/`rdx`, and
   reserves the 32-byte shadow space. The wasm call site then reloads `r13`/`r14` and does
   `test eax, eax; jnz unwind`.
 
@@ -96,7 +98,8 @@ site check it (`test spl, 15; jnz` → trap) and the encoder tests run with it o
 **Two stacks** (ARCHITECTURE.md, "Calls, stack depth and recursion"). Values and locals live on the
 **value stack** the runtime maps per store (frame overlap as in `w2jit`); every prologue checks
 `r12 + 8·frame_slots ≤ ctx[VSTACK_LIMIT]`. The **native stack** holds only return addresses, pushed
-pins and pads (≤ 80 bytes per frame, never more than one page at once: no stack probes on Windows,
+pins and pads (at most 96 bytes per frame with a function-record call in flight — return address,
+eight pins, pad, the saved context — plus 16 per `tail_switch` restore frame; never more than one page at once: no stack probes on Windows,
 D23; the SysV red zone is never used). Every prologue checks `rsp ≥ ctx[NSTACK_LIMIT]`. The runtime
 sets that limit at the first JIT entry of the store on the stack, whatever the store's depth:
 `limit = sp − min(max_wasm_stack, (sp − low) / 2)`, `max_wasm_stack` default 512 KiB (Wasmtime's,
@@ -132,8 +135,12 @@ operations (S0002, proposed decision), so the shared core never places code betw
 **Host calls and host exceptions.** The runtime makes one ctypes callback per import of type
 `CFUNCTYPE(c_int32, c_void_p, c_void_p)`; its whole body is a `try` (a ctypes callback that
 raises only prints the error and returns 0, i.e. "success"): read arguments from the slots, call
-the `HostFunc`, write results masked to their width, return 0; on `Trap` return its code; on any other `BaseException` store it in
-`StoreState` and return 13. The code unwinds as for a trap; the runtime re-raises the stored
+the `HostFunc`, write results masked to their width, then write the status to `ctx[HOST_ERROR]` as
+the last action: 0; on a `Trap` with a wasm trap code that code; on any other `BaseException` (a
+`Trap` with another code included) store it in `StoreState` and write 13. An asynchronous exception
+that escapes the callback anyway (ctypes then prints it and leaves the C return value undefined)
+leaves the bridge's preset 13 with nothing pending: the runtime raises a `RuntimeError` "host call
+interrupted" (D34), never a success with unwritten results. The code unwinds as for a trap; the runtime re-raises the stored
 exception at the outermost entry. The GIL is released by the entry (`CFUNCTYPE`) and taken back by
 callbacks (ARCHITECTURE.md, "Long calls and the GIL").
 
@@ -222,7 +229,7 @@ uv run pytest tests/jit -k "entry or trap or reentry or host or interrupt or sta
   runs, stays set and stops the next call at its first poll. `TRAP_CODE` (word 1) is written on a
   non-zero status only. A host callback returns status 0 only after its results are written; an
   asynchronous exception arriving in the callback's last handler can still escape to ctypes (which
-  then returns 0).
+  then leaves the return value undefined; closed by the status word in step 6, D34).
 * 2026-10-30: per-OS stack bounds rule with a sanity range and the 128 KiB fallback; `tools/stack_info.py` measures the sizes in CI (Linux glibc: main ≈ 8 MiB, threads 8 MiB, 2 MiB under an unlimited rlimit).
 * 2026-10-30: stack sizes measured by `tools/stack_info.py` in CI run 41087438788 (CPython 3.13):
   Linux glibc (RLIMIT_STACK 16 MiB): main 16372 KiB, default thread 16384 KiB, budget 512 KiB.
@@ -330,3 +337,13 @@ uv run pytest tests/jit -k "entry or trap or reentry or host or interrupt or sta
   without Python, and tail recursion through an import runs in constant stacks
   (`test_tail_recursion_through_a_function_import`: 10⁶ rounds on a 256 KiB thread, as Wasmtime).
   The import word keeps the host function's address; the bridge is reached through the thunk.
+  For an import bound to a JIT function of the same store, the import word still holds a ctypes
+  callback and the module a thunk for it; both are unreachable (the record points to the exporter's
+  code) and kept: the thunk is compiled before the binding is known, and the layout stays the same.
+* 2026-11-01 (step 6, after review): host status word, maintainer-approved (D34): word 7 holds the
+  status of the current host call, preset to 13 by the bridge and written last by the callback; the
+  bridge puts back the enclosing call's preset; the C return value is ignored. A host `Trap` whose
+  code is not a wasm trap code is a host exception. Code areas are unmapped when their instance is
+  collected; a `FuncRef` is accepted only if the store handed it out; the `ready` guard is gone.
+  The two-stacks bound is stated exactly (96 bytes per frame, + 16 per restore frame).
+* 2026-11-01: step 6 done (final review of steps 2–5, its fixes and D34 reviewed); status implemented.

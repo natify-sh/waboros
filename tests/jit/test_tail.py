@@ -477,3 +477,24 @@ def test_isa_check_on_tail_call_code(tmp_path: Path) -> None:
             cmd += ["--data", f"{data}:{len(code)}"]
         p = subprocess.run(cmd, capture_output=True, text=True)
         assert p.returncode == 0, p.stdout + p.stderr
+
+
+def test_real_modules_with_alignment_checks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A `check_align` build checks rsp % 16 at every call site, the host thunk's included:
+    compiled modules with host thunks, tail calls, cross-instance switches and nested entries run
+    with it on."""
+    from tests.jit import test_tables
+    from w2py.targets.jit.x86_64 import backend
+
+    thunk_only = wat("""(module (import "env" "h" (func $h)) (table 1 funcref)
+      (elem (i32.const 0) func $h))""")  # fmt: skip
+    mod = parse(thunk_only)
+    validate(mod)
+    plain = cast(Compiled, JitX86_64Target().compile(mod)).code
+    monkeypatch.setattr(backend.Backend.__init__, "__defaults__", (True,))
+    checked = cast(Compiled, JitX86_64Target().compile(mod)).code
+    assert len(checked) > len(plain)  # the thunk is the only code: it got the check
+    test_return_call_to_host_functions()
+    test_tail_calls_across_instances()
+    test_tables.test_host_function_in_a_table()
+    test_tables.test_table_grow_across_nested_entries()

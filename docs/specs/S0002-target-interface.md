@@ -2,11 +2,11 @@
 title: Target interface
 kind: spec
 id: S0002
-status: approved
+status: implemented
 superseded_by:
 related: [D5, D6, D10, D16, D17, D18, D23, D24, S0001, S0003]
 owner: maintainer
-updated: 2026-10-30
+updated: 2026-11-01
 ---
 
 # S0002 Target interface
@@ -251,3 +251,4 @@ weights itself until then.
 * 2026-10-30: `TargetInstance.limits(name)` for import type checks in `runtime/link.py`; reference values cross the boundary as opaque objects (`None` = null), numbers stay `Raw` (maintainer).
 * 2026-10-30: step 3 split into 3a–3d (tables in 3d, native floats in 3c); no Python helpers for computation, only runtime services (D25 amended); `--engine jit-x86_64`, one target adapter, lazy spectest (maintainer).
 * 2026-10-30: step 4 done; the fallback warns once (D31).
+* 2026-11-01: step 6 done (final review of steps 2–5, its fixes and D34 reviewed); status implemented.

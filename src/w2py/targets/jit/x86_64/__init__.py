@@ -23,10 +23,6 @@ if TYPE_CHECKING:
 class JitX86_64Target:
     name = "jit-x86_64"
     version = 0
-    # S0002 step 2 guard: `target_order("auto")` skips a target with `ready = False`. True since
-    # step 3e: the expected failures equal pyc's (tests/spec/test_runner.py keeps it honest);
-    # S0002 step 6 deletes this attribute together with the check in base._probe.
-    ready = True
 
     def probe(self) -> str | None:
         """None if x86-64 code can be mapped W^X and called here; else the reason."""

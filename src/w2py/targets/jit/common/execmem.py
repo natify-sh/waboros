@@ -18,6 +18,10 @@ class ExecMem:
         self.size = max(page, (size + page - 1) // page * page)
         self.addr = _alloc(self.size)
         self.sealed = False
+        # unmapped when unreachable: records cross only within a store, which keeps its
+        # instances (and so their code areas) alive while any of its code can run
+        self._release = weakref.finalize(self, _free, self.addr, self.size)
+        self._release.atexit = False  # a daemon thread may still run this code at exit
 
     def write(self, code: bytes) -> None:
         if self.sealed or not self.addr:
@@ -32,9 +36,8 @@ class ExecMem:
         self.sealed = True
 
     def free(self) -> None:
-        if self.addr:
-            addr, self.addr = self.addr, 0
-            _free(addr, self.size)
+        self.addr = 0
+        self._release()
 
 
 class Reservation:
@@ -47,6 +50,7 @@ class Reservation:
         self.committed = 0
         self.addr = _reserve(size)
         self._release = weakref.finalize(self, _free, self.addr, size)
+        self._release.atexit = False  # a daemon thread may still use this memory at exit
         self.commit(commit)
 
     def commit(self, nbytes: int) -> None:
@@ -77,7 +81,7 @@ def load(code: bytes) -> ExecMem:
 
 
 if sys.platform == "win32":
-    # UNTESTED: the D23 shape for Windows; no Windows runner exercises it yet.
+    # The D23 shape for Windows; the CI `os` job runs tests/jit on windows-latest.
     _k32 = ctypes.WinDLL("kernel32", use_last_error=True)
     _k32.VirtualAlloc.restype = ctypes.c_void_p
     _k32.VirtualAlloc.argtypes = [

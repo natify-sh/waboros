@@ -10,7 +10,7 @@ Alignment (LESSONS 3): rsp is 8 mod 16 on entry to any of these; each pads to 0 
 import sys
 from functools import cache
 
-from w2py.targets.jit.common.context import TRAP_CODE, Layout
+from w2py.targets.jit.common.context import HOST_ERROR, STATUS_HOST_ERROR, TRAP_CODE, Layout
 from w2py.targets.jit.common.execmem import load
 from w2py.targets.jit.common.instance import Trampolines
 from w2py.targets.jit.x86_64.encoder import (
@@ -66,22 +66,34 @@ def entry(a: Asm, win64: bool) -> None:
 
 def bridge(a: Asm, win64: bool) -> None:
     """Wasm code: eax = context word of the host function, rdx = its slots, then
-    `call [r15 + 8 * HOST_BRIDGE]`. Calls int32_t host(ctx, slots) and returns its status in
-    eax. Saves every pool register the convention lets the host clobber, for all frames above
-    (LESSONS 2); the call site reloads r13/r14. Win64 also reserves the 32-byte shadow space."""
+    `call [r15 + 8 * HOST_BRIDGE]`. Calls host(ctx, slots) with ctx[HOST_ERROR] preset to 13 and
+    returns the status the host left there in eax (its C return value is ignored: ctypes leaves
+    it undefined when an exception escapes a callback, D34); the word's previous value is put
+    back, so an outer host call still reads its own preset. Saves every pool register the
+    convention lets the host clobber, for all frames above (LESSONS 2); the call site reloads
+    r13/r14. Win64 also reserves the 32-byte shadow space."""
     saved = [R8, R9, R10, R11] if win64 else [RSI, RDI, R8, R9, R10, R11]
-    pad = 8 + (32 if win64 else 0)  # 8 + 8 * even + 8 (+ 32) = 0 mod 16
+    pad = (32 if win64 else 0) + 8 * (len(saved) % 2)  # 8 + 8 * (saved + 1) + pad = 0 mod 16
+    status = Mem(R15, 8 * HOST_ERROR)
     a.endbr64()
     for r in saved:
         a.push(r)
-    a.alu_imm("sub", RSP, pad, w=True)
+    a.mov(RCX, status, w=True)
+    a.push(RCX)  # the enclosing host call's preset (nested entries share contexts)
+    if pad:
+        a.alu_imm("sub", RSP, pad, w=True)
+    a.mov_imm(status, STATUS_HOST_ERROR, w=True)
     if win64:
         a.mov(RCX, R15, w=True)  # rdx already holds the slots
     else:
         a.mov(RDI, R15, w=True)
         a.mov(RSI, RDX, w=True)
     a.call(Mem(R15, 0, RAX, 8))
-    a.alu_imm("add", RSP, pad, w=True)
+    if pad:
+        a.alu_imm("add", RSP, pad, w=True)
+    a.mov(RAX, status)  # 32-bit: zero-extended
+    a.pop(RCX)
+    a.mov(status, RCX, w=True)
     for r in reversed(saved):
         a.pop(r)
     a.ret()

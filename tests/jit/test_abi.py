@@ -2,12 +2,16 @@
 backend's ABI methods, run through the entry trampoline of this machine's convention."""
 
 import ctypes
+import importlib.util
+import json
+import signal
 import subprocess
 import sys
 import threading
 import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -15,7 +19,7 @@ from tests.jit import need
 from w2py.runtime.link import host_func
 from w2py.runtime.store import StoreState
 from w2py.targets.base import HostFunc, Raw, Trap, TrapCode
-from w2py.targets.jit.common.context import INTERRUPT, TRAP_CODE, Layout
+from w2py.targets.jit.common.context import HOST_ERROR, INTERRUPT, TRAP_CODE, Layout
 from w2py.targets.jit.common.execmem import load
 from w2py.targets.jit.common.instance import (
     DEFAULT_BUDGET,
@@ -38,6 +42,7 @@ from w2py.targets.jit.x86_64.encoder import (
     RAX,
     RBP,
     RBX,
+    RCX,
     RDI,
     RSI,
     Asm,
@@ -209,7 +214,11 @@ def test_reentry_50_deep(tramp: Trampolines) -> None:
     assert inst.call(1, [50]) == [1050] and store.depth == 0
 
 
-@pytest.mark.parametrize("exc", [ValueError("v"), KeyboardInterrupt(), IndexError("i")])
+# a Trap whose code is no wasm trap (13 is HOST_ERROR's status) is a host exception, not a status
+ODD_TRAP = Trap(cast(TrapCode, 13), "trap 13")
+
+
+@pytest.mark.parametrize("exc", [ValueError("v"), KeyboardInterrupt(), IndexError("i"), ODD_TRAP])
 @pytest.mark.parametrize("nested", [False, True])
 @pytest.mark.parametrize("wrapped", [False, True])  # the runtime's HostError wrapper, or plain
 def test_host_exception_surfaces_as_itself(
@@ -240,9 +249,11 @@ def test_pins_of_every_frame_survive_a_clobbering_host(tramp: Trampolines) -> No
     clobber = [R8, R9, R10, R11] + ([] if sys.platform == "win32" else [RSI, RDI])
     a = Asm()
     a.endbr64()
+    ctx = {"win32": RCX}.get(sys.platform, RDI)  # the first C argument
+    a.mov_imm(Mem(ctx, 8 * HOST_ERROR), 0, w=True)  # the status word (D34), before ctx is lost
     for r in clobber:
         a.mov_imm(r, 0)
-    a.alu("xor", RAX, RAX)
+    a.mov_imm(RAX, 77)  # the C return value is ignored
     a.ret()
     host_code = load(a.finish())
     frames = [POOL, (RSI, RDI, R8, RBX), (R9, R10, R11)]
@@ -464,3 +475,77 @@ def test_linux_main_thread_budget_from_rlimit() -> None:
     assert native_budget(sp, linux_main_low(high, 16 << 20), DEFAULT_BUDGET) == 512 << 10
     assert linux_main_low(high, None) is None
     assert native_budget(sp, linux_main_low(high, None), DEFAULT_BUDGET) == 128 << 10
+
+
+def test_a_host_that_never_writes_its_status_fails(tramp: Trampolines) -> None:
+    """As when an asynchronous exception escapes a ctypes callback before its last action: the
+    status word keeps the bridge's preset 13 and the call fails, whatever the C return value
+    (D34; before, a 0 return was success with unwritten results)."""
+    a = Asm()
+    a.endbr64()
+    a.alu("xor", RAX, RAX)
+    a.ret()
+    host_code = load(a.finish())
+
+    def g(b: Backend, f: Frame, ls: list[Label]) -> None:
+        b.a.mov_imm(Mem(R12), 5, w=True)
+        b.call_host(f, word(1, 0), 0)
+
+    store = StoreState()
+    inst = build(store, tramp, [((), 1, 1, g)], [counter([], "unused")])
+    inst.ctx[word(1, 0)] = host_code.addr
+    with pytest.raises(RuntimeError, match="host call interrupted"):
+        inst.call(1, [])
+    assert store.depth == 0 and store.pending is None and inst.ctx[HOST_ERROR] == 0
+
+
+ASYNC_HOST = """
+import json, signal
+from tests.jit.test_compiler import build, wat
+from w2py.runtime.store import StoreState
+from w2py.targets.jit.common.instance import _stacks
+
+def tick(*a):
+    if st.depth:  # only inside a call: the harness below must not be hit
+        raise KeyboardInterrupt
+
+st = StoreState()
+i = build(wat('''(module (import "env" "h" (func $h (param i32) (result i32)))
+  (func (export "f") (param i32) (result i32) (local i32)
+    (loop $l (local.set 1 (call $h (local.get 1)))
+      (local.set 0 (i32.sub (local.get 0) (i32.const 1))) (br_if $l (local.get 0)))
+    (local.get 1)))'''), imports={"env": {"h": lambda a: [a[0] + 1]}}, store=st)
+seen = {}
+signal.signal(signal.SIGALRM, tick)
+signal.setitimer(signal.ITIMER_REAL, 0.002, 0.002)
+for _ in range(300):
+    try:
+        k = "ok" if i("f", 1000) == [1000] else "wrong result"
+    except KeyboardInterrupt:
+        k = "KeyboardInterrupt"
+    except RuntimeError as e:
+        k = "interrupted" if "host call interrupted" in str(e) else repr(e)
+    except BaseException as e:
+        k = repr(e)
+    seen[k] = seen.get(k, 0) + 1
+signal.setitimer(signal.ITIMER_REAL, 0)
+signal.signal(signal.SIGALRM, signal.SIG_IGN)
+print(json.dumps([seen, st.depth, _stacks(st).active]))
+"""
+
+
+@pytest.mark.skipif(not hasattr(signal, "setitimer"), reason="needs SIGALRM timers")
+def test_async_exceptions_in_host_calls_never_give_wrong_results(tramp: Trampolines) -> None:
+    """KeyboardInterrupt every 2 ms while wasm calls a host function in a loop: every call gives
+    the right result or an exception, never a wrong result or a stray status, and the store's
+    bookkeeping is back to zero (D34; before: wrong results, garbage statuses)."""
+    need(importlib.util.find_spec("wasmtime") is not None, "wasmtime (wat2wasm)")
+    root = str(Path(__file__).resolve().parents[2])
+    run = subprocess.run(
+        [sys.executable, "-c", ASYNC_HOST], capture_output=True, text=True, cwd=root, timeout=300
+    )
+    assert run.returncode == 0, run.stderr[-1000:]
+    seen, depth, active = json.loads(run.stdout)
+    print(seen)
+    assert set(seen) <= {"ok", "KeyboardInterrupt", "interrupted"}, seen
+    assert (depth, active) == (0, 0)

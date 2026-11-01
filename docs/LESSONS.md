@@ -2,7 +2,7 @@
 title: Lessons
 kind: log
 status: current
-updated: 2026-10-30
+updated: 2026-11-01
 ---
 
 # Lessons
@@ -159,3 +159,19 @@ What went wrong or surprised us while building the PoC, so it is not found again
     xpass replaced the curated reasons ("gap: table import / unknown import kind") with raw error
     texts. Rule: after a regeneration, diff the file and keep the curated reasons; drop only the
     lines that now pass. Found: JIT step 3e, 2026-10-30.
+35. **A reference the host can construct is a pointer the host can forge.** A `FuncRef` was checked
+    only for its store, so `FuncRef(0x1000, store)` passed to an exported `(param funcref)` went
+    into a table, and `call_indirect` jumped to address 0x1000: a segfault, not a trap. Rule: a
+    value that becomes an address in JIT code crosses the boundary only if the runtime handed it out
+    (the store's `funcrefs` map) and is that very object (`is`, not `==`: a subclass can lie about
+    equality), never by its shape. The same review found code areas never unmapped (+4 KiB of
+    address space per instance, forever): an object owning a mapping gets a finalizer when it is
+    created — with `atexit = False`, because at interpreter exit a daemon thread may still run the
+    code or use the memory (the default `atexit = True` unmapped it under a running thread:
+    SIGSEGV at exit). Found: JIT step 6 reviews, 2026-11-01.
+36. **A ctypes callback's return value is not reliable.** An asynchronous exception arriving in a
+    callback outside its `try` makes ctypes print it and return an uninitialised value, which the
+    JIT took as the host call's status: wrong results as success. Rule: a status the generated code
+    trusts is preset by the code to "failed" and overwritten by the callback as its last action
+    (D34); a test sends `KeyboardInterrupt` every 2 ms during host calls. Found: JIT step 6 review,
+    2026-11-01.

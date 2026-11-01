@@ -22,6 +22,7 @@ from w2py.targets.jit.common.context import (
     DATA_DROP,
     ELEM_DROP,
     HOST_BRIDGE,
+    HOST_ERROR,
     INTERRUPT,
     LIBCALLS,
     MEMORY_GROW,
@@ -49,6 +50,7 @@ DEFAULT_BUDGET = 512 << 10  # Wasmtime's default `max_wasm_stack` (D6)
 UNKNOWN_STACK_BUDGET = 128 << 10  # when the thread's stack bounds cannot be read or are implausible
 PLAUSIBLE_STACK = 1 << 30  # more stack than this below the entry: the bounds are not trusted
 TABLE_LIMIT = 10_000_000  # elements: pyc's cap (D27), so both targets fail the same table.grow
+_TRAP_STATUSES = frozenset(TrapCode)  # the statuses a host `Trap` may return as itself
 _TYPE_IDS: dict[Any, int] = {}  # canonical function type ids of the process (structural keys)
 _TYPE_IDS_LOCK = threading.Lock()  # stores on different threads register types concurrently
 
@@ -114,8 +116,9 @@ class _StoreStacks:
         if v is None:
             return 0
         if not isextern(t):
-            # a record of another store would run on that store's context and value stack
-            if not isinstance(v, FuncRef) or v.store is not self:
+            # only a reference this store handed out: a record of another store would run on that
+            # store's context and value stack, a forged address anywhere (LESSONS 35)
+            if not isinstance(v, FuncRef) or self.funcrefs.get(v.addr) is not v:  # one object each
                 raise TypeError(f"not a function reference of this store: {v!r}")
             return v.addr
         h = self.extern_ids.get(id(v))
@@ -369,9 +372,10 @@ class Instance:
     def call(self, func_index: int, args: Sequence[Raw]) -> list[Raw]:
         offset, nres = self.funcs[func_index - self.nimports]
         store, st, ctx = self.store, _stacks(self.store), self.ctx
-        store.enter()
-        st.active += 1
+        depth, active = store.depth, st.active  # restored as they were, whatever interrupts us
         try:
+            store.enter()
+            st.active += 1
             if st.active == 1:  # no JIT frame below, whatever the store's depth
                 st.vsp = st.vstack.addr
                 nlimit = self._nstack_limit(st.vsp)
@@ -385,14 +389,12 @@ class Instance:
                 raise Trap(TrapCode.STACK_OVERFLOW, "call stack exhausted")
             slots = (ctypes.c_uint64 * n).from_address(frame)
             slots[: len(args)] = list(args)
-            ctx[NSTACK_LIMIT], ctx[VSTACK_LIMIT] = st.nlimit, st.vtop
             status = self.entry(ctypes.addressof(ctx), frame, self.code.addr + offset)
             if status:
                 raise self._error(status)
             return list(slots[:nres])
         finally:
-            st.active -= 1
-            store.leave()
+            st.active, store.depth = active, depth
 
     def _nstack_limit(self, frame: int) -> int:
         """At the first JIT entry on the stack: rsp as wasm code sees it (the stub), then
@@ -405,8 +407,11 @@ class Instance:
     def _error(self, status: int) -> BaseException:
         if status == STATUS_HOST_ERROR:
             exc, self.store.pending = self.store.pending, None
-            if exc is None:
-                return RuntimeError("HOST_ERROR status without a pending exception")
+            if exc is None:  # the callback never wrote its status (D34)
+                exc = RuntimeError(
+                    "host call interrupted before it completed (an exception escaped the ctypes "
+                    "callback)"
+                )
             return exc if self.store.depth == 1 else HostError(exc)
         if status == STATUS_INTERRUPT and _stacks(self.store).active == 1:
             # The outermost JIT entry consumes every interrupt() made so far, in every context of
@@ -422,11 +427,12 @@ class Instance:
             return RuntimeError(f"JIT code returned status {status}")
 
     def _host(self, f: HostFunc, nparams: int, masks: Sequence[int]) -> Callable[[int, int], int]:
-        """A ctypes callback must not raise: ctypes would print the error and return 0, i.e.
-        success with unwritten results. Every outcome becomes a status; a host exception waits in
-        the store. 0 is returned only after the results are written; an asynchronous exception
-        (KeyboardInterrupt) raised inside the handlers of `serve` is caught by the outer handler.
-        What remains: one arriving inside the outer handler or the final `finally` escapes."""
+        """The status of a host call is context word HOST_ERROR, which the bridge presets to 13
+        (D34): the callback writes the results, then the status, as its last action. An
+        asynchronous exception (KeyboardInterrupt) escaping the callback leaves the preset: the
+        call fails (`_error`), never "succeeds" with unwritten results. The C return value is
+        ignored (ctypes leaves it undefined when an exception escapes). A host exception waits in
+        the store."""
         store, n = self.store, max(nparams, len(masks))
 
         def serve(slots: int) -> int:
@@ -437,7 +443,10 @@ class Instance:
                     vals[i] = r & m
                 return 0
             except Trap as e:
-                return int(e.code)
+                if e.code in _TRAP_STATUSES:
+                    return int(e.code)
+                store.pending = e  # not a wasm trap code (e.g. 13): a host exception like any other
+                return STATUS_HOST_ERROR
             except BaseException as e:
                 store.pending = e.exc if isinstance(e, HostError) else e
                 return STATUS_HOST_ERROR
@@ -445,13 +454,15 @@ class Instance:
         def callback(ctx: int, slots: int) -> int:
             st = _stacks(store)
             saved, st.vsp = st.vsp, slots + 8 * n  # a nested entry starts above these slots
+            status = STATUS_HOST_ERROR
             try:
-                return serve(slots)
+                status = serve(slots)
             except BaseException as e:
                 store.pending = store.pending or e
-                return STATUS_HOST_ERROR
             finally:
                 st.vsp = saved
+                ctypes.c_uint64.from_address(ctx + 8 * HOST_ERROR).value = status  # last
+            return 0
 
         return callback
 
@@ -665,15 +676,16 @@ class JitInstance(Instance):
 
     def call(self, func_index: int, args: Sequence[Raw]) -> list[Raw]:
         if func_index < self.nimports:
-            self.store.enter()  # an exported import: the host function itself (objects for refs)
+            depth = self.store.depth  # an exported import: the host function itself (refs: objects)
             try:
+                self.store.enter()
                 return list(self.hosts[func_index](args))
             except HostError as e:
                 if self.store.depth == 1:
                     raise e.exc from None
                 raise
             finally:
-                self.store.leave()
+                self.store.depth = depth
         ps, rs = self.module["types"][self.ftypes[func_index]]
         if not any(isref(t) for t in (*ps, *rs)):
             return super().call(func_index, args)

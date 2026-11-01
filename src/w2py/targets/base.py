@@ -116,10 +116,7 @@ _warned: set[str] = set()
 
 @cache
 def _probe(name: str) -> str | None:
-    target = TARGETS[name]()
-    if not getattr(target, "ready", True):  # S0002 step 2 guard; removed in step 3
-        return "not ready"
-    return target.probe()
+    return TARGETS[name]().probe()
 
 
 def target_order(choice: str | None = None) -> list[str]:

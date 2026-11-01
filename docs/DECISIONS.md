@@ -415,3 +415,22 @@ gain): such a variant is never the default, is requested explicitly, is declared
 to the ISA level (an OS tag), is refused on another OS, and needs its own decision amending D23.
 Rejected for now: automatic detection by default (a cache or artifact compiled on one machine would
 need the detection and recompile path to be proven before it is safe).
+
+### D34. Host-call status goes through context word 7, preset to HOST_ERROR
+Status: accepted (maintainer, 2026-11-01) · Date: 2026-11-01 · Supersedes: — · Evidence: `tests/jit/test_abi.py::test_async_exceptions_in_host_calls_never_give_wrong_results`
+
+When an asynchronous exception (`KeyboardInterrupt` from a signal handler, `SystemExit`) arrives in a
+ctypes callback outside its `try`, ctypes prints "Exception ignored" and leaves the C return value
+**uninitialised**: the JIT read whatever was in `eax` as the host call's status — wrong results
+reported as success, garbage trap codes, the store's depth left behind (step 6 review: 46 wrong
+results out of 223 calls with a 2 ms SIGALRM). So the status no longer travels in the return value.
+The bridge presets context word 7 (`HOST_ERROR`, unused until now) to 13 before calling the host
+function and returns the word afterwards (putting back the value it found, an enclosing host call's
+preset, so nested calls on one context do not see each other's statuses); the callback writes its
+results, then its status to word 7 as its very last action. A callback that does not finish leaves 13
+with no exception pending: the runtime raises `RuntimeError` "host call interrupted" (the escaped
+exception itself is gone: ctypes swallowed it). Wasmtime keeps the outcome of a host call apart from
+the native return value too (the trap or error is recorded in its per-call `CallThreadState`, not
+decoded from a register). wasmtime-py's trampoline (`wasmtime/_func.py`, `trampoline`: `caller =
+Caller(caller)` runs before its `try`) has the same window and does not close it. This amends context
+ABI v1 without a version bump: S0003 fixes v1 in phase 5 and no artifact has been saved yet.

@@ -13,6 +13,7 @@ Everything here is x86-64-v1 (D24): bsr/bsf with an explicit zero case, popcnt b
 import struct
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from typing import cast
 
 from w2py.targets.base import TrapCode
 from w2py.targets.jit.common.backend import NEGATE, SWAP, Dst, Imm, Operand, Reg, Slot
@@ -920,10 +921,12 @@ class Backend:
         self._copy(8)
 
     # ---------------------------------------------------------------- calls
-    def _call(self, f: Frame, target: Label | Mem) -> None:
+    def _call(self, f: Frame | None, target: Label | Mem, misaligned: Label | None = None) -> None:
+        """`call target`; a `check_align` build first jumps to `misaligned` (default: the frame's
+        MISALIGNED stub) if rsp % 16 != 0."""
         if self.check_align:
             self.a.test_imm(RSP, 15)
-            self.a.jcc("ne", self._stub(f, STATUS_MISALIGNED))
+            self.a.jcc("ne", misaligned or self._stub(cast(Frame, f), STATUS_MISALIGNED))
         self.a.call(target)
 
     def call_direct(self, f: Frame, label: Label, shift_slots: int) -> None:
@@ -1066,11 +1069,17 @@ class Backend:
         a.alu_imm("sub", RSP, 8, w=True)  # rsp = 8 mod 16 on entry: aligned for the bridge
         a.mov(RDX, R12, w=True)
         a.mov_imm(RAX, word)
-        a.call(Mem(R15, 8 * HOST_BRIDGE))
+        bad = a.label()  # no frame here: a misaligned call returns the status itself
+        self._call(None, Mem(R15, 8 * HOST_BRIDGE), bad)
         a.alu_imm("add", RSP, 8, w=True)
         a.mov(R13, Mem(R15, MEM0), w=True)  # as a tail-call target it returns to a caller that
         a.mov(R14, Mem(R15, MEM0 + 8), w=True)  # does not reload them (memory.grow may have run)
         a.ret()
+        if self.check_align:
+            a.bind(bad)
+            a.mov_imm(RAX, STATUS_MISALIGNED)
+            a.alu_imm("add", RSP, 8, w=True)
+            a.ret()
         return at
 
     def call_host(self, f: Frame, word: int, slot: int) -> None:
