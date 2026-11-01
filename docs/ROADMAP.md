@@ -270,8 +270,9 @@ lacks a feature reports it through `Target.supports` and the module runs on anot
    tier without writing one, a compiler that hosts in other languages can use with only a loader
    (D36), and the strongest test of our runtime (a large real program). Not a change of course: w2py
    stays a compiler in Python (CLAUDE.md, BRIEF.md), which remains the bootstrap and the path for
-   MicroPython and small devices; rewriting our own JIT in a language compiled to wasm was considered
-   and not taken (a rewrite of all of it, harder debugging, the same per-language runtime services).
+   MicroPython and small devices. Rewriting our own JIT in a language compiled to wasm is not taken
+   now (a rewrite of all of it, harder debugging, the same per-language runtime services) but stays
+   open: the maintainer may revisit it, e.g. with the results of this experiment.
    Needs a fixed artifact format (phase 5) and WASI (phase 6). Experiment: build Winch/Cranelift for
    wasm, run it on w2py, measure the size of the module, the first run on `pyc`, the self-compilation
    time, memory, and the code quality on CoreMark against our one-pass JIT; check how its output
