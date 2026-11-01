@@ -2,8 +2,9 @@
 
 `python3 tools/features.py` regenerates docs/features.json and the table in docs/FEATURES.md;
 `--check` fails if either is stale or a feature key is not in the pinned upstream copy
-(docs/upstream/features.json). Evidence rule: a feature is true on pyc only if the spec files that
-exercise it have no entry in tests/spec/xfail/pyc.txt; partial lists what fails; null otherwise.
+(docs/upstream/features.json). Evidence rule: a feature is true on a target only if the spec files
+that exercise it have no entry in tests/spec/xfail/<target>.txt; partial lists what fails; null
+otherwise (or when the target does not claim the feature's directory).
 """
 
 import json
@@ -49,10 +50,11 @@ SPEC = {
 }
 
 
-def xfails() -> dict[str, list[str]]:
-    """Spec stem -> reasons, from tests/spec/xfail/pyc.txt (`file.wast:line  reason`)."""
+def xfails(target: str) -> dict[str, list[str]]:
+    """Spec stem -> reasons, from tests/spec/xfail/<target>.txt (`file.wast:line  reason`)."""
     out: dict[str, list[str]] = {}
-    for line in (ROOT / "tests/spec/xfail/pyc.txt").read_text(encoding="utf-8").splitlines():
+    path = ROOT / "tests/spec/xfail" / f"{target}.txt"
+    for line in path.read_text(encoding="utf-8").splitlines():
         if line.strip() and not line.startswith("#"):
             head, _, reason = line.partition("  ")
             out.setdefault(head.split(".wast")[0], []).append(reason.strip())
@@ -83,10 +85,11 @@ def evidence(key: str, target: str, bad: dict[str, list[str]], counts: dict[str,
 
 def build(upstream: dict[str, Any]) -> dict[str, Any]:
     feats = list(upstream["features"])
-    bad, counts = xfails(), spec_counts()
+    counts = spec_counts()
     runtimes = {}
     for t in TARGETS:
-        ev = {k: evidence(k, t, bad, counts) if t == "pyc" else None for k in feats}
+        bad = xfails(t)
+        ev = {k: evidence(k, t, bad, counts) for k in feats}
         values = {k: ev[k] and ev[k][0] for k in feats}
         runtimes[f"w2py {t}"] = {
             "url": "https://github.com/natify-sh/w2py",
@@ -108,15 +111,15 @@ def cell(v: Any) -> str:
 
 
 def table(upstream: dict[str, Any], ours: dict[str, Any]) -> str:
-    bad, counts = xfails(), spec_counts()
+    bad, counts = {t: xfails(t) for t in TARGETS}, spec_counts()
     wt = upstream["browsers"]["Wasmtime"]["features"]
     rt = ours["runtimes"]
     rows = ["| feature | phase | Wasmtime | pyc | jit-x86_64 |", "|---|---|---|---|---|"]
     for k, f in upstream["features"].items():
-        mine = []
+        mine: list[str] = []
         for t in TARGETS:
             c = cell(rt[f"w2py {t}"]["features"][k])
-            e = evidence(k, t, bad, counts) if t == "pyc" else None
+            e = evidence(k, t, bad[t], counts)
             mine.append(f"{c} {e[1]}/{e[2]}" if e else c)
         row = [f"{f['description']} (`{k}`)", f["phase"], cell(wt.get(k)), *mine]
         rows.append("| " + " | ".join(map(str, row)) + " |")
