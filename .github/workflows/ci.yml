@@ -35,8 +35,8 @@ jobs:
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
       - run: uv sync --python 3.13
       # llvm-mc (encoder check) and objdump/objcopy (ISA check); the tests skip without them.
-      - run: command -v llvm-mc || (sudo apt-get update && sudo apt-get install -y llvm binutils)
-      - run: llvm-mc --version && objdump --version | head -1
+      - run: (command -v llvm-mc && command -v llvm-objcopy) || (sudo apt-get update && sudo apt-get install -y llvm binutils)
+      - run: llvm-mc --version && llvm-objcopy --version | head -1 && objdump --version | head -1
       - run: uv run pytest tests/jit -v -rs
         env:
           W2PY_JIT_REQUIRE: "1"  # a missing tool fails the job instead of skipping (tests/jit)
@@ -91,3 +91,50 @@ jobs:
       - run: uv run python tests/spec/fetch.py
       - run: uv run python -m tests.spec.run --engine wasmtime
       - run: uv run python -m tests.spec.run --engine pyc
+  arm64:
+    # jit-aarch64 step 4a (S0004): the encoder against llvm-mc, the trampolines and executable
+    # memory (I-cache flush; Linux PROT_BTI on BTI CPUs; macOS MAP_JIT) on the three arm64 OSes.
+    # The job fails unless this is a native arm64 process whose jit-aarch64 probe succeeds (an
+    # x64 Python under emulation, or MAP_JIT refused by a hardened runtime, must be seen).
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      PYTHONUTF8: "1"
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04-arm, macos-latest, windows-11-arm]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+      - run: uv sync --python 3.13
+      # llvm-mc and llvm-objcopy for the encoder tests (W2PY_JIT_REQUIRE=1 below)
+      - if: runner.os == 'Linux'
+        run: (command -v llvm-mc && command -v llvm-objcopy) || (sudo apt-get update && sudo apt-get install -y llvm)
+      - if: runner.os == 'macOS'
+        run: |
+          command -v llvm-mc || brew list llvm >/dev/null 2>&1 || brew install llvm
+          command -v llvm-mc || echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+      - if: runner.os == 'Windows'
+        run: |
+          command -v llvm-mc || [ -x "/c/Program Files/LLVM/bin/llvm-mc.exe" ] || choco install llvm -y --no-progress
+          command -v llvm-mc || echo "C:\Program Files\LLVM\bin" >> "$GITHUB_PATH"
+      - run: llvm-mc --version && llvm-objcopy --version | head -1
+      # what this runner gives the JIT; fails unless native arm64 with a working probe
+      - run: >-
+          uv run python -W always -c "import platform, sys;
+          from w2py.targets.base import TARGETS, target_order;
+          from w2py.targets.jit.common import execmem;
+          why = TARGETS['jit-aarch64']().probe();
+          print(platform.machine(), sys.platform, 'probe:', why,
+          'PROT_BTI:', getattr(execmem, '_PROT_BTI', None), 'auto:', target_order('auto'));
+          sys.exit(platform.machine().lower() not in ('arm64', 'aarch64') or why is not None)"
+      # every tests/jit test runs or fails; only the x86-64 ISA checks are left out (they need
+      # GNU objdump with x86-64, which these runners lack)
+      - run: uv run pytest tests/jit -v -rs -k "not isa_check and not isa_levels"
+        env:
+          W2PY_JIT_REQUIRE: "1"
+      - if: ${{ !cancelled() }}
+        run: uv run python tools/stack_info.py

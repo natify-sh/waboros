@@ -9,7 +9,7 @@ from typing import Any, cast
 
 import pytest
 
-from tests.jit import need, test_compiler
+from tests.jit import native, need, test_compiler
 from tests.jit.test_compiler import build, outcome, trap_of, wat
 from tests.jit.test_float import Oracle
 from tests.jit.test_tables import provider
@@ -75,7 +75,7 @@ def _three() -> str:
 
 @pytest.fixture(autouse=True)
 def _jit() -> None:
-    need(JitX86_64Target().probe() is None, "x86-64 executable memory")
+    native("jit-x86_64")
     need(importlib.util.find_spec("wasmtime") is not None, "wasmtime")
 
 

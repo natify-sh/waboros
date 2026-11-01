@@ -36,7 +36,7 @@ it is not a new format. The runtime side is [S0002](S0002-target-interface.md).
 | 2 | `INTERRUPT` | non-zero → the next poll returns status `INTERRUPT` (12); any thread may set it |
 | 3, 4 | `FUEL`, `EPOCH_DEADLINE` | deferred, zero |
 | 5 | `VSTACK_LIMIT` | value-stack address a frame must not cross → `STACK_OVERFLOW` |
-| 6 | `NSTACK_LIMIT` | lowest native `rsp` allowed → `STACK_OVERFLOW`; written by the runtime before each entry |
+| 6 | `NSTACK_LIMIT` | lowest native `sp` allowed → `STACK_OVERFLOW`; written by the runtime before each entry |
 | 7 | `HOST_ERROR` | status of the current host call: preset to 13 by the bridge, written last by the host function (step 6, D34) |
 | 8 | `HOST_BRIDGE` | address of the host-call bridge for the host's convention |
 | 9 | `TAIL_SWITCH` | address of the cross-context tail-call trampoline (step 3e, D30) |
@@ -359,3 +359,9 @@ uv run pytest tests/jit -k "entry or trap or reentry or host or interrupt or sta
   the slot after the delta and `memory.init` after the segment index (a one-memory module writes
   neither, so its code is unchanged); the runtime reads them by the same rule. memory64 stays
   unsupported.
+* 2026-11-01 (phase 4, step 4a, S0004): a second architecture, no layout change, same version 1.
+  The words are architecture-neutral (word 6 is the lowest native `sp`, the stack pointer of any
+  architecture); what differs per architecture (bridge registers, what the bridge preserves,
+  `tail_switch`'s record and return-address registers, landing pads, `CODE` alignment, I-cache
+  maintenance) is a table in ARTIFACT.md part 3. The aarch64 register roles and trampolines are
+  in S0004; the x86-64 ones above are unchanged (code byte-identical).

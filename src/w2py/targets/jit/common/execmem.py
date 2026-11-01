@@ -1,13 +1,25 @@
 """Executable memory, W^X (R2, S0003): map read-write, write the code, flip to read-execute; a page
 is never writable and executable at once. Also address space reserved up front and committed on
 demand. POSIX: mmap/mprotect/munmap through ctypes. Windows: VirtualAlloc/VirtualProtect/VirtualFree
-(the D23 shape; run by the Windows CI job)."""
+(the D23 shape; run by the Windows CI job).
+
+AArch64 (S0004) does not keep the instruction cache coherent with data writes: a sealed area is
+invalidated before its first call (Linux `__clear_cache`, macOS `sys_icache_invalidate`, Windows
+`FlushInstructionCache`); no flush function means no executable memory (the probe fails, D31).
+Linux maps it `PROT_BTI` where the CPU reports BTI (landing pads enforced). macOS arm64 maps
+`MAP_JIT` and switches the calling thread between writing and executing
+(`pthread_jit_write_protect_np`), as Apple requires; a hardened runtime without the JIT
+entitlement refuses the mapping. x86-64 needs none of this."""
 
 import ctypes
 import mmap
 import os
+import platform
 import sys
 import weakref
+from typing import Any
+
+ARM64 = platform.machine().lower() in ("aarch64", "arm64")
 
 
 class ExecMem:
@@ -28,11 +40,12 @@ class ExecMem:
             raise ValueError("code area is sealed or freed")
         if len(code) > self.size:
             raise ValueError("code does not fit")
-        ctypes.memmove(self.addr, code, len(code))
+        _write(self.addr, code)
 
     def seal(self) -> None:
-        """Read-write -> read-execute."""
+        """Read-write -> read-execute, then the instruction cache is made coherent."""
         _protect(self.addr, self.size)
+        _flush(self.addr, self.size)
         self.sealed = True
 
     def free(self) -> None:
@@ -80,6 +93,24 @@ def load(code: bytes) -> ExecMem:
     return mem
 
 
+def _flush(addr: int, size: int) -> None:  # x86-64: coherent instruction cache
+    pass
+
+
+def _write(addr: int, code: bytes) -> None:
+    ctypes.memmove(addr, code, len(code))
+
+
+def write_toggled(protect: Any, addr: int, code: bytes) -> None:
+    """macOS arm64 MAP_JIT: `protect(0)` makes the pages writable (not executable) for this thread
+    only, `protect(1)` switches back, also when the copy raises."""
+    protect(0)
+    try:
+        ctypes.memmove(addr, code, len(code))
+    finally:
+        protect(1)
+
+
 if sys.platform == "win32":
     # The D23 shape for Windows; the CI `os` job runs tests/jit on windows-latest.
     _k32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -123,6 +154,14 @@ if sys.platform == "win32":
         if not _k32.VirtualFree(addr, 0, 0x8000):  # MEM_RELEASE
             raise ctypes.WinError(ctypes.get_last_error())
 
+    if ARM64:
+        _k32.GetCurrentProcess.restype = ctypes.c_void_p
+        _k32.FlushInstructionCache.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t]
+
+        def _flush(addr: int, size: int) -> None:
+            if not _k32.FlushInstructionCache(_k32.GetCurrentProcess(), addr, size):
+                raise ctypes.WinError(ctypes.get_last_error())
+
 else:
     _libc = ctypes.CDLL(None, use_errno=True)
     _libc.mmap.restype = ctypes.c_void_p
@@ -165,3 +204,57 @@ else:
     def _free(addr: int, size: int) -> None:
         if _libc.munmap(addr, size) != 0:
             raise _oserror()
+
+    def _symbol(name: str, argtypes: list[Any], *libs: str) -> Any:
+        """A C function of the process (or of the first of `libs` that has it), or None."""
+        for lib in (None, *libs):
+            try:
+                f = getattr(ctypes.CDLL(lib), name)
+            except (OSError, AttributeError):
+                continue
+            f.argtypes, f.restype = argtypes, None
+            return f
+        return None
+
+    if ARM64 and sys.platform == "darwin":
+        _MAP_JIT = 0x800
+        _jit_wp = _symbol("pthread_jit_write_protect_np", [ctypes.c_int])
+        _icache = _symbol(
+            "sys_icache_invalidate", [ctypes.c_void_p, ctypes.c_size_t], "libSystem.B.dylib"
+        )
+
+        def _alloc(size: int) -> int:
+            if _jit_wp is None or _icache is None:
+                raise OSError("no pthread_jit_write_protect_np/sys_icache_invalidate")
+            return _map(size, mmap.PROT_READ | mmap.PROT_WRITE | mmap.PROT_EXEC, _MAP_JIT)
+
+        def _write(addr: int, code: bytes) -> None:
+            write_toggled(_jit_wp, addr, code)
+
+        def _protect(addr: int, size: int) -> None:
+            pass  # MAP_JIT pages are switched per thread by _write
+
+        def _flush(addr: int, size: int) -> None:
+            _icache(addr, size)
+
+    elif ARM64:
+        _clear_cache = _symbol("__clear_cache", [ctypes.c_void_p] * 2, "libgcc_s.so.1")
+
+        def _prot_bti() -> int:
+            """PROT_BTI if the CPU has BTI (AT_HWCAP2 = 26, HWCAP2_BTI = 1 << 17), else 0."""
+            try:
+                _libc.getauxval.restype, _libc.getauxval.argtypes = ctypes.c_ulong, [ctypes.c_ulong]
+            except AttributeError:  # not Linux
+                return 0
+            return 0x10 if _libc.getauxval(26) & 1 << 17 else 0
+
+        _PROT_BTI = _prot_bti()
+
+        def _protect(addr: int, size: int) -> None:
+            if _libc.mprotect(addr, size, mmap.PROT_READ | mmap.PROT_EXEC | _PROT_BTI) != 0:
+                raise _oserror()
+
+        def _flush(addr: int, size: int) -> None:
+            if _clear_cache is None:
+                raise OSError("no instruction-cache flush function (__clear_cache)")
+            _clear_cache(addr, addr + size)

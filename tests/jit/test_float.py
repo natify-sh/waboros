@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 
-from tests.jit import need
+from tests.jit import native, need
 from tests.jit.test_compiler import M32, M64, ROOT, build, outcome, trap_of, wat
 from w2py.frontend.binary import parse
 from w2py.frontend.validate import validate
@@ -28,7 +28,7 @@ from w2py.targets.jit.x86_64 import JitX86_64Target
 
 @pytest.fixture(autouse=True)
 def _jit() -> None:
-    need(JitX86_64Target().probe() is None, "x86-64 executable memory")
+    native("jit-x86_64")
 
 
 @pytest.fixture(params=["pinned", "nopin"])

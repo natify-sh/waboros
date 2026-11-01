@@ -18,12 +18,13 @@ OBJCOPY = shutil.which("llvm-objcopy") or shutil.which("objcopy")
 
 
 def _gnu_objdump() -> str | None:
-    """tools/isa_check.py needs GNU objdump (-b binary); macOS's `objdump` is llvm-objdump."""
+    """tools/isa_check.py needs GNU objdump (-b binary) with x86-64; macOS's is llvm-objdump."""
     path = shutil.which("objdump")
     if path is None:
         return None
     out = subprocess.run([path, "--version"], capture_output=True, text=True).stdout
-    return path if "GNU objdump" in out else None
+    archs = subprocess.run([path, "--help"], capture_output=True, text=True).stdout
+    return path if "GNU objdump" in out and "x86-64" in archs else None  # arm64: native only
 
 
 OBJDUMP = _gnu_objdump()

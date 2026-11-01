@@ -15,7 +15,7 @@ from typing import Any, cast
 
 import pytest
 
-from tests.jit import need
+from tests.jit import native, need
 from tests.jit.test_compiler import ROOT, Inst, build, outcome, trap_of, wat
 from tests.jit.test_float import Oracle
 from w2py.runtime import link
@@ -29,7 +29,7 @@ from w2py.targets.jit.x86_64 import JitX86_64Target
 
 @pytest.fixture(autouse=True)
 def _jit() -> None:
-    need(JitX86_64Target().probe() is None, "x86-64 executable memory")
+    native("jit-x86_64")
 
 
 def provider(i: Inst) -> link.Provider:

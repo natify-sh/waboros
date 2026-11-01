@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from tests.jit import need
+from tests.jit import native, need
 from w2py.frontend.binary import parse
 from w2py.frontend.validate import validate
 from w2py.runtime import link
@@ -38,7 +38,7 @@ def wat(text: str) -> bytes:
 
 @pytest.fixture(autouse=True)
 def _jit() -> None:
-    need(JitX86_64Target().probe() is None, "x86-64 executable memory")
+    native("jit-x86_64")
 
 
 class Inst:

@@ -15,7 +15,7 @@ from typing import cast
 
 import pytest
 
-from tests.jit import need
+from tests.jit import native, need
 from w2py.runtime.link import host_func
 from w2py.runtime.store import StoreState
 from w2py.targets.base import HostFunc, Raw, Trap, TrapCode
@@ -29,7 +29,6 @@ from w2py.targets.jit.common.instance import (
     linux_main_low,
     native_budget,
 )
-from w2py.targets.jit.x86_64 import JitX86_64Target
 from w2py.targets.jit.x86_64.abi import bridge, entry, trampolines
 from w2py.targets.jit.x86_64.backend import Backend, Frame
 from w2py.targets.jit.x86_64.encoder import (
@@ -58,7 +57,7 @@ POOL = (RBX, RBP, RSI, RDI, R8, R9, R10, R11)
 
 @pytest.fixture
 def tramp() -> Trampolines:
-    need(JitX86_64Target().probe() is None, "x86-64 executable memory")
+    native("jit-x86_64")
     return trampolines()
 
 

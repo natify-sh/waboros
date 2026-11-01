@@ -105,12 +105,22 @@ def _jit_x86_64() -> Target:
     return JitX86_64Target()
 
 
-TARGETS: dict[str, Callable[[], Target]] = {"pyc": _pyc, "jit-x86_64": _jit_x86_64}
+def _jit_aarch64() -> Target:
+    from w2py.targets.jit.aarch64 import JitAarch64Target
+
+    return JitAarch64Target()
+
+
+TARGETS: dict[str, Callable[[], Target]] = {
+    "pyc": _pyc,
+    "jit-x86_64": _jit_x86_64,
+    "jit-aarch64": _jit_aarch64,
+}
 
 
 # Which `platform.machine()` values a `jit-*` target is for, so `auto` can tell "no JIT for this
 # machine" from "the JIT is here but unusable" in its warning, with no import needed.
-_MACHINES = {"jit-x86_64": ("x86_64", "amd64")}
+_MACHINES = {"jit-x86_64": ("x86_64", "amd64"), "jit-aarch64": ("aarch64", "arm64")}
 _warned: set[str] = set()
 
 
@@ -120,7 +130,8 @@ def _probe(name: str) -> str | None:
 
 
 def target_order(choice: str | None = None) -> list[str]:
-    """D25: one target per engine. `auto`: a `jit-*` target whose probe succeeds, else `pyc`;
+    """D25: one target per engine. `auto`: a `jit-*` target whose probe succeeds and that is
+    `complete` (S0004: its expected failures equal pyc's), else `pyc` with one D31 warning;
     W2PY_TARGET overrides. The module's content never changes the choice."""
     choice = choice or os.environ.get("W2PY_TARGET", "auto")
     if choice != "auto":
@@ -132,8 +143,10 @@ def target_order(choice: str | None = None) -> list[str]:
             continue
         why = _probe(name)
         if why is None:
-            return [name]
-        if machine in _MACHINES.get(name, ()):
+            if getattr(TARGETS[name](), "complete", True):
+                return [name]
+            msg = f"w2py: {name} incomplete (integer core only); using pyc"
+        elif machine in _MACHINES.get(name, ()):
             msg = f"w2py: {name} unavailable ({why}); using pyc"
     if msg not in _warned:
         _warned.add(msg)

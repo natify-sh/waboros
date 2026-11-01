@@ -376,7 +376,9 @@ Whenever `auto` selects `pyc` it says so once per process and message (D25):
 re-exports it). Two messages: `w2py: jit-x86_64 unavailable (<reason>); using pyc` when the JIT for
 this machine's architecture exists but its probe fails (executable memory forbidden, ...), and
 `w2py: no JIT target for <machine>; using pyc` on an architecture without a JIT target (maintainer:
-the fallback is reported there too). No message when the target was chosen explicitly; an explicit
+the fallback is reported there too). A third (S0004): `w2py: jit-aarch64 incomplete (integer core
+only); using pyc` when the probe succeeds but the target is not `complete` (its expected failures
+are not yet `pyc`'s, D25). No message when the target was chosen explicitly; an explicit
 `jit-*` that cannot run is an `Unsupported` error. Rejected: `print` to stderr (cannot be filtered or turned into an error, noisy in
 libraries); `logging` (silent by default, so the one case where speed silently drops would go unseen).
 
@@ -494,3 +496,14 @@ This is an amendment of context ABI v1 without a version bump, as D30, D32 and D
 have contained more than one memory before, none is saved yet, and S0003 fixes v1 in phase 5 (D36:
 from then on such a change bumps the version). Rejected: always passing the index (simpler to state,
 one more `mov` at every grow/init site of every module, and every existing artifact's code changes).
+
+### D38. Context ABI v1: a per-architecture table (aarch64)
+Status: accepted · Date: 2026-11-01 · Supersedes: — · Evidence: S0004 (approved by the maintainer, 2026-11-01); tests/jit/test_abi_aarch64.py; x86-64 code byte-identical (562 blobs)
+
+The context words, records, libcalls and trap codes stay the same for every architecture (64-bit
+little-endian words addressed from the context register). What differs — bridge registers, what the
+bridge preserves, `tail_switch`'s record and return-address registers, landing pads, `CODE`
+alignment, I-cache maintenance — is a table in ARTIFACT.md part 3 with an x86-64 and an aarch64
+column; aarch64's register roles and trampolines are in S0004. This is an amendment of context ABI
+v1 without a version bump, as D30, D32, D34 and D37: no aarch64 artifact exists yet, and S0003 fixes
+v1 in phase 5 (D36). Rejected: an aarch64-specific copy of part 3 (two texts to keep equal).

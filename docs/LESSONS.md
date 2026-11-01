@@ -175,3 +175,9 @@ What went wrong or surprised us while building the PoC, so it is not found again
     trusts is preset by the code to "failed" and overwritten by the callback as its last action
     (D34); a test sends `KeyboardInterrupt` every 2 ms during host calls. Found: JIT step 6 review,
     2026-11-01.
+37. **A test that expects a child process to fail passes when the child cannot start.** The BTI
+    test runs a pad-less function in a child interpreter and expects it to die; under QEMU user
+    mode (no binfmt) `subprocess` cannot start the aarch64 interpreter at all, and the first draft
+    counted that as the expected failure. Rule: a test that expects a crash first runs the same
+    child with the bug removed and requires success (`test_bti_is_enforced_where_the_cpu_has_it`),
+    and skips with the reason when no child starts. Found: JIT step 4a, 2026-11-01.

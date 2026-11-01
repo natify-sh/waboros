@@ -170,13 +170,26 @@ previous value (an enclosing host call's preset): a host function that does not 
 
 **Tail calls** (D30). A `return_call*` puts its arguments at its own frame base, drops its native
 frame and jumps, so both stacks stay constant. When the callee's function record names another
-context, the code jumps to `ctx[TAIL_SWITCH]` instead, with the record's address in the scratch
-register the architecture names (x86-64: `rdx`) and the caller's return address on top of the stack.
+context, the code jumps to `ctx[TAIL_SWITCH]` instead, with the record's address and the caller's
+return address where the architecture's table below puts them.
 The trampoline (one per process and convention, in the host's code area like the bridge) does the
 following. If that return address is its own `restore` point, it loads the record's context and jumps
 to its code. Otherwise it saves the current context, loads the record's context and memory words, and
 calls the code; at `restore` it puts the saved context back, reloads the memory words and returns the
 callee's status. Every return matches its call.
+
+**Per architecture** (S0004, D38; an amendment of version 1, which phase 5 fixes): what a host that
+provides the bridge or the tail-call trampoline itself must follow. Everything else in this part is
+the same 64-bit little-endian words for every architecture.
+
+| | x86-64 | aarch64 |
+|---|---|---|
+| bridge call | `eax` = word, `rdx` = slots; `call` | `x0` = word, `x1` = slots; `blr x16` |
+| bridge preserves | pool (`rbx rbp rsi rdi r8–r11`), `r12`–`r15` | `x2`–`x8`, `x19`–`x28`, `x29`, `sp` |
+| `tail_switch` | record in `rdx`, return address at `[rsp]` | record in `x16`, return address in `x30` |
+| landing pad | `endbr64` | `bti c` (functions, trampolines), `bti j` (jump-table pads) |
+| `CODE` alignment | none | load address ≡ 0 mod 4096 (`adrp`) |
+| instruction cache | coherent | invalidate the loaded range before the first call |
 
 **Trap codes** (keep the PoC's first six numbers; names are Wasmtime's `TrapCode`):
 

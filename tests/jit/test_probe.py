@@ -1,16 +1,18 @@
 """The `jit-x86_64` probe and its registration (S0002 step 2)."""
 
 import platform
+import warnings
 
 import pytest
 
-from tests.jit import need
+from tests.jit import native
+from w2py.targets import base
 from w2py.targets.base import TARGETS, Unsupported, target_order
 from w2py.targets.jit.x86_64 import JitX86_64Target
 
 
 def test_probe_succeeds_here() -> None:
-    need(platform.machine().lower() in ("x86_64", "amd64"), "an x86-64 machine")
+    native("jit-x86_64")
     assert JitX86_64Target().probe() is None
 
 
@@ -30,3 +32,34 @@ def test_registered_and_selected_by_auto() -> None:
     assert target.supports({}) is not None
     with pytest.raises(Unsupported):
         target.compile({})
+
+
+def test_aarch64_probe_here_or_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    from w2py.targets.jit.aarch64 import JitAarch64Target
+
+    t = JitAarch64Target()
+    if platform.machine().lower() in t.machines:
+        native("jit-aarch64")
+        assert t.probe() is None
+    monkeypatch.setattr(platform, "machine", lambda: "x86_64")
+    assert "not an aarch64 process (x86_64" in str(t.probe())
+    assert t.supports({}) is not None
+    with pytest.raises(Unsupported):
+        t.compile({})
+
+
+def test_auto_skips_an_incomplete_jit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """S0004: `complete = False` keeps `auto` on pyc with the third D31 message, even where the
+    probe succeeds; an explicit choice still gives the target."""
+
+    def probe(name: str) -> str | None:
+        return None if name == "jit-aarch64" else "no"
+
+    monkeypatch.setattr(base, "_probe", probe)
+    monkeypatch.setattr(base, "_warned", set[str]())
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        assert target_order("auto") == ["pyc"] == target_order("auto")
+    msg = "w2py: jit-aarch64 incomplete (integer core only); using pyc"
+    assert [str(x.message) for x in w] == [msg]
+    assert target_order("jit-aarch64") == ["jit-aarch64"]

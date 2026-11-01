@@ -346,3 +346,20 @@ Resolved by the maintainer on 2026-11-01 (see Changes); none open.
   (a `nop` on ARMv8.0), so it is baseline and the ISA gate allows it, nothing else above ARMv8.0;
   (5) far branches: compile normally and recompile only a function whose conditional branches do
   not reach, in far mode.
+* 2026-11-01 (step 4a): encoder (`aarch64/encoder.py`; 28 529 forms equal to `llvm-mc`, plus
+  branch-range ends, labels and `mov_imm` sequences checked by disassembly), trampolines and the
+  host-thunk shape (`aarch64/abi.py`) exactly as above, executable memory per OS
+  (`common/execmem.py`: Linux `__clear_cache` + `PROT_BTI` when `AT_HWCAP2` has BTI; macOS arm64
+  `MAP_JIT` mapped read-write-execute, the calling thread switched by
+  `pthread_jit_write_protect_np` around the write, `sys_icache_invalidate`; Windows
+  `FlushInstructionCache`; x86-64 unchanged), the probe on all three OSes (decision 2), the glue
+  in `common/target.py` (`JitTarget`; x86-64 code byte-identical: 562 blobs of the spec modules
+  and CoreMark), `jit-aarch64` registered with `complete = False` and the third D31 message, and
+  a CI job on each arm64 OS. Differences from the plan above: the `complete` guard came in 4a,
+  not 4b (the target is registered now); `aarch64/backend.py` already has the frame, trap, poll
+  and call methods of the D26 interface (what the ABI tests drive; 4b adds the operations); a
+  constant takes one `orr` only when `movz`/`movn` would need more than one instruction (as
+  LLVM's `mov`). Tests: `tests/jit/test_encoder_aarch64.py`, `tests/jit/test_abi_aarch64.py`
+  (run here under QEMU 8.2 with BTI enforced: `python3 tools/run_arm64.py -m pytest
+  tests/jit/test_abi_aarch64.py`); x86-64-only tests skip on other machines (`tests.jit.native`)
+  instead of failing under `W2PY_JIT_REQUIRE=1`.
