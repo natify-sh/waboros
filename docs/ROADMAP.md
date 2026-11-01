@@ -155,7 +155,7 @@ lacks a feature reports it through `Target.supports` and the module runs on anot
   declared level.
 
 ## Phase 4 — the second architecture (integer core) proves the interface
-*Status: done except the macOS follow-ups below. 4a encoder, trampolines and executable memory; 4b integer-core backend; 4c ISA gate, spec, cross-compilation check and CI on arm64; 4d review and the interface freeze (D39); 4e parity: `jit-aarch64` fails exactly what `pyc` and `jit-x86_64` fail (28903 pass) and `auto` selects it on arm64; CoreMark passes its self-check (speed from the arm64 runners in BENCHMARKS.md).*
+*Status: done. 4a encoder, trampolines and executable memory; 4b integer-core backend; 4c ISA gate, spec, cross-compilation check and CI on arm64; 4d review and the interface freeze (D39); 4e parity: `jit-aarch64` fails exactly what `pyc` and `jit-x86_64` fail (28903 pass) and `auto` selects it on arm64; CoreMark passes its self-check (speed from the arm64 runners in BENCHMARKS.md).*
 
 * `jit-aarch64`, tested natively on GitHub's arm64 runners (Linux, macOS arm64 with `MAP_JIT`, Windows on Arm), first the integer
   core (then parity, step 4e): the same stage 1, the same spec commands as phase 3. QEMU user-mode is only for
@@ -174,9 +174,9 @@ lacks a feature reports it through `Target.supports` and the module runs on anot
   `macos-latest` CI job, not only `tests/jit`; (2) a CI check with the python.org macOS installer,
   whose hardened runtime may forbid `MAP_JIT` without the JIT entitlement: either the JIT runs there
   or `auto` falls back to `pyc` with the D31 warning and the reason is recorded (RISKS R2).
-  Status: the CI job `macos-pythonorg` is written and asserts either outcome; it answers once the
-  installer version and sha256 are pinned in it (TODO) and it has run on a runner. Then record the
-  entitlements it printed in R2 and mark this done.
+  Status: done. (1) The macOS arm64 job runs the spec suite and `auto` (4e). (2) The python.org
+  3.13.17 CPython runs the JIT: its hardened runtime carries `disable-executable-page-protection`
+  (CI job `macos-pythonorg`, RISKS R2).
 
 ## Phase 5 — JIT completion
 *Status: not started.*
@@ -274,6 +274,7 @@ lacks a feature reports it through `Target.supports` and the module runs on anot
    large modules"). Costs: a patchable call path, compilation in the middle of a call (re-entrancy,
    the GIL, executable-memory growth). Compare with eager compilation + cache before deciding.
 14. **A self-hosting compiler in wasm, one module per architecture (research, after phases 4–6).**
+   The full note is [MICRO-COMPILERS.md](MICRO-COMPILERS.md) (maintainer).
    The maintainer's idea: our own compiler written in a language that compiles to wasm, shipped as one
    module per architecture — `x64.wasm`, `arm64.wasm`, … (or a shared `core.wasm` plus a backend
    module per architecture, linked by imports). Each runs on any wasm runtime (`pyc` first), compiles

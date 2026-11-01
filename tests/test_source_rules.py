@@ -19,3 +19,26 @@ def test_no_side_effect_inside_assert() -> None:
                     path,
                     node.lineno,
                 )
+
+
+def test_compiler_side_has_no_host_specific_imports() -> None:
+    """MICRO-COMPILERS.md, "Rules for now": the reader, validator, one-pass core and backends stay
+    free of ctypes, mmap and threads, so they can be ported into a wasm micro-compiler."""
+    import ast
+
+    files = [*(ROOT / "src/w2py/frontend").glob("*.py")]
+    files += [
+        ROOT / "src/w2py/targets/jit/common" / f"{n}.py" for n in ("compiler", "backend", "context")
+    ]
+    files += [
+        p
+        for p in (ROOT / "src/w2py/targets/jit").glob("*/*.py")
+        if p.stem in ("backend", "encoder", "abi")
+    ]
+    banned = {"ctypes", "mmap", "threading", "_thread"}
+    for path in files:
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            names = [a.name for a in node.names] if isinstance(node, ast.Import) else []
+            if isinstance(node, ast.ImportFrom) and node.module:
+                names = [node.module]
+            assert not {n.split(".")[0] for n in names} & banned, (path, getattr(node, "lineno", 0))

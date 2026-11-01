@@ -461,3 +461,4 @@ Resolved by the maintainer on 2026-11-01 (see Changes); none open.
   enforced); the `arm64` job runs CoreMark (self-check required) and the spec suite on all three
   OSes, and fails unless `auto` selects `jit-aarch64`.
 * 2026-11-01 (step 4e review): no correctness issue (differential float fuzz, bulk/table overlap, tail-call traps, far mode vs Wasmtime aarch64 under QEMU). The float code assumes the default FPCR (round to nearest, FZ=0, DN=0) and never sets it, as the x86-64 code assumes the default MXCSR (S0003); a host import that changes FPCR changes results.
+* 2026-11-01: answered — the python.org 3.13.17 macOS CPython (hardened runtime) runs `jit-aarch64`: it carries `disable-executable-page-protection`; probe None, `auto` → `jit-aarch64`, ABI tests pass (RISKS R2). Phase 4 complete.
