@@ -31,8 +31,8 @@ read 2026-11-01) and aarch64 lowering; V8's x64 assembler (`CpuFeatures::Support
 (v128 as a 16-byte `bytearray`, lanes by `struct`). wasm3 has no SIMD.
 
 ## Goals / Non-goals
-* Goals: the `simd/` directory (25 481 runnable commands; 509 text-format `assert_malformed` are
-  skipped for every engine, S0001) passes on `pyc`, `jit-x86_64` and `jit-aarch64` and is claimed
+* Goals: the `simd/` directory (25 990 commands, of which 25 481 run: the 509 text-format
+  `assert_malformed` are skipped for every engine, S0001) passes on `pyc`, `jit-x86_64` and `jit-aarch64` and is claimed
   by each; JIT code for SIMD uses only x86-64-v1 (SSE2) and ARMv8.0-A NEON; code and generated
   source of every module without v128 stay **byte-identical**; CoreMark does not move.
 * Non-goals: relaxed SIMD (`relaxed-simd/`, 79 commands: a follow-up spec), x86-64-v2/v3 variants
@@ -140,7 +140,10 @@ CoreMark are identical before and after for both targets (step acceptance).
 
 The new shared modules — `frontend/simd.py` (the one operator table) and `jit/common/simd.py` (stack
 effects, operand pairs, select, globals, the boundary split) — are beyond the maintainer's list of
-three (Q8). Instruction encodings for SIMD live in the architecture's `simd.py` on top of the
+three (Q8). Every `simd.py` is compiler-side code (MICRO-COMPILERS.md, "Rules for now"):
+`tests/test_source_rules.py` checks the three JIT ones like `compiler.py` and the backends (no
+`ctypes`, `mmap`, threads, no import of `execmem`, `instance`, `target`). The boundary split/join in
+`jit/common/simd.py` is pure arithmetic on ints; `instance.py` calls it, never the reverse. Instruction encodings for SIMD live in the architecture's `simd.py` on top of the
 encoder's raw emit; `encoder.py` files do not change.
 
 ## Semantics
@@ -211,7 +214,7 @@ bits (TESTING.md), and neither JIT adds canonicalisation work. `pyc` uses its sc
 
 ### Claiming `simd`
 `tests/spec/claims.py` maps the directory `simd` to the feature key `simd`. Until a target claims
-it, its runs list `simd: unclaimed (25 990 commands)` and CI runs nothing there. Progress is
+it, its runs list `simd: unclaimed (25 990 commands, 25 481 runnable)` and CI runs nothing there. Progress is
 measured with an explicit directory argument, which bypasses claims:
 `uv run python -m tests.spec.run --engine pyc simd` (failures count as failures; not a CI gate). A
 target claims `simd` (adds it to `CLAIMS[target]`, then `python3 tools/features.py` updates
@@ -223,7 +226,7 @@ FEATURES.md and features.json) in the step where:
 * for a JIT: its `simd/` entries equal `pyc`'s (the D25 parity test covers directories both
   claim).
 
-Between the `pyc` claim (5b) and a JIT's (5d, 5e), `auto` keeps selecting the JIT and a SIMD module
+Between the `pyc` claim (5b) and a JIT's (5d3, 5e2), `auto` keeps selecting the JIT and a SIMD module
 fails there with `Unsupported("simd")`, as today (Q2).
 
 ## Test plan
@@ -244,7 +247,9 @@ fails there with `Unsupported("simd")`, as today (Q2).
   exported v128 globals, `call_indirect`/`return_call` with v128, v128 `select`/`drop`, v128 block
   parameters, a SIMD op under deep recursion (`STACK_OVERFLOW`, scratch slots inside the frame).
 * **Differential**: `wasm-tools smith --simd-enabled` modules on each target vs Wasmtime (NaN lanes
-  by class), in the differential job when it exists (R3).
+  by class), in the differential job when it exists (R3). Wasmtime is driven through the spec
+  runner's adapter (`tests/spec/wasmtime_engine.py`, its raw v128 path, S0001), never through
+  wasmtime-py's `Val` API, which cannot convert v128 (`wasm_valtype_kind`) and would fail the oracle.
 
 ### Measurement plan
 * CoreMark (`tools/run_coremark_pyc.py`, `tools/run_coremark_jit.py`, both JIT targets) before and
@@ -254,6 +259,8 @@ fails there with `Unsupported("simd")`, as today (Q2).
   loop gave 11 SIMD instructions) — u8 saturating add (image blend), f32 dot product, i8 scan
   (`eq` + `bitmask`), 4×4 f32 matrix multiply, a byte table lookup (`swizzle`), `f32x4.nearest`, each
   with a checksum. Built scalar and SIMD; rows: each target, SIMD vs scalar build, vs Wasmtime.
+  Expected on `pyc`: the SIMD build slower than the scalar one (a lane op through `struct` is
+  ~1 µs); that is not a bug. SWAR is the measured optimisation for later.
 * Real program for compile time and coverage: `webp_codec.wasm` (playwright-core, 565 369 bytes,
   17 071 SIMD instructions, 102 distinct operators, five Emscripten imports): compile time, D35 lists,
   ISA gate; running it needs its JavaScript glue's imports (not attempted).
@@ -264,12 +271,15 @@ fails there with `Unsupported("simd")`, as today (Q2).
 | 5a | front end: `frontend/simd.py` table, decoding, validation, `drop`/`select` annotation; targets refuse v128 as `unsupported: simd` | implementer | `uv run python -m tests.spec.run --engine pyc simd`: all 671 `assert_invalid` and every binary module of `simd/` decode and validate (`assert_invalid` pass; others fail only as `unsupported: simd`); core numbers and the identity lists unchanged | table ~300, hooks ~40, tests ~150 |
 | 5b | `pyc`: `targets/pyc/simd.py`, all 236 operators | implementer | explicit `simd` run ≤ 25 failures → `pyc` claims `simd`; `pyc` source identity; CoreMark `pyc` row; BENCHMARKS row for the representation micro-benchmark | ~700, tests ~200 |
 | 5c | JIT core and amendment (both backends): slot map, `jit/common/simd.py`, `Layout` widths, boundary split, the `simd` method with data movement only (`v128.const`, `load`/`store` incl. lanes, splat, `extract`/`replace_lane`, bitwise, `select`, globals) on x86-64 and aarch64 | jit-engineer, plan approved first | identity lists for both targets; `tests/jit/test_simd_abi.py` on x86-64 and under QEMU aarch64; `simd_load`, `simd_store`, `simd_lane`, `simd_splat`, `simd_select`, `simd_linking` equal `pyc` | core ~150, common ~200, each backend ~250 |
-| 5d | `jit/x86_64/simd.py`: every operator at SSE2, encodings vs `llvm-mc`, ISA allowlist, SSE2-only QEMU job | jit-engineer | `--engine jit-x86_64 simd` = `pyc`'s failures → claim; `spec_diff pyc jit-x86_64` empty for `simd/`; run under `qemu64` without SSSE3/SSE4.1; SIMD benchmark rows | ~1 100, tests ~300 |
-| 5e | `jit/aarch64/simd.py`: every operator in NEON | jit-engineer | same on the arm64 runners and under QEMU (BTI); D35 lists equal both ways | ~700, tests ~250 |
-| 5f | review of 5c–5e by a `reviewer` with no access to the implementers' reasoning; D39 amendment recorded; this spec `implemented` | reviewer | findings closed; CoreMark rows unchanged | docs |
+| 5d1 | `jit/x86_64/simd.py`: class D operators (1–3 SSE2 instructions), encodings vs `llvm-mc`, ISA allowlist, the SSE2-only QEMU job | jit-engineer | files of `simd/` whose hardest operator is class D (18 739 commands) equal `pyc`; run under `qemu64` without SSSE3/SSE4.1 | ~450, tests ~120 |
+| 5d2 | class S operators (4–12 instructions) | jit-engineer | files with S at most (6 150 more commands) equal `pyc` | ~450, tests ~120 |
+| 5d3 | class L operators (`shuffle`, `swizzle`, rounding); claim | jit-engineer | `--engine jit-x86_64 simd` = `pyc`'s failures → claim; `spec_diff pyc jit-x86_64` empty for `simd/`; SIMD benchmark rows | ~250, tests ~80 |
+| 5e1, 5e2 | `jit/aarch64/simd.py`: every operator in NEON, in two parts (data movement and class D first, then the rest; claim in 5e2) | jit-engineer | same on the arm64 runners and under QEMU (BTI); D35 lists equal both ways | ~350 each, tests ~120 each |
+| 5f | review of 5c–5e by a `reviewer` with no access to the implementers' reasoning; D39 amendment recorded; MICRO-COMPILERS.md line counts updated (backends grow to ~2–2.6k lines); this spec `implemented` | reviewer | findings closed; CoreMark rows unchanged | docs |
 
 A step that needs more than its size stops and reports (CLAUDE.md). 5c changes the frozen
-interface: both backends in that step (D39); 5d and 5e add operators only.
+interface: both backends in that step (D39); 5d1–5e2 add operators only. 5d is split by the
+operator classes above (the largest step otherwise: ~1 100 lines), each with its own `simd/` files.
 
 ## Alternatives considered
 * **A vector register class now** (a vector `tos` like the integer one, or pinned v128 locals):
@@ -321,3 +331,7 @@ Q5 (a), Q6 (a), Q7 (a), Q8 (a). Kept below with their options for the record.
 ## Changes
 * 2026-11-01: created (draft).
 * 2026-11-01: approved by the maintainer with every recommendation (Q1–Q8); D41.
+* 2026-11-01: after the maintainer's review: the `simd.py` modules join the portability test; the
+  differential oracle goes through the runner's raw v128 adapter; 5d split into 5d1–5d3 by operator
+  class and 5e into 5e1–5e2; one command count everywhere (25 990, 25 481 runnable); `pyc` SIMD is
+  expected slower than scalar; 5f updates MICRO-COMPILERS.md line counts.

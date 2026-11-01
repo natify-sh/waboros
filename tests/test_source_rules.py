@@ -29,12 +29,14 @@ def test_compiler_side_has_no_host_specific_imports() -> None:
 
     files = [*(ROOT / "src/w2py/frontend").glob("*.py")]
     files += [
-        ROOT / "src/w2py/targets/jit/common" / f"{n}.py" for n in ("compiler", "backend", "context")
+        p
+        for n in ("compiler", "backend", "context", "simd")
+        if (p := ROOT / "src/w2py/targets/jit/common" / f"{n}.py").exists()
     ]
     files += [
         p
         for p in (ROOT / "src/w2py/targets/jit").glob("*/*.py")
-        if p.stem in ("backend", "encoder", "abi")
+        if p.stem in ("backend", "encoder", "abi", "simd")
     ]
     banned = {"ctypes", "mmap", "threading", "_thread"}
     host = {"execmem", "instance", "target"}  # the package's host side (loader, probe, selection)
