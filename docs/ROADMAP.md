@@ -174,6 +174,9 @@ lacks a feature reports it through `Target.supports` and the module runs on anot
   `macos-latest` CI job, not only `tests/jit`; (2) a CI check with the python.org macOS installer,
   whose hardened runtime may forbid `MAP_JIT` without the JIT entitlement: either the JIT runs there
   or `auto` falls back to `pyc` with the D31 warning and the reason is recorded (RISKS R2).
+  Status: the CI job `macos-pythonorg` is written and asserts either outcome; it answers once the
+  installer version and sha256 are pinned in it (TODO) and it has run on a runner. Then record the
+  entitlements it printed in R2 and mark this done.
 
 ## Phase 5 — JIT completion
 *Status: not started.*

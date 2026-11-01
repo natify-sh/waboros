@@ -51,8 +51,7 @@ known-bad versions can force recompilation.
 **Status at HEAD: partly mitigated.** Mitigated on x86-64 Linux: the W^X executable-memory probe and the
 fallback to `pyc` with `JitUnavailableWarning` (D31; proved with executable memory forbidden by
 `tools/no_exec.py` in the CI `spec` job and `tests/test_fallback.py`); CET IBT (`endbr64` at every
-indirectly reachable entry, `backend.py`) and CET shadow stacks (traps return through frames, S0003). Open: macOS `MAP_JIT` and Windows ACG (no runner has shown them working;
-the Windows and macOS x64 CI jobs run `tests/jit`), aarch64 BTI/PAC (no aarch64 target yet).
+indirectly reachable entry, `backend.py`) and CET shadow stacks (traps return through frames, S0003). Open: macOS `MAP_JIT` under a hardened runtime (see below) and Windows ACG (the Windows and macOS x64 CI jobs run `tests/jit`), aarch64 BTI/PAC (no aarch64 target yet).
 
 The direction is clear: more systems forbid writable-and-executable memory, and CPUs add control-flow
 integrity that hand-made code must respect.
@@ -61,6 +60,7 @@ integrity that hand-made code must respect.
 |---|---|---|---|
 | iOS / iPadOS (Pythonista) | no JIT for third-party apps | JIT impossible | `pyc`; maybe a system engine (R3, JavaScriptCore) |
 | macOS on Apple Silicon | executable memory needs `MAP_JIT` and per-thread write/execute switching (`pthread_jit_write_protect_np`); hardened-runtime apps need a JIT entitlement | works if the interpreter binary allows it; depends on how it is signed | ctypes calls for `MAP_JIT` + toggling; probe; fall back to `pyc` |
+| macOS arm64, python.org CPython | notarized, hardened-runtime build: `MAP_JIT` needs `com.apple.security.cs.allow-jit`; RWX without it needs `allow-unsigned-executable-memory` (Apple, "Hardened Runtime" entitlements and "Porting Just-In-Time Compilers to Apple Silicon") | unknown until CI runs: the CI job `macos-pythonorg` prints `codesign -d --entitlements` of the binary and asserts either the JIT runs or `auto` gives `pyc` with one `JitUnavailableWarning` naming the refusal | non-hardened CPython (uv, Homebrew, pyenv builds) keeps the JIT; option not implemented: with only `allow-unsigned-executable-memory`, map RW and `mprotect` to RX without `MAP_JIT` (unverified on arm64, no hardware here) |
 | Linux, hardened | SELinux `deny_execmem`, PaX/grsecurity `MPROTECT`, systemd `MemoryDenyWriteExecute=yes` | `mmap`/`mprotect` to executable fails | probe; fall back; document for service authors |
 | Windows | Arbitrary Code Guard (process mitigation, opt-in) blocks dynamic code | same | probe; fall back |
 | Pyodide / browsers | no native code at all | JIT impossible | `pyc`, or the browser's `WebAssembly` (ROADMAP open question 7) |

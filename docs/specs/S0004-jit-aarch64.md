@@ -334,6 +334,8 @@ Resolved by the maintainer on 2026-11-01 (see Changes); none open.
 
 ## Changes
 * 2026-11-01: created (draft).
+* 2026-11-01: CI job `macos-pythonorg` added (python.org installer CPython, hardened runtime): it
+  asserts the JIT runs or `auto` falls back to `pyc` with the D31 reason; installer pin is a TODO.
 * 2026-11-01: approved by the maintainer with these decisions, which override the draft where it
   differs: (1) a `complete = False` guard keeps `auto` on `pyc` (with the D31 warning) on arm64 until
   `jit-aarch64` fails exactly what `pyc` fails; (2) **all three OSes in phase 4** — Linux

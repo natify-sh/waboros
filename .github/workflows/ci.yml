@@ -192,3 +192,79 @@ jobs:
           uv run python tools/jit_dump.py --target jit-x86_64 dump/arm64-host-jit-x86_64.txt
           diff x86-dump/x86-host-jit-aarch64.txt dump/arm64-host-jit-aarch64.txt
           diff x86-dump/x86-host-jit-x86_64.txt dump/arm64-host-jit-x86_64.txt
+  macos-pythonorg:
+    # ROADMAP phase 4, after 4e: does jit-aarch64 run under the python.org installer's CPython (a
+    # notarized, hardened-runtime build) on Apple Silicon? Both answers pass this job as long as the
+    # behaviour is right: the probe succeeds and the JIT tests pass, or the probe refuses, `auto`
+    # gives ['pyc'] with exactly one JitUnavailableWarning that names the reason (D31). The
+    # entitlements of the binary are printed so the log says why. No `needs:`; RISKS R2.
+    runs-on: macos-latest
+    env:
+      PYTHONUTF8: "1"
+      # The newest 3.13.x on python.org that ships a macOS installer, found at run time (this repo's
+      # sandbox cannot reach python.org to pin a hash); the package must carry Apple's signature of
+      # the Python Software Foundation (pkgutil --check-signature), which is what a user verifies too.
+      PY_MINOR: "3.13"
+      PY_FW: /Library/Frameworks/Python.framework/Versions/3.13
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+      - name: install the python.org CPython
+        run: |
+          V=$(curl -fsSL https://www.python.org/ftp/python/ | grep -oE "href=\"$PY_MINOR\.[0-9]+/\"" \
+              | grep -oE "$PY_MINOR\.[0-9]+" | sort -t. -k3 -n -r | while read -r v; do \
+                curl -fsI "https://www.python.org/ftp/python/$v/python-$v-macos11.pkg" >/dev/null 2>&1 \
+                && { echo "$v"; break; }; done)
+          [ -n "$V" ] || { echo "no $PY_MINOR macOS installer found"; exit 1; }
+          echo "python.org $V"
+          curl -fsSL -o python.pkg "https://www.python.org/ftp/python/$V/python-$V-macos11.pkg"
+          shasum -a 256 python.pkg
+          pkgutil --check-signature python.pkg | tee sig.txt
+          grep -q "Developer ID Installer: Python Software Foundation" sig.txt || { echo "unexpected signer"; exit 1; }
+          sudo installer -pkg python.pkg -target /
+      - name: signature and entitlements (the question this job answers)
+        run: |
+          for b in "$PY_FW/bin/python3.13" "$PY_FW/Resources/Python.app/Contents/MacOS/Python"; do
+            echo "== $b"
+            codesign -dv --verbose=4 "$b" 2>&1 | grep -E "Identifier|flags|Authority|TeamIdentifier" || true
+            codesign -d --entitlements - "$b" 2>&1 || true
+          done
+          "$PY_FW/bin/python3.13" -c "import platform, sys; print(sys.version, platform.machine())"
+      - name: venv with that interpreter
+        run: |
+          echo UV_PROJECT_ENVIRONMENT=$PWD/.venv-po >> "$GITHUB_ENV"
+          uv sync --python "$PY_FW/bin/python3.13"
+          .venv-po/bin/python -c "import sys; print(sys.executable, sys.base_prefix)"
+      - name: probe and auto, then the behaviour check
+        run: |
+          .venv-po/bin/python -W always - <<'PY'
+          import platform, sys, warnings
+          from w2py.targets.base import TARGETS, JitUnavailableWarning, target_order
+          assert platform.machine() == "arm64", platform.machine()
+          why = TARGETS["jit-aarch64"]().probe()
+          print("probe:", why)
+          with warnings.catch_warnings(record=True) as w:
+              warnings.simplefilter("always")
+              order = target_order("auto")
+          msgs = [str(x.message) for x in w if x.category is JitUnavailableWarning]
+          print("auto:", order, "warnings:", msgs)
+          if why is None:
+              print("RESULT: the JIT RUNS under the python.org CPython")
+              assert order == ["jit-aarch64"] and not msgs
+          else:
+              print("RESULT: the JIT is REFUSED (", why, "); auto falls back to pyc")
+              assert order == ["pyc"] and len(msgs) == 1 and why in msgs[0], (order, msgs)
+          PY
+      - name: tests
+        run: |
+          # probe ok: the JIT tests run and must pass; probe refused: they skip. No W2PY_JIT_REQUIRE:
+          # llvm-mc is not installed in this job, so the encoder checks skip either way.
+          .venv-po/bin/python -m pytest tests/jit/test_probe.py tests/jit/test_execmem.py tests/jit/test_abi_aarch64.py -rs
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: .cache/spec
+          key: spec-${{ runner.os }}-${{ hashFiles('tests/spec/fetch.py', 'tests/spec/spectest.wat') }}
+      - name: the spec suite with auto (jit-aarch64 or the pyc fallback; 0 unexpected either way)
+        run: |
+          .venv-po/bin/python tests/spec/fetch.py
+          .venv-po/bin/python -m tests.spec.run --engine auto
