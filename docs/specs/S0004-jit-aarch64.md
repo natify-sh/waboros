@@ -2,7 +2,7 @@
 title: jit-aarch64, the second architecture (phase 4, integer core)
 kind: spec
 id: S0004
-status: draft
+status: approved
 superseded_by:
 related: [D10, D14, D23, D24, D25, D26, D29, D30, D31, D32, D34, D35, D36, D37, R2, R3, R6, S0002, S0003]
 owner: maintainer
@@ -330,16 +330,19 @@ Each JIT step follows CLAUDE.md: plan approved first, review after.
 * **A pool of 8 (as x86-64)**: simpler comparison; 13 used first and measured against 8.
 
 ## Open questions
-1. Readiness: bring back a `complete = False` guard so `auto` keeps `pyc` on arm64 until parity
-   (recommended), or let `auto` pick `jit-aarch64` and fail modules it cannot compile (violates D25)?
-2. Phase 4 platforms: Linux only, macOS/Windows refused in the probe until phase 5 (recommended,
-   matches ROADMAP), or Windows Arm64 too (same code, `FlushInstructionCache`, runner exists)?
-3. Parity step: add a step 4e (floats, tables, references, bulk memory, tail calls; ~600 lines)
-   right after the freeze so `auto` selects `jit-aarch64` before phase 5 (recommended), or leave it
-   to phase 5's "rest of the opcode set"?
-4. `PROT_BTI` on JIT pages where the CPU has BTI (recommended: it is what tests the pads), or pads
-   only?
-5. Far branches: retry per function (recommended) or always-far forward conditional branches?
+Resolved by the maintainer on 2026-11-01 (see Changes); none open.
 
 ## Changes
 * 2026-11-01: created (draft).
+* 2026-11-01: approved by the maintainer with these decisions, which override the draft where it
+  differs: (1) a `complete = False` guard keeps `auto` on `pyc` (with the D31 warning) on arm64 until
+  `jit-aarch64` fails exactly what `pyc` fails; (2) **all three OSes in phase 4** — Linux
+  (`ubuntu-24.04-arm`), macOS arm64 (`macos-latest`: `MAP_JIT`, `pthread_jit_write_protect_np`,
+  `sys_icache_invalidate` via ctypes; the probe refuses cleanly under a hardened runtime without the
+  entitlement) and Windows on Arm (`windows-11-arm`: `FlushInstructionCache`), each with a CI job;
+  (3) **step 4e, parity, right after the freeze** (floats, tables, references, `call_indirect`,
+  bulk memory, tail calls, typed function references), so `auto` selects `jit-aarch64` before
+  phase 5; (4) `PROT_BTI` on JIT pages only where the CPU reports BTI (`AT_HWCAP2`); `bti` is a HINT
+  (a `nop` on ARMv8.0), so it is baseline and the ISA gate allows it, nothing else above ARMv8.0;
+  (5) far branches: compile normally and recompile only a function whose conditional branches do
+  not reach, in far mode.

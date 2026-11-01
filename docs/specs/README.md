@@ -15,4 +15,4 @@ lifecycle: [STANDARDS.md](../STANDARDS.md).
 | [S0001](S0001-engine-interface.md) | Engine interface of the spec-suite runner | approved | maintainer |
 | [S0002](S0002-target-interface.md) | Target interface | implemented | maintainer |
 | [S0003](S0003-jit-context-abi.md) | JIT context ABI and entry (phase 3, x86-64) | implemented | maintainer |
-| [S0004](S0004-jit-aarch64.md) | jit-aarch64, the second architecture (phase 4, integer core) | draft | maintainer |
+| [S0004](S0004-jit-aarch64.md) | jit-aarch64, the second architecture (phase 4, integer core) | approved | maintainer |
