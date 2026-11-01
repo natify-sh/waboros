@@ -99,7 +99,15 @@ Jobs of `.github/workflows/ci.yml`: `lint` (ruff, pyright, `check_docs.py`, `fea
 
 The `jit` job runs `tools/isa_all.py` (locally: 379 blobs, about 32 s): it compiles every spec module and CoreMark with
 `W2PY_JIT_DUMP` and disassembles each blob with `tools/isa_check.py` (code ranges only), failing on any
-instruction above x86-64-v1 (D24).
+instruction above x86-64-v1 (D24). `isa_all.py --target jit-aarch64` does the same for aarch64 code,
+compiled (never run) on any host: `isa_check.py --arch aarch64` disassembles with `llvm-mc` and allows
+ARMv8.0-A and the `bti` HINTs only (tests: `tests/jit/test_isa_aarch64.py`, planted LSE/CRC/SVE/fp16/
+HINT words must fail).
+
+Cross-compilation (D35): `tools/jit_dump.py --target T OUT` writes a sha256 list of the code of every
+spec module and CoreMark. The `jit` job uploads its lists for both targets (artifact `jit-dump-x86`);
+the `arm64` job (Linux) compiles the same modules and `diff`s its lists with them, so code compiled on
+x86-64 and on arm64 is the same bytes both ways.
 
 The `spec` job also runs `--engine auto` with executable memory forbidden: `tools/no_exec.py` sets
 `PR_SET_MDWE` (`PR_MDWE_REFUSE_EXEC_GAIN`, Linux >= 6.3; the kernel then refuses `mprotect(PROT_EXEC)` on

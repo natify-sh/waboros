@@ -3,7 +3,13 @@
 tool) and fail on any instruction outside the x86-64-v1 allowlist. Data ranges inside the blob
 (jump tables) are skipped.
 
-    python3 tools/isa_check.py BLOB [--level v1|v2] [--data START:END ...]  # offsets
+    python3 tools/isa_check.py BLOB [--arch x86_64|aarch64] [--level v1|v2] [--data START:END ...]
+
+`--arch aarch64` (S0004): `llvm-mc --disassemble -triple=aarch64` (no -mattr: LLVM then decodes
+ARMv8.0-A only, so LSE, CRC32, RDM, dot product, fp16 arithmetic, crypto, SVE, MTE, ... come back
+as invalid encodings), run on any host. On top of that: HINTs other than `bti c/j/jc` (hint #34/
+#36/#38; the plain ones print by name) and system-register moves LLVM cannot name (`msr S0_3_...`,
+where it decodes ARMv8.1+ `sb`, `cfinv`, `axflag`) are refused. `--level` is x86-64 only.
 
 Exit 0: every instruction is allowed; 1: some are not (listed); 2: usage or objdump error, an
 empty blob, or a disassembly that does not cover every code byte. Besides the closed mnemonic
@@ -13,6 +19,7 @@ encodings, APX registers r16-r31 and three-register GPR forms (APX NDD) are refu
 
 import argparse
 import re
+import shutil
 import subprocess
 import sys
 
@@ -111,22 +118,83 @@ def check(path: str, size: int, data: list[tuple[int, int]], level: str = "v1") 
     return bad
 
 
+_A64_INVALID = re.compile(r"<stdin>:(\d+):\d+: warning: invalid instruction encoding")
+_A64_HINTS_OK = {"#34", "#36", "#38"}  # bti c, bti j, bti jc: a nop before ARMv8.5
+
+
+def why_not_a64(text: str) -> str | None:
+    """None if a disassembled aarch64 instruction is ARMv8.0-A (or a `bti` HINT), else why not."""
+    mnem, _, ops = text.partition("\t")
+    if mnem == "hint" and ops.strip() not in _A64_HINTS_OK:
+        return "HINT above ARMv8.0 (not bti)"
+    if mnem in ("msr", "mrs", "sys", "sysl") and re.search(r"\bS\d_\d_C\d+_C\d+_\d\b", ops):
+        return "system register or operation unknown to ARMv8.0"
+    return None
+
+
+def check_aarch64(path: str, size: int, data: list[tuple[int, int]]) -> list[str]:
+    """Lines of the disassembly above ARMv8.0-A. Raises ValueError for an empty blob, a range that
+    is not whole words or output that does not account for every word."""
+    if size == 0:
+        raise ValueError("empty blob")
+    mc = shutil.which("llvm-mc")
+    if not mc:
+        raise ValueError("llvm-mc not found")
+    with open(path, "rb") as f:
+        blob = f.read()
+    bad: list[str] = []
+    for start, end in code_ranges(size, data):
+        if (end - start) % 4:
+            raise ValueError(f"code range {start:#x}..{end:#x} is not whole words")
+        words = [blob[a : a + 4] for a in range(start, end, 4)]
+        text = "".join(" ".join(f"0x{b:02x}" for b in w) + "\n" for w in words)  # one word a line
+        p = subprocess.run(
+            [mc, "--disassemble", "-triple=aarch64"],
+            input=text,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=True,
+        )
+        invalid = {int(m.group(1)) - 1 for m in _A64_INVALID.finditer(p.stderr)}
+        insns = [
+            ln.strip() for ln in p.stdout.splitlines() if ln.startswith("\t") and ln != "\t.text"
+        ]
+        if len(insns) + len(invalid) != len(words) or any(i >= len(words) for i in invalid):
+            raise ValueError(f"disassembly of {start:#x}..{end:#x} does not cover its words")
+        it = iter(insns)
+        for i, w in enumerate(words):
+            at = f"{start + 4 * i:x}: {w.hex()}"
+            if i in invalid:
+                bad.append(f"{at}  (invalid or above ARMv8.0-A)")
+            else:
+                insn = next(it)
+                if why := why_not_a64(insn):
+                    bad.append(f"{at}  {insn.strip()}  ({why})")
+    return bad
+
+
 def main() -> int:
-    ap = argparse.ArgumentParser(description="x86-64-v1 ISA-level check of a code blob")
+    ap = argparse.ArgumentParser(description="ISA-level check of a code blob")
     ap.add_argument("blob")
     ap.add_argument("--data", action="append", default=[], help="START:END byte offsets")
+    ap.add_argument("--arch", choices=["x86_64", "aarch64"], default="x86_64")
     ap.add_argument("--level", choices=sorted(LEVELS), default="v1", help="declared level")
     args = ap.parse_args()
     try:
         data = [tuple(int(x, 0) for x in d.split(":")) for d in args.data]
         with open(args.blob, "rb") as f:
             size = len(f.read())
-        bad = check(args.blob, size, [(d[0], d[1]) for d in data], args.level)
+        ranges = [(d[0], d[1]) for d in data]
+        if args.arch == "aarch64":
+            bad = check_aarch64(args.blob, size, ranges)
+        else:
+            bad = check(args.blob, size, ranges, args.level)
     except (ValueError, IndexError, OSError, subprocess.CalledProcessError) as e:
         print(f"isa_check: {e}", file=sys.stderr)
         return 2
     for line in bad:
-        print(f"not x86-64-{args.level}: {line}")
+        print(f"not {'ARMv8.0-A' if args.arch == 'aarch64' else 'x86-64-' + args.level}: {line}")
     return 1 if bad else 0
 
 

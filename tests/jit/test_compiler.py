@@ -500,7 +500,7 @@ def test_isa_check_on_compiled_code(tmp_path: Path) -> None:
     from tests.jit.test_encoder import OBJDUMP
 
     if JIT != "jit-x86_64":
-        pytest.skip("tools/isa_check.py checks x86-64 code (aarch64: step 4c)")
+        pytest.skip("tools/isa_check.py checks x86-64 code (aarch64: test_isa_aarch64.py)")
     need(OBJDUMP, "GNU objdump")
     mod = parse(
         wat(CONTROL[: CONTROL.rindex(")")] + "(memory 1)" + MEMORY[MEMORY.index("(func") :])

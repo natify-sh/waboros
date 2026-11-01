@@ -3,9 +3,9 @@ JIT computes from it. Stdlib only:  PYTHONPATH=src python tools/stack_info.py
 
 The bounds are read here independently of the JIT (pthread_getattr_np / pthread_get_stackaddr_np /
 GetCurrentThreadStackLimits); the JIT's `low` and native budget come from its own functions.
-`sp` is read by the JIT's stack-pointer stub through its entry when the jit-x86_64 probe succeeds;
-elsewhere the JIT part is not reported. `libc` is empty on musl (platform.libc_ver knows glibc
-only)."""
+`sp` is read by the JIT's stack-pointer stub through its entry when the probe of this machine's own
+JIT target (jit-x86_64 or jit-aarch64) succeeds; elsewhere the JIT part is not reported.
+`libc` is empty on musl (platform.libc_ver knows glibc only)."""
 
 import ctypes
 import platform
@@ -56,14 +56,20 @@ def bounds() -> tuple[int, int] | str:
 
 def jit_view() -> str:
     try:
+        from w2py.targets.base import TARGETS
         from w2py.targets.jit.common import instance
-        from w2py.targets.jit.x86_64 import JitX86_64Target
+        from w2py.targets.jit.common.target import JitTarget
 
-        if JitX86_64Target().probe() is not None:
-            return "jit: probe failed, no sp"
-        from w2py.targets.jit.x86_64.abi import trampolines
-
-        t = trampolines()
+        mine = [
+            t
+            for t in (make() for make in TARGETS.values())
+            if isinstance(t, JitTarget) and platform.machine().lower() in t.machines
+        ]
+        if not mine:
+            return f"jit: no JIT target for {platform.machine()}"
+        if mine[0].probe() is not None:
+            return f"jit: {mine[0].name} probe failed, no sp"
+        t = mine[0].trampolines()
         ctx, frame = (ctypes.c_uint64 * 18)(), (ctypes.c_uint64 * 1)()
         instance.ENTRY(t.entry)(ctypes.addressof(ctx), ctypes.addressof(frame), t.sp_stub)
         sp, (low, rule) = frame[0], instance._read_stack()  # pyright: ignore[reportPrivateUsage]
@@ -71,8 +77,8 @@ def jit_view() -> str:
         below = "?" if low is None else f"{(sp - low) // KIB} KiB"
         low_s = "None" if low is None else f"{low:#x}"
         return (
-            f"jit: sp {sp:#x} low {low_s} (below sp {below}) native budget {budget // KIB} KiB"
-            f" rule: {rule}"
+            f"jit ({mine[0].name}): sp {sp:#x} low {low_s} (below sp {below})"
+            f" native budget {budget // KIB} KiB rule: {rule}"
         )
     except Exception as e:  # report, never fail: this is a measurement tool
         return f"jit: {e!r}"

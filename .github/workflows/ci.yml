@@ -47,6 +47,18 @@ jobs:
           key: spec-${{ runner.os }}-${{ hashFiles('tests/spec/fetch.py', 'tests/spec/spectest.wat') }}
       - run: uv run python tests/spec/fetch.py
       - run: uv run python tools/isa_all.py
+      # S0004: the same gate for the aarch64 code, cross-compiled here (never run; D35): ARMv8.0-A
+      - run: uv run python tools/isa_all.py --target jit-aarch64
+      # D35: the code of every module and CoreMark per target as a sha256 list; the `arm64` job
+      # compiles the same modules on arm64 and diffs its lists with these (both ways)
+      - run: |
+          mkdir dump
+          uv run python tools/jit_dump.py --target jit-aarch64 dump/x86-host-jit-aarch64.txt
+          uv run python tools/jit_dump.py --target jit-x86_64 dump/x86-host-jit-x86_64.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: jit-dump-x86
+          path: dump
   spec:
     runs-on: ubuntu-latest
     steps:
@@ -96,6 +108,7 @@ jobs:
     # memory (I-cache flush; Linux PROT_BTI on BTI CPUs; macOS MAP_JIT) on the three arm64 OSes.
     # The job fails unless this is a native arm64 process whose jit-aarch64 probe succeeds (an
     # x64 Python under emulation, or MAP_JIT refused by a hardened runtime, must be seen).
+    needs: jit  # the x86-64 hash lists (artifact jit-dump-x86) for the cross-compilation diff
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -138,3 +151,28 @@ jobs:
           W2PY_JIT_REQUIRE: "1"
       - if: ${{ !cancelled() }}
         run: uv run python tools/stack_info.py
+      # S0004 4c, Linux arm64: the spec suite on jit-aarch64 (0 unexpected), the ISA gate on the
+      # runner's own compile, and D35 in both directions against the x86-64 job's lists
+      - if: runner.os == 'Linux'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: .cache/spec
+          key: spec-${{ runner.os }}-${{ hashFiles('tests/spec/fetch.py', 'tests/spec/spectest.wat') }}
+      - if: runner.os == 'Linux'
+        run: uv run python tests/spec/fetch.py
+      - if: runner.os == 'Linux'
+        run: uv run python -m tests.spec.run --engine jit-aarch64 --json spec-jit-aarch64.json
+      - if: runner.os == 'Linux'
+        run: uv run python tools/isa_all.py --target jit-aarch64
+      - if: runner.os == 'Linux'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: jit-dump-x86
+          path: x86-dump
+      - if: runner.os == 'Linux'
+        run: |
+          mkdir dump
+          uv run python tools/jit_dump.py --target jit-aarch64 dump/arm64-host-jit-aarch64.txt
+          uv run python tools/jit_dump.py --target jit-x86_64 dump/arm64-host-jit-x86_64.txt
+          diff x86-dump/x86-host-jit-aarch64.txt dump/arm64-host-jit-aarch64.txt
+          diff x86-dump/x86-host-jit-x86_64.txt dump/arm64-host-jit-x86_64.txt

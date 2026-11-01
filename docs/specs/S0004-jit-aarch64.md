@@ -395,3 +395,23 @@ Resolved by the maintainer on 2026-11-01 (see Changes); none open.
   not fit even in far mode, and a module whose `b`/`bl` exceed ±128 MiB, raise `Unsupported` as
   this spec says (`OutOfRange` mapped in the backend's `finish`); `tests/test_source_rules.py` keeps
   compiling/emitting calls out of `assert`s in the JIT.
+* 2026-11-01 (step 4c): the aarch64 ISA gate and the cross-compilation check. `tools/isa_check.py
+  --arch aarch64` disassembles with `llvm-mc --disassemble -triple=aarch64` (one word a line; the
+  invalid-encoding warnings carry the line, so the offender is named). Decision: the allowlist is
+  LLVM's own default decoder (ARMv8.0-A only: LSE, CRC32, RDM, dotprod, fp16 arithmetic, RCPC, crypto,
+  SVE, MTE, JSCVT, complex come back invalid, checked on LLVM 18) plus two refusals for what LLVM
+  decodes under a generic name: `hint #N` except `#34/#36/#38` (`bti c/j/jc`; pointer-authentication
+  and `esb` HINTs are refused) and system-register moves it cannot name (`sb`, `cfinv`, `axflag`
+  print as `msr S0_...`). `llvm-objdump` is not used. `tools/jit_dump.py --target T OUT` compiles
+  (never runs) every `.wasm` of the spec cache plus `spectest.wasm` and CoreMark and writes
+  `<path> <sha256 of code> <data_start>` or `rejected` / `unsupported: <feature>`; 5 969 modules, 1 245
+  compiled by `jit-aarch64` (1 714 by `jit-x86_64`), identical lists on the x86-64 host and under
+  QEMU for both targets (`run_arm64.py tools/jit_dump.py`, no `--in-process` needed: it starts no
+  child). `tools/isa_all.py --target jit-aarch64` uses it: 222 distinct blobs, 0 failed, on x86-64.
+  CoreMark does not compile on the integer core (`unsupported: opcode 0x63`), so it has no row
+  and no hash until step 4e; it is in the lists already and will appear then. CI: the x86-64
+  `jit` job runs both ISA gates and uploads its lists (`jit-dump-x86`); the `arm64` job (needs
+  `jit`; Linux only for the spec steps, where the spec cache is fetched) runs the spec suite on
+  `jit-aarch64`, the aarch64 ISA gate, and diffs its own lists with the artifact for both targets.
+  `tools/stack_info.py` reports the JIT part for the machine's own JIT target (QEMU: `jit
+  (jit-aarch64): sp ... native budget 512 KiB`). Tests: `tests/jit/test_isa_aarch64.py`.
