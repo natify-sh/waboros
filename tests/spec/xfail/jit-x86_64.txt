@@ -1,3 +1,6 @@
+bulk-memory/bulk.wast:221  unknown trap text: uninitialized element 2
+bulk-memory/table_init.wast:2272  LoadError: NotImplementedError: rec / sub / struct / array types
+bulk-memory/table_init.wast:2286  LookupError: no exported function run
 imports.wast:240  LoadError: NotImplementedError: tag import
 imports.wast:244  LoadError: NotImplementedError: tag import
 imports.wast:248  LoadError: NotImplementedError: tag import

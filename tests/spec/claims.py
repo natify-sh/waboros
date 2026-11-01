@@ -20,7 +20,7 @@ CLAIMS: dict[str, frozenset[str]] = {
         {"simd", "relaxedSimd", "multiMemory", "memory64", "bulkMemory", "exceptionsFinal", "gc"}
     ),
     "pyc": frozenset({"bulkMemory"}),  # multi-memory, memory64: most of the directory fails
-    "jit-x86_64": frozenset(),  # phase 3: the core group only
+    "jit-x86_64": frozenset({"bulkMemory"}),  # parity with pyc (D25)
 }
 
 
