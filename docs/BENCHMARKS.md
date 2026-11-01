@@ -117,14 +117,22 @@ poc/in/core.wasm`, then `cd poc && python3 run_jit2.py in/core.wasm`.
 * ISA gate (`tools/isa_all.py`, D24): 379 code blobs (every spec module of `jit-x86_64` plus
   CoreMark), 0 instructions above x86-64-v1; about 32 s locally.
 
-### Package JIT on aarch64 (step 4e): no number yet
+### Package JIT on aarch64 (step 4e): first numbers from the arm64 CI runners
 
-CoreMark compiles on `jit-aarch64` since step 4e and passes its self-check under QEMU 8.2 user
-mode (`python3 tools/run_arm64.py tools/run_coremark_jit.py poc/in/core.wasm --target
-jit-aarch64`: "Correct operation validated", crcfinal 0x5275 at 30 000 iterations). QEMU speed
-says nothing about the hardware, so no row is recorded here. The number comes from the `arm64` CI
-job (`ubuntu-24.04-arm`, also macOS and Windows arm64), which runs and prints the same command;
-it goes here, alternated with Wasmtime and `pyc` on the same runner, when it is read from a run.
+CI run 41346000607 (commit 4dbe66d, 2026-11-01), one CoreMark run per runner
+(`uv run python tools/run_coremark_jit.py poc/in/core.wasm --target jit-aarch64`), self-check
+"Correct operation validated" on all three. Single runs on shared CI runners: noisy, not a
+comparison between the OSes or with x86-64; no Wasmtime or `pyc` run alternated on the same runner yet.
+
+| runner | CPython | CoreMark it/s | compile |
+|---|---|---|---|
+| `ubuntu-24.04-arm` (Linux aarch64, Azure) | 3.13.18 | 16 592 | 50 ms |
+| `macos-latest` (macOS 26, Apple Silicon) | 3.13.16 | 16 049 | 42 ms |
+| `windows-11-arm` (Windows 11 ARM64) | 3.13.17 | 16 545 | 104 ms |
+
+Under QEMU 8.2 user mode the same command passes its self-check (crcfinal 0x5275); QEMU speed says
+nothing about hardware. The same run: spec core 20509 pass / 0 fail and `auto` selects
+`jit-aarch64` on all three runners.
 
 ## Compile and load times (CoreMark)
 
