@@ -10,7 +10,7 @@
         "branchHinting": null,
         "bulkMemory": [
           "partial",
-          "7482/7485 over bulk-memory/; xfail 3 (bulk-memory/bulk 1, bulk-memory/table_init 2); mostly: unknown trap text: uninitialized element 2"
+          "7483/7485 over bulk-memory/; xfail 2 (bulk-memory/table_init 2); mostly: LoadError: NotImplementedError: rec / sub / struct / array types"
         ],
         "compactImportSection": null,
         "compilationHints": null,
@@ -40,13 +40,13 @@
         "multiValue": true,
         "mutableGlobals": [
           "partial",
-          "431/439 over global+imports+exports; xfail 8 (imports 8); mostly: gap: table import / unknown import kind"
+          "431/439 over global+imports+exports; xfail 8 (imports 8); mostly: LoadError: NotImplementedError: tag import"
         ],
         "numericValuesInWat": null,
         "profiles": null,
         "referenceTypes": [
           "partial",
-          "397/431 over ref_func+ref_is_null+ref_null+ref+table_get+table_set+table_grow+table_size+table+select; xfail 34 (ref_null 34); mostly: earlier module of the file did not load"
+          "397/431 over ref_func+ref_is_null+ref_null+ref+table_get+table_set+table_grow+table_size+table+select; xfail 34 (ref_null 34); mostly: no current module"
         ],
         "relaxedDeadCodeValidation": null,
         "relaxedSimd": null,
@@ -76,7 +76,7 @@
         "branchHinting": null,
         "bulkMemory": [
           "partial",
-          "7482/7485 over bulk-memory/; xfail 3 (bulk-memory/bulk 1, bulk-memory/table_init 2); mostly: unknown trap text: uninitialized element 2"
+          "7483/7485 over bulk-memory/; xfail 2 (bulk-memory/table_init 2); mostly: LoadError: NotImplementedError: rec / sub / struct / array types"
         ],
         "compactImportSection": null,
         "compilationHints": null,
@@ -142,7 +142,7 @@
         "branchHinting": null,
         "bulkMemory": [
           "partial",
-          "7482/7485 over bulk-memory/; xfail 3 (bulk-memory/bulk 1, bulk-memory/table_init 2); mostly: unknown trap text: uninitialized element 2"
+          "7483/7485 over bulk-memory/; xfail 2 (bulk-memory/table_init 2); mostly: LoadError: NotImplementedError: rec / sub / struct / array types"
         ],
         "compactImportSection": null,
         "compilationHints": null,

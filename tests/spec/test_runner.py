@@ -379,3 +379,12 @@ def test_an_incomplete_jit_fails_only_what_it_does_not_compile(jit: str) -> None
             assert reason == "reason~=^unsupported:", key
         else:
             assert reason.startswith("unsupported: ") or key in pyc, key
+
+
+def test_trap_text_is_matched_by_prefix() -> None:
+    from tests.spec.run import TrapCode, trap_code
+
+    assert trap_code("uninitialized element 2") is TrapCode.INDIRECT_CALL_TO_NULL
+    assert trap_code("out of bounds table access") is TrapCode.TABLE_OUT_OF_BOUNDS
+    assert trap_code("null reference") is TrapCode.NULL_REFERENCE
+    assert trap_code("uninitialized") is None

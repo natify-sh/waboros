@@ -28,7 +28,7 @@ directories (`test/core/<dir>/`) count only on a target that claims the feature
 | Acquire-Release Atomics (`acquireReleaseAtomics`) | 2 | - | - | - | - |
 | JS BigInt to Wasm i64 Integration (`bigInt`) | 5 | - | - | - | - |
 | Branch Hinting (`branchHinting`) | 5 | flag | - | - | - |
-| Bulk Memory Operations (`bulkMemory`) | 5 | since 0.20 | partial 7482/7485 | partial 7482/7485 | partial 7482/7485 |
+| Bulk Memory Operations (`bulkMemory`) | 5 | since 0.20 | partial 7483/7485 | partial 7483/7485 | partial 7483/7485 |
 | Compact Import Section (`compactImportSection`) | 4 | - | - | - | - |
 | Compilation Hints (`compilationHints`) | 2 | - | - | - | - |
 | Component Model (`componentModel`) | 1 | - | - | - | - |

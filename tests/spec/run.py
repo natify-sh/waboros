@@ -75,6 +75,16 @@ TRAP_CODES = {
     "null function reference": TrapCode.NULL_REFERENCE,
     "null reference": TrapCode.NULL_REFERENCE,
 }
+
+
+def trap_code(text: str) -> TrapCode | None:
+    """The code of an expected trap text: the longest TRAP_CODES key the text starts with (the
+    reference interpreter's rule: the expected text is a prefix of the message, and the spec adds
+    details such as "uninitialized element 2")."""
+    keys = [k for k in TRAP_CODES if text.startswith(k)]
+    return TRAP_CODES[max(keys, key=len)] if keys else None
+
+
 NULL_TYPES = ("refnull", "nullref", "nullfuncref", "nullexternref", "nullexnref")
 LANE_BITS = {"i8": 8, "i16": 16, "i32": 32, "i64": 64, "f32": 32, "f64": 64}
 # (mask, canonical, arithmetic) per float width: S0001 "Comparison"
@@ -279,7 +289,7 @@ class _FileRun:
             ):
                 raise Failure(f"got {got}")
         elif t == "assert_trap":
-            self.expect_trap(c, lambda: self.act(c["action"]), TRAP_CODES.get(c["text"]))
+            self.expect_trap(c, lambda: self.act(c["action"]), trap_code(c["text"]))
         elif t == "assert_exhaustion":
             self.expect_trap(c, lambda: self.act(c["action"]), TrapCode.STACK_OVERFLOW)
         elif t in ("assert_malformed", "assert_invalid"):
@@ -301,7 +311,7 @@ class _FileRun:
         elif t == "assert_uninstantiable":
             module = self.load(c)
             self.expect_trap(
-                c, lambda: self.engine.instantiate(module, self.registry), TRAP_CODES.get(c["text"])
+                c, lambda: self.engine.instantiate(module, self.registry), trap_code(c["text"])
             )
         else:
             raise Failure("unsupported command")

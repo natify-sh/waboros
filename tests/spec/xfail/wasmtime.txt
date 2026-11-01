@@ -43,7 +43,6 @@ ref_null.wast:80  wasmtime-py aborts on a typed reference in a signature (the pr
 ref_null.wast:81  wasmtime-py aborts on a typed reference in a signature (the process dies)
 
 # proposal subdirectories (S0001, 2026-10-30): single commands
-bulk-memory/bulk.wast:221  unknown trap text: uninitialized element 2
 exceptions/throw.wast:39  unsupported command
 exceptions/throw.wast:40  unsupported command
 exceptions/throw.wast:42  unsupported command
