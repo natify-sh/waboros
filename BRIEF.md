@@ -136,7 +136,7 @@ a test. "Measure, do not estimate."
 | how it is built | `docs/ARCHITECTURE.md`, `docs/TARGETS.md` |
 | the order of work | `docs/ROADMAP.md` |
 | how it is tested | `docs/TESTING.md` |
-| why a choice was made | `docs/DECISIONS.md` (D1–D32) |
+| why a choice was made | `docs/DECISIONS.md` (D1–D33) |
 | what went wrong before | `docs/LESSONS.md` |
 | risks and possible answers | `docs/RISKS.md` |
 | the JIT artifact contract | `docs/ARTIFACT.md` |

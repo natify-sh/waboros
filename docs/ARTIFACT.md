@@ -2,7 +2,7 @@
 title: JIT artifact, ISA levels and the context ABI
 kind: reference
 status: current
-updated: 2026-10-30
+updated: 2026-11-01
 ---
 
 # JIT artifact, ISA levels and the context ABI
@@ -50,8 +50,9 @@ Rules:
   recompiled, not executed.
 * **Checked, not trusted**: CI disassembles generated code (`objdump`) and fails if any instruction is
   above the level the artifact declares.
-* `Config.isa` (w2py addition): `"baseline"` (default), `"native"`, a level name, or a level plus
-  feature names.
+* `Config.isa` (w2py addition): `"baseline"` (default), a level name, or a level plus feature names
+  (explicit opt-in, stage 1 of D33); `"native"` comes later (stage 2) and becomes the default only by a
+  separate decision. A requested level the CPU lacks is refused at load, naming the missing features.
 * **Detection at load time, stdlib only**: on x86-64 a small `cpuid` stub run through the same
   executable-memory + ctypes path (works on every OS); on aarch64 `getauxval(AT_HWCAP/AT_HWCAP2)` via
   ctypes on Linux/Android, `sysctlbyname("hw.optional.*")` on macOS, `IsProcessorFeaturePresent` on

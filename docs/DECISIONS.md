@@ -2,7 +2,7 @@
 title: Decisions
 kind: log
 status: current
-updated: 2026-10-30
+updated: 2026-11-01
 ---
 
 # Decisions
@@ -395,3 +395,23 @@ Rejected: a separate bridge call site for host imports (more code at every impor
 measured gain). Context ABI: the records were already a section of v1 (3d); records for imports are an
 amendment of v1 without a version bump (S0003: v1 is fixed in phase 5; no artifact is saved yet, and
 the import words keep their bridge callbacks, so code compiled before still runs).
+
+### D33. CPU and OS features beyond the baseline: explicit opt-in first, automatic detection later
+Status: accepted (maintainer, 2026-11-01) · Date: 2026-11-01 · Supersedes: — · Evidence: —
+
+Refines how the optional variants of D24 are switched on. Stage 1: only an **explicit** request
+selects code above the baseline — `Config.isa` set to a level (`"x86-64-v2"`, `"x86-64-v3"`) or a
+level plus feature names, like the platform flags of MicroPython's native `.mpy` targets (a generic
+RISC-V target runs everywhere, a flagged one only where the feature exists). The default stays
+`"baseline"`. A requested level the running CPU lacks is refused at load with an error that names the
+missing features (detection by `cpuid` / `getauxval` / `sysctlbyname` / `IsProcessorFeaturePresent`,
+ARTIFACT.md part 1) — never executed, never a crash. Stage 2, later: `"native"` (detect and use what
+the CPU has, recorded in the artifact and the cache key), first for local cache artifacts only.
+Making `"native"` the default, as Wasmtime does, is a separate decision taken only with a measurement
+showing the variants pay and CI covering both paths (baseline and variant on the same tests).
+The same rule holds for **OS-specific** code, should one ever pay (D23 keeps artifacts independent of
+the OS; the maintainer reserved revisiting that if register or ABI limits give a substantial measured
+gain): such a variant is never the default, is requested explicitly, is declared in the artifact next
+to the ISA level (an OS tag), is refused on another OS, and needs its own decision amending D23.
+Rejected for now: automatic detection by default (a cache or artifact compiled on one machine would
+need the detection and recompile path to be proven before it is safe).
