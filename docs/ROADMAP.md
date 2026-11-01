@@ -181,7 +181,7 @@ lacks a feature reports it through `Target.supports` and the module runs on anot
 ## Phase 5 — JIT completion
 *Status: not started.*
 
-Order (maintainer, 2026-11-01): SIMD (spec in progress) -> the rename to `waboros`
+Order (maintainer, 2026-11-01): SIMD ([S0005](specs/S0005-simd.md), approved) -> the rename to `waboros`
 as its own step (D40) -> guard pages (D29) -> the rest below.
 
 * What remains of the opcode set, in stages (TARGETS.md), on **every** JIT target in step:

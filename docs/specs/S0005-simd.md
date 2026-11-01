@@ -2,7 +2,7 @@
 title: Fixed-width SIMD (v128) on pyc, jit-x86_64 and jit-aarch64
 kind: spec
 id: S0005
-status: draft
+status: approved
 superseded_by:
 related: [D22, D23, D24, D25, D26, D28, D33, D35, D36, D37, D39, R2, R3, S0001, S0002, S0003, S0004]
 owner: maintainer
@@ -294,6 +294,9 @@ interface: both backends in that step (D39); 5d and 5e add operators only.
 * **Copy-and-patch stencils for SIMD** (R3: "SIMD cheaper"): belongs to that separate decision.
 
 ## Open questions
+All eight resolved by the maintainer on 2026-11-01 as recommended: Q1 (b), Q2 (a), Q3 (a), Q4 (b),
+Q5 (a), Q6 (a), Q7 (a), Q8 (a). Kept below with their options for the record.
+
 * **Q1 Claim threshold.** (a) 0 failures; (b) ≤ 25 listed failures, no whole-file, `unsupported:` or
   `wrong kind` entries; (c) ≥ 99 % (≤ 254). Recommended: (b).
 * **Q2 `auto` between the `pyc` claim and the JIT claims.** (a) `pyc` claims at 5b; `auto` keeps the
@@ -317,3 +320,4 @@ interface: both backends in that step (D39); 5d and 5e add operators only.
 
 ## Changes
 * 2026-11-01: created (draft).
+* 2026-11-01: approved by the maintainer with every recommendation (Q1–Q8); D41.

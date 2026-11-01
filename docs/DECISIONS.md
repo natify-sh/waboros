@@ -541,3 +541,19 @@ import names, the CLI, the docs, CI, the artifact's identifying strings if any. 
 code and docs keep `w2py`. The step uses `waboros` everywhere at once, repository URLs included
 (`natify-sh/waboros`), without waiting for the GitHub repository: the maintainer renames it last
 (GitHub then redirects the old URLs; the new ones resolve only after that rename).
+
+### D41. SIMD: v128 in two slots, no vector register class, native SSE2/NEON only
+Status: accepted (maintainer, 2026-11-01) · Date: 2026-11-01 · Supersedes: — · Evidence: [S0005](specs/S0005-simd.md) (simd/ 25 990 commands; 236 operators: 158 at 1–3 SSE2 instructions, 68 at 4–12, 10 without an SSE2 form; pyc value model timed)
+
+Fixed-width SIMD follows S0005. `pyc` keeps a v128 as a Python `int`; the JITs keep it in two
+consecutive slots (the two-slot rule ARTIFACT.md v1 already states; no version bump). The D39
+interface is amended by one `simd` method and the v128 operand meaning; vector registers are scratch
+inside one call (`xmm0`–`xmm5`; `v0`–`v7`, `v16`–`v31`), so no register class, no trampoline change
+and no save around host calls; a vector `tos` only after a SIMD benchmark shows it pays. Every
+operator gets native code at the baseline (SSE2, ARMv8.0-A NEON): Cranelift's libcalls for `pshufb`
+and vector rounding on SSE2-only CPUs are computation helpers, excluded by D25; an x86-64-v2 variant
+only later under D33 with a measured gain. A target claims `simd/` with at most 25 listed failures
+and no whole-file, `unsupported:` or `wrong kind` entries; `pyc` claims first, and until the JITs
+claim, `auto` keeps the JIT and SIMD modules fail there as today. SIMD code lives in its own modules
+(the maintainer's three plus `frontend/simd.py` and `jit/common/simd.py`). Opcodes in the shared
+tuples are `0xFD000 + sub`. Relaxed SIMD and a NaN canonicalisation option are later work.
