@@ -538,4 +538,6 @@ Status: accepted (maintainer, 2026-11-01) · Date: 2026-11-01 · Supersedes: —
 (ROADMAP q14, [MICRO-COMPILERS.md](MICRO-COMPILERS.md)), and close in spirit to Python (snakes).
 The rename is **one separate step after SIMD**, before guard pages: the package, the distribution and
 import names, the CLI, the docs, CI, the artifact's identifying strings if any. Until that step the
-code and docs keep `w2py`. Renaming the GitHub repository is the maintainer's action.
+code and docs keep `w2py`. The step uses `waboros` everywhere at once, repository URLs included
+(`natify-sh/waboros`), without waiting for the GitHub repository: the maintainer renames it last
+(GitHub then redirects the old URLs; the new ones resolve only after that rename).
