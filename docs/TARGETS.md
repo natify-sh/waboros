@@ -144,3 +144,18 @@ very large functions (LESSONS.md 17).
 Where no JIT is allowed at all — iOS (Pythonista), Pyodide, hardened Linux without executable
 anonymous memory — `pyc` is the target. In Pyodide the browser's own `WebAssembly` is faster than any
 of ours; a thin target calling it through `js` is an option to consider.
+
+## Python platforms and what w2py gives them
+
+The platforms CPython ships for (cibuildwheel's `archs`, `main`, 2026-11, as the maintainer's map of
+the targets worth having). w2py itself has no wheels (pure Python); this says where a JIT makes sense.
+
+| platform (`archs`) | what w2py gives it |
+|---|---|
+| Linux / macOS / Windows `x86_64`/`AMD64`, `aarch64`/`arm64`/`ARM64` | JIT (`jit-x86_64`, `jit-aarch64`), CI on native runners |
+| Android `x86_64`, `arm64_v8a` | the same backends where the app may map executable memory (our W^X path: write, then switch to execute); checked on the emulator in CI |
+| iOS (`arm64_iphoneos`, simulators) | `pyc` only: third-party apps get no JIT (`MAP_JIT` needs an entitlement); `auto` falls back with the D31 warning |
+| Pyodide `wasm32` | `pyc` only (no machine code); worth a check that `pyc` runs there |
+| Linux `riscv64` | the most alive candidate for a third architecture — a wasm micro-compiler (ROADMAP q14) |
+| Linux `ppc64le`, `s390x` | candidates for micro-compilers; `s390x` is big-endian (wasm memory is little-endian) |
+| Linux `i686`, `armv7l`; Windows `x86` | 32-bit: the JIT runtime assumes 64-bit (addresses, context words, the 4 GiB reservation), so a separate design, not just a backend; `pyc` meanwhile |
