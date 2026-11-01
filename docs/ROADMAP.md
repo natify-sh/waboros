@@ -170,6 +170,10 @@ lacks a feature reports it through `Target.supports` and the module runs on anot
   third architecture).
 * aarch64 on macOS (`MAP_JIT` + `pthread_jit_write_protect_np` via ctypes) and Windows on ARM are in
   this phase too (maintainer's decision, S0004).
+* After step 4e (maintainer, 2026-11-01): macOS arm64 coverage — (1) the spec suite in the
+  `macos-latest` CI job, not only `tests/jit`; (2) a CI check with the python.org macOS installer,
+  whose hardened runtime may forbid `MAP_JIT` without the JIT entitlement: either the JIT runs there
+  or `auto` falls back to `pyc` with the D31 warning and the reason is recorded (RISKS R2).
 
 ## Phase 5 — JIT completion
 *Status: not started.*
