@@ -163,6 +163,8 @@ lacks a feature reports it through `Target.supports` and the module runs on anot
 * Record the size of the new backend and what in the shared core or the interface had to change; fix the
   places where x86-64 leaked (flags, two-operand forms, fixed registers for division and shifts) and
   **freeze the interface**. Nothing in phase 5 starts before this.
+* Cross-compilation check (D35): the aarch64 code of the spec modules and CoreMark compiled on the
+  x86-64 runner is byte-identical to the code compiled on the arm64 runner, and runs there.
 * After it, decide on copy-and-patch for further architectures with numbers for both approaches.
 * aarch64 on macOS (`MAP_JIT` + `pthread_jit_write_protect_np` via ctypes) and Windows on ARM follow
   in phase 5.

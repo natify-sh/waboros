@@ -434,3 +434,21 @@ the native return value too (the trap or error is recorded in its per-call `Call
 decoded from a register). wasmtime-py's trampoline (`wasmtime/_func.py`, `trampoline`: `caller =
 Caller(caller)` runs before its `try`) has the same window and does not close it. This amends context
 ABI v1 without a version bump: S0003 fixes v1 in phase 5 and no artifact has been saved yet.
+
+### D35. Cross-compilation: any host compiles JIT artifacts for any architecture w2py has
+Status: accepted (maintainer, 2026-11-01) · Date: 2026-11-01 · Supersedes: — · Evidence: —
+
+The JIT compiler is pure Python and only writes bytes; it never runs what it emits while compiling.
+With artifacts that depend on the architecture and its declared ISA level only (D23, D24), any host
+can compile for any `jit-<arch>`: `jit-aarch64` on an x86-64 machine and the reverse, one artifact
+per architecture for every OS. Like Wasmtime's `--target` / `Config.target`: `Config.target` names
+the target (API.md); `w2py compile --target jit-aarch64` writes a portable artifact. Rules: a
+cross-compiled artifact is never run on the compiling host — the loader refuses another architecture
+or a level the CPU lacks (ARTIFACT.md part 1); only an explicit ISA level is allowed (`"native"`
+means the compiling CPU, D33); it is tested where it runs (native CI runners or QEMU). From phase 4,
+CI checks that an artifact compiled on x86-64 for aarch64 is byte-identical to the one compiled on
+the arm64 runner, and runs it there, so the compiler's independence from its host is tested, not
+assumed. Saving artifacts to files (format, `w2py compile`, `Module.serialize`) comes in phase 5;
+until then cross-compilation exists inside a process only. `pyc` and `mpy` are not cross-compiled in
+this sense: a code object belongs to one Python version and implementation (marshal magic), an
+`.mpy` file to one `.mpy` format version, so their "target" is the interpreter, not the CPU.

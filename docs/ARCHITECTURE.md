@@ -334,6 +334,16 @@ Like Wasmtime's cache (and `Module.serialize`), compiled artifacts are kept on d
 * Measured cost it saves (PoC, CoreMark): `pyc` translation + `compile()` ≈ 111 ms, from cache
   ≈ 0.5 ms; the JIT compiles in ≈ 25 ms.
 
+## Cross-compilation
+
+The JIT compiler emits bytes and never executes them while compiling, and a JIT artifact depends on
+the architecture and its declared ISA level only (D23, D24). So any host compiles for any `jit-<arch>`
+w2py has, as Wasmtime's `--target` does (D35): a portable artifact made on x86-64 for aarch64 is
+loaded and run on aarch64 only, the loader refusing another architecture or a missing ISA level.
+Only explicit levels are valid for another target (`"native"` is the compiling CPU, D33). Artifact
+files come in phase 5; from phase 4 CI compares the aarch64 artifact made on x86-64 with the one made
+on the arm64 runner byte for byte. `pyc`/`mpy` artifacts belong to an interpreter version, not a CPU.
+
 ## Versioned contracts
 
 Everything w2py generates is a derivative of the wasm and is consumed by code that may come from
