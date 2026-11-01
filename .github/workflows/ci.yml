@@ -201,24 +201,18 @@ jobs:
     runs-on: macos-latest
     env:
       PYTHONUTF8: "1"
-      # The newest 3.13.x on python.org that ships a macOS installer, found at run time (this repo's
-      # sandbox cannot reach python.org to pin a hash); the package must carry Apple's signature of
-      # the Python Software Foundation (pkgutil --check-signature), which is what a user verifies too.
-      PY_MINOR: "3.13"
+      # The python.org macOS installer, pinned (sha256 of the downloaded file; python.org lists MD5
+      # only), and it must carry Apple's signature of the Python Software Foundation.
+      PY_VERSION: "3.13.17"
+      PKG_SHA256: "3053592af66128269efab37fe7851a4894920b27c442aeec99ce4d34d17c07e3"
       PY_FW: /Library/Frameworks/Python.framework/Versions/3.13
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
       - name: install the python.org CPython
         run: |
-          V=$(curl -fsSL https://www.python.org/ftp/python/ | grep -oE "href=\"$PY_MINOR\.[0-9]+/\"" \
-              | grep -oE "$PY_MINOR\.[0-9]+" | sort -t. -k3 -n -r | while read -r v; do \
-                curl -fsI "https://www.python.org/ftp/python/$v/python-$v-macos11.pkg" >/dev/null 2>&1 \
-                && { echo "$v"; break; }; done)
-          [ -n "$V" ] || { echo "no $PY_MINOR macOS installer found"; exit 1; }
-          echo "python.org $V"
-          curl -fsSL -o python.pkg "https://www.python.org/ftp/python/$V/python-$V-macos11.pkg"
-          shasum -a 256 python.pkg
+          curl -fsSL -o python.pkg "https://www.python.org/ftp/python/$PY_VERSION/python-$PY_VERSION-macos11.pkg"
+          echo "$PKG_SHA256  python.pkg" | shasum -a 256 -c -
           pkgutil --check-signature python.pkg | tee sig.txt
           grep -q "Developer ID Installer: Python Software Foundation" sig.txt || { echo "unexpected signer"; exit 1; }
           sudo installer -pkg python.pkg -target /
