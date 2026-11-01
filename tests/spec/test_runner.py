@@ -279,6 +279,18 @@ def test_exit_codes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     assert rep["directories"]["core"]["claimed"] is True
 
 
+def test_unsupported_entry_does_not_hide_another_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    FakeEngine.results = {"a": [1]}
+    bad = invoke("a", 3, expected=[{"type": "i32", "value": "9"}])  # fails with "got [1]"
+    code, rep = run_main(tmp_path / "x", monkeypatch, [MODULE, bad], "t.wast:3  unsupported: X\n")
+    assert (code, rep["totals"]["fail"], rep["totals"]["xfail"]) == (1, 1, 0)
+    assert rep["results"][-1]["reason"] == "unexpected reason: got [1]"
+    code, rep = run_main(tmp_path / "y", monkeypatch, [MODULE, bad], "t.wast:3  curated text\n")
+    assert (code, rep["totals"]["xfail"]) == (0, 1)  # other reasons match by id
+
+
 def test_setup_errors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     assert run.main(["--engine", "nope"]) == 2
     monkeypatch.setattr(run, "CACHE_DIR", tmp_path)

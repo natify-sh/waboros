@@ -191,3 +191,10 @@ What went wrong or surprised us while building the PoC, so it is not found again
     cannot reach with integer-only modules of our own (`tests/jit/test_compiler.py` runs on every
     native JIT target; a real integer program, `poc/bench/switch/vm.wasm`). Found: JIT step 4b,
     2026-11-01.
+39. **An id-only xfail entry also swallows a crash (LESSONS 27 again).** `bulk-memory/x.wast:12
+    unsupported: tables` matched by id, so an `AttributeError` in the same command (the aarch64
+    backend met `call_indirect` after `0x11` was added to its supported opcodes) still ended as
+    `xfail` and the run said fail 0. Symptom: a backend gains a feature and a run stays green with
+    new crashes under old `unsupported` lines. Rule: an entry whose reason starts with
+    `unsupported:` matches only the same full text; any other failure is a fail with
+    `unexpected reason: …`. Hand-written reasons still match by id. Found: step 4d review, 2026-11-01.

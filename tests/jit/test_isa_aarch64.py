@@ -83,3 +83,21 @@ def test_backend_code_passes(tmp_path: Path) -> None:
     assert start < len(code)  # a jump table is there
     p = gate(tmp_path, code, "--data", f"{start}:{len(code)}")
     assert p.returncode == 0, p.stdout[:2000] + p.stderr
+
+
+def test_trampolines_host_thunk_and_probe_pass(tmp_path: Path) -> None:
+    need(LLVM_MC, "llvm-mc")
+    from w2py.targets.jit.aarch64 import JitAarch64Target
+    from w2py.targets.jit.aarch64.abi import assemble, host_thunk
+    from w2py.targets.jit.aarch64.encoder import Asm
+
+    thunk = Asm()
+    host_thunk(thunk, 5)
+    blobs = {
+        "trampolines": assemble()[0],
+        "host thunk": thunk.finish(),
+        "probe": JitAarch64Target().probe_code(),
+    }
+    for what, blob in blobs.items():
+        p = gate(tmp_path, blob)
+        assert p.returncode == 0, what + p.stdout[:2000] + p.stderr

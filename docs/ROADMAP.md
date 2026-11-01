@@ -155,9 +155,9 @@ lacks a feature reports it through `Target.supports` and the module runs on anot
   declared level.
 
 ## Phase 4 — the second architecture (integer core) proves the interface
-*Status: not started.*
+*Status: in progress. Done: 4a encoder, trampolines and executable memory, 4b integer-core backend, 4c spec suite, cross-compilation check and CI on arm64, 4d review. Freeze pending the maintainer's approval; 4e (parity with `jit-x86_64`) is next.*
 
-* `jit-aarch64`, tested natively on GitHub's arm64 runners (Linux; macOS arm64 with `MAP_JIT`), integer
+* `jit-aarch64`, tested natively on GitHub's arm64 runners (Linux, macOS arm64 with `MAP_JIT`, Windows on Arm), integer
   core only: the same stage 1, the same spec commands as phase 3. QEMU user-mode is only for
   architectures without native runners (riscv64 and later ones).
 * Record the size of the new backend and what in the shared core or the interface had to change; fix the
@@ -168,8 +168,8 @@ lacks a feature reports it through `Target.supports` and the module runs on anot
 * After it, decide how further architectures are written, with numbers: a backend in Python,
   copy-and-patch, or a micro-compiler in wasm (open question 14; the maintainer's candidate for the
   third architecture).
-* aarch64 on macOS (`MAP_JIT` + `pthread_jit_write_protect_np` via ctypes) and Windows on ARM follow
-  in phase 5.
+* aarch64 on macOS (`MAP_JIT` + `pthread_jit_write_protect_np` via ctypes) and Windows on ARM are in
+  this phase too (maintainer's decision, S0004).
 
 ## Phase 5 — JIT completion
 *Status: not started.*

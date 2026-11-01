@@ -40,7 +40,7 @@ show what is new; the spec commit moves the same way, in small steps.
 | pywasm (pip) | a second oracle and a source of ideas: its spec runner (`test/spec.py`) was adapted in the PoC session; it passes the core spec suite (54 006 commands, 0 failures at its pinned spec commit `fffc6e12f`) but treats `assert_invalid` / `assert_malformed` as no-ops |
 | meld | fusing component test programs into core modules for WASI 0.2 |
 | MicroPython unix port, `mpy-cross` | the `mpy` target |
-| QEMU user-mode | JIT targets for other architectures in CI |
+| QEMU user-mode | JIT targets for other architectures in CI; `jit-aarch64` BTI (the arm64 Linux runner has none): `tools/run_arm64.py` in the x86 `jit` job |
 
 The runtime package itself declares **no** dependencies; these live in a development group.
 The Python ones are the uv `dev` group in `pyproject.toml` (`uv sync`); wasmtime 50.0.1 needs

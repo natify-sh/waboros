@@ -402,8 +402,8 @@ class Instance:
             st.active, store.depth = active, depth
 
     def _nstack_limit(self, frame: int) -> int:
-        """At the first JIT entry on the stack: rsp as wasm code sees it (the stub), then
-        `native_budget`."""
+        """At the first JIT entry on the stack: the stack pointer as wasm code sees it (the
+        stub), then `native_budget`."""
         if self.entry(ctypes.addressof(self.ctx), frame, self.tramp.sp_stub):
             raise RuntimeError("stack-pointer stub failed")
         sp = ctypes.c_uint64.from_address(frame).value

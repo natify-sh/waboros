@@ -459,7 +459,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                     r = r._replace(reason=f"unexpected reason: {r.reason}")
             elif r.id in xfail:
                 used.add(r.id)
-                status = {"fail": "xfail", "pass": "xpass"}.get(status, status)
+                if status == "fail" and xfail[r.id].startswith("unsupported:"):
+                    if r.reason == xfail[r.id]:  # a curated `unsupported: <feature>` must match
+                        status = "xfail"  # in full: it must not hide a crash (LESSONS 27, 39)
+                    else:
+                        r = r._replace(reason=f"unexpected reason: {r.reason}")
+                else:
+                    status = {"fail": "xfail", "pass": "xpass"}.get(status, status)
             counts[status] += 1
             per_dir.setdefault(directory, Counter())[status] += 1
             results.append((stem, r, status))

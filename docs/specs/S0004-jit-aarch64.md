@@ -27,7 +27,7 @@ notes; ideas from Winch and Liftoff arm64 (lowering), Cranelift's aarch64 assemb
   (D24); code compiled on x86-64 byte-identical to code compiled on arm64 (D35); a written list of
   what changed in the shared core, and the interface frozen after it.
 * Non-goals (phase 4): float arithmetic, tables, references, bulk memory, tail calls (see Scope);
-  macOS arm64 (`MAP_JIT`) and Windows on Arm execution (phase 5, ROADMAP); guard pages (D29, R6);
+  guard pages (D29, R6);
   optional ISA features (LSE, …; D33); the artifact file (phase 5); copy-and-patch (decided after
   this phase with numbers, R3).
 
@@ -126,8 +126,9 @@ stub, `tail_switch`, every function (reached from the entry, records, tail calls
 thunk. Jump-table targets get `bti j` pads. Because every indirect branch uses `x16`/`x17`
 (BTYPE 01), `bti c` also accepts the tail-call `br`. `bti` is in the HINT space: a NOP before
 ARMv8.5, so the baseline holds. Linux enforces BTI only on pages mapped `PROT_BTI` (0x10); the
-loader adds `PROT_BTI` when `getauxval(AT_HWCAP2) & HWCAP2_BTI`, so the arm64 CI runner (Neoverse
-N2, Armv9.0) checks every pad; without it the pads are untested.
+loader adds `PROT_BTI` when `getauxval(AT_HWCAP2) & HWCAP2_BTI`. The arm64 Linux CI runner's CPU
+has no BTI (`PROT_BTI` reads 0 there), so the pads are proven under QEMU user mode in the x86 `jit`
+job, which enforces BTI: a missing pad is a SIGILL.
 
 **PAC: not used.** Return addresses are left unsigned (no `paciasp`/`autiasp`). Reason: wasm
 values and locals live on the value stack, never on the native stack, so wasm stores cannot reach a
@@ -171,8 +172,8 @@ AArch64 does not keep the instruction cache coherent with data writes. `execmem.
 RW, write, `mprotect` RX (plus `PROT_BTI` where supported), then **invalidate the range** before the
 first call: Linux: `__clear_cache(start, end)` through ctypes from the process (`CDLL(None)`, else
 `libgcc_s.so.1`; it does `dc cvau`/`dsb ish`/`ic ivau`/`dsb ish`/`isb` with the line sizes from
-`CTR_EL0` and skips what `CTR_EL0.IDC/DIC` make unnecessary). Phase 5: macOS `sys_icache_invalidate`
-(libSystem) with `MAP_JIT` + `pthread_jit_write_protect_np`; Windows `FlushInstructionCache`.
+`CTR_EL0` and skips what `CTR_EL0.IDC/DIC` make unnecessary). macOS: `sys_icache_invalidate`
+(libSystem) with `MAP_JIT` + `pthread_jit_write_protect_np`; Windows: `FlushInstructionCache`.
 x86-64 keeps a no-op. A process where no flush function is found fails the probe (D31 warning),
 never runs unflushed code. Code areas are written once and never patched (W^X), so a fresh area
 needs only this one flush (`ic ivau` is broadcast to every core, inner-shareable). Remaining
@@ -180,8 +181,8 @@ theoretical case: another core that prefetched a freed area's address before it 
 `membarrier(SYNC_CORE)` closes it — recorded under R2 for phase 5, not done in phase 4.
 
 **Probe** (`JitAarch64Target.probe`): `platform.machine()` in (`aarch64`, `arm64`), 64-bit,
-little-endian; `sys.platform == "linux"` (phase 4: macOS and Windows return "jit-aarch64 on
-<platform> comes in phase 5" — the D31 warning, `auto` keeps `pyc`); flush function found; then map
+little-endian; an OS with an executable-memory path (Linux, macOS, Windows; others return
+"executable memory unavailable", the D31 warning, and `auto` keeps `pyc`); flush function found; then map
 `bti c; mov w0, #42; ret` W^X, flush, call it once.
 
 ## Semantics
@@ -287,8 +288,7 @@ Header: `arch` = 2 (aarch64), `isa_level` = 1 (ARMv8.0-A with FP and Advanced SI
 * **CI**: a new job on `ubuntu-24.04-arm` (native; QEMU stays for architectures without runners,
   ROADMAP): `pytest tests/jit` with `W2PY_JIT_REQUIRE=1`, the spec runs (wasmtime oracle, `pyc`,
   `jit-aarch64`, `auto`), `tools/no_exec.py` fallback, `tools/stack_info.py`, the ISA gate, the
-  cross-compilation diff, CoreMark. `macos-latest` (arm64) and `windows-11-arm` join in phase 5; in
-  phase 4 they only check that `auto` warns and runs `pyc`.
+  cross-compilation diff, CoreMark. `macos-latest` (arm64) and `windows-11-arm` run the same job (decision 2 of the Changes).
 * **Without arm64 hardware** (checked in this container, Ubuntu 24.04 x86-64):
   `apt-get install qemu-user libc6-arm64-cross libgcc-s1-arm64-cross`, then
   `uv python install cpython-3.13-linux-aarch64-gnu`, then
@@ -415,3 +415,15 @@ Resolved by the maintainer on 2026-11-01 (see Changes); none open.
   `jit-aarch64`, the aarch64 ISA gate, and diffs its own lists with the artifact for both targets.
   `tools/stack_info.py` reports the JIT part for the machine's own JIT target (QEMU: `jit
   (jit-aarch64): sp ... native budget 512 KiB`). Tests: `tests/jit/test_isa_aarch64.py`.
+* 2026-11-01 (step 4d, review fixes): what each arm64 OS runs in CI. Linux (`ubuntu-24.04-arm`):
+  `tests/jit` (all but the two x86-64 ISA tests), `stack_info`, the spec suite on `jit-aarch64`,
+  `--engine auto` (selects `pyc` with the third D31 message; pyc's numbers), `tools/no_exec.py`
+  with `auto` (MDWE, `pyc`), the ISA gate, the D35 diff both ways. macOS and Windows: `tests/jit`
+  natively, including `test_compiler` and the far-branch tests, `stack_info`; no spec run there
+  yet, because the spec cache needs the converter tools (`wasm-tools` wheels) and they were not
+  checked for those runners; the spec result does not depend on the OS, the executable memory
+  path does, and `tests/jit` covers it. BTI: the arm64 Linux runner's CPU has no BTI
+  (`PROT_BTI` 0), so the x86 `jit` job runs the aarch64 ABI and compiler tests under QEMU user
+  mode, which enforces BTI (about 70 s locally). `jit_dump.py` hashes the whole `Compiled`
+  (code, data start, functions, records, signatures, thunks, layout), not only the code. The xfail
+  reader now accepts an `unsupported: <feature>` entry only for exactly that failure (LESSONS 39).

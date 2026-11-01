@@ -252,3 +252,4 @@ weights itself until then.
 * 2026-10-30: step 3 split into 3a–3d (tables in 3d, native floats in 3c); no Python helpers for computation, only runtime services (D25 amended); `--engine jit-x86_64`, one target adapter, lazy spectest (maintainer).
 * 2026-10-30: step 4 done; the fallback warns once (D31).
 * 2026-11-01: step 6 done (final review of steps 2–5, its fixes and D34 reviewed); status implemented.
+* 2026-11-01 (phase 4, S0004): a second JIT target, `jit-aarch64`; the JIT glue moved to `common/target.py` (`JitTarget`: `arch`, `machines`, `probe_code`, `backend`, `trampolines`). Readiness guard restored: a target with `complete = False` is never chosen by `auto`, which keeps `pyc` with the third D31 message; an explicit engine still runs it. `complete` is read with a default of True (`getattr`: `PycTarget` does not define it, so it stays out of the `Target` Protocol).

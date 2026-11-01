@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Cross-compilation check (D35, S0004 step 4c): compile, never run, every module of the spec cache
 (`tests/spec/fetch.py`) and CoreMark with one JIT target, on any host, and write one line per
-module: `<path> <sha256 of the code> <data_start>`, or `<path> rejected|unsupported: <feature>`.
+module: `<path> <sha256 of the whole Compiled> <data_start>` (code,
+data_start, funcs, records, sigs, thunks, layout), or `<path> rejected|unsupported: <feature>`.
 The lists of two hosts must be identical:
 
     python3 tools/jit_dump.py --target jit-aarch64 OUT.txt      # PYTHONPATH=src
@@ -50,7 +51,11 @@ def main() -> int:
             lines.append(f"{name} unsupported: {e.feature}")
             continue
         assert isinstance(c, Compiled)
-        lines.append(f"{name} {hashlib.sha256(c.code).hexdigest()} {c.data_start}")
+        everything = repr(
+            (c.data_start, c.funcs, c.records, c.sigs, sorted(c.thunks.items()), c.layout)
+        )
+        digest = hashlib.sha256(c.code + everything.encode()).hexdigest()
+        lines.append(f"{name} {digest} {c.data_start}")
     args.out.write_text("\n".join(lines) + "\n", encoding="utf-8")
     done = sum(1 for ln in lines if " rejected" not in ln and " unsupported" not in ln)
     print(f"jit_dump: {len(lines)} modules, {done} compiled by {args.target}, list in {args.out}")

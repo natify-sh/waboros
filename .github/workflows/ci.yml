@@ -40,6 +40,11 @@ jobs:
       - run: uv run pytest tests/jit -v -rs
         env:
           W2PY_JIT_REQUIRE: "1"  # a missing tool fails the job instead of skipping (tests/jit)
+      # S0004: the aarch64 ABI and compiler tests under QEMU user mode, which enforces BTI (the
+      # arm64 runner's CPU has none); about 1.5 min
+      - run: sudo apt-get install -y qemu-user libc6-arm64-cross libgcc-s1-arm64-cross
+      - run: uv python install cpython-3.13-linux-aarch64-gnu
+      - run: python3 tools/run_arm64.py -m pytest tests/jit/test_abi_aarch64.py tests/jit/test_compiler.py tests/jit/test_compiler_aarch64.py -q
       # D24: every spec module and CoreMark compiled by jit-x86_64 has only x86-64-v1 instructions
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
@@ -162,6 +167,11 @@ jobs:
         run: uv run python tests/spec/fetch.py
       - if: runner.os == 'Linux'
         run: uv run python -m tests.spec.run --engine jit-aarch64 --json spec-jit-aarch64.json
+      # `auto` must select pyc with the D31 warning (jit-aarch64 is incomplete), then MDWE: pyc too
+      - if: runner.os == 'Linux'
+        run: uv run python -m tests.spec.run --engine auto
+      - if: runner.os == 'Linux'
+        run: uv run python tools/no_exec.py -- uv run python -m tests.spec.run --engine auto
       - if: runner.os == 'Linux'
         run: uv run python tools/isa_all.py --target jit-aarch64
       - if: runner.os == 'Linux'
