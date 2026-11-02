@@ -83,7 +83,7 @@ round by round: `python3 tools/run_coremark_jit.py poc/in/core.wasm`, then
 ### Package JIT: function imports through their records (JIT step 3f, D32)
 
 Conditions: 2026-10-30, Intel Xeon @ 2.10 GHz, 4 vCPU cloud machine, CPython 3.13.17. HEAD
-(3c2c853's `src/`, exported to a scratch directory and put first on `PYTHONPATH`) and the change,
+(the `src/` of the commit that added the one-time JIT fallback warning (step 4, 2026-10-30), exported to a scratch directory and put first on `PYTHONPATH`) and the change,
 alternated round by round in one session.
 
 * **1e6 calls of an import from a wasm loop** (a scratch script: `(call $f (local.get 0))` in a
@@ -120,7 +120,7 @@ poc/in/core.wasm`, then `cd poc && python3 run_jit2.py in/core.wasm`.
 
 ### Package JIT on aarch64 (step 4e): first numbers from the arm64 CI runners
 
-CI run 41346000607 (commit 4dbe66d, 2026-11-01), one CoreMark run per runner
+CI run 41346000607 (2026-11-01), one CoreMark run per runner
 (`uv run python tools/run_coremark_jit.py poc/in/core.wasm --target jit-aarch64`), self-check
 "Correct operation validated" on all three. Single runs on shared CI runners: noisy, not a
 comparison between the OSes or with x86-64; no Wasmtime or `pyc` run alternated on the same runner yet.

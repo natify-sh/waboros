@@ -4,6 +4,7 @@
 import datetime
 import os
 import re
+import subprocess
 import sys
 
 KINDS = {"guide", "reference", "spec", "log", "index"}
@@ -14,6 +15,7 @@ ID_RE = re.compile(r"\b(D\d+|R\d+|S\d{4})\b")
 LINK_RE = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
 ID_LIST = re.compile(r"^(D\d+|R\d+|S\d{4})$")
 NO_ID_SCAN = ("docs/STANDARDS.md",)  # holds example ids
+HASH_RE = re.compile(r"(?:\bcommits?\s+|`)([0-9a-f]{7,40})\b")
 
 
 def valid_date(v):
@@ -55,6 +57,19 @@ def prose(lines, start=0):
             fence = not fence
         elif not fence:
             yield n, line
+
+
+def is_commit(root, tok, after_word):
+    """A hash-like token (letter and digit) that names a commit of this repo. Without git,
+    only "commit <hex>" text counts."""
+    if not (re.search(r"[a-f]", tok) and re.search(r"\d", tok)):
+        return False
+    try:
+        cmd = ["git", "-C", root, "cat-file", "-t", tok]
+        r = subprocess.run(cmd, capture_output=True, text=True)
+    except OSError:
+        return after_word
+    return r.stdout.strip() == "commit"
 
 
 def collect(root):
@@ -147,6 +162,10 @@ def main(argv):
                 for m in ID_RE.finditer(line):
                     if m.group(1) not in known:
                         err(f, n, "unknown reference " + m.group(1))
+            if f not in NO_ID_SCAN:
+                for m in HASH_RE.finditer(line):
+                    if is_commit(root, m.group(1), "`" != m.group(0)[0]):
+                        err(f, n, "our own commit hash %s: use a date, step or CI run id" % m[1])
             for m in LINK_RE.finditer(line):
                 t = m.group(1).split("#")[0]
                 if not t or re.match(r"^[a-z]+:", t):

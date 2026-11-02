@@ -513,7 +513,7 @@ Status: accepted (maintainer, 2026-11-01) · Date: 2026-11-01 · Supersedes: —
 
 The backend interface of D26 (`common/backend.py`: its methods, operand kinds, the `supported` opcode
 set, the far-mode retry `func_end -> bool` + `rewind`) and the `JitTarget` glue (`arch`, `machines`,
-`complete`, `probe_code`, `backend`, `trampolines`) are frozen as of commit f9addf2. The contract:
+`complete`, `probe_code`, `backend`, `trampolines`) are frozen as of the review fixes of phase 4d (2026-11-01). The contract:
 the core passes `Imm` (unsigned at the operand's width), `Reg` (`tos` or a pinned pool register) or
 `Slot`; every value is zero-extended; `dst` is `tos`, with every other stack entry spilled out of it
 but a popped operand possibly still in it; at every edge and call the operand stack is in slots and

@@ -78,6 +78,9 @@ one with `Supersedes: Dn` and mark the old one `superseded by Dm`.
 | order of work | ROADMAP.md |
 
 ## Steps, briefs and commits
+Refer to dates, steps, decisions or CI run IDs, never to our own commit hashes: history may be
+rewritten (`tools/check_docs.py` flags them).
+
 Step briefs and reports are not stored as files. Each step is one commit; the message carries the
 goal, the acceptance commands and the numbers before and after:
 ```

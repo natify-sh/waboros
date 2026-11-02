@@ -216,7 +216,7 @@ AArch64 behaviour the backend handles (Arm ARM DDI 0487; wasm semantics as in Wa
 ## The x86-64 leaks in the shared code (phase-4 deliverable)
 The D26 interface itself held: `Backend` has no flags, no fixed registers, no x86 immediate rules
 (`Imm` is the full value; each backend decides what fits). What must change (line numbers at HEAD
-1497986):
+of 2026-11-01):
 
 1. **Per-backend opcode set.** `SUPPORTED` is one module-level set (`common/compiler.py:107-110`)
    used by `unsupported()` (`:129-153`) and the x86 target (`x86_64/__init__.py:50-53`). A backend
@@ -335,7 +335,7 @@ Resolved by the maintainer on 2026-11-01 (see Changes); none open.
 ## Changes
 * 2026-11-01: created (draft).
 * 2026-11-01: CI job `macos-pythonorg` added (python.org installer CPython, hardened runtime): it
-  asserts the JIT runs or `auto` falls back to `pyc` with the D31 reason; installer pinned by sha256 in the next commit (72acc45).
+  asserts the JIT runs or `auto` falls back to `pyc` with the D31 reason; installer pinned by sha256 in a follow-up change the same day.
 * 2026-11-01: approved by the maintainer with these decisions, which override the draft where it
   differs: (1) a `complete = False` guard keeps `auto` on `pyc` (with the D31 warning) on arm64 until
   `jit-aarch64` fails exactly what `pyc` fails; (2) **all three OSes in phase 4** — Linux

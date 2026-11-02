@@ -201,7 +201,7 @@ host exceptions, i64 arithmetic, explicit checks for `idiv` overflow (x86 faults
 value stack, control stack, pinned locals and labels, and calling a small `MacroAssembler`-like
 backend interface per operation (Winch / Liftoff style; what `w2jit2` does, minus the split).
 
-**Measurement** (2026-10-30, commit 207b477, Xeon @ 2.10 GHz, 4 cores, CPython 3.13.17, one
+**Measurement** (2026-10-30, after the D24 baseline-ISA change, Xeon @ 2.10 GHz, 4 cores, CPython 3.13.17, one
 session, best of 3). Code generation of `w2jit2` on the functions it covers, and a minimal (a)-style
 prototype run on exactly those functions: LIR build (operand stack → vregs), liveness (locals
 extended over loops), linear scan onto 11 registers, operand rewrite — no live-range splitting, no
