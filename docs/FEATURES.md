@@ -81,11 +81,12 @@ directories (`test/core/<dir>/`) count only on a target that claims the feature
 
 **Implementation notes per proposal** (hand-written; Wasmtime's `Config.wasm_*` switch in brackets):
 
-* multi-memory (`wasm_multi_memory`): **needed for fused components** (D7).
+* multi-memory (`wasm_multi_memory`): done on every target (D37); **needed for fused components** (D7).
 * memory64 (`wasm_memory64`): addresses are already Python ints in `pyc`.
-* SIMD (`wasm_simd`): `pyc` v128 as an int, correct first (done, claimed); JIT: two slots per v128, SSE2 / NEON at the baseline (D24, D41, S0005; `jit-x86_64` complete and claimed, step 5d3; `jit-aarch64` in progress, not claimed).
+* SIMD (`wasm_simd`): `pyc` v128 as an int, correct first (done, claimed); JIT: two slots per v128, SSE2 / NEON at the baseline (D24, D41, S0005; `jit-x86_64` complete and claimed, step 5d3; `jit-aarch64`: data movement and the integer operators
+  (5c, 5e1), the rest and the claim at 5e2).
 * relaxed SIMD (`wasm_relaxed_simd`, `_deterministic`): follow Wasmtime's deterministic choice when asked.
-* tail calls (`wasm_tail_call`): `pyc` uses a trampoline for functions with `return_call*`; the JIT replaces the frame.
+* tail calls (`wasm_tail_call`): done; `pyc` uses a trampoline for functions with `return_call*`; the JIT replaces the frame.
 * custom page sizes (`wasm_custom_page_sizes`): a property of the `Memory` facade.
 * threads (`wasm_threads`, `Config.shared_memory`): `SharedMemory`; `pyc` atomics under the GIL, care for free-threaded builds.
 * exceptions (`wasm_exceptions`): `Tag`, `try_table`, `throw`, `exnref`.
@@ -100,7 +101,7 @@ directories (`test/core/<dir>/`) count only on a target that claims the feature
 
 | feature | Wasmtime API | plan |
 |---|---|---|
-| interruption of long calls | (epochs; Ctrl+C in the CLI) | JIT: interrupt word polled by the code; `pyc`: yield points (ARCHITECTURE.md, "Long calls and the GIL") |
+| interruption of long calls | (epochs; Ctrl+C in the CLI) | done: `StoreState.interrupt()`; JIT polls the interrupt word, `pyc` has yield points (ARCHITECTURE.md, "Long calls and the GIL"); Ctrl+C in phase 5 |
 | fuel | `Config.consume_fuel`, `Store.set_fuel/get_fuel` | counters at entries and back-edges, compiled in on demand |
 | epochs | `Config.epoch_interruption`, `Engine.increment_epoch`, `Store.set_epoch_deadline` | as fuel; checked against a context slot |
 | limits | `Store.set_limits` | memory/table/instance limits in the runtime |
@@ -110,13 +111,14 @@ directories (`test/core/<dir>/`) count only on a target that claims the feature
 | WASI 0.1 | `Linker.define_wasi`, `WasiConfig` | the WASI host (candidate: fusedwasi `p1` twin) |
 | WASI 0.2 (fused) | `Store.set_wasi`, `set_wasi_http` | the WASI host (candidate: fusedwasi `p2` twin); needs multi-memory |
 | traps with frames | `Trap.frames`, `Frame` | `pyc`: from Python tracebacks; JIT: code-address map |
-| NaN semantics | canonicalization option | `pyc` loses NaN payload bits through Python floats today; decide per spec tests |
+| NaN semantics | canonicalization option | spec rules met on every target (D28: f32 payloads ride in the double; SIMD NaN lanes by class, S0005); a canonicalization option with the `Config` work of phase 6 (S0005 Q5) |
 
 ## Per-target notes
 
 * **`mpy` (MicroPython)** supports what its interpreter allows: no `SharedMemory`/threads in general,
   big-int i64 (slow on 32-bit MCUs), floats only on ports built with them. Unsupported features are
   reported by `Target.supports`, never mis-executed.
-* **JIT targets** may lag the `pyc` target feature by feature; `auto` selects a JIT only when its
-  expected failures equal `pyc`'s in the claimed groups, otherwise the engine runs on `pyc` (D25,
-  TARGETS.md).
+* **JIT targets** may lag the `pyc` target feature by feature. `auto` picks one target per machine,
+  never per module (D25): a JIT whose probe succeeds and that is `complete`, else `pyc` with one D31
+  warning. A JIT claims a proposal directory only when it equals `pyc` there; until then a module
+  using it is `Unsupported` on that JIT (S0005 Q2), as SIMD on `jit-aarch64` is before step 5e2.
