@@ -79,6 +79,11 @@ instructions, S: 4-12, L: longer or no direct form), and a status: **implemented
   A small tool, in the style of `tools/features.py`, renders `docs/ISA-MAP.md` from those tables;
   `--check` fails CI if it is stale. Until a second level exists, the tool is not needed: keep the
   explicit level field in the tables only.
+  * Status (2026-11-02): x86 `CODE`/`SHIFTC`/`LOADC`/the shuffle table are keyed (operator, level),
+    all v1; the inline paths listed in `jit/x86_64/simd.py`'s docstring are not. The first v2 spec
+    adds: selection that falls back v2 -> v1 per operator, `SUPPORTED` per level, and level keys for
+    the inline paths it replaces (the likely v2 candidates: `pshufb`, `ptest`, `pextrb`/`pinsrb`,
+    `roundps`).
 * **A variant enters only with a measurement** (D24): the SIMD benchmark or CoreMark shows a gain on
   the operators it changes. "Not worth it" is a valid recorded outcome.
 * **Opt-in and declared** (D33): a level is chosen explicitly (`Config.isa`), the artifact declares

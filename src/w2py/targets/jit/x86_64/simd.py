@@ -20,7 +20,12 @@ GPR or a memory step around a program. Sequences: Cranelift's x64 lowering for t
 Class L (5d3), no SSSE3/SSE4.1: rounding by the 2^23 / 2^52 magic add (a program, above);
 `i8x16.shuffle` by one instruction when its lanes match one (`_shuffles`), else a byte gather
 into the scratch slots (base + 6, 7); `i8x16.swizzle` per lane by `cmp`/`sbb` and a masked byte
-load, into the scratch slots. Both copy the scratch slots to `dst` last."""
+load, into the scratch slots. Both copy the scratch slots to `dst` last.
+
+ISA levels: `CODE`, `SHIFTC` and `LOADC` are keyed (operator, level) and `_SHUF` (lanes, level),
+filled once; every entry is "v1" and selection is exact on (op, "v1"), with no fallback. Not
+level-keyed today: `PACK`, `ZEROS`, the swizzle and shuffle gather paths, bitmask/all_true,
+extract/replace/splat/bitselect/any_true, `MOVES`, `OTHER` (docs/ISA-LEVELS.md)."""
 
 from typing import TYPE_CHECKING
 
@@ -279,18 +284,24 @@ def _parse(prog: str) -> tuple[Step, ...]:
     return tuple(out)
 
 
-CODE = {fs.BASE + sub: _parse(PROG[o.name]) for sub, o in fs.OPS.items() if o.name in PROG}
-LOADC = {k: _parse(p) for k, p in LOADS.items()}
+LEVEL = "v1"  # the ISA level selection asks for; a variant is a second (operator, level) entry
+CODE = {(fs.BASE + sub, LEVEL): _parse(PROG[o.name]) for sub, o in fs.OPS.items() if o.name in PROG}
+LOADC = {(k, LEVEL): _parse(p) for k, p in LOADS.items()}
 PACK = _parse("pxor 1 1; packsswb 0 1")  # i16x8.bitmask: signs into the low 8 bytes
 ZEROS = {n: _parse(f"pxor 1 1; pcmpeq{s} 1 0") for n, s in ((1, "b"), (2, "w"), (4, "d"))}
 ZEROS[8] = _parse("pxor 1 1; pcmpeqd 1 0; pshufd 2 1 0xb1; pand 1 2")  # both halves zero
-SHIFTC = {fs.BASE + sub: _parse(SHIFT[o.name]) for sub, o in fs.OPS.items() if o.name in SHIFT}
+SHIFTC = {
+    (fs.BASE + sub, LEVEL): _parse(SHIFT[o.name]) for sub, o in fs.OPS.items() if o.name in SHIFT
+}
 SUPPORTED = (
-    MOVES | set(CODE) | set(SHIFTC) | {fs.BASE + s for s, o in fs.OPS.items() if o.name in OTHER}
+    MOVES
+    | {op for op, _ in CODE}
+    | {op for op, _ in SHIFTC}
+    | {fs.BASE + s for s, o in fs.OPS.items() if o.name in OTHER}
 )
 
 
-_SHUF: dict[tuple[int, ...], str] = {}
+_SHUF: dict[tuple[tuple[int, ...], str], str] = {}
 
 
 def _shuffles() -> dict[tuple[int, ...], str]:
@@ -410,19 +421,19 @@ def emit(
         movups(a, 0, _slot(dst) if op == 0x23 else g, True)
         return
     kind, size, signed = shape(op)
-    if op in CODE:
+    if (op, LEVEL) in CODE:
         for i, x in enumerate(args):
             movups(a, i, _slot(x), False)
-        movups(a, run(a, CODE[op]), _slot(dst), True)
+        movups(a, run(a, CODE[op, LEVEL]), _slot(dst), True)
         return
     if kind in ("shuffle", "swizzle"):  # class L (5d3): one instruction, or byte by byte
         if not _SHUF:
-            _SHUF.update(_shuffles())
+            _SHUF.update({(k, LEVEL): p for k, p in _shuffles().items()})
         lanes = tuple(imm[0] >> 8 * i & 255 for i in range(16)) if imm else ()
-        if lanes in _SHUF:
+        if (lanes, LEVEL) in _SHUF:
             for i, x in enumerate(args):
                 movups(a, i, _slot(x), False)
-            movups(a, run(a, _parse(_SHUF[lanes])), _slot(dst), True)
+            movups(a, run(a, _parse(_SHUF[lanes, LEVEL])), _slot(dst), True)
             return
         sc = _slot(dst, 48)  # the scratch slots: disjoint from the operands, read first
         for i in range(16):
@@ -439,18 +450,18 @@ def emit(
             a.store8(Mem(R12, sc.disp + i), RDX)
         _copy(a, sc, _slot(dst))
         return
-    if kind in LOADC:
+    if (kind, LEVEL) in LOADC:
         movq_load(a, 0, b._bounds(f, args[0], imm[0], 8, imm[1]))
-        movups(a, run(a, LOADC[kind]), _slot(dst), True)
+        movups(a, run(a, LOADC[kind, LEVEL]), _slot(dst), True)
         return
-    if op in SHIFTC:  # the count first: it may be in tos (LESSONS 32)
+    if (op, LEVEL) in SHIFTC:  # the count first: it may be in tos (LESSONS 32)
         b.move(Reg(RCX), args[1], False)
         a.alu_imm("and", RCX, 8 * size - 1)
         if size == 1 and kind == "shr_s":
             a.alu_imm("add", RCX, 8)
         a.movq_to_xmm(1, RCX, False)
         movups(a, 0, _slot(args[0]), False)
-        movups(a, run(a, SHIFTC[op]), _slot(dst), True)
+        movups(a, run(a, SHIFTC[op, LEVEL]), _slot(dst), True)
         return
     if kind in ("bitmask", "all_true"):  # i32 results by 32-bit writes: zero-extended
         assert isinstance(dst, Reg)

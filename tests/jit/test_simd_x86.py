@@ -233,3 +233,14 @@ def test_class_l_operators_match_pyc(monkeypatch: pytest.MonkeyPatch) -> None:
             v = _v(fmt, (vals[i : i + n] + vals[:n])[:n])
             for o in ("ceil", "floor", "trunc", "nearest"):
                 assert run(jit, f"{sh}.{o}", v) == run(pyc, f"{sh}.{o}", v), (sh, o, hex(v))
+
+
+def test_every_lowering_has_a_v1_entry() -> None:
+    """Every front-end operator is lowered by a "v1" table entry or by a named inline group."""
+    every = {fs.BASE + sub for sub in fs.OPS}
+    assert all(lvl == "v1" for _, lvl in [*x.CODE, *x.SHIFTC, *x.LOADC])
+    tabled = {op for op, _ in [*x.CODE, *x.SHIFTC]}
+    inline = {fs.BASE + sub for sub, o in fs.OPS.items() if o.name in x.OTHER}  # bitmask, all_true,
+    # the extending loads, shuffle, swizzle
+    assert tabled | x.MOVES | inline == every == x.SUPPORTED
+    assert not tabled & x.MOVES and not tabled & inline
