@@ -112,10 +112,10 @@ JIT code registers no Win64 unwind information (`RtlAddFunctionTable`). Harmless
 through frames (D10) and host exceptions are statuses, so no SEH unwind ever crosses JIT frames; a
 debugger or profiler walking the stack may stop there. Needed once a fault handler (R6) unwinds.
 
-## R4. Version skew: output of one w2py version used by another
+## R4. Version skew: output of one waboros version used by another
 
 > **Largely settled by DECISIONS.md D18** (the Wasmtime model): generated code is used only by the
-> w2py version that made it; on any mismatch the runtime regenerates from the wasm (the cache, a fat
+> waboros version that made it; on any mismatch the runtime regenerates from the wasm (the cache, a fat
 > file) or refuses (a thin file). The analysis below is kept for the reasons.
 
 Two versions meet: the one that **generated** the code and the one that **runs** it (another machine,
@@ -137,9 +137,9 @@ the runtime that forces regeneration.
 **Possible solutions for the generated-module coupling** (ARCHITECTURE.md, "Versioned contracts"):
 
 * (a) **self-contained modules**: helpers always emitted into the module — no coupling, larger output;
-* (b) **versioned helper namespaces** (`w2py.rt.v1`, `w2py.rt.v2`, …): the package keeps old helper
+* (b) **versioned helper namespaces** (`waboros.rt.v1`, `waboros.rt.v2`, …): the package keeps old helper
   versions side by side; a module imports exactly the one it was generated for;
-* (c) **a declared module ABI** (`__w2py_abi__ = N` in the module): the runtime refuses a mismatch and
+* (c) **a declared module ABI** (`__waboros_abi__ = N` in the module): the runtime refuses a mismatch and
   regenerates from the wasm.
 
 **Possible general policy: the wasm is the source of truth, everything generated is a derivative.** On

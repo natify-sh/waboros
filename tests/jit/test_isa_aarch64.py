@@ -12,10 +12,10 @@ import pytest
 
 from tests.jit import need
 from tests.jit.test_compiler import CONTROL, MEMORY, ROOT, wat
-from w2py.frontend.binary import parse
-from w2py.frontend.validate import validate
-from w2py.targets import base
-from w2py.targets.jit.common.compiler import Compiled
+from waboros.frontend.binary import parse
+from waboros.frontend.validate import validate
+from waboros.targets import base
+from waboros.targets.jit.common.compiler import Compiled
 
 LLVM_MC = shutil.which("llvm-mc")
 
@@ -87,9 +87,9 @@ def test_backend_code_passes(tmp_path: Path) -> None:
 
 def test_trampolines_host_thunk_and_probe_pass(tmp_path: Path) -> None:
     need(LLVM_MC, "llvm-mc")
-    from w2py.targets.jit.aarch64 import JitAarch64Target
-    from w2py.targets.jit.aarch64.abi import assemble, host_thunk
-    from w2py.targets.jit.aarch64.encoder import Asm
+    from waboros.targets.jit.aarch64 import JitAarch64Target
+    from waboros.targets.jit.aarch64.abi import assemble, host_thunk
+    from waboros.targets.jit.aarch64.encoder import Asm
 
     thunk = Asm()
     host_thunk(thunk, 5)

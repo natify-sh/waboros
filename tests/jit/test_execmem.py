@@ -10,11 +10,11 @@ from typing import Any, cast
 import pytest
 
 from tests.jit import native
-from w2py.targets.base import TARGETS
-from w2py.targets.jit.common import execmem
-from w2py.targets.jit.common.execmem import ExecMem, load
-from w2py.targets.jit.common.target import JitTarget
-from w2py.targets.jit.x86_64.encoder import R8, RAX, RCX, RDI, RDX, RSI, Asm
+from waboros.targets.base import TARGETS
+from waboros.targets.jit.common import execmem
+from waboros.targets.jit.common.execmem import ExecMem, load
+from waboros.targets.jit.common.target import JitTarget
+from waboros.targets.jit.x86_64.encoder import R8, RAX, RCX, RDI, RDX, RSI, Asm
 
 MAPS = Path("/proc/self/maps")
 

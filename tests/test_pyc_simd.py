@@ -10,11 +10,11 @@ from typing import Any
 import pytest
 
 from tests.spec.target_engine import TargetEngine
-from w2py.frontend.binary import parse
-from w2py.frontend.validate import validate
-from w2py.runtime import link
-from w2py.runtime.store import StoreState
-from w2py.targets import base
+from waboros.frontend.binary import parse
+from waboros.frontend.validate import validate
+from waboros.runtime import link
+from waboros.runtime.store import StoreState
+from waboros.targets import base
 
 V, I32, F32 = b"\x7b", b"\x7f", b"\x7d"
 M128 = (1 << 128) - 1

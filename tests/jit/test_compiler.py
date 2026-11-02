@@ -14,13 +14,13 @@ from typing import Any
 import pytest
 
 from tests.jit import native, native_jit, need
-from w2py.frontend.binary import parse
-from w2py.frontend.validate import validate
-from w2py.runtime import link
-from w2py.runtime.store import StoreState
-from w2py.targets import base
-from w2py.targets.base import HostFunc, Raw, Trap, TrapCode, Unsupported
-from w2py.targets.jit.common.compiler import Compiled
+from waboros.frontend.binary import parse
+from waboros.frontend.validate import validate
+from waboros.runtime import link
+from waboros.runtime.store import StoreState
+from waboros.targets import base
+from waboros.targets.base import HostFunc, Raw, Trap, TrapCode, Unsupported
+from waboros.targets.jit.common.compiler import Compiled
 
 ROOT = Path(__file__).resolve().parents[2]
 M32, M64 = 0xFFFFFFFF, (1 << 64) - 1
@@ -84,7 +84,7 @@ def trap_of(inst: "Inst", name: str, *args: int) -> TrapCode:
 def pins(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Every compare-with-pyc test runs with pinned locals and with all locals in slots."""
     if request.param == "nopin":
-        monkeypatch.setenv("W2PY_JIT_NOPIN", "all")
+        monkeypatch.setenv("WABOROS_JIT_NOPIN", "all")
     yield
 
 
@@ -519,5 +519,5 @@ def test_isa_check_on_compiled_code(tmp_path: Path) -> None:
 
 def test_core_names_no_architecture() -> None:
     """D26: the shared core imports nothing architecture- or target-specific."""
-    src = (ROOT / "src/w2py/targets/jit/common/compiler.py").read_text(encoding="utf-8")
+    src = (ROOT / "src/waboros/targets/jit/common/compiler.py").read_text(encoding="utf-8")
     assert "x86" not in src and "targets.pyc" not in src

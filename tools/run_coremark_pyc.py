@@ -4,7 +4,7 @@ import sys
 import time
 from typing import Any
 
-from w2py.targets.pyc import load
+from waboros.targets.pyc import load
 
 
 def main() -> None:
@@ -22,7 +22,7 @@ def main() -> None:
     exports.update(load(wasm, {"wiring": {"millis": millis, "print": pr}}))
     t = time.perf_counter()
     exports["setup"]()
-    print(f"\n[w2py pyc] wall {time.perf_counter() - t:.2f}s")
+    print(f"\n[waboros pyc] wall {time.perf_counter() - t:.2f}s")
 
 
 main()

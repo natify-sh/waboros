@@ -84,7 +84,7 @@ only what its test programs needed.
 
 State on branch `phase0-skeleton` (not merged to `main`, the maintainer's choice):
 
-* **Done, phases 0–2:** package layout, strict binary reader and validator (`src/w2py/frontend/`), the
+* **Done, phases 0–2:** package layout, strict binary reader and validator (`src/waboros/frontend/`), the
   spec-suite runner (the metric), and the `pyc` target complete for the core group (spec core: `pyc`
   20509 pass, 89 expected failures; wasmtime oracle 63 782 over all claimed directories). `pyc` is frozen
   for new features and gets correctness fixes only.
@@ -151,5 +151,5 @@ a test. "Measure, do not estimate."
 | how documents are written and checked | `docs/STANDARDS.md` |
 | component specs (contracts, written before implementation) | `docs/specs/` |
 
-The maintainer writes in Ukrainian; code, comments, commits and documents are in English. The name
-`w2py` stays until the rename to `waboros` (D40), one step after SIMD.
+The maintainer writes in Ukrainian; code, comments, commits and documents are in English. The project
+was called `w2py` until the rename to `waboros` (D40, done 2026-11-02); `poc/` keeps the old name.

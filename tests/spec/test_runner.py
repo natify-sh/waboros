@@ -353,7 +353,7 @@ def _xfail_keys(engine: str, both: Sequence[str]) -> set[str]:
 
 
 def _jits(complete: bool) -> list[str]:
-    from w2py.targets.base import TARGETS
+    from waboros.targets.base import TARGETS
 
     jits = [n for n in TARGETS if n.startswith("jit-")]
     return [n for n in jits if getattr(TARGETS[n](), "complete", True) == complete]

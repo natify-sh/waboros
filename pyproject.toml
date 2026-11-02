@@ -1,21 +1,57 @@
+[build-system]
+requires = ["setuptools>=77", "setuptools_scm>=8"]
+build-backend = "setuptools.build_meta"
+
 [project]
-name = "w2py"
-version = "0.0.0"
+name = "waboros"
+dynamic = ["version"]
 description = "A WebAssembly compiler in pure Python"
 readme = "README.md"
+authors = [{ name = "o-murphy", email = "thehelixpg@gmail.com" }]
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
+keywords = ["webassembly", "wasm", "compiler", "jit"]
+classifiers = [
+    "Intended Audience :: Developers",
+    "Natural Language :: English",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: Implementation :: PyPy",
+    "Topic :: Software Development :: Compilers",
+    "Typing :: Typed",
+]
 dependencies = []
 
-[build-system]
-requires = ["uv_build>=0.9,<0.10"]
-build-backend = "uv_build"
+[project.urls]
+Homepage = "https://github.com/natify-sh/waboros"
+Repository = "https://github.com/natify-sh/waboros"
+Issues = "https://github.com/natify-sh/waboros/issues"
 
-[tool.uv.build-backend]
-module-name = "w2py"
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+waboros = ["py.typed"]
+
+[tool.setuptools_scm]
+# Until the repo has a tag (or any commit), there is nothing to derive a version from.
+fallback_version = "0.0.0"
 
 [dependency-groups]
 dev = [
     "pytest",
+    "pytest-cov",
     "ruff",
     "pyright",
     "wasmtime==50.0.1",
@@ -32,10 +68,13 @@ extend-exclude = ["poc", "*.md"]
 select = ["E", "F", "W", "I", "UP", "B"]
 
 [tool.pyright]
-include = ["src/w2py", "tests"]
+include = ["src/waboros", "tests"]
 exclude = ["poc"]
 pythonVersion = "3.11"
 typeCheckingMode = "strict"
+
+[tool.coverage.run]
+source = ["waboros"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -43,7 +82,7 @@ testpaths = ["tests"]
 [tool.ruff.lint.per-file-ignores]
 "tools/*" = ["UP031"]
 # Ported PoC code (pyright: basic in the files): keep its style findings out of the way for now.
-"src/w2py/frontend/binary.py" = ["E501", "UP031"]
-"src/w2py/targets/pyc/codegen.py" = ["E501", "B007", "B023", "B905", "UP031"]
-"src/w2py/targets/pyc/simd.py" = ["UP031"]  # generates source text like codegen.py
-"src/w2py/targets/pyc/runtime.py" = ["E401", "E501", "E701", "E702", "I001", "UP031"]
+"src/waboros/frontend/binary.py" = ["E501", "UP031"]
+"src/waboros/targets/pyc/codegen.py" = ["E501", "B007", "B023", "B905", "UP031"]
+"src/waboros/targets/pyc/simd.py" = ["UP031"]  # generates source text like codegen.py
+"src/waboros/targets/pyc/runtime.py" = ["E401", "E501", "E701", "E702", "I001", "UP031"]

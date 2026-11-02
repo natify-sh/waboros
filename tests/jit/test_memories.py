@@ -13,11 +13,11 @@ from tests.jit import native, need, test_compiler
 from tests.jit.test_compiler import JIT, build, outcome, trap_of, wat
 from tests.jit.test_float import Oracle
 from tests.jit.test_tables import provider
-from w2py.frontend.binary import parse
-from w2py.frontend.validate import validate
-from w2py.runtime.store import StoreState
-from w2py.targets import base
-from w2py.targets.base import TrapCode
+from waboros.frontend.binary import parse
+from waboros.frontend.validate import validate
+from waboros.runtime.store import StoreState
+from waboros.targets import base
+from waboros.targets.base import TrapCode
 
 LOADS = ["i32.load", "i64.load", "f32.load", "f64.load", "i32.load8_s", "i32.load8_u",
          "i32.load16_s", "i32.load16_u", "i64.load8_s", "i64.load8_u", "i64.load16_s",

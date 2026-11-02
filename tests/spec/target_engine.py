@@ -1,6 +1,7 @@
 # pyright: reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false
-"""Every w2py target as a SpecEngine (docs/specs/S0001): a thin adapter over S0002 (select, compile,
-instantiate, call). `TargetEngine(name)`: a target name (`pyc`, `jit-x86_64`, ...) or `auto` (D25).
+"""Every waboros target as a SpecEngine (docs/specs/S0001): a thin adapter over S0002 (select,
+compile, instantiate, call). `TargetEngine(name)`: a target name (`pyc`, `jit-x86_64`, ...) or
+`auto` (D25).
 
 A valid module the target cannot compile (`Unsupported`, D25: no fallback) loads as a placeholder;
 instantiating it raises the S0001 `Unsupported`, so its commands fail `unsupported: <feature>` and
@@ -26,11 +27,11 @@ from tests.spec.engine import (
     Unsupported,
     Value,
 )
-from w2py.frontend.binary import F32, F64, I32, I64, ImplLimit, Malformed, parse
-from w2py.frontend.validate import Invalid, validate
-from w2py.runtime import link
-from w2py.runtime.store import StoreState
-from w2py.targets import base
+from waboros.frontend.binary import F32, F64, I32, I64, ImplLimit, Malformed, parse
+from waboros.frontend.validate import Invalid, validate
+from waboros.runtime import link
+from waboros.runtime.store import StoreState
+from waboros.targets import base
 
 _PARSE_ERRORS = (AssertionError, IndexError, ValueError, struct.error, UnicodeDecodeError)
 _MASK = {

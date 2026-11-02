@@ -23,7 +23,7 @@ plugs in first (to test the runner), then `pyc`, `jit-x86_64`. Not the public AP
 
 ## Interface
 
-### Files (all dev-only; nothing under `src/w2py` changes, D1, D11)
+### Files (all dev-only; nothing under `src/waboros` changes, D1, D11)
 Under `tests/spec/`: `engine.py` (the protocol, values, errors below; stdlib only),
 `wasmtime_engine.py` (the adapter; the only file that imports `wasmtime`), `run.py` (the runner CLI,
 value parsing and comparison), `fetch.py` (pin, download, conversion), `spectest.wat`,
@@ -276,7 +276,7 @@ result and on an xpass).
   `annotations`, `ref_null`, `type-canon`, `type-equivalence`, `type-rec`), 74/97 with default
   flags; `--enable-all` writes compact imports, which Wasmtime rejects. `json-from-wast` converts
   97/97 and uses the `wast` parser family that Wasmtime's own spec runner uses.
-* **Interface in `src/w2py/_spec_engine.py`**: ships a test seam and pulls the runtime's trap type
+* **Interface in `src/waboros/_spec_engine.py`**: ships a test seam and pulls the runtime's trap type
   towards it; an adapter per engine costs one `try/except`.
 * **In-process only**: one abort (already real for wasmtime-py) loses the whole run.
 

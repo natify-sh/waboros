@@ -14,10 +14,10 @@ import pytest
 from tests.jit import native, need
 from tests.jit.test_encoder import OBJDUMP, run_isa_check
 from tests.jit.test_simd_abi import LLVM_MC, VALS, _computed, _mc, _pair, run
-from w2py.frontend import simd as fs
-from w2py.targets.base import TrapCode
-from w2py.targets.jit.x86_64 import simd as x
-from w2py.targets.jit.x86_64.encoder import R9, R12, RAX, RCX, Asm, Mem
+from waboros.frontend import simd as fs
+from waboros.targets.base import TrapCode
+from waboros.targets.jit.x86_64 import simd as x
+from waboros.targets.jit.x86_64.encoder import R9, R12, RAX, RCX, Asm, Mem
 
 
 def _v(fmt: str, lanes: list[int]) -> int:

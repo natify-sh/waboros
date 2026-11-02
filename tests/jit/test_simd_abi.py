@@ -16,10 +16,10 @@ import pytest
 from tests.jit import native, need
 from tests.jit.test_compiler import JIT, Inst, build, wat
 from tests.jit.test_tables import provider
-from w2py.runtime.store import StoreState
-from w2py.targets.base import Raw, Trap, TrapCode
-from w2py.targets.jit.common import simd
-from w2py.targets.jit.common.context import Layout
+from waboros.runtime.store import StoreState
+from waboros.targets.base import Raw, Trap, TrapCode
+from waboros.targets.jit.common import simd
+from waboros.targets.jit.common.context import Layout
 
 M64, M128 = (1 << 64) - 1, (1 << 128) - 1
 A, B = 0x0123456789ABCDEF_FEDCBA9876543210, 0xFFFFFFFF_00000000_80000000_7FFFFFFF
@@ -126,7 +126,7 @@ def _pair(
     pins: str, monkeypatch: pytest.MonkeyPatch, text: str = MOD
 ) -> tuple[Inst, Inst]:  # fmt: skip
     if pins == "nopin":
-        monkeypatch.setenv("W2PY_JIT_NOPIN", "all")
+        monkeypatch.setenv("WABOROS_JIT_NOPIN", "all")
     w = wat(text)
     imports: dict[str, Any] = {"env": {"h": _host}}
     out = []
@@ -322,8 +322,8 @@ def _mc(triple: str, lines: list[str]) -> list[bytes]:
 
 def test_x86_forms_match_llvm_mc() -> None:
     need(LLVM_MC, "llvm-mc")
-    from w2py.targets.jit.x86_64 import simd as x
-    from w2py.targets.jit.x86_64.encoder import R12, R13, R15, RCX, Asm, Mem
+    from waboros.targets.jit.x86_64 import simd as x
+    from waboros.targets.jit.x86_64.encoder import R12, R13, R15, RCX, Asm, Mem
 
     forms = [(Mem(R12, 8), "r12 + 8"), (Mem(R15, 8 * 300), "r15 + 2400"), (Mem(RCX), "rcx"),
              (Mem(R13, 16, RCX), "r13 + rcx*1 + 16"),
@@ -347,8 +347,8 @@ def test_x86_forms_match_llvm_mc() -> None:
 
 def test_aarch64_forms_match_llvm_mc() -> None:
     need(LLVM_MC, "llvm-mc")
-    from w2py.targets.jit.aarch64 import simd as v
-    from w2py.targets.jit.aarch64.encoder import Asm
+    from waboros.targets.jit.aarch64 import simd as v
+    from waboros.targets.jit.aarch64.encoder import Asm
 
     ours: list[bytes] = []
     text: list[str] = []

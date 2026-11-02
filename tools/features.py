@@ -91,8 +91,8 @@ def build(upstream: dict[str, Any]) -> dict[str, Any]:
         bad = xfails(t)
         ev = {k: evidence(k, t, bad, counts) for k in feats}
         values = {k: ev[k] and ev[k][0] for k in feats}
-        runtimes[f"w2py {t}"] = {
-            "url": "https://github.com/natify-sh/w2py",
+        runtimes[f"waboros {t}"] = {
+            "url": "https://github.com/natify-sh/waboros",
             "category": "Standalone Runtimes",
             "features": values,
         }
@@ -121,7 +121,7 @@ def table(upstream: dict[str, Any], ours: dict[str, Any]) -> str:
     for k, f in upstream["features"].items():
         mine: list[str] = []
         for t in TARGETS:
-            c = cell(rt[f"w2py {t}"]["features"][k])
+            c = cell(rt[f"waboros {t}"]["features"][k])
             e = evidence(k, t, bad[t], counts)
             mine.append(f"{c} {e[1]}/{e[2]}" if e else c)
         row = [f"{f['description']} (`{k}`)", f["phase"], cell(wt.get(k)), *mine]

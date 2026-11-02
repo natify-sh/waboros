@@ -6,9 +6,9 @@ import warnings
 import pytest
 
 from tests.jit import native
-from w2py.targets import base
-from w2py.targets.base import TARGETS, Unsupported, target_order
-from w2py.targets.jit.x86_64 import JitX86_64Target
+from waboros.targets import base
+from waboros.targets.base import TARGETS, Unsupported, target_order
+from waboros.targets.jit.x86_64 import JitX86_64Target
 
 
 def test_probe_succeeds_here() -> None:
@@ -35,7 +35,7 @@ def test_registered_and_selected_by_auto() -> None:
 
 
 def test_aarch64_probe_here_or_refused(monkeypatch: pytest.MonkeyPatch) -> None:
-    from w2py.targets.jit.aarch64 import JitAarch64Target
+    from waboros.targets.jit.aarch64 import JitAarch64Target
 
     t = JitAarch64Target()
     if platform.machine().lower() in t.machines:
@@ -52,7 +52,7 @@ def test_auto_skips_an_incomplete_jit(monkeypatch: pytest.MonkeyPatch) -> None:
     """S0004: `complete = False` keeps `auto` on pyc with the third D31 message, even where the
     probe succeeds; an explicit choice still gives the target (every JIT is complete since 4e:
     the guard is tested on a patched one)."""
-    from w2py.targets.jit.aarch64 import JitAarch64Target
+    from waboros.targets.jit.aarch64 import JitAarch64Target
 
     monkeypatch.setattr(JitAarch64Target, "complete", False)
 
@@ -64,6 +64,6 @@ def test_auto_skips_an_incomplete_jit(monkeypatch: pytest.MonkeyPatch) -> None:
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter("always")
         assert target_order("auto") == ["pyc"] == target_order("auto")
-    msg = "w2py: jit-aarch64 incomplete (its expected failures differ from pyc's); using pyc"
+    msg = "waboros: jit-aarch64 incomplete (its expected failures differ from pyc's); using pyc"
     assert [str(x.message) for x in w] == [msg]
     assert target_order("jit-aarch64") == ["jit-aarch64"]

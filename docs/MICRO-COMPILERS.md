@@ -95,7 +95,7 @@ Zig/C/Rust. The compiler side imports neither `ctypes` nor `mmap` today: keep it
 1. **No runtime, no GC, no WASI**: `wasm32-freestanding` / `wasm32-unknown-unknown`. A contract like
    `compile(in_ptr, in_len) -> (out_ptr, out_len)` in its own memory, plus an allocator export;
    versioned like the artifact format.
-2. **Only wasm features every w2py target runs**: MVP + Wasm 2.0 core (no SIMD, threads, exceptions,
+2. **Only wasm features every waboros target runs**: MVP + Wasm 2.0 core (no SIMD, threads, exceptions,
    GC). Pin toolchain `target-feature`s explicitly; some enable extras by default.
 3. **Deterministic**: the same input always gives the same bytes (no randomly seeded hash maps, no
    address-dependent ordering). Byte-identical checks depend on it.
@@ -110,7 +110,7 @@ Language choice is about safety and ergonomics, not architecture: Zig (already i
 
 1. **Short** (x86-64, aarch64): the Python JIT compiles the micro-compiler to native directly.
 2. **Long** (no Python backend): `pyc` runs `<arch>.wasm` (~150x slower than native, once per
-   machine), it compiles itself, the artifact is cached (key: w2py version, architecture, ISA level).
+   machine), it compiles itself, the artifact is cached (key: waboros version, architecture, ISA level).
 3. **Cross** (D35): an x86-64 machine runs `riscv64.wasm` and emits a native riscv64 compiler
    artifact for a slow device, which then skips the bootstrap. A shipped artifact must be
    byte-identical with a self-built one.

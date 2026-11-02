@@ -13,11 +13,11 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from w2py.frontend import binary, simd
-from w2py.frontend.validate import validate
-from w2py.runtime import link
-from w2py.runtime.store import StoreState
-from w2py.targets import base
+from waboros.frontend import binary, simd
+from waboros.frontend.validate import validate
+from waboros.runtime import link
+from waboros.runtime.store import StoreState
+from waboros.targets import base
 
 DIR = Path(__file__).resolve().parents[1] / "poc/bench/simd"
 KERNELS = ("addsat", "dot", "scan", "matmul", "swizzle", "nearest")

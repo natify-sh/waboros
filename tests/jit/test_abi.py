@@ -16,12 +16,12 @@ from typing import cast
 import pytest
 
 from tests.jit import native, need
-from w2py.runtime.link import host_func
-from w2py.runtime.store import StoreState
-from w2py.targets.base import HostFunc, Raw, Trap, TrapCode
-from w2py.targets.jit.common.context import HOST_ERROR, INTERRUPT, TRAP_CODE, Layout
-from w2py.targets.jit.common.execmem import load
-from w2py.targets.jit.common.instance import (
+from waboros.runtime.link import host_func
+from waboros.runtime.store import StoreState
+from waboros.targets.base import HostFunc, Raw, Trap, TrapCode
+from waboros.targets.jit.common.context import HOST_ERROR, INTERRUPT, TRAP_CODE, Layout
+from waboros.targets.jit.common.execmem import load
+from waboros.targets.jit.common.instance import (
     DEFAULT_BUDGET,
     Instance,
     Memory,
@@ -29,10 +29,10 @@ from w2py.targets.jit.common.instance import (
     linux_main_low,
     native_budget,
 )
-from w2py.targets.jit.x86_64 import trampolines
-from w2py.targets.jit.x86_64.abi import bridge, entry
-from w2py.targets.jit.x86_64.backend import Backend, Frame
-from w2py.targets.jit.x86_64.encoder import (
+from waboros.targets.jit.x86_64 import trampolines
+from waboros.targets.jit.x86_64.abi import bridge, entry
+from waboros.targets.jit.x86_64.backend import Backend, Frame
+from waboros.targets.jit.x86_64.encoder import (
     R8,
     R9,
     R10,
@@ -365,10 +365,10 @@ def test_native_limit_set_by_the_first_jit_entry_at_any_store_depth(tramp: Tramp
 DEEPEST_HOST = """
 import sys, threading
 from tests.jit.test_abi import build, recursion
-from w2py.runtime.store import StoreState
-from w2py.targets.base import Trap
-from w2py.targets.jit.common import instance
-from w2py.targets.jit.x86_64 import trampolines
+from waboros.runtime.store import StoreState
+from waboros.targets.base import Trap
+from waboros.targets.jit.common import instance
+from waboros.targets.jit.x86_64 import trampolines
 depth, kib, jit = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3] == "jit"
 x = []
 for _ in range(depth):
@@ -503,8 +503,8 @@ def test_a_host_that_never_writes_its_status_fails(tramp: Trampolines) -> None:
 ASYNC_HOST = """
 import json, signal
 from tests.jit.test_compiler import build, wat
-from w2py.runtime.store import StoreState
-from w2py.targets.jit.common.instance import _stacks
+from waboros.runtime.store import StoreState
+from waboros.targets.jit.common.instance import _stacks
 
 def tick(*a):
     if st.depth:  # only inside a call: the harness below must not be hit

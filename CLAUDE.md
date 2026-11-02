@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Context and rules for working on w2py with an agent.
+Context and rules for working on waboros with an agent.
 
 **Start with [`BRIEF.md`](BRIEF.md)**: what the project is, what it is not, and the order of work.
 
@@ -131,6 +131,7 @@ Report:      files changed, commands run with output, numbers before/after, docs
 ## Commands
 ```
 uv sync                                    # dev environment
+uv build                                   # sdist + wheel `waboros-*` (version from git tags, setuptools-scm)
 uv run pytest -q                           # package tests
 uv run python tests/spec/fetch.py          # fetch and convert the pinned spec suite
 uv run python -m tests.spec.run --engine {wasmtime,pyc,jit-x86_64,auto}   # the spec metric

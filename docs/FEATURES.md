@@ -16,7 +16,7 @@ the WebAssembly website's [features.json](https://webassembly.org/features/), pi
 `docs/upstream/`) and the table. A feature is "yes" on a target only if its spec tests pass there;
 "partial" lists the failing tests in `features.json`; "-" is not supported or its spec tests are not
 run yet. "W3C phase" is the proposal's stage in the WebAssembly Community Group process (5 =
-standardized), from the upstream data, not a w2py roadmap phase. Wasmtime's column is the upstream data. `pyc` is computed from `tests/spec/xfail/pyc.txt`
+standardized), from the upstream data, not a waboros roadmap phase. Wasmtime's column is the upstream data. `pyc` is computed from `tests/spec/xfail/pyc.txt`
 and the command counts in `tests/spec/counts.json`; each cell shows `ok/total` commands. Proposal
 directories (`test/core/<dir>/`) count only on a target that claims the feature
 (`tests/spec/claims.py`); an unclaimed feature is "-". `jit-x86_64` and `jit-aarch64` are computed the same way from their `tests/spec/xfail/<target>.txt`; they claim the same directories as `pyc` (D25 parity) including `simd`, which `pyc` claims since S0005 step 5b, `jit-x86_64` since step 5d3 and `jit-aarch64` since step 5e2. Every registered target has a column (`tests/test_features.py`). `mpy` is not listed yet.

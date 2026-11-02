@@ -6,8 +6,8 @@ import pytest
 
 from tests.jit import native
 from tests.jit.test_compiler import ROOT, build, trap_of
-from w2py.targets.base import TrapCode
-from w2py.targets.jit.aarch64.backend import Backend
+from waboros.targets.base import TrapCode
+from waboros.targets.jit.aarch64.backend import Backend
 
 
 @pytest.fixture(autouse=True)

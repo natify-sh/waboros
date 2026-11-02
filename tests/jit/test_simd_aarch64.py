@@ -14,10 +14,10 @@ import pytest
 from tests.jit import native, need
 from tests.jit.test_simd_abi import LLVM_MC, _computed, _mc, _pair, run
 from tests.jit.test_simd_x86 import COUNTS, NAN_ARITH, V, _bounds, _nan_class, _v
-from w2py.frontend import simd as fs
-from w2py.targets.base import TrapCode
-from w2py.targets.jit.aarch64 import simd as v
-from w2py.targets.jit.aarch64.encoder import Asm
+from waboros.frontend import simd as fs
+from waboros.targets.base import TrapCode
+from waboros.targets.jit.aarch64 import simd as v
+from waboros.targets.jit.aarch64.encoder import Asm
 
 
 def _module() -> tuple[str, dict[str, list[tuple[int, ...]]]]:

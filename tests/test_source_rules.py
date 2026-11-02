@@ -10,7 +10,7 @@ def test_no_side_effect_inside_assert() -> None:
     unrelated code (review of 4b): no `assert` in the JIT may compile or emit code."""
     import ast
 
-    for path in (ROOT / "src/w2py/targets/jit").rglob("*.py"):
+    for path in (ROOT / "src/waboros/targets/jit").rglob("*.py"):
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             if isinstance(node, ast.Assert):
                 calls = [c for c in ast.walk(node.test) if isinstance(c, ast.Call)]
@@ -27,15 +27,15 @@ def test_compiler_side_has_no_host_specific_imports() -> None:
     target), so they can be ported into a wasm micro-compiler."""
     import ast
 
-    files = [*(ROOT / "src/w2py/frontend").glob("*.py")]
+    files = [*(ROOT / "src/waboros/frontend").glob("*.py")]
     files += [
         p
         for n in ("compiler", "backend", "context", "simd")
-        if (p := ROOT / "src/w2py/targets/jit/common" / f"{n}.py").exists()
+        if (p := ROOT / "src/waboros/targets/jit/common" / f"{n}.py").exists()
     ]
     files += [
         p
-        for p in (ROOT / "src/w2py/targets/jit").glob("*/*.py")
+        for p in (ROOT / "src/waboros/targets/jit").glob("*/*.py")
         if p.stem in ("backend", "encoder", "abi", "simd")
     ]
     banned = {"ctypes", "mmap", "threading", "_thread"}

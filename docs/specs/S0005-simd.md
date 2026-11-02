@@ -19,8 +19,8 @@ global boundaries, the amendment of the frozen backend interface (D39) it needs,
 lowering at the ISA baselines (D24), NaN rules, how a target claims the `simd/` spec directory, and
 the steps. Requirements set by the maintainer (binding):
 
-1. **SIMD lives in its own modules**: `src/w2py/targets/pyc/simd.py`,
-   `src/w2py/targets/jit/x86_64/simd.py`, `src/w2py/targets/jit/aarch64/simd.py`. Existing files only
+1. **SIMD lives in its own modules**: `src/waboros/targets/pyc/simd.py`,
+   `src/waboros/targets/jit/x86_64/simd.py`, `src/waboros/targets/jit/aarch64/simd.py`. Existing files only
    dispatch to them; every inline hook is listed in "Hooks" below, nothing else changes.
 2. **`simd/` stays unclaimed by a target until it nearly passes** (threshold in "Claiming `simd`");
    no large expected-failure lists.

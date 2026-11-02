@@ -52,8 +52,8 @@ Supported opcodes (the rest raise `Unsupported` with the first missing feature, 
 
 **`auto` does not select `jit-aarch64` until its expected failures equal `pyc`'s (D25).** The target
 carries `complete = False`; `target_order("auto")` skips an incomplete JIT and warns once with
-`w2py: jit-aarch64 incomplete (its expected failures differ from pyc's); using pyc` (a third D31 message). An explicit
-`--engine jit-aarch64` / `W2PY_TARGET=jit-aarch64` runs it. This brings back the readiness guard
+`waboros: jit-aarch64 incomplete (its expected failures differ from pyc's); using pyc` (a third D31 message). An explicit
+`--engine jit-aarch64` / `WABOROS_TARGET=jit-aarch64` runs it. This brings back the readiness guard
 S0002 step 2 had (removed in step 6), as an amendment of S0002.
 
 Cheap to add right after the freeze (not in phase 4's acceptance): floats are easier than on
@@ -224,7 +224,7 @@ of 2026-11-01):
 2. **Far-branch retry.** `compile_module` emits each function once (`compiler.py:236-241`). New:
    `Backend.func_end` may report "branches out of range"; the core calls `b.rewind(pos)` and runs
    `_Func` again with `far=True` passed to `func_begin`. x86-64 never asks (rel32).
-3. **Target glue.** `x86_64/__init__.py:23-73` (probe, `supports`, `compile` with `W2PY_JIT_DUMP`,
+3. **Target glue.** `x86_64/__init__.py:23-73` (probe, `supports`, `compile` with `WABOROS_JIT_DUMP`,
    `instantiate`) is generic except three imports; it moves to `common/target.py` (second real use)
    and each architecture gives its probe stub, `Backend` and `trampolines()`.
 4. **I-cache flush and `PROT_BTI`** in `common/execmem.py:33-36, 71-80` (`seal`/`load`), no-op on
@@ -268,7 +268,7 @@ Header: `arch` = 2 (aarch64), `isa_level` = 1 (ARMv8.0-A with FP and Advanced SI
 
 ## Test plan
 * **4a** `uv run pytest tests/jit/test_encoder_aarch64.py` → every form equals `llvm-mc
-  -triple=aarch64 -show-encoding` (x86-64 and arm64 hosts; `W2PY_JIT_REQUIRE=1` in CI);
+  -triple=aarch64 -show-encoding` (x86-64 and arm64 hosts; `WABOROS_JIT_REQUIRE=1` in CI);
   `uv run pytest tests/jit -k "entry or trap or reentry or host or interrupt or stack"` on the arm64
   runner with hand-assembled functions (S0003 test plan, aarch64 twins), BTI enforced.
 * **4b** on the arm64 runner: `uv run python -m tests.spec.run --engine jit-aarch64` → 0 unexpected;
@@ -286,7 +286,7 @@ Header: `arch` = 2 (aarch64), `isa_level` = 1 (ARMv8.0-A with FP and Advanced SI
   arm64 job produces its own and `diff` must be empty; the arm64 job then runs the spec suite from
   that code. The same check runs in reverse for `jit-x86_64`.
 * **CI**: a new job on `ubuntu-24.04-arm` (native; QEMU stays for architectures without runners,
-  ROADMAP): `pytest tests/jit` with `W2PY_JIT_REQUIRE=1`, the spec runs (wasmtime oracle, `pyc`,
+  ROADMAP): `pytest tests/jit` with `WABOROS_JIT_REQUIRE=1`, the spec runs (wasmtime oracle, `pyc`,
   `jit-aarch64`, `auto`), `tools/no_exec.py` fallback, `tools/stack_info.py`, the ISA gate, the
   cross-compilation diff, CoreMark. `macos-latest` (arm64) and `windows-11-arm` run the same job (decision 2 of the Changes).
 * **Without arm64 hardware** (checked in this container, Ubuntu 24.04 x86-64):
@@ -364,7 +364,7 @@ Resolved by the maintainer on 2026-11-01 (see Changes); none open.
   LLVM's `mov`). Tests: `tests/jit/test_encoder_aarch64.py`, `tests/jit/test_abi_aarch64.py`
   (run here under QEMU 8.2 with BTI enforced: `python3 tools/run_arm64.py -m pytest
   tests/jit/test_abi_aarch64.py`); x86-64-only tests skip on other machines (`tests.jit.native`)
-  instead of failing under `W2PY_JIT_REQUIRE=1`.
+  instead of failing under `WABOROS_JIT_REQUIRE=1`.
 * 2026-11-01 (step 4b): the integer-core backend (`aarch64/backend.py`), every operation of the
   Scope table, as specified above (division checks `cbz` + `cmn`/`ccmp`/`b.vs`; `ctz` = `rbit` +
   `clz`; popcnt through `cnt`/`addv`; bounds checks in 64 bits; jump tables by `adrp` + `ldrsw`

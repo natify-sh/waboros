@@ -18,17 +18,17 @@ from tests.jit import native, need
 from tests.jit.test_compiler import JIT, ROOT, Inst, build, outcome, pins, trap_of, wat
 from tests.jit.test_float import Oracle
 from tests.jit.test_tables import provider
-from w2py.frontend.binary import parse
-from w2py.frontend.validate import validate
-from w2py.runtime.store import StoreState
-from w2py.targets import base
-from w2py.targets.base import Raw, Trap, TrapCode
-from w2py.targets.jit.common.compiler import Compiled
-from w2py.targets.jit.common.context import TAIL_SWITCH
-from w2py.targets.jit.common.instance import JitFunc
-from w2py.targets.jit.x86_64 import JitX86_64Target
-from w2py.targets.jit.x86_64.abi import bridge, entry, sp_stub, tail_switch
-from w2py.targets.jit.x86_64.encoder import Asm
+from waboros.frontend.binary import parse
+from waboros.frontend.validate import validate
+from waboros.runtime.store import StoreState
+from waboros.targets import base
+from waboros.targets.base import Raw, Trap, TrapCode
+from waboros.targets.jit.common.compiler import Compiled
+from waboros.targets.jit.common.context import TAIL_SWITCH
+from waboros.targets.jit.common.instance import JitFunc
+from waboros.targets.jit.x86_64 import JitX86_64Target
+from waboros.targets.jit.x86_64.abi import bridge, entry, sp_stub, tail_switch
+from waboros.targets.jit.x86_64.encoder import Asm
 
 __all__ = ["pins"]  # the fixture, used by name
 
@@ -493,7 +493,7 @@ def test_real_modules_with_alignment_checks(monkeypatch: pytest.MonkeyPatch) -> 
     with it on."""
     native("jit-x86_64")
     from tests.jit import test_tables
-    from w2py.targets.jit.x86_64 import backend
+    from waboros.targets.jit.x86_64 import backend
 
     thunk_only = wat("""(module (import "env" "h" (func $h)) (table 1 funcref)
       (elem (i32.const 0) func $h))""")  # fmt: skip

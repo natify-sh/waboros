@@ -2,7 +2,7 @@
 title: Benchmarks
 kind: log
 status: current
-updated: 2026-11-01
+updated: 2026-11-02
 ---
 
 # Benchmarks
@@ -235,8 +235,8 @@ meld itself (a 2.9 MB component) into a core module. Same Xeon 2.1 GHz cloud mac
 |---|---|---|---|---|
 | wasmtime-py (Cranelift) | — | — | 1.05 s | 2 834 770 bytes, the reference |
 | meld p1 CLI under wasmtime (WASI) | — | — | 1.09 s | 2 841 680 bytes (attestation with a wall-clock timestamp) |
-| w2py `pyc`, PyPy 7.3.19 | 8.7 s (CPython) | 8.2 s | **44 s** | byte-identical to the reference |
-| w2py `pyc`, CPython 3.13 | 8.7 s | 6.1 s | **253 s** | byte-identical to the reference |
+| PoC `pyc`, PyPy 7.3.19 | 8.7 s (CPython) | 8.2 s | **44 s** | byte-identical to the reference |
+| PoC `pyc`, CPython 3.13 | 8.7 s | 6.1 s | **253 s** | byte-identical to the reference |
 
 The module: 4 336 functions, 1 267 `call_indirect`, `memory.copy` ×940, `memory.fill` ×16, no SIMD,
 no multi-value, no `trunc_sat`; translated to 13.6 MB of Python source. The PoC JIT cannot run it yet
@@ -252,7 +252,7 @@ functions by body bytes — an estimate, weakest for QuickJS (10 % covered). Mod
 natify-sh/py-wasmext (`dev` branch) and meld (above). CPython 3.13 and PyPy 7.3.19, Xeon 2.1 GHz,
 2 cores, one session. wasmtime-py's Cranelift compiles functions in parallel on both cores.
 
-| module | wasm | JIT covered | **w2py JIT**, CPython (projected) | w2py JIT, PyPy (projected) | wasmtime Cranelift | `pyc`: translate + `compile()` |
+| module | wasm | JIT covered | **PoC JIT**, CPython (projected) | PoC JIT, PyPy (projected) | wasmtime Cranelift | `pyc`: translate + `compile()` |
 |---|---|---|---|---|---|---|
 | CoreMark | 19 KB | 100 % | 0.03 s (measured) | — | — | — |
 | Lua 5.4 | 321 KB | 54 % | 0.37–0.44 s | 1.54 s | 0.25 s | 0.40 + 1.60 s |
@@ -274,7 +274,7 @@ natify-sh/py-wasmext (`dev` branch) and meld (above). CPython 3.13 and PyPy 7.3.
   **lazy compilation** (a function compiled on its first call, as V8 does with Liftoff) would make the
   first-load cost proportional to the code actually used — ROADMAP.md, open question 13.
 
-## WAMR (iwasm) next to w2py
+## WAMR (iwasm) next to the PoC
 
 `poc/bench/wamr/` (a minimal C host over `libiwasm`). WAMR 2.4.3 runtime for AOT (an `.aot` made by
 `wamrc` 2.4.3 is refused by a runtime built from WAMR `main`: "unknown binary version"); fast
@@ -285,7 +285,7 @@ CoreMark passes its self-check in every row.
 |---|---|---|---|
 | **iwasm AOT** (`wamrc` = LLVM, ahead of time) | **26 016 – 26 349** | **595 – 617** | `libiwasm` 134–244 KB AOT-only (x86-64, stripped) + an `.aot` per module × target × WAMR version |
 | wasmtime (Cranelift) | 21 104 | 419 | a 29.7 MB library |
-| **w2py JIT (`w2jit2`)** | **16 896** | **406** | the Python standard library |
+| **PoC JIT (`w2jit2`)** | **16 896** | **406** | the Python standard library |
 | iwasm Fast JIT (x86-64 only) | 15 550 | 368 | `libiwasm` with Fast JIT |
 | iwasm fast interpreter | 2 410 | 43 | `libiwasm` |
 
@@ -305,8 +305,8 @@ Same session, CoreMark it/s, alternating runs:
 |---|---|---|
 | wasmtime, guard pages (default) | 20 246 / 20 247 / 20 787 / 21 218 | 100 % |
 | wasmtime, `signals_based_traps=False` (explicit checks) | 16 372 / 17 922 | 81–89 % |
-| **w2py JIT, guard pages** (JIT-emitted SIGSEGV handler) | 18 349 / 19 989 / 19 221 / 18 923 / 19 279 | **~91 %** |
-| w2py JIT, explicit checks | 15 252 / 15 581 / 15 981 / 16 084 / 16 636 | ~78 % |
+| **PoC JIT, guard pages** (JIT-emitted SIGSEGV handler) | 18 349 / 19 989 / 19 221 / 18 923 / 19 279 | **~91 %** |
+| PoC JIT, explicit checks | 15 252 / 15 581 / 15 981 / 16 084 / 16 636 | ~78 % |
 
 Machine code 39 357 → 30 403 bytes. The switch VM (not memory-bound) does not change (397 vs 397–447
 M ops/s, wasmtime 432–485). With explicit checks on both sides the PoC JIT and Cranelift are level:
@@ -321,15 +321,15 @@ functions (inlining), 8 527 → 8 097 instructions, 19.5 → 18.0 KB. Pairs in o
 |---|---|---|---|
 | iwasm AOT | 24 472 | 23 405 | −4 % |
 | wasmtime | 20 710 | 20 950 | +1 % |
-| w2py JIT v2 | 16 780 | 16 477 | −2 % (`-Oz` +4 %, `-O4` −7 %) |
+| PoC JIT v2 | 16 780 | 16 477 | −2 % (`-Oz` +4 %, `-O4` −7 %) |
 | iwasm Fast JIT | 13 540 | 13 213 | −2 % |
-| w2py `pyc`, PyPy | 3 140 | 3 094–3 116 | −1 % |
+| PoC `pyc`, PyPy | 3 140 | 3 094–3 116 | −1 % |
 | w2luajit, LuaJIT | 2 645 | 2 678 | +1 % |
 | wasm3 | 2 479 | 2 306 | −7 % |
 | iwasm fast interpreter | 2 256 | 2 066 | −8 % |
 | w2lua, Lua 5.4 | 366 | 428 | +17 % |
-| w2py `pyc`, CPython | 139 | 132 | −5 % |
-| w2py, MicroPython | 82 | 83 | +1 % |
+| PoC `pyc`, CPython | 139 | 132 | −5 % |
+| PoC, MicroPython | 82 | 83 | +1 % |
 
 ## Precompiled Lua
 
@@ -346,7 +346,7 @@ w2lua output loaded as source or as `string.dump` bytecode (stripped) inside lup
 * Result (CoreMark it/s, self-check passed, runs alternated): package 90.3, 96.1, 96.0, 98.5, 95.9,
   97.1, 99.7; PoC 99.6, 100.3, 91.0, 96.4, 95.4, 94.3, 101.7. Medians ≈ 97 / 96: same within noise
   (±5 it/s on this machine).
-* Conditions: helpers imported from `w2py.targets.pyc.runtime` (D18) instead of pasted into the
+* Conditions: helpers imported from `waboros.targets.pyc.runtime` (D18) instead of pasted into the
   generated module; no measurable cost.
 
 ## `pyc`: checked `call_indirect` (table bounds, null, signature)

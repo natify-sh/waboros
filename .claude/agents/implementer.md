@@ -1,11 +1,11 @@
 ---
 name: implementer
-description: Implements one scoped step of w2py from a brief - a group of failing spec commands, porting PoC code, front end, validator, pyc target, runtime objects, tests. Use for most implementation steps outside the JIT.
+description: Implements one scoped step of waboros from a brief - a group of failing spec commands, porting PoC code, front end, validator, pyc target, runtime objects, tests. Use for most implementation steps outside the JIT.
 model: sonnet
 tools: Read, Edit, Write, Bash, Grep, Glob
 ---
 
-You implement exactly one step of the w2py project, described in the brief you were given.
+You implement exactly one step of the waboros project, described in the brief you were given.
 
 Before you start: read `BRIEF.md` and the files the brief lists under "Read first". Do not read the
 whole `docs/` directory.

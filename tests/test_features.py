@@ -39,7 +39,7 @@ def test_unknown_key_fails(tmp_path: Path) -> None:
     root = copy_repo(tmp_path)
     path = root / "docs/features.json"
     data = json.loads(path.read_text())
-    data["runtimes"]["w2py pyc"]["features"]["noSuchFeature"] = True
+    data["runtimes"]["waboros pyc"]["features"]["noSuchFeature"] = True
     path.write_text(json.dumps(data))
     r = run_check(root)
     assert r.returncode == 1 and "noSuchFeature" in r.stderr
@@ -56,7 +56,7 @@ def test_every_registered_target_has_a_column() -> None:
     """A new target must not drop out of FEATURES.md silently (jit-aarch64 did, step 4e)."""
     import importlib.util
 
-    from w2py.targets.base import TARGETS
+    from waboros.targets.base import TARGETS
 
     spec = importlib.util.spec_from_file_location("features", ROOT / "tools" / "features.py")
     assert spec and spec.loader

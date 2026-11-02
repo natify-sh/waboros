@@ -2,7 +2,7 @@
 title: JIT artifact, ISA levels and the context ABI
 kind: reference
 status: current
-updated: 2026-11-01
+updated: 2026-11-02
 ---
 
 # JIT artifact, ISA levels and the context ABI
@@ -14,8 +14,8 @@ a C function pointer and pass C callbacks can load and run it (C/C++, Dart FFI, 
 Java FFM, .NET, Deno/Bun, MicroPython's `ffi`). This document is the contract such hosts — and our own
 Python loader — rely on. It has three parts, each versioned.
 
-> **Scope (DECISIONS.md D18).** First of all this is the format of the w2py runtime's own cache entries
-> and serialized files (`Module.serialize`, `w2py compile`): w2py follows the Wasmtime model, the
+> **Scope (DECISIONS.md D18).** First of all this is the format of the waboros runtime's own cache entries
+> and serialized files (`Module.serialize`, `waboros compile`): waboros follows the Wasmtime model, the
 > runtime lives in the package and nothing is embedded in the artifact. Loading from other languages
 > stays possible because the boundary is neutral, but it is optional.
 
@@ -35,7 +35,7 @@ the CPU cannot run.
 
 Rules:
 
-* **Portable artifacts** (`w2py compile`, shipped files) use the baseline unless asked otherwise.
+* **Portable artifacts** (`waboros compile`, shipped files) use the baseline unless asked otherwise.
   An operation whose natural instruction is above the baseline gets a baseline sequence. Example found
   in the PoC: `f64.trunc` was emitted as `roundsd` (SSE4.1, x86-64-v2); at v1 it needs an SSE2
   sequence (convert-truncate for |x| < 2⁵², otherwise x itself, preserving sign and NaN). The same
@@ -50,7 +50,7 @@ Rules:
   recompiled, not executed.
 * **Checked, not trusted**: CI disassembles generated code (`objdump`) and fails if any instruction is
   above the level the artifact declares.
-* `Config.isa` (w2py addition): `"baseline"` (default), a level name, or a level plus feature names
+* `Config.isa` (waboros addition): `"baseline"` (default), a level name, or a level plus feature names
   (explicit opt-in, stage 1 of D33); `"native"` comes later (stage 2) and becomes the default only by a
   separate decision. A requested level the CPU lacks is refused at load, naming the missing features.
 * **Detection at load time, stdlib only**: on x86-64 a small `cpuid` stub run through the same
@@ -66,14 +66,14 @@ A little-endian binary container. Self-contained: a host needs **no wasm parser*
 
 | field | type | meaning |
 |---|---|---|
-| `magic` | 8 bytes | `W2PYJIT\0` |
+| `magic` | 8 bytes | `WABOROS\0` |
 | `format_version` | u16 | this document's part 2 version (1) |
 | `ctx_abi_version` | u16 | part 3 version (1) |
 | `arch` | u16 | 1 = x86-64, 2 = aarch64, 3 = riscv64, … (registry in this file) |
 | `isa_level` | u16 | per architecture: 1 = baseline, 2 = v2, 3 = v3, … |
 | `isa_features` | u64 | bitset of extra features (registry per architecture) |
 | `flags` | u32 | code-affecting options: fuel, epoch/interrupt polling, bounds-check mode, … |
-| `compiler` | str | `w2py <version> <target> <target version>` |
+| `compiler` | str | `waboros <version> <target> <target version>` |
 | `module_sha256` | 32 bytes | hash of the wasm bytes |
 | `config_sha256` | 32 bytes | hash of every code-affecting option |
 | `section_count` | u32 | |
@@ -103,7 +103,7 @@ Strings are UTF-8 with a u32 length prefix. A loader refuses an artifact whose `
 `Module.serialize()` writes this format; the cache stores it.
 
 **Thin and fat files (D18).** A thin file (no `WASM` section) is refused on any mismatch. A fat file is
-never refused: when the loader cannot use the code — another w2py or target version, another ISA
+never refused: when the loader cannot use the code — another waboros or target version, another ISA
 level, a compiler version on the known-bad list, a format it does not know — it checks that the
 embedded wasm matches `module_sha256` and regenerates from it. For this the loader must be able to
 read the header and find section 14 in every format version, so the header prefix (`magic`,
@@ -201,7 +201,7 @@ the same 64-bit little-endian words for every architecture.
 | 2 | `MEMORY_OUT_OF_BOUNDS` | 10 | `NULL_REFERENCE` |
 | 3 | `INTEGER_DIVISION_BY_ZERO` | 11 | `OUT_OF_FUEL` |
 | 4 | `INTEGER_OVERFLOW` | 12 | `INTERRUPT` |
-| 5 | `STACK_OVERFLOW` | 13 | `HOST_ERROR` (w2py) |
+| 5 | `STACK_OVERFLOW` | 13 | `HOST_ERROR` (waboros) |
 | 6 | `BAD_CONVERSION_TO_INTEGER` | 14 | `UNCAUGHT_EXCEPTION` |
 | 7 | `INDIRECT_CALL_TO_NULL` | 15 | `HEAP_MISALIGNED` |
 

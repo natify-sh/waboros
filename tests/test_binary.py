@@ -5,7 +5,7 @@ import tracemalloc
 
 import pytest
 
-from w2py.frontend.binary import ImplLimit, Malformed, decode, parse
+from waboros.frontend.binary import ImplLimit, Malformed, decode, parse
 
 HEAD = b"\0asm\1\0\0\0"
 TYPE = b"\x01\x04\x01\x60\x00\x00"

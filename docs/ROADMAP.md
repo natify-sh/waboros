@@ -14,7 +14,7 @@ Phases in order; each ends with tests green for what it claims. Numbers are meas
 
 The first goal is not a feature but a **measurement**: every later change should move a number.
 
-1. **Skeleton** (phase 0): the repository under natify-sh with the working name `w2py` (renaming later is
+1. **Skeleton** (phase 0): the repository under natify-sh with the working name `waboros` (renaming later is
    cheap); `pyproject.toml` with no runtime dependencies and a development group — `wasmtime` (the
    oracle), `pytest`, `wabt-package` (for `wast2json`); CI on CPython 3.11–3.15, 3.15t and PyPy 3.11, on
    Linux x86-64. Minimum Python 3.11 (D19).
@@ -183,7 +183,7 @@ lacks a feature reports it through `Target.supports` and the module runs on anot
 
 Order (maintainer, 2026-11-01): SIMD (S0005) -> the rename to `waboros` with the packaging for publishing (LICENSE,
 setuptools + setuptools-scm, coverage/publish workflows, dependabot; D40)
-as its own step (D40) -> guard pages (D29) -> the rest below.
+as its own step (D40, done 2026-11-02) -> guard pages (D29) -> the rest below.
 
 * What remains of the opcode set, in stages (TARGETS.md), on **every** JIT target in step:
   SIMD (under way, above), memory64, relaxed SIMD, exceptions, GC, then the later proposals. What a backend lacks is
@@ -239,7 +239,7 @@ as its own step (D40) -> guard pages (D29) -> the rest below.
 1. **Minimum Python.** Resolved by D19: 3.11 (the PoC's 3.8 and 3.4 `--legacy` measurements stay as
    history).
 2. **The WASI host.** fusedwasi's Python twin (candidate: 0.1.0a1 is runtime-independent and runs on
-   wasmtime, wasm3 and wasmext, D8; not tried with w2py yet),
+   wasmtime, wasm3 and wasmext, D8; not tried with waboros yet),
    an own implementation, or another; and what WASI means on MicroPython (open question 6).
 3. **Parallelism of `pyc` guests**: yield points only, or also subinterpreters (3.12+/3.14),
    free-threaded builds, a process with shared memory (ARCHITECTURE.md, "Long calls and the GIL")?
@@ -247,18 +247,18 @@ as its own step (D40) -> guard pages (D29) -> the rest below.
    accept and ignore, or reject?
 5. **NaN payloads in `pyc`**: Python floats keep the payload in most paths but not all (f32 rounding
    through `struct`); follow the spec's canonical/arithmetic NaN rules only, or carry bit patterns?
-6. **WASI on MicroPython**: a slim twin, or fusedwasi compiled to wasm and translated by w2py itself
+6. **WASI on MicroPython**: a slim twin, or fusedwasi compiled to wasm and translated by waboros itself
    (then each language/target needs only a thin layer of OS primitives)?
 7. **Pyodide**: `pyc` runs there today; a separate target later (maintainer). The experiment in
    [PYODIDE.md](PYODIDE.md): the guest rewritten into an Emscripten side module and loaded with
    `ctypes.CDLL` runs CoreMark at 92–95 % of direct `WebAssembly` in Node, sharing Pyodide's heap;
    open: isolation (bounds checks), traps, grow, tables, D25 parity, browsers.
 8. **Free-threaded CPython (no GIL)**: shared memories and atomics in `pyc` need real synchronisation.
-9. **Name** — settled by D40: the project becomes `waboros`, renamed in its own step after SIMD.
+9. **Name** — settled by D40: the project is `waboros`; the rename was done on 2026-11-02.
 10. **Version skew** — settled by D18: no embedded runtime, exact match or regenerate; fat files carry
    the wasm. Left: the known-bad compiler list (where it lives, how it is updated).
 11. **Components on the fly**: accept a component and fuse it at load time (then compile and cache the
-   core module by the component's hash) by running **meld compiled to wasm on w2py itself**, shipped
+   core module by the component's hash) by running **meld compiled to wasm on waboros itself**, shipped
    as a data file in the wheel (Apache-2.0): no native dependency and no second fuser to keep in sync.
    **Checked (meld 0.66.0, BENCHMARKS.md):** meld builds without patches for `wasm32-wasip1` (CLI,
    2.7 MB, 16 WASI p1 imports), `wasm32-wasip2` (component, 2.9 MB) and — best for this use —
@@ -300,7 +300,7 @@ as its own step (D40) -> guard pages (D29) -> the rest below.
    **How a micro-compiler starts on a machine** (`pyc` runs it; it never compiles): (1) bootstrap, once
    per machine: `pyc` runs `riscv64.wasm` as an ordinary wasm program and feeds it its own wasm; it
    emits a native artifact of itself — slow (`pyc` is ~150× slower than native code) but done once;
-   (2) cache: that artifact is kept like any cached artifact, keyed by w2py version, architecture and
+   (2) cache: that artifact is kept like any cached artifact, keyed by waboros version, architecture and
    ISA level; (3) from then on the runtime loads the native micro-compiler, which compiles every other
    module in milliseconds. Short path where a Python backend exists (x86-64, aarch64): our JIT compiles
    `x64.wasm` to native directly, no `pyc` step; the long path is only for architectures without a
@@ -313,10 +313,10 @@ as its own step (D40) -> guard pages (D29) -> the rest below.
    (phase 5); a small versioned contract of the compiler module itself (e.g. `compile(in_ptr, in_len)`
    returning the artifact in its memory: no WASI, no file system); one compiler artifact per
    architecture and ISA level. Cost: the compiler written again in Rust,
-   Zig or C, and harder debugging than Python. w2py stays a compiler in Python (CLAUDE.md, BRIEF.md):
+   Zig or C, and harder debugging than Python. waboros stays a compiler in Python (CLAUDE.md, BRIEF.md):
    it remains the bootstrap, the reference and the path for MicroPython and small devices.
    Alternative considered, also open: run an existing compiler built for `wasm32-wasi` (Winch or
-   Cranelift) on w2py — an optimising tier without writing one, but several MB, its output has to be
+   Cranelift) on waboros — an optimising tier without writing one, but several MB, its output has to be
    adapted to our ABI, and it needs WASI. Experiments: for either, the module size, the first run on
    `pyc`, the self-compilation time, memory, and code quality on CoreMark against the Python JIT. A
    shipped pre-compiled compiler artifact needs a reproducible build (byte-identical with a self-built

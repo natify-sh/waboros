@@ -1,8 +1,8 @@
 {
   "$source": "https://raw.githubusercontent.com/WebAssembly/website/refs/heads/main/features.json",
   "runtimes": {
-    "w2py pyc": {
-      "url": "https://github.com/natify-sh/w2py",
+    "waboros pyc": {
+      "url": "https://github.com/natify-sh/waboros",
       "category": "Standalone Runtimes",
       "features": {
         "acquireReleaseAtomics": null,
@@ -67,8 +67,8 @@
         "wideArithmetic": null
       }
     },
-    "w2py jit-x86_64": {
-      "url": "https://github.com/natify-sh/w2py",
+    "waboros jit-x86_64": {
+      "url": "https://github.com/natify-sh/waboros",
       "category": "Standalone Runtimes",
       "features": {
         "acquireReleaseAtomics": null,
@@ -133,8 +133,8 @@
         "wideArithmetic": null
       }
     },
-    "w2py jit-aarch64": {
-      "url": "https://github.com/natify-sh/w2py",
+    "waboros jit-aarch64": {
+      "url": "https://github.com/natify-sh/waboros",
       "category": "Standalone Runtimes",
       "features": {
         "acquireReleaseAtomics": null,

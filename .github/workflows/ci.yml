@@ -39,7 +39,7 @@ jobs:
       - run: llvm-mc --version && llvm-objcopy --version | head -1 && objdump --version | head -1
       - run: uv run pytest tests/jit -v -rs
         env:
-          W2PY_JIT_REQUIRE: "1"  # a missing tool fails the job instead of skipping (tests/jit)
+          WABOROS_JIT_REQUIRE: "1"  # a missing tool fails the job instead of skipping (tests/jit)
       # S0004: the aarch64 ABI and compiler tests under QEMU user mode, which enforces BTI (the
       # arm64 runner's CPU has none); about 1.5 min
       - run: sudo apt-get install -y qemu-user libc6-arm64-cross libgcc-s1-arm64-cross
@@ -49,7 +49,7 @@ jobs:
       # enforced; about 2.5 min
       - run: python3 tools/run_arm64.py -m pytest tests/jit/test_simd_abi.py tests/jit/test_simd_aarch64.py -q
         env:
-          W2PY_JIT_REQUIRE: "1"
+          WABOROS_JIT_REQUIRE: "1"
       # D24: every spec module and CoreMark compiled by jit-x86_64 has only x86-64-v1 instructions
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
@@ -64,7 +64,7 @@ jobs:
       # `simd` run must pass whole and equal pyc's
       - run: qemu-x86_64 -cpu qemu64,-pni,-ssse3,-sse4.1,-sse4.2,-popcnt .venv/bin/python -m pytest tests/jit/test_simd_abi.py tests/jit/test_simd_x86.py -q
         env:
-          W2PY_JIT_REQUIRE: "1"
+          WABOROS_JIT_REQUIRE: "1"
       - run: |
           qemu-x86_64 -cpu qemu64,-pni,-ssse3,-sse4.1,-sse4.2,-popcnt .venv/bin/python -m tests.spec.run --engine jit-x86_64 --in-process --json simd-qemu64.json simd > /dev/null
           uv run python tools/spec_diff.py pyc simd-qemu64.json simd
@@ -99,7 +99,7 @@ jobs:
       - run: uv run python tools/no_exec.py -- uv run python -m tests.spec.run --engine auto
   os:
     # Windows x64 and macOS x64 (Intel); arm64 runners come with jit-aarch64. tests/jit runs inside
-    # pytest here: llvm-mc/objdump checks skip where the tools are absent (no W2PY_JIT_REQUIRE).
+    # pytest here: llvm-mc/objdump checks skip where the tools are absent (no WABOROS_JIT_REQUIRE).
     runs-on: ${{ matrix.os }}
     env:
       PYTHONUTF8: "1"  # Windows console code page
@@ -145,7 +145,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
       - run: uv sync --python 3.13
-      # llvm-mc and llvm-objcopy for the encoder tests (W2PY_JIT_REQUIRE=1 below)
+      # llvm-mc and llvm-objcopy for the encoder tests (WABOROS_JIT_REQUIRE=1 below)
       - if: runner.os == 'Linux'
         run: (command -v llvm-mc && command -v llvm-objcopy) || (sudo apt-get update && sudo apt-get install -y llvm)
       - if: runner.os == 'macOS'
@@ -160,8 +160,8 @@ jobs:
       # what this runner gives the JIT; fails unless native arm64 with a working probe
       - run: >-
           uv run python -W always -c "import platform, sys;
-          from w2py.targets.base import TARGETS, target_order;
-          from w2py.targets.jit.common import execmem;
+          from waboros.targets.base import TARGETS, target_order;
+          from waboros.targets.jit.common import execmem;
           why = TARGETS['jit-aarch64']().probe();
           print(platform.machine(), sys.platform, 'probe:', why,
           'PROT_BTI:', getattr(execmem, '_PROT_BTI', None), 'auto:', target_order('auto'));
@@ -171,7 +171,7 @@ jobs:
       # GNU objdump with x86-64, which these runners lack)
       - run: uv run pytest tests/jit -v -rs -k "not isa_check and not isa_levels"
         env:
-          W2PY_JIT_REQUIRE: "1"
+          WABOROS_JIT_REQUIRE: "1"
       - if: ${{ !cancelled() }}
         run: uv run python tools/stack_info.py
       # step 4e: CoreMark on jit-aarch64, natively (the number for BENCHMARKS.md); it must pass
@@ -247,7 +247,7 @@ jobs:
         run: |
           .venv-po/bin/python -W always - <<'PY'
           import platform, sys, warnings
-          from w2py.targets.base import TARGETS, JitUnavailableWarning, target_order
+          from waboros.targets.base import TARGETS, JitUnavailableWarning, target_order
           assert platform.machine() == "arm64", platform.machine()
           why = TARGETS["jit-aarch64"]().probe()
           print("probe:", why)
@@ -265,7 +265,7 @@ jobs:
           PY
       - name: tests
         run: |
-          # probe ok: the JIT tests run and must pass; probe refused: they skip. No W2PY_JIT_REQUIRE:
+          # probe ok: the JIT tests run and must pass; probe refused: they skip. No WABOROS_JIT_REQUIRE:
           # llvm-mc is not installed in this job, so the encoder checks skip either way.
           .venv-po/bin/python -m pytest tests/jit/test_probe.py tests/jit/test_execmem.py tests/jit/test_abi_aarch64.py -rs
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
@@ -278,7 +278,7 @@ jobs:
           .venv-po/bin/python -m tests.spec.run --engine auto
   android:
     # Can jit-x86_64 map executable memory inside an Android app process (SELinux untrusted_app,
-    # our mmap RW, write, mprotect RX path), and does w2py behave either way? CPython's own
+    # our mmap RW, write, mprotect RX path), and does waboros behave either way? CPython's own
     # testbed app (the python.org Android package; the recipe of cibuildwheel and CPython's CI)
     # on a Gradle-managed emulator, x86_64 with KVM. Both answers pass this job as long as the
     # behaviour is right (tools/android_check.py, same rule as macos-pythonorg). arm64: no job,
@@ -297,10 +297,10 @@ jobs:
           echo "$PKG_SHA256  pkg.tar.gz" | sha256sum -c -
           mkdir pkg && tar -xzf pkg.tar.gz -C pkg
           java -version && python3 --version && echo "ANDROID_HOME=$ANDROID_HOME"
-      - name: stage the app's site-packages (pytest, w2py) and working directory (tests, tools, CoreMark)
+      - name: stage the app's site-packages (pytest, waboros) and working directory (tests, tools, CoreMark)
         run: |
           python3 -m pip install --quiet --target stage/site-packages pytest  # pure Python wheels
-          cp -r src/w2py stage/site-packages/
+          cp -r src/waboros stage/site-packages/
           mkdir -p stage/cwd/tools stage/cwd/poc/in
           cp tools/android_check.py tools/run_coremark_jit.py stage/cwd/tools/
           cp poc/in/core.wasm stage/cwd/poc/in/

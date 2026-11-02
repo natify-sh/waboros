@@ -26,7 +26,7 @@ from tests.spec.engine import (
     Unsupported,
     Value,
 )
-from w2py.targets.base import TARGETS, target_order
+from waboros.targets.base import TARGETS, target_order
 
 CACHE_DIR = fetch.CACHE_DIR
 ROOT = Path(__file__).resolve().parents[2]
@@ -49,7 +49,7 @@ def _target(name: str) -> Callable[[], SpecEngine]:
     return make
 
 
-# every w2py target by its name, and `auto` (the target D25 picks here)
+# every waboros target by its name, and `auto` (the target D25 picks here)
 ENGINES: dict[str, Callable[[], SpecEngine]] = {
     "wasmtime": _wasmtime,
     **{name: _target(name) for name in (*TARGETS, "auto")},

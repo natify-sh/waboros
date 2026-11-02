@@ -19,7 +19,7 @@ native piece breaks platforms like Pythonista. Development tools are free to use
 ### D2. Translate, do not interpret
 Status: accepted · Date: 2026-10-26 · Supersedes: — · Evidence: BENCHMARKS.md, CoreMark
 
-Measured on CoreMark (CPython): pywasm (interpreter) 0.58 it/s, w2py translation 86, so ×150; on PyPy
+Measured on CoreMark (CPython): pywasm (interpreter) 0.58 it/s, waboros translation 86, so ×150; on PyPy
 ×400, because a tracing JIT optimises straight code far better than an interpreter loop (warpy, an
 RPython interpreter with a meta-tracing JIT: 192 it/s). Superinstructions were considered and do not
 apply: the translation already has no dispatch left.
@@ -59,7 +59,7 @@ wherever the wasm spec leaves room.
 ### D7. Component model: fused modules only
 Status: accepted · Date: 2026-10-26 · Supersedes: — · Evidence: —
 
-No component parser or canonical ABI in w2py. Components are fused with `meld` into one core module;
+No component parser or canonical ABI in waboros. Components are fused with `meld` into one core module;
 WASI 0.2 comes from the WASI host (D8). Requires multi-memory. p1 programs may go the same way through the
 preview1 adapter.
 
@@ -68,17 +68,17 @@ Status: accepted · Date: 2026-10-26 · Supersedes: — · Evidence: —
 
 Not decided. The candidate is the Python twin of fusedwasi (natify-sh/fusedwasi): one function per
 import, memories as buffers, the same code as the C headers used by wasmext. It has not been used with
-w2py yet. Whatever is chosen, w2py only binds names and memories (`Linker.define_wasi`), and the
+waboros yet. Whatever is chosen, waboros only binds names and memories (`Linker.define_wasi`), and the
 choice must not set the minimum Python of the package (3.11, D19).
 
 2026-10-30 (maintainer): fusedwasi 0.1.0a1 is runtime-independent and already works with wasmtime,
-wasm3 and wasmext, so it is expected to fit w2py as well; the choice is confirmed in the WASI phase by
-running it on w2py.
+wasm3 and wasmext, so it is expected to fit waboros as well; the choice is confirmed in the WASI phase by
+running it on waboros.
 
 ### D9. Cache compiled artifacts
 Status: accepted · Date: 2026-10-26 · Supersedes: — · Evidence: —
 
-Keyed by the module hash, w2py version, target and target environment, and code-affecting config. The
+Keyed by the module hash, waboros version, target and target environment, and code-affecting config. The
 same format is `Module.serialize`. Measured: `pyc` cold 111 ms → 0.5 ms cached. Serialized files and
 fat files (embedding the wasm): D18.
 
@@ -100,7 +100,7 @@ Status: accepted · Date: 2026-10-26 · Supersedes: — · Evidence: —
 * **mypyc target** — dropped: needs `librt` at run time (a dependency) and a native build is better
   served by wasm2c/wasmext.
 * **Lua / LuaJIT backends** — parked as an experiment proving the IR is language-neutral (LuaJIT
-  1 873 it/s); not part of w2py. Superseded by D20 (rejected).
+  1 873 it/s); not part of waboros. Superseded by D20 (rejected).
 * **`--trust-align` memoryview access** — rejected: no gain on CPython, ×20 slower on PyPy.
 * **Function inlining in `pyc`** — opt-in only: neutral on CPython 3.13, ~+5 % on PyPy.
 * **pywasm as the base** — rejected as a base (interpreter, ×150–400 slower, needs Python ≥ 3.11 — `match`, `typing.Self` — no
@@ -132,7 +132,7 @@ with entry trampolines for every calling convention of the architecture, functio
 segments; (3) **context ABI v1** — entry signature, context words, host-function signature, trap
 codes. Hosts in other languages (C, Dart, LuaJIT, …) may load artifacts; a C reference loader keeps the
 contract honest. *Narrowed by D18*: the contract is first of all the format of cache entries and
-serialized files read by the w2py runtime; other-language loaders and the C loader are optional.
+serialized files read by the waboros runtime; other-language loaders and the C loader are optional.
 
 ### D16. Our own thin IR; wasm is the portable IR; no LLVM
 Status: accepted · Date: 2026-10-26 · Supersedes: — · Evidence: —
@@ -157,20 +157,20 @@ insurance, not a commitment.
 ### D18. No embedded runtime: the Wasmtime model, not the wasmext model
 Status: accepted · Date: 2026-10-30 · Supersedes: — · Evidence: —
 
-w2py generates code when a module is loaded, so what it generates is a derivative owned by the engine,
+waboros generates code when a module is loaded, so what it generates is a derivative owned by the engine,
 as in Wasmtime — not a product that lives without the tool, as wasm2c + a C build is in wasmext (there
 the output must carry its runtime). Consequences:
 
 * **The runtime lives only in the package**: `Store`, memories, tables, globals, traps, WASI, the JIT
   entry and context. Generated code (a `pyc` code object, a JIT artifact) holds code and metadata and
-  uses the runtime of its own w2py version. The PoC's `RUNTIME` string emitted into every module is a
+  uses the runtime of its own waboros version. The PoC's `RUNTIME` string emitted into every module is a
   PoC shortcut, not the design.
-* **Portable form: a serialized file** (`Module.serialize`, `w2py compile`), like Wasmtime's `.cwasm`;
-  it runs only on a w2py runtime. Named `<name>.<target>.<ext>`, the target including what decides
+* **Portable form: a serialized file** (`Module.serialize`, `waboros compile`), like Wasmtime's `.cwasm`;
+  it runs only on a waboros runtime. Named `<name>.<target>.<ext>`, the target including what decides
   whether it can run there (`core.jit-x86_64-v1.w2a`, `core.pyc-cp313.w2a`; `.w2a` is a working
   extension until the project has a name). The header, not the file name, is authoritative.
 * **Fat files**: optionally the file embeds the original wasm (ARTIFACT.md, section `WASM`). A fat file
-  is never refused: on any mismatch — w2py or target version, bytecode magic, ISA level, a known-bad
+  is never refused: on any mismatch — waboros or target version, bytecode magic, ISA level, a known-bad
   compiler version — the runtime regenerates from the embedded wasm (and may cache the result), so the
   file always runs, only slower the first time. A thin file is refused on a mismatch, as in Wasmtime.
 * **Version skew (RISKS.md, R4) reduces to one rule**: accept an exact match, otherwise regenerate from
@@ -179,7 +179,7 @@ the output must carry its runtime). Consequences:
   internal and may change between any two versions.
 * ARTIFACT.md stays the format of cache entries and serialized files; loaders in other languages and
   the C reference loader become optional (D15 narrowed). *Superseded by D36 for these points and the
-  two on running only on a w2py runtime and the internal interface.*
+  two on running only on a waboros runtime and the internal interface.*
 * Possible exception, later and optional: a standalone export with minimal embedded helpers for
   MicroPython devices, where the runtime package costs flash.
 
@@ -200,7 +200,7 @@ and PyPy 3.11; actions are pinned by commit SHA. Tooling (ruff, pyright) targets
 ### D20. Lua / LuaJIT rejected as a target
 Status: accepted · Date: 2026-10-30 · Supersedes: D12 (the Lua item) · Evidence: BENCHMARKS.md, CoreMark
 
-Lua 5.4 and LuaJIT are not w2py targets, now or later. The experiment gave little for its cost
+Lua 5.4 and LuaJIT are not waboros targets, now or later. The experiment gave little for its cost
 (Lua 5.4 271 it/s, LuaJIT 1 873 it/s, against ~15 000 for the x86-64 JIT and no use from Python);
 it stays in `poc/` (`w2lua.py`, `w2luajit.py`, `run_lua.py`) as a record and as evidence for D17.
 D17 (language-neutral shared layers) is unchanged.
@@ -208,7 +208,7 @@ D17 (language-neutral shared layers) is unchanged.
 ### D21. No WAT parser of our own; WAT through wasm-tools, optionally
 Status: accepted · Date: 2026-10-30 · Supersedes: — · Evidence: —
 
-w2py reads the binary format only and will not contain a text-format (WAT) parser: a full WAT grammar
+waboros reads the binary format only and will not contain a text-format (WAT) parser: a full WAT grammar
 (folded expressions, every proposal, GC type syntax, annotations) is a project of its own and adds
 nothing to the compiler or the targets. Who needs WAT uses `wasm-tools parse`. In phase 6 the public
 API may accept WAT when the optional extra `wasm-tools-package` is installed, calling it
@@ -216,11 +216,11 @@ automatically; without it, text input gets a clear error (a deliberate deviation
 which accepts WAT everywhere). The package keeps no runtime dependency (D1): the extra is optional.
 Tests write modules in WAT and build them with `wasm-tools` at development time. The 662 spec
 commands that test only WAT parsing (text `assert_malformed`, S0001) stay `skip` permanently: with
-the extra they would test wasm-tools, not w2py. This settles D3's "`.wat` may be accepted later".
+the extra they would test wasm-tools, not waboros. This settles D3's "`.wat` may be accepted later".
 Known consequences: wasmtime-py's own tests (the API axis in TESTING.md) write modules in WAT, so
 that CI job installs the extra; the CLI's `run file.wat` and `wast` need it too; text errors come
 from wasm-tools. Where no native wasm-tools wheel runs, a later option is to run `wasm-tools.wasm`
-(wasm-tools built for WASI) on w2py itself once WASI works: native wasm-tools if installed, else the
+(wasm-tools built for WASI) on waboros itself once WASI works: native wasm-tools if installed, else the
 wasm build on our own engine (maintainer: a good idea; phase 6 or later).
 
 ### D22. Platform tiers: iOS/Pythonista and MicroPython are tier 3
@@ -229,7 +229,7 @@ Status: accepted · Date: 2026-10-30 · Supersedes: — · Evidence: —
 The primary platforms are CPython and PyPy on the operating systems of the CI matrix (TESTING.md).
 iOS/Pythonista and MicroPython are **tier 3**: best effort, never a reason to constrain the design
 or to block a step. On iOS/Pythonista wasm runs through the separate PyPI package `wasmhost`
-(JavaScriptCore's `WebAssembly` via JSContext), not through w2py. The `mpy` target (ROADMAP phase 7)
+(JavaScriptCore's `WebAssembly` via JSContext), not through waboros. The `mpy` target (ROADMAP phase 7)
 keeps its place in the order of work at tier 3. D1 is unchanged: no runtime dependencies stays a rule
 for every platform.
 
@@ -351,7 +351,7 @@ Status: accepted (maintainer, 2026-10-30) · Date: 2026-10-30 · Supersedes: —
 Tail calls between wasm functions compiled by the JIT never grow either stack, as in Wasmtime.
 Deviation (temporary): a `return_call` to a function import is a call plus a return through the host
 bridge, so tail recursion through an imported wasm function grows the stack (A `return_call`s an
-imported `pong` that `return_call_indirect`s back: Wasmtime runs 10⁶ rounds, both w2py targets trap
+imported `pong` that `return_call_indirect`s back: Wasmtime runs 10⁶ rounds, both waboros targets trap
 `STACK_OVERFLOW` at 10³). It is closed by calling an imported function of another JIT instance of the
 same store directly through its function record (closed by D32). A `return_call*`  moves its arguments to its frame
 base, drops its native frame and jumps. When the callee's function record has another context, r15
@@ -373,10 +373,10 @@ Status: accepted · Date: 2026-10-30 · Supersedes: — · Evidence: tests/test_
 
 Whenever `auto` selects `pyc` it says so once per process and message (D25):
 `warnings.warn(msg, JitUnavailableWarning)`, a `RuntimeWarning` defined in `targets/base.py` (phase 6
-re-exports it). Two messages: `w2py: jit-x86_64 unavailable (<reason>); using pyc` when the JIT for
+re-exports it). Two messages: `waboros: jit-x86_64 unavailable (<reason>); using pyc` when the JIT for
 this machine's architecture exists but its probe fails (executable memory forbidden, ...), and
-`w2py: no JIT target for <machine>; using pyc` on an architecture without a JIT target (maintainer:
-the fallback is reported there too). A third (S0004): `w2py: jit-aarch64 incomplete (integer core
+`waboros: no JIT target for <machine>; using pyc` on an architecture without a JIT target (maintainer:
+the fallback is reported there too). A third (S0004): `waboros: jit-aarch64 incomplete (integer core
 only); using pyc` when the probe succeeds but the target is not `complete` (its expected failures
 are not yet `pyc`'s, D25). No message when the target was chosen explicitly; an explicit
 `jit-*` that cannot run is an `Unsupported` error. Rejected: `print` to stderr (cannot be filtered or turned into an error, noisy in
@@ -438,26 +438,26 @@ decoded from a register). wasmtime-py's trampoline (`wasmtime/_func.py`, `trampo
 Caller(caller)` runs before its `try`) has the same window and does not close it. This amends context
 ABI v1 without a version bump: S0003 fixes v1 in phase 5 and no artifact has been saved yet.
 
-### D35. Cross-compilation: any host compiles JIT artifacts for any architecture w2py has
+### D35. Cross-compilation: any host compiles JIT artifacts for any architecture waboros has
 Status: accepted (maintainer, 2026-11-01) · Date: 2026-11-01 · Supersedes: — · Evidence: —
 
 The JIT compiler is pure Python and only writes bytes; it never runs what it emits while compiling.
 With artifacts that depend on the architecture and its declared ISA level only (D23, D24), any host
 can compile for any `jit-<arch>`: `jit-aarch64` on an x86-64 machine and the reverse, one artifact
 per architecture for every OS. Like Wasmtime's `--target` / `Config.target`: `Config.target` names
-the target (API.md); `w2py compile --target jit-aarch64` writes a portable artifact. Rules: a
+the target (API.md); `waboros compile --target jit-aarch64` writes a portable artifact. Rules: a
 cross-compiled artifact is never run on the compiling host — the loader refuses another architecture
 or a level the CPU lacks (ARTIFACT.md part 1); only an explicit ISA level is allowed (`"native"`
 means the compiling CPU, D33); it is tested where it runs (native CI runners or QEMU). From phase 4,
 CI checks that an artifact compiled on x86-64 for aarch64 is byte-identical to the one compiled on
 the arm64 runner, and runs it there, so the compiler's independence from its host is tested, not
-assumed. Saving artifacts to files (format, `w2py compile`, `Module.serialize`) comes in phase 5;
+assumed. Saving artifacts to files (format, `waboros compile`, `Module.serialize`) comes in phase 5;
 until then cross-compilation exists inside a process only. `pyc` and `mpy` are not cross-compiled in
 this sense: a code object belongs to one Python version and implementation (marshal magic), an
 `.mpy` file to one `.mpy` format version, so their "target" is the interpreter, not the CPU.
 
 ### D36. JIT artifacts are executable from other languages; the C reference loader is part of CI
-Status: accepted (maintainer, 2026-11-01) · Date: 2026-11-01 · Supersedes: D18 in part (the bullets "runs only on a w2py runtime", "the interface … is internal and may change between any two versions" and "loaders in other languages and the C reference loader become optional"), and the D15 narrowing · Evidence: —
+Status: accepted (maintainer, 2026-11-01) · Date: 2026-11-01 · Supersedes: D18 in part (the bullets "runs only on a waboros runtime", "the interface … is internal and may change between any two versions" and "loaders in other languages and the C reference loader become optional"), and the D15 narrowing · Evidence: —
 
 A JIT artifact talks to its host only through the context words and C-convention functions
 (ARTIFACT.md part 3: `entry(ctx, frame, code)`, `host(ctx, slots)` with the status in `ctx[7]` (D34),
@@ -465,14 +465,14 @@ records, libcalls), with no Python in it (D15, D23). So a host written in anothe
 Go, Dart, LuaJIT, …) can load and run it, and that is now a supported use, not an accident:
 * **Versioned, not internal.** From phase 5 the artifact format and the context ABI are a stable,
   versioned contract (`format_version`, `ctx_abi_version`): any change bumps the version (CLAUDE.md
-  "The JIT artifact is a contract"), and every loader — w2py's and others — refuses a version it does
-  not know. The w2py runtime keeps D18's behaviour on its own side (regenerate from the wasm on a
+  "The JIT artifact is a contract"), and every loader — waboros's and others — refuses a version it does
+  not know. The waboros runtime keeps D18's behaviour on its own side (regenerate from the wasm on a
   mismatch); a foreign host refuses.
 * **The runtime services are specified, not only implemented in Python**: `memory.grow`, `table.grow`,
   segment init and drop, the canonical type-id registry and records, stack limits, the interrupt word,
   trap codes — written down in ARTIFACT.md precisely enough to implement without reading our code.
 * **A C reference loader is part of the test suite and runs in CI** (phase 5, together with fixing the
-  format): it loads artifacts written by w2py, provides the services, runs a set of spec modules and
+  format): it loads artifacts written by waboros, provides the services, runs a set of spec modules and
   CoreMark, and must agree with the Python runtime; it also checks that unknown versions are refused.
   It stays a test tool, not a shipped runtime.
 * `pyc` and `mpy` artifacts are interpreter bytecode and run only in their interpreter.
@@ -540,13 +540,17 @@ Status: accepted (maintainer, 2026-11-01) · Date: 2026-11-01 · Supersedes: —
 (ROADMAP q14, [MICRO-COMPILERS.md](MICRO-COMPILERS.md)), and close in spirit to Python (snakes).
 The rename is **one separate step after SIMD**, before guard pages: the package, the distribution and
 import names, the CLI, the docs, CI, the artifact's identifying strings if any. Until that step the
-code and docs keep `w2py`. The step uses `waboros` everywhere at once, repository URLs included
+code and docs kept `w2py`. The step uses `waboros` everywhere at once, repository URLs included
 (`natify-sh/waboros`), without waiting for the GitHub repository: the maintainer renames it last
 (GitHub then redirects the old URLs; the new ones resolve only after that rename).
 Packaging lands with the rename (maintainer, 2026-11-02), following the other natify-sh repositories
-(py-wasmhost, py-wasmext): a LICENSE (MIT, copyright natify-sh, as fusedwasi), `pyproject.toml` ready for publishing, the build backend
+(py-wasmhost, py-wasmext): a LICENSE (MIT, copyright natify-sh, as fusedwasi), `pyproject.toml` ready for
+publishing, the build backend
 setuptools + setuptools-scm (version from git tags), and `.github/workflows/coverage.yml`,
 `publish.yml` and `.github/dependabot.yml`. The runtime keeps no dependency.
+The rename is done (2026-11-02): `w2py` survives only in `poc/` and in the docs that name PoC files or
+PoC measurements; the environment variables are `WABOROS_*`, with no aliases (nothing was published). The artifact magic is `WABOROS\0` with no format version bump
+(2026-11-02): no artifact is serialized before phase 5.
 
 ### D41. SIMD: v128 in two slots, no vector register class, native SSE2/NEON only
 Status: accepted (maintainer, 2026-11-01) · Date: 2026-11-01 · Supersedes: — · Evidence: [S0005](specs/S0005-simd.md) (simd/ 25 990 commands; 236 operators: 158 at 1–3 SSE2 instructions, 68 at 4–12, 10 without an SSE2 form; pyc value model timed)

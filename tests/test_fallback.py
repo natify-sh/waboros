@@ -9,15 +9,15 @@ from pathlib import Path
 
 import pytest
 
-from w2py.targets import base
-from w2py.targets.jit.x86_64 import JitX86_64Target
+from waboros.targets import base
+from waboros.targets.jit.x86_64 import JitX86_64Target
 
 ROOT = Path(__file__).resolve().parent.parent
 
 
 @pytest.fixture
 def fresh(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("W2PY_TARGET", raising=False)
+    monkeypatch.delenv("WABOROS_TARGET", raising=False)
     monkeypatch.setattr(base, "_warned", set())
     monkeypatch.setattr(base, "_probe", lambda name: "no way")
     monkeypatch.setattr(base.platform, "machine", lambda: "x86_64")
@@ -37,7 +37,7 @@ def test_no_warning_when_chosen(fresh: None, monkeypatch: pytest.MonkeyPatch) ->
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         assert base.target_order("pyc") == ["pyc"]
-        monkeypatch.setenv("W2PY_TARGET", "pyc")
+        monkeypatch.setenv("WABOROS_TARGET", "pyc")
         assert base.target_order() == ["pyc"]
 
 
@@ -71,7 +71,7 @@ def test_mdwe_forbids_executable_memory() -> None:
         libc = ctypes.CDLL(None, use_errno=True)
         if libc.prctl(65, 1, 0, 0, 0) != 0:
             sys.exit(77)
-        from w2py.targets import base
+        from waboros.targets import base
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
             order = base.target_order("auto")
@@ -82,10 +82,10 @@ def test_mdwe_forbids_executable_memory() -> None:
         assert [x.category for x in w] == [base.JitUnavailableWarning], w
         assert why in str(w[0].message)
         from tests.test_target_pyc import F32_ID
-        from w2py.frontend.binary import parse
-        from w2py.frontend.validate import validate
-        from w2py.runtime import link
-        from w2py.runtime.store import StoreState
+        from waboros.frontend.binary import parse
+        from waboros.frontend.validate import validate
+        from waboros.runtime import link
+        from waboros.runtime.store import StoreState
         mod = parse(F32_ID)
         validate(mod)
         t = base.select(mod, order)

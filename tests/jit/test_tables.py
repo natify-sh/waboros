@@ -19,13 +19,13 @@ import pytest
 from tests.jit import native, need
 from tests.jit.test_compiler import JIT, ROOT, Inst, build, outcome, trap_of, wat
 from tests.jit.test_float import Oracle
-from w2py.runtime import link
-from w2py.runtime.store import StoreState
-from w2py.targets.base import Raw, Trap, TrapCode
-from w2py.targets.jit.common.compiler import Compiled
-from w2py.targets.jit.common.context import NSTACK_LIMIT, VSTACK_LIMIT
-from w2py.targets.jit.common.instance import FuncRef
-from w2py.targets.jit.x86_64 import JitX86_64Target
+from waboros.runtime import link
+from waboros.runtime.store import StoreState
+from waboros.targets.base import Raw, Trap, TrapCode
+from waboros.targets.jit.common.compiler import Compiled
+from waboros.targets.jit.common.context import NSTACK_LIMIT, VSTACK_LIMIT
+from waboros.targets.jit.common.instance import FuncRef
+from waboros.targets.jit.x86_64 import JitX86_64Target
 
 
 @pytest.fixture(autouse=True)
@@ -356,8 +356,8 @@ def test_isa_check_on_table_code(tmp_path: Path) -> None:
     x86-64-v1."""
     native("jit-x86_64")
     from tests.jit.test_encoder import OBJDUMP
-    from w2py.frontend.binary import parse
-    from w2py.frontend.validate import validate
+    from waboros.frontend.binary import parse
+    from waboros.frontend.validate import validate
 
     need(OBJDUMP, "GNU objdump")
     bulk = """(module (import "env" "h" (func $h (param i32) (result i32)))
@@ -468,7 +468,7 @@ def test_segment_drops_without_memory_or_table() -> None:
     """data.drop of a passive segment in a module without memory, elem.drop without a table: the
     services exist (a zero libcall word would be a call to address 0); and every libcall word of
     a module without any of them is callable."""
-    from w2py.targets.jit.common.context import LIBCALLS
+    from waboros.targets.jit.common.context import LIBCALLS
 
     jit = build(
         wat("""(module (data "x") (elem func $f) (func $f)
@@ -561,7 +561,7 @@ def test_exit_with_a_daemon_thread_in_jit_code() -> None:
 def test_type_ids_from_threads_are_distinct() -> None:
     """The canonical id registry is shared by every store: concurrent registrations of distinct
     types never share an id."""
-    from w2py.targets.jit.common.instance import type_id
+    from waboros.targets.jit.common.instance import type_id
 
     got: list[list[int]] = [[] for _ in range(8)]
     start = threading.Barrier(8)

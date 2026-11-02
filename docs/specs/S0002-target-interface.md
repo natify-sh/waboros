@@ -27,7 +27,7 @@ internal interface, so one test suite and one fallback rule serve all of them
   memory sharing across targets (below, "later"); `mpy`.
 
 ## Interface
-`src/w2py/targets/base.py` (stdlib only). Internal; pyright strict.
+`src/waboros/targets/base.py` (stdlib only). Internal; pyright strict.
 
 ```python
 class TrapCode(IntEnum):    # numbers and names of ARTIFACT.md part 3 (Wasmtime's names, D6)
@@ -79,7 +79,7 @@ class TargetInstance(Protocol):
   without a verdict and marks the module `validated = False`: `pyc` may run it (a Python exception is
   safe), a JIT target's `supports()` refuses it, so machine code is only ever generated for fully
   validated modules.
-* `StoreState` (internal, `src/w2py/runtime/store.py`): the owner thread, the entry depth, the
+* `StoreState` (internal, `src/waboros/runtime/store.py`): the owner thread, the entry depth, the
   pending host exception, `max_wasm_stack`, the stack bounds the JIT needs (S0003), the list of
   live instances for `interrupt`. The phase-6 `Store` wraps it.
 * Registry: `TARGETS: dict[str, Callable[[], Target]]` in `base.py`; `select(module, order)` returns
@@ -106,14 +106,14 @@ the original exception (TARGETS.md; `KeyboardInterrupt` included).
 References (`funcref`, `externref`): later, with stage 2 (TARGETS.md).
 
 **Linking.** The runtime, not the target, resolves `(module, field)` to an `Extern` and checks its
-type (today's code in `tests/spec/pyc_engine.py` moves to `src/w2py/runtime/link.py`). Functions
+type (today's code in `tests/spec/pyc_engine.py` moves to `src/waboros/runtime/link.py`). Functions
 stay within one target (D25): every instance of a store runs on the store's target, so functions,
 memories, tables and globals are shared only between instances of that target; host functions come
 in as `HostFunc`.
 
 **Target choice (D25).** The target is fixed per engine (and so per store): `auto` picks
 `jit-<arch>` when `probe()` succeeds (once per process, cached), else `pyc`; the module's content
-never changes the choice. `W2PY_TARGET` overrides it. A module the chosen target cannot compile
+never changes the choice. `WABOROS_TARGET` overrides it. A module the chosen target cannot compile
 raises `Unsupported` with the feature — there is no per-module fallback and no Python helper for a
 computation the JIT has not implemented (D25); only runtime services (`memory.grow`, `table.grow`,
 table/segment initialisation) are called through the host bridge. A module without a full validator
@@ -144,7 +144,7 @@ Phase-3 steps, each one commit with its acceptance; the reviewer reads every JIT
    rsp/rbp/r12/r13 bases, equals `llvm-mc --show-encoding` output (dev tool; skipped if absent).
 3. **The JIT runs wasm**, four sub-steps, each one commit and one review (engine names are target
    names: `--engine jit-x86_64`, never a bare `jit`; one adapter `tests/spec/target_engine.py` for
-   every w2py target; the runner instantiates `spectest` lazily; `tools/spec_diff.py A B` lists
+   every waboros target; the runner instantiates `spectest` lazily; `tools/spec_diff.py A B` lists
    commands passing on A and not on B):
    * **3a ABI**: context, value stack, SysV entry (Win64 shape), trap-by-return, host bridge with
      nested entries and host exceptions, stack limits, interrupt — tested on hand-built functions;
@@ -169,7 +169,7 @@ Phase-3 steps, each one commit with its acceptance; the reviewer reads every JIT
    x86-64-v1 allowlist; it must fail on a planted `roundsd` and pass when v2 is declared.
    Done: CoreMark 17 526 vs `w2jit2` 17 662 it/s (medians of 5 alternated rounds, 99.2 %), see
    BENCHMARKS.md "JIT step 5 checkpoint". ISA: `tools/isa_all.py` (CI job `jit`) compiles every spec
-   module with `W2PY_JIT_DUMP` plus CoreMark and runs `tools/isa_check.py --data` on each non-empty
+   module with `WABOROS_JIT_DUMP` plus CoreMark and runs `tools/isa_check.py --data` on each non-empty
    blob (379 blobs, 0 failures); `isa_check.py --level v2` declares the SSE3–SSE4.2/popcnt level;
    `tests/jit/test_encoder.py::test_isa_levels` plants `roundsd`/`popcnt` (fail at v1, pass at v2)
    and AVX (fails at both).

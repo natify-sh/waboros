@@ -11,7 +11,19 @@ from pathlib import Path
 import pytest
 
 from tests.jit import need
-from w2py.targets.jit.x86_64.encoder import ALU, BT, CC, RAX, RBP, RSP, SHIFT, SSE, UNARY, Asm, Mem
+from waboros.targets.jit.x86_64.encoder import (
+    ALU,
+    BT,
+    CC,
+    RAX,
+    RBP,
+    RSP,
+    SHIFT,
+    SSE,
+    UNARY,
+    Asm,
+    Mem,
+)
 
 LLVM_MC = shutil.which("llvm-mc")
 OBJCOPY = shutil.which("llvm-objcopy") or shutil.which("objcopy")

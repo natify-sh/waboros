@@ -5,14 +5,14 @@ status: current
 updated: 2026-11-02
 ---
 
-# w2py
+# waboros
 
 > New here? Read [`BRIEF.md`](BRIEF.md) first.
 
 A WebAssembly **compiler and runtime for Python with no runtime dependencies**: the Python standard
 library is all it needs. Its core is a compiler written in Python that emits machine code at run time;
 the public API will take the familiar shape of wasmtime-py (Engine, Store, Module, Linker, Instance,
-WASI), which is also the test oracle. Where Wasmtime has Cranelift (or Winch, Pulley), w2py has
+WASI), which is also the test oracle. Where Wasmtime has Cranelift (or Winch, Pulley), waboros has
 **targets**: a translator
 to Python code (`pyc`), a translator for MicroPython (`mpy`) and machine-code JITs written in Python
 that run through `mmap` + `ctypes` (`jit-x86_64`, `jit-aarch64`, later `jit-riscv64`, …). A target is
@@ -29,11 +29,11 @@ documents under `docs/` are the plan.
 | | CoreMark, it/s | needs |
 |---|---|---|
 | wasmtime (Cranelift) | 19 044 | a 30+ MB native wheel |
-| **w2py jit-x86_64 (PoC `w2jit2`), CPython 3.8–3.13** | **15 337–15 437** | stdlib only |
+| **PoC jit-x86_64 (`w2jit2`), CPython 3.8–3.13** | **15 337–15 437** | stdlib only |
 | wasm3 (pywasm3) | 2 433 | a native extension |
-| w2py pyc, PyPy 7.3 | 2 300–2 900 | stdlib only |
-| w2py mpy, MicroPython 1.29 unix, `@native` | 94 | nothing |
-| w2py pyc, CPython 3.13 | 86–100 | stdlib only |
+| PoC pyc (`poc/w2py.py`), PyPy 7.3 | 2 300–2 900 | stdlib only |
+| PoC mpy, MicroPython 1.29 unix, `@native` | 94 | nothing |
+| PoC pyc, CPython 3.13 | 86–100 | stdlib only |
 | pywasm 2.2.3 (pure-Python interpreter) | 0.58 | stdlib only |
 
 Same machine (cloud x86-64, Xeon 2.1 GHz); the first three rows in one session. Full table, conditions
@@ -50,7 +50,7 @@ everywhere else (iOS/Pythonista, hardened systems, unknown architectures), Micro
 | [`docs/TARGETS.md`](docs/TARGETS.md) | the target interface, automatic selection, how to add an architecture step by step, the targets planned |
 | [`docs/ARTIFACT.md`](docs/ARTIFACT.md) | the JIT artifact as a language-neutral, versioned contract: ISA levels, the file format, the context ABI |
 | [`docs/API.md`](docs/API.md) | the Python API (after wasmtime-py) and the CLI (after the `wasmtime` binary) |
-| [`docs/FEATURES.md`](docs/FEATURES.md) | what Wasmtime supports, what w2py must support, the state of each target |
+| [`docs/FEATURES.md`](docs/FEATURES.md) | what Wasmtime supports, what waboros must support, the state of each target |
 | [`docs/TESTING.md`](docs/TESTING.md) | the spec test suite, differential testing, benchmarks, CI matrix |
 | [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) | every measurement made, with conditions |
 | [`docs/RISKS.md`](docs/RISKS.md) | risks with possible solutions (not decisions): moving artifacts between machines and trust, version skew between generator and runtime, platforms restricting JIT and CPU control-flow integrity, alternatives to a hand-written JIT |

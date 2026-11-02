@@ -13,16 +13,16 @@ import pytest
 
 from tests.jit import native
 from tests.jit.test_abi import ODD_TRAP, counter, word
-from w2py.runtime.link import host_func
-from w2py.runtime.store import StoreState
-from w2py.targets.base import HostFunc, Raw, Trap, TrapCode
-from w2py.targets.jit.aarch64 import trampolines
-from w2py.targets.jit.aarch64.abi import CTX, FRAME, MBASE, MSIZE, assemble
-from w2py.targets.jit.aarch64.backend import POOL, Backend, Frame
-from w2py.targets.jit.aarch64.encoder import FP, LR, SP, ZR, Asm, Label
-from w2py.targets.jit.common.context import HOST_ERROR, INTERRUPT, TAIL_SWITCH, TRAP_CODE, Layout
-from w2py.targets.jit.common.execmem import ExecMem, load
-from w2py.targets.jit.common.instance import Instance, Memory, Trampolines
+from waboros.runtime.link import host_func
+from waboros.runtime.store import StoreState
+from waboros.targets.base import HostFunc, Raw, Trap, TrapCode
+from waboros.targets.jit.aarch64 import trampolines
+from waboros.targets.jit.aarch64.abi import CTX, FRAME, MBASE, MSIZE, assemble
+from waboros.targets.jit.aarch64.backend import POOL, Backend, Frame
+from waboros.targets.jit.aarch64.encoder import FP, LR, SP, ZR, Asm, Label
+from waboros.targets.jit.common.context import HOST_ERROR, INTERRUPT, TAIL_SWITCH, TRAP_CODE, Layout
+from waboros.targets.jit.common.execmem import ExecMem, load
+from waboros.targets.jit.common.instance import Instance, Memory, Trampolines
 
 Emit = Callable[[Backend, Frame, list[Label]], None]
 Funcs = Sequence[tuple[tuple[int, ...], int, int, Emit]]  # (pins, frame slots, results, body)
@@ -72,7 +72,7 @@ def test_trampolines_are_landing_pads(tramp: Trampolines) -> None:
 def test_bti_is_enforced_where_the_cpu_has_it(tramp: Trampolines) -> None:
     """A function without a pad, called through a pointer, must die of SIGILL on a BTI CPU with
     PROT_BTI pages: proof that the pads above are checked, not merely present."""
-    from w2py.targets.jit.common import execmem
+    from waboros.targets.jit.common import execmem
 
     if not getattr(execmem, "_PROT_BTI", 0):
         cpuinfo = Path("/proc/cpuinfo")
@@ -81,8 +81,8 @@ def test_bti_is_enforced_where_the_cpu_has_it(tramp: Trampolines) -> None:
         pytest.skip("no BTI enforcement here (not Linux, or the CPU lacks BTI)")
     import subprocess
 
-    src = ("import ctypes; from w2py.targets.jit.common.execmem import ExecMem, load; "
-           "from w2py.targets.jit.aarch64.encoder import Asm; a = Asm(); "
+    src = ("import ctypes; from waboros.targets.jit.common.execmem import ExecMem, load; "
+           "from waboros.targets.jit.aarch64.encoder import Asm; a = Asm(); "
            "a.mov_imm(0, 42, wide=False); a.ret(); m = load(a.finish()); "
            "print(ctypes.CFUNCTYPE(ctypes.c_int)(m.addr)())")  # fmt: skip
     try:  # the same function with its pad first: the child itself must work

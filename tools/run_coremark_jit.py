@@ -8,12 +8,12 @@ import time
 from collections.abc import Sequence
 from typing import Any
 
-from w2py.frontend.binary import parse
-from w2py.frontend.validate import validate
-from w2py.runtime import link
-from w2py.runtime.store import StoreState
-from w2py.targets import base
-from w2py.targets.base import HostFunc, Raw
+from waboros.frontend.binary import parse
+from waboros.frontend.validate import validate
+from waboros.runtime import link
+from waboros.runtime.store import StoreState
+from waboros.targets import base
+from waboros.targets.base import HostFunc, Raw
 
 GOOD_CRCS = {
     "seedcrc": "0xe9f5",
@@ -62,14 +62,14 @@ def main() -> None:
     validate(mod)
     tg = base.TARGETS[name]()
     c = tg.compile(mod)
-    print(f"[w2py {name}] compile {(time.perf_counter() - t) * 1000:.1f} ms")
+    print(f"[waboros {name}] compile {(time.perf_counter() - t) * 1000:.1f} ms")
     wiring: dict[str, HostFunc] = {"millis": millis, "print": pr}
     ext = link.resolve(mod, {"wiring": wiring})
     box["inst"] = inst = tg.instantiate(c, ext, StoreState())
     idx = next(i for n, k, i in mod["exports"] or () if n == "setup" and k == 0)
     t = time.perf_counter()
     inst.call(idx, [])
-    print(f"\n[w2py {name}] wall {time.perf_counter() - t:.2f}s")
+    print(f"\n[waboros {name}] wall {time.perf_counter() - t:.2f}s")
 
 
 if __name__ == "__main__":

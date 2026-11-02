@@ -3,8 +3,8 @@ import os
 
 import pytest
 
-from w2py.targets.base import TrapCode
-from w2py.targets.pyc import Trap, load, translate
+from waboros.targets.base import TrapCode
+from waboros.targets.pyc import Trap, load, translate
 
 COREMARK = os.path.join(os.path.dirname(__file__), "..", "poc", "in", "core.wasm")
 
@@ -23,7 +23,7 @@ def test_tiny_module_call_and_trap() -> None:
 
 def test_generated_source_imports_runtime() -> None:
     src = translate(DIV)
-    assert "from w2py.targets.pyc.runtime import" in src
+    assert "from waboros.targets.pyc.runtime import" in src
     assert "class Trap" not in src
 
 
@@ -206,7 +206,7 @@ NEG32 = bytes.fromhex(
 
 
 def test_f32_nan_payload_kept() -> None:
-    from w2py.targets.pyc import runtime as rt
+    from waboros.targets.pyc import runtime as rt
 
     assert load(NEG32, {})["f"](0x7FA00001) == 0xFFA00001  # sNaN stays signalling, payload kept
     assert rt._i32_f32(rt._f32_i32(0x7FA00000)) == 0x7FA00000
@@ -217,7 +217,7 @@ def test_f32_nan_payload_kept() -> None:
 
 
 def test_float_rounding_helpers() -> None:
-    from w2py.targets.pyc import runtime as rt
+    from waboros.targets.pyc import runtime as rt
 
     assert str(rt._fceil(-0.5)) == "-0.0" and str(rt._ftrunc(-0.5)) == "-0.0"
     assert rt._i64_f64(rt._fnearest(rt._f64_i64(0x7FF4000000000000))) == 0x7FFC000000000000
@@ -424,8 +424,8 @@ def _raw_instance(wat: str, imports: dict[str, dict[str, object]]) -> dict[str, 
     two modules are linked in one store)."""
     from wasmtime import wat2wasm
 
-    ns: dict[str, object] = {"__name__": "w2py_pyc_module"}
-    exec(compile(translate(bytes(wat2wasm(wat))), "<w2py-pyc>", "exec"), ns)
+    ns: dict[str, object] = {"__name__": "waboros_pyc_module"}
+    exec(compile(translate(bytes(wat2wasm(wat))), "<waboros-pyc>", "exec"), ns)
     return ns["instantiate"](imports)  # pyright: ignore[reportCallIssue]
 
 

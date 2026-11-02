@@ -4,10 +4,10 @@
 import pytest
 
 from tests.test_validate import I32, check, mod, sec
-from w2py.frontend import simd
-from w2py.frontend.binary import Malformed, decode, parse
-from w2py.frontend.validate import Invalid, validate
-from w2py.targets import base
+from waboros.frontend import simd
+from waboros.frontend.binary import Malformed, decode, parse
+from waboros.frontend.validate import Invalid, validate
+from waboros.targets import base
 
 V = b"\x7b"
 MEM = sec(5, b"\x01\x00\x01")

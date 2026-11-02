@@ -5,20 +5,20 @@ import pytest
 
 def need(ok: object, what: str) -> None:
     """Skip a test whose dev tool or capability is missing; fail it instead under
-    W2PY_JIT_REQUIRE=1 (the CI `jit` job), so a skip cannot hide there."""
+    WABOROS_JIT_REQUIRE=1 (the CI `jit` job), so a skip cannot hide there."""
     if not ok:
-        if os.environ.get("W2PY_JIT_REQUIRE") == "1":
-            pytest.fail(f"{what} missing (W2PY_JIT_REQUIRE=1)")
+        if os.environ.get("WABOROS_JIT_REQUIRE") == "1":
+            pytest.fail(f"{what} missing (WABOROS_JIT_REQUIRE=1)")
         pytest.skip(f"{what} missing")
 
 
 def native(target: str) -> None:
     """Skip unless this machine has `target`'s architecture (another architecture is not a missing
-    tool, so this skips under W2PY_JIT_REQUIRE=1 too), then `need` its probe."""
+    tool, so this skips under WABOROS_JIT_REQUIRE=1 too), then `need` its probe."""
     import platform
 
-    from w2py.targets.base import TARGETS
-    from w2py.targets.jit.common.target import JitTarget
+    from waboros.targets.base import TARGETS
+    from waboros.targets.jit.common.target import JitTarget
 
     t = TARGETS[target]()
     assert isinstance(t, JitTarget)
@@ -32,8 +32,8 @@ def native_jit() -> str:
     tests then skip through `native`)."""
     import platform
 
-    from w2py.targets.base import TARGETS
-    from w2py.targets.jit.common.target import JitTarget
+    from waboros.targets.base import TARGETS
+    from waboros.targets.jit.common.target import JitTarget
 
     for name, make in TARGETS.items():
         t = make()

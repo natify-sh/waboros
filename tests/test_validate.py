@@ -3,8 +3,8 @@ import os
 
 import pytest
 
-from w2py.frontend.binary import parse
-from w2py.frontend.validate import Invalid, validate
+from waboros.frontend.binary import parse
+from waboros.frontend.validate import Invalid, validate
 
 COREMARK = os.path.join(os.path.dirname(__file__), "..", "poc", "in", "core.wasm")
 I32, I64 = b"\x7f", b"\x7e"

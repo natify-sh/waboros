@@ -8,7 +8,7 @@ The lists of two hosts must be identical:
     python3 tools/jit_dump.py --target jit-aarch64 OUT.txt      # PYTHONPATH=src
     diff x86-OUT.txt arm64-OUT.txt
 
-With W2PY_JIT_DUMP=<dir> the code of every module is also written there (tools/isa_all.py)."""
+With WABOROS_JIT_DUMP=<dir> the code of every module is also written there (tools/isa_all.py)."""
 
 import argparse
 import hashlib
@@ -22,10 +22,10 @@ sys.path.insert(0, str(ROOT))
 
 def main() -> int:
     from tests.spec.fetch import CACHE_DIR
-    from w2py.frontend.binary import parse
-    from w2py.frontend.validate import validate
-    from w2py.targets import base
-    from w2py.targets.jit.common.compiler import Compiled
+    from waboros.frontend.binary import parse
+    from waboros.frontend.validate import validate
+    from waboros.targets import base
+    from waboros.targets.jit.common.compiler import Compiled
 
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--target", required=True, choices=["jit-x86_64", "jit-aarch64"])

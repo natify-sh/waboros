@@ -1,4 +1,4 @@
-"""What w2py does inside an Android app process (CI job `android`, docs/TESTING.md).
+"""What waboros does inside an Android app process (CI job `android`, docs/TESTING.md).
 
 Run by CPython's testbed app (`android.py test ... -- -m tools.android_check`) with the working
 directory holding tests/, tools/ and poc/in/core.wasm. Prints the platform, the SELinux context, the
@@ -17,7 +17,7 @@ import warnings
 import pytest
 
 from tools.run_coremark_jit import valid
-from w2py.targets.base import TARGETS, JitUnavailableWarning, target_order
+from waboros.targets.base import TARGETS, JitUnavailableWarning, target_order
 
 
 def main() -> int:

@@ -3,7 +3,7 @@
     python3 tools/run_arm64.py -m pytest tests/jit/test_abi_aarch64.py -q
 
 Needs `apt-get install qemu-user libc6-arm64-cross libgcc-s1-arm64-cross` and
-`uv python install cpython-3.13-linux-aarch64-gnu` (or W2PY_ARM64_PYTHON=<its python3>); pytest
+`uv python install cpython-3.13-linux-aarch64-gnu` (or WABOROS_ARM64_PYTHON=<its python3>); pytest
 and wasmtime (the tests' wat2wasm) for aarch64 go to .cache/arm64-site on first use. QEMU does not
 model a stale I-cache: a missing flush passes here; only a native runner proves it. Subprocesses
 start the aarch64 interpreter only where binfmt is registered (QEMU_LD_PREFIX is set for them);
@@ -23,9 +23,9 @@ if __name__ == "__main__":
     found = [
         p for d in dirs if d for p in glob.glob(os.path.expanduser(d) + "/*aarch64*/bin/python3")
     ]
-    py = os.environ.get("W2PY_ARM64_PYTHON") or (sorted(found)[-1] if found else None)
+    py = os.environ.get("WABOROS_ARM64_PYTHON") or (sorted(found)[-1] if found else None)
     if not py:
-        sys.exit("run_arm64: no aarch64 CPython (set W2PY_ARM64_PYTHON)")
+        sys.exit("run_arm64: no aarch64 CPython (set WABOROS_ARM64_PYTHON)")
     if not (SITE / "wasmtime").exists():  # pytest; wasmtime for the tests' wat2wasm
         pip = ["uv", "pip", "install", "--target", str(SITE), "--python-version", "3.13"]
         plat = ["--python-platform", "aarch64-unknown-linux-gnu"]

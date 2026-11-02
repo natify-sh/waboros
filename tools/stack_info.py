@@ -56,9 +56,9 @@ def bounds() -> tuple[int, int] | str:
 
 def jit_view() -> str:
     try:
-        from w2py.targets.base import TARGETS
-        from w2py.targets.jit.common import instance
-        from w2py.targets.jit.common.target import JitTarget
+        from waboros.targets.base import TARGETS
+        from waboros.targets.jit.common import instance
+        from waboros.targets.jit.common.target import JitTarget
 
         mine = [
             t

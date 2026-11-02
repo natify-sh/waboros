@@ -12,7 +12,7 @@ at a time; each one passes the same tests before it is selectable.
 
 ## The interface
 
-A sketch of the idea; the interface as implemented is S0002 and `src/w2py/targets/base.py` (`probe()` and
+A sketch of the idea; the interface as implemented is S0002 and `src/waboros/targets/base.py` (`probe()` and
 `supports(module)` without `config`; no `serialize`/`deserialize` yet). Everything a target needs comes in,
 nothing global:
 
@@ -74,7 +74,7 @@ The choice depends on the environment only, never on a module's content (D25): o
 and store, no per-module fallback. A JIT is selected by `auto` only when its expected failures equal
 `pyc`'s in the claimed groups. When `auto` ends on `pyc` because no JIT can run here, it warns once
 with `JitUnavailableWarning` (D31); an explicit `jit-*` that cannot run is an `Unsupported` error.
-`W2PY_TARGET` (environment) overrides for testing.
+`WABOROS_TARGET` (environment) overrides for testing.
 
 ## Adding an architecture step by step
 
@@ -126,7 +126,7 @@ with real numbers for both.
 | `jit-x86_64` | Linux, macOS (Intel), BSDs, Windows, Android (app process, CI emulator) | package: the core group at parity with `pyc` (spec core 20509 pass, same 89 expected failures: integers, SSE2 floats, `memory.grow`, tables, `call_indirect`, references, bulk memory, tail calls, function imports through records; CoreMark 17 526 it/s; SIMD: every operator with SSE2 only, `simd/` claimed at parity with `pyc`, 25 481 runnable commands pass, S0005 step 5d3); selected by `auto`, which falls back to `pyc` with a warning (D31). PoC: CoreMark (`w2jit2`, SysV only, 17 662 it/s in the same session) | explicit bounds checks only; one artifact for every OS (D23): the Win64 entry trampoline and bridge and a `VirtualAlloc` loader are written and CI runs `tests/jit` on `windows-latest` and `macos-26-intel` and those jobs are green (e.g. run 41304018802) |
 | `jit-aarch64` | Linux, macOS (Apple Silicon: `MAP_JIT`), Windows on ARM, Android `arm64_v8a` (not checked in CI) | package: parity with `pyc` and `jit-x86_64` (spec 28903 pass in phase 4; 54 385 pass, 91 expected failures with `simd/`), selected by `auto` on arm64; SIMD: every operator in ARMv8.0-A NEON, `simd/` claimed at parity with `pyc` (S0005 5c, 5e1, 5e2); CI on Linux, macOS and Windows arm64 runners | the second architecture: proved the backend split, interface frozen after it (D39) |
 | `jit-riscv64`, `jit-armv7`, `jit-mips32` (Ingenic X2000, little-endian), `jit-ppc64le`, `jit-loongarch64` | as available | — | QEMU user-mode in CI; candidates for copy-and-patch |
-| `lua` / `luajit` | Lua 5.4, LuaJIT | CoreMark | **not a w2py target** (D20, rejected; code stays in `poc/`): an experiment showing the IR serves other languages (271 / 1 873 it/s); the shared layers stay language-neutral so such backends remain possible (DECISIONS.md D17) |
+| `lua` / `luajit` | Lua 5.4, LuaJIT | CoreMark | **not a waboros target** (D20, rejected; code stays in `poc/`): an experiment showing the IR serves other languages (271 / 1 873 it/s); the shared layers stay language-neutral so such backends remain possible (DECISIONS.md D17) |
 | `mypyc` | CPython + mypyc runtime | CoreMark | **dropped**: needs `librt` at run time (a dependency) and is 9× slower than wasm2c for a native build |
 
 **MicroPython's own native emitters as JIT back ends (research).** Our JIT is the same idea as
@@ -147,12 +147,12 @@ Where no JIT is allowed at all — iOS (Pythonista), Pyodide, hardened Linux wit
 anonymous memory — `pyc` is the target. In Pyodide the browser's own `WebAssembly` is faster than any
 of ours; a thin target calling it through `js` is an option to consider.
 
-## Python platforms and what w2py gives them
+## Python platforms and what waboros gives them
 
 The platforms CPython ships for (cibuildwheel's `archs`, `main`, 2026-11, as the maintainer's map of
-the targets worth having). w2py itself has no wheels (pure Python); this says where a JIT makes sense.
+the targets worth having). waboros itself has no wheels (pure Python); this says where a JIT makes sense.
 
-| platform (`archs`) | what w2py gives it |
+| platform (`archs`) | what waboros gives it |
 |---|---|
 | Linux / macOS / Windows `x86_64`/`AMD64`, `aarch64`/`arm64`/`ARM64` | JIT (`jit-x86_64`, `jit-aarch64`), CI on native runners |
 | Android `x86_64`, `arm64_v8a` | the same backends where the app may map executable memory (our W^X path: write, then switch to execute). CI job `android` (`x86_64` only): CPython's testbed app (python.org package 3.14.10, API 35 `aosp_atd` image, KVM) runs `tools/android_check.py`, which prints the SELinux context and the probe, then either runs CoreMark (self-check) and the JIT tests, or shows `auto` giving `pyc` with exactly one D31 warning naming the refusal. First run (CI run 41351056918): the JIT runs in the app process (`untrusted_app`), `auto` selects `jit-x86_64`, CoreMark validated (docs/RISKS.md R2). `arm64_v8a`: no job, because the Android emulator has no Linux arm64 build and GitHub's arm64 runners cannot run it (CPython's own CI builds it there and skips the tests); Termux (a shell, a permissive environment, not an app process) would be the manual route |

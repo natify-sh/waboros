@@ -7,12 +7,12 @@ from collections.abc import Mapping, Sequence
 import pytest
 
 from tests.test_pyc import DIV, SHARE_A, SHARE_B
-from w2py.frontend.binary import parse
-from w2py.frontend.validate import validate
-from w2py.runtime import link
-from w2py.runtime.store import StoreState
-from w2py.targets import base
-from w2py.targets.base import HostFunc, Raw, TargetInstance, Trap, TrapCode
+from waboros.frontend.binary import parse
+from waboros.frontend.validate import validate
+from waboros.runtime import link
+from waboros.runtime.store import StoreState
+from waboros.targets import base
+from waboros.targets.base import HostFunc, Raw, TargetInstance, Trap, TrapCode
 
 HEAD = "0061736d01000000"
 # (module (import "env" "h" (func (result i32))) (func (export "run") (result i32) call 0))

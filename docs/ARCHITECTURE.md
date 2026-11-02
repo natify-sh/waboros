@@ -9,11 +9,11 @@ updated: 2026-11-02
 
 ## Principles
 
-1. **No runtime dependencies.** At run time w2py uses the Python standard library only (`struct`,
-   `mmap`, `ctypes`, `marshal`, `hashlib`, `os`, `threading`). Tools used while *developing* w2py
+1. **No runtime dependencies.** At run time waboros uses the Python standard library only (`struct`,
+   `mmap`, `ctypes`, `marshal`, `hashlib`, `os`, `threading`). Tools used while *developing* waboros
    (wabt, wasm-tools, wasmtime as a reference, clang for experiments) never reach the user.
 2. **Wasmtime is the reference.** Its object model, its API (as wasmtime-py exposes it), its CLI, its
-   trap codes and its set of features are what w2py follows. We do not invent what Wasmtime already
+   trap codes and its set of features are what waboros follows. We do not invent what Wasmtime already
    answers; we replace only its compiler (Cranelift / Winch / Pulley) with our targets.
 3. **Translation, not interpretation.** Wasm is compiled once into the form the host runs best:
    Python code for an interpreter, machine code where executable memory is allowed. The PoC shows
@@ -27,7 +27,7 @@ updated: 2026-11-02
 ## Layers
 
 ```
-            .wasm / .wat                                   cache (~/.cache/w2py)
+            .wasm / .wat                                   cache (~/.cache/waboros)
                  │                                                  ▲ │
    ┌─────────────▼──────────────┐                                   │ │
    │ frontend                    │ decode · validate · const exprs  │ │
@@ -55,7 +55,7 @@ updated: 2026-11-02
 Proposed package layout (the full target; what exists at HEAD is listed after it):
 
 ```
-w2py/
+waboros/
   frontend/      reader.py  module.py  validate.py  constexpr.py  names.py  wat.py (optional)
   ir/            hir.py (stack → trees, structured control)  analyses.py  opt.py  types.py
     lir.py       (machine-neutral linear form for the JITs, built from HIR)
@@ -76,7 +76,7 @@ w2py/
   __main__.py
 ```
 
-At HEAD `src/w2py/` holds: `frontend/` (`binary.py` reader, `validate.py`, `simd.py` the one SIMD
+At HEAD `src/waboros/` holds: `frontend/` (`binary.py` reader, `validate.py`, `simd.py` the one SIMD
 operator table with its decoder and validator), `runtime/` (`link.py`, `store.py`), `targets/base.py`
 (the `Target` protocol, registry, `auto` selection, `JitUnavailableWarning`), `targets/pyc/`
 (`codegen.py`, `runtime.py`, `simd.py`), and `targets/jit/` with `common/` (`compiler.py` the one-pass
@@ -97,8 +97,8 @@ along the lines above is the first step of the roadmap.
 ## The IR
 
 **Wasm is already the portable, optimised IR.** It is typed, validated and optimised by its producer
-(clang `-O3`, rustc: inlining, unrolling, common subexpressions are done before w2py sees it). That is
-why w2py needs no LLVM-class optimiser — measured: a baseline JIT with no such optimisations reaches
+(clang `-O3`, rustc: inlining, unrolling, common subexpressions are done before waboros sees it). That is
+why waboros needs no LLVM-class optimiser — measured: a baseline JIT with no such optimisations reaches
 ~80 % of Cranelift on CoreMark. What wasm does not give a code generator directly is computed once, in
 a thin IR of our own, and shared by all targets.
 
@@ -154,7 +154,7 @@ the ~20 % gap to Cranelift.
 
 ## The object model (after Wasmtime)
 
-| Object | Owns / does | w2py notes |
+| Object | Owns / does | waboros notes |
 |---|---|---|
 | `Config` | features, target choice, cache, stack limits, fuel/epoch switches | `target='auto'` or a name; Wasmtime's Cranelift options have no meaning here and are accepted and ignored, or rejected (decide) |
 | `Engine` | a `Config`; the selected target; the compiled-code registry | one per process is typical; selection is resolved here (see TARGETS.md) |
@@ -226,7 +226,7 @@ store: this is the chosen one (D25). Open question 12 in ROADMAP.md keeps only t
 
 ## Calls, stack depth and recursion
 
-Wasmtime traps with `STACK_OVERFLOW` when guest recursion exceeds `max_wasm_stack`. w2py must do the
+Wasmtime traps with `STACK_OVERFLOW` when guest recursion exceeds `max_wasm_stack`. waboros must do the
 same on every target, deterministically, and must never let a guest crash the interpreter.
 
 **`pyc` (and `mpy`).** A wasm call is a Python call, so a deep guest recursion meets the interpreter's
@@ -328,7 +328,7 @@ slot.
 
 Like Wasmtime's cache (and `Module.serialize`), compiled artifacts are kept on disk.
 
-* **Key**: sha256 of the wasm bytes + w2py version + target id + target environment + every config
+* **Key**: sha256 of the wasm bytes + waboros version + target id + target environment + every config
   option that changes generated code (features, fuel/epoch, stack limits, bounds-check mode).
   Target environment: for `pyc` the implementation and bytecode magic (`importlib.util.MAGIC_NUMBER`,
   `sys.implementation.cache_tag`); for `mpy` the `.mpy` version and architecture; for a JIT the
@@ -336,11 +336,11 @@ Like Wasmtime's cache (and `Module.serialize`), compiled artifacts are kept on d
 * **Content**: `pyc` → the marshalled code object (exactly what a `.pyc` holds) plus metadata;
   `mpy` → the `.mpy`; JIT → the artifact of [ARTIFACT.md](ARTIFACT.md) (position-independent code,
   entry trampolines per calling convention, tables, segments; declared ISA level and context ABI).
-* **Where**: `$XDG_CACHE_HOME/w2py` (or the platform's equivalent, computed with stdlib only); atomic
-  writes (temp file + `os.replace`); a size limit with LRU eviction; `w2py cache` in the CLI.
+* **Where**: `$XDG_CACHE_HOME/waboros` (or the platform's equivalent, computed with stdlib only); atomic
+  writes (temp file + `os.replace`); a size limit with LRU eviction; `waboros cache` in the CLI.
 * `Module.serialize()` / `deserialize()` write and read the same artifact format, so a module can
-  also be compiled ahead of time and shipped (`w2py compile`, a file like Wasmtime's `.cwasm`: it
-  needs the w2py runtime, nothing is embedded — DECISIONS.md D18). Optionally **fat**: the file
+  also be compiled ahead of time and shipped (`waboros compile`, a file like Wasmtime's `.cwasm`: it
+  needs the waboros runtime, nothing is embedded — DECISIONS.md D18). Optionally **fat**: the file
   carries the original wasm and regenerates itself on any mismatch instead of being refused. What to cache versus ship, and the
   trust problem of artifacts from other machines: RISKS.md, R1.
 * Measured cost it saves (PoC, CoreMark): `pyc` translation + `compile()` ≈ 111 ms, from cache
@@ -350,7 +350,7 @@ Like Wasmtime's cache (and `Module.serialize`), compiled artifacts are kept on d
 
 The JIT compiler emits bytes and never executes them while compiling, and a JIT artifact depends on
 the architecture and its declared ISA level only (D23, D24). So any host compiles for any `jit-<arch>`
-w2py has, as Wasmtime's `--target` does (D35): a portable artifact made on x86-64 for aarch64 is
+waboros has, as Wasmtime's `--target` does (D35): a portable artifact made on x86-64 for aarch64 is
 loaded and run on aarch64 only, the loader refusing another architecture or a missing ISA level.
 Only explicit levels are valid for another target (`"native"` is the compiling CPU, D33). Artifact
 files come in phase 5; from phase 4 CI compares the aarch64 artifact made on x86-64 with the one made
@@ -358,13 +358,13 @@ on the arm64 runner byte for byte. `pyc`/`mpy` artifacts belong to an interprete
 
 ## Versioned contracts
 
-Everything w2py generates is a derivative of the wasm and is consumed by code that may come from
-another w2py version. Each interface between them is a versioned contract:
+Everything waboros generates is a derivative of the wasm and is consumed by code that may come from
+another waboros version. Each interface between them is a versioned contract:
 
 | contract | between | where |
 |---|---|---|
 | JIT artifact format + context ABI + ISA level | the JIT compiler and any loader (Python or another language) | ARTIFACT.md |
-| **generated-module ABI** (`pyc`, `mpy`) | a generated Python module and the runtime: how it receives imports and memories, which helpers it calls, how it reports traps, how the runtime finds its exports | **internal** (D18): generated code is used only by the runtime version that made it; an exact match of the w2py version is required, otherwise regenerate |
+| **generated-module ABI** (`pyc`, `mpy`) | a generated Python module and the runtime: how it receives imports and memories, which helpers it calls, how it reports traps, how the runtime finds its exports | **internal** (D18): generated code is used only by the runtime version that made it; an exact match of the waboros version is required, otherwise regenerate |
 | cache key fields | a cache entry and the runtime looking it up | "Cache" above |
 
 On a mismatch the runtime regenerates from the wasm when it has it (the cache; a fat file) and refuses
@@ -378,7 +378,7 @@ takes the store's state and a memory, so `Linker.define_wasi()` can bind names t
 The candidate is **fusedwasi** (natify-sh/fusedwasi, branch `wasi-p2` at the time of writing): one
 flat function per import, in C and in a Python twin, for WASI 0.1 (`wasi_snapshot_preview1`,
 `wasi_unstable`) and WASI 0.2 (all imports of the command world and `wasi:http`). **It has not been
-used with w2py yet**: only its README and the Python twin's source were read, and one assumption was
+used with waboros yet**: only its README and the Python twin's source were read, and one assumption was
 checked separately (below). If it is chosen:
 
 * `Linker.define_wasi()` binds the import names to the twin's functions (`partial(fn, host, comp)`);

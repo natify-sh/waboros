@@ -17,13 +17,13 @@ import pytest
 
 from tests.jit import native, need
 from tests.jit.test_compiler import JIT, M32, M64, ROOT, build, outcome, trap_of, wat
-from w2py.frontend.binary import parse
-from w2py.frontend.validate import validate
-from w2py.runtime import link
-from w2py.runtime.store import StoreState
-from w2py.targets.base import Raw, TrapCode
-from w2py.targets.jit.common.compiler import Compiled
-from w2py.targets.jit.x86_64 import JitX86_64Target
+from waboros.frontend.binary import parse
+from waboros.frontend.validate import validate
+from waboros.runtime import link
+from waboros.runtime.store import StoreState
+from waboros.targets.base import Raw, TrapCode
+from waboros.targets.jit.common.compiler import Compiled
+from waboros.targets.jit.x86_64 import JitX86_64Target
 
 
 @pytest.fixture(autouse=True)
@@ -34,7 +34,7 @@ def _jit() -> None:
 @pytest.fixture(params=["pinned", "nopin"])
 def pins(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     if request.param == "nopin":
-        monkeypatch.setenv("W2PY_JIT_NOPIN", "all")
+        monkeypatch.setenv("WABOROS_JIT_NOPIN", "all")
     yield
 
 

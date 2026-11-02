@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from tests.jit import need
-from w2py.targets.jit.aarch64.encoder import (
+from waboros.targets.jit.aarch64.encoder import (
     ADDSUB,
     COND,
     CSEL,
