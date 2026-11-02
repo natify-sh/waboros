@@ -8,7 +8,10 @@ registers hold values; everything else is the backend's scratch.
 
 Operands: `Imm` (the value of the operand's width, unsigned), `Reg` (a backend register id), `Slot`
 (value-stack slot k of the current frame). `wide`: a 64-bit operation, else 32-bit with the result
-zero-extended (LESSONS 5). Slots always hold zero-extended 64-bit values.
+zero-extended (LESSONS 5). Slots always hold zero-extended 64-bit values. `AddK` (S0007 K): the
+i32 `(id + k) mod 2**32`, accepted only by `move` (as `src`, wide=False) and as the `load`/`store`
+address, each formed by one 32-bit add into the destination or the index scratch (no flags, no
+other register written).
 """
 
 from collections.abc import Sequence
@@ -29,6 +32,12 @@ class Reg:
 @dataclass(frozen=True, slots=True)
 class Slot:
     k: int
+
+
+@dataclass(frozen=True, slots=True)
+class AddK:  # the i32 value (register `id` + k) mod 2**32 (S0007 K)
+    id: int  # a pool register holding a zero-extended i32 (a pinned local)
+    k: int  # 0 <= k < 2**32
 
 
 Operand = Imm | Reg | Slot
@@ -67,7 +76,7 @@ class Backend(Protocol[L, F]):
     def finish(self) -> tuple[bytes, int]: ...  # (code + data area, offset of the data area)
 
     # data
-    def move(self, dst: Dst, src: Operand, wide: bool) -> None: ...
+    def move(self, dst: Dst, src: Operand | AddK, wide: bool) -> None: ...
     def binop(self, op: str, dst: Reg, x: Operand, y: Operand, wide: bool) -> None: ...
     def divrem(self, f: F, op: str, dst: Reg, x: Operand, y: Operand, wide: bool) -> None: ...
     def unop(self, op: str, dst: Reg, x: Operand, wide: bool) -> None: ...
@@ -92,11 +101,11 @@ class Backend(Protocol[L, F]):
     # and context words (globals)
     def memory_size(self, dst: Reg, mem: int) -> None: ...  # in pages
     def load(
-        self, f: F, size: int, signed: bool, wide: bool, dst: Reg, addr: Operand, offset: int,
-        mem: int,
+        self, f: F, size: int, signed: bool, wide: bool, dst: Reg, addr: Operand | AddK,
+        offset: int, mem: int,
     ) -> None: ...  # fmt: skip
     def store(
-        self, f: F, size: int, addr: Operand, offset: int, src: Operand, mem: int
+        self, f: F, size: int, addr: Operand | AddK, offset: int, src: Operand, mem: int
     ) -> None: ...  # fmt: skip
     def ctx_load(self, dst: Reg, word: int, indirect: bool) -> None: ...
     def ctx_store(self, word: int, src: Operand, indirect: bool) -> None: ...

@@ -531,7 +531,7 @@ the opcode sets out of `common/compiler.py`. Measured for that decision (S0004 4
 abi ~930 code lines on aarch64 (integer core) vs ~1490 on x86-64 (full); compile 0.19–0.22 vs
 0.14–0.18 ms per module.
 
-Amended twice: S0005 (D41) added the `simd` method and the meaning of a v128 operand, in both backends, approved by the maintainer; then S0005 (D39 amendment item 5, Changes of 2026-11-02) added `move_v128`, which moves a v128 slot pair or writes a 128-bit constant as one 16-byte store (the store-forwarding fix, LESSONS 44), in both backends, approved by the maintainer.
+Amended three times: S0005 (D41) added the `simd` method and the meaning of a v128 operand, in both backends, approved by the maintainer; then S0005 (D39 amendment item 5, Changes of 2026-11-02) added `move_v128`, which moves a v128 slot pair or writes a 128-bit constant as one 16-byte store (the store-forwarding fix, LESSONS 44), in both backends, approved by the maintainer. S0007 (amendment A, step 3) added the operand kind `AddK` (a pinned i32 plus a constant mod 2³²), accepted only by `move` and as the `load`/`store` address, in both backends, approved by the maintainer with x86-64 byte identity waived (amendment F).
 
 ### D40. The project is renamed `waboros` (from `w2py`)
 Status: accepted (maintainer, 2026-11-01) · Date: 2026-11-01 · Supersedes: — · Evidence: the name `waboros` is free on PyPI (`https://pypi.org/pypi/waboros/json` -> 404 on 2026-11-01)

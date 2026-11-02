@@ -202,8 +202,9 @@ uv run python tools/run_corpus.py --targets pyc,jit-x86_64          # results eq
   returns of swapped locals, calls between the functions, and a function that is call-free with
   more than H slots. Results and trap codes on each JIT the machine has must equal `pyc`'s; the test
   also runs with `WABOROS_JIT_BOUNDS=guard` where guard mode exists.
-* **Unit tests** (`tests/jit/test_compiler.py`): an `AddK` load at `k = 2³² − 4` with a pinned local
-  0 wraps to `−4` and traps with offset 0, reads address 0 with offset 4; a call-free function with
+* **Unit tests** (`tests/jit/test_compiler.py`): an `AddK` load at `k = 2³² − 4` from a pinned local
+  holding 0 wraps to `2³² − 4` and traps with offset 0 and with offset 4 (the sum is 2³², not 0); from
+  a local holding 4 it reads address 0 with offset 0; a call-free function with
   `H + 1` slots keeps its checks; a leaf call at the value-stack limit traps `STACK_OVERFLOW`, not a
   fault; interrupts still stop a `loop` in a call-free function and a loop-free recursion.
 * **Calls benchmark** `poc/bench/calls/` + `tools/run_calls_bench.py` (new, ~60 lines): the
@@ -322,3 +323,13 @@ investigation's.
   placement shown (BENCHMARKS.md), so by this spec's rule it is not merged; revisit after the
   ROADMAP's code-placement item. It would not have covered: a block above other values (height > 0), an `if`
   without `else`, a block inside an `if` without `else`.
+* 2026-11-02: step 3 done (K: the entry kind ADDK, the operand `AddK` in `move` and as the `load`/`store`
+  address, `tos_taken`, `local.set`/`local.tee` spilling ADDK entries of their local; both JITs). Spec parity
+  (54 385 pass, 0 fail, 91 xfail on `jit-x86_64` in guard and explicit mode and with `WABOROS_JIT_NOPIN=all`,
+  and on `jit-aarch64` under QEMU); D35: the same 47 modules change on each target, each with an i32 add/sub
+  of a pinned local (or `local.tee`) and a constant. New: `tests/jit/test_scalar_fuzz.py` (12 seeds, explicit
+  and guard mode) and the `AddK` unit test. Scalar kernels with a padding control: `addsat` −18 %, `scan` −9 %,
+  `nearest` −11 %, `matmul` −4 %; **CoreMark +0.9 % over a padding sweep, within the spread** (step
+  acceptance asked for a gain beyond it); calls and corpus within noise; compile time +4–5 % (BENCHMARKS.md).
+  The Test plan's unit-test sentence was corrected: from a local holding 0, `k = 2³² − 4` with offset 4 is
+  2³², a trap, not address 0 (wasm wraps before adding the offset).

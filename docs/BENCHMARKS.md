@@ -722,3 +722,43 @@ JCC erratum check: the crossings of 32-byte boundaries repeat every 32 bytes (pa
 4, the extra one the base case's `jmp`), but pad 0 and pad 32 go opposite ways, so the erratum does not explain
 the loss at pad 0. The step does not show a gain beyond placement. Compile time (CoreMark and the three corpus
 modules, 3 alternated pairs): 188–198 → 197–203 ms median, minimums equal (182–191 ms).
+
+### Step 3: `local + const` as one operand (K) (2026-11-02)
+
+The change (core and both JITs, D39 amendment A): `i32.add`/`i32.sub` of a pinned i32 local and a constant
+stays on the operand stack as one entry and is consumed as the operand `AddK`: a load/store address forms
+it in the index register with one `lea ecx, [rbx+k]` (aarch64 `add w9, w19, #k`) instead of `lea eax` +
+`mov ecx, eax`; `local.set`/`local.tee` writes it into the local with one `lea`; any other consumer computes
+it into `tos`. 47 spec modules change on each target (the same 47, each with such an add/sub; CoreMark
+included); CoreMark code 34 963 → 33 993 bytes in guard mode, 43 960 → 42 990 explicit, aarch64 38 960 →
+37 372. Conditions: 2026-11-02 19:45–20:25 UTC, Intel Xeon @ 2.10 GHz, 4 vCPU VM, CPython 3.13.17,
+`jit-x86_64` in its default bounds mode (guard, D44), one benchmark process at a time, load average
+0.8–1.06. Baseline: HEAD (`git archive` into a scratch directory, `PYTHONPATH`, `waboros.__file__` checked),
+alternated run by run with the step's code.
+
+| benchmark | runs | before | after | change |
+|---|---|---|---|---|
+| CoreMark (it/s), as built | 8 pairs | 16 758 (15 604–17 197) | 16 741 (16 324–17 637) | −0.1 %, faster in 5 of 8 (noise) |
+| CoreMark, padding sweep 0–56 bytes | 16 pairs | 17 189 (16 523–17 910) | 17 347 (16 693–18 493) | +0.9 %, faster in 10 of 16 (within the spread) |
+| scalar `addsat` (µs per iteration) | 16 pairs × 5 rounds | 5.04 (4.97–5.39) | 4.12 (3.94–4.61) | −18 %, faster in 16 of 16 |
+| scalar `scan` | 16 pairs | 2.29 (2.25–2.43) | 2.08 (2.03–2.15) | −9 %, 16 of 16 |
+| scalar `nearest` | 16 pairs | 1.41 (1.38–1.50) | 1.25 (1.21–1.93) | −11 %, 14 of 16 |
+| scalar `matmul` | 16 pairs | 3.54 (3.47–3.88) | 3.41 (3.30–5.97) | −4 %, 12 of 16 |
+| scalar `dot` | 16 pairs | 2.87 | 2.86 | noise |
+| scalar `swizzle` | 16 pairs | 3.13 (3.05–3.28) | 4.04 (3.71–5.45) | code placement (below) |
+| calls, `leaf` / `fib(27)` (ns per call) | 16 pairs × 11 rounds | 1.98 / 2.64 | 1.94 / 2.69 | noise (9 and 6 of 16) |
+
+Padding control (LESSONS 51): both trees with 0, 8, …, 56 bytes of `int3` before the first function (a scratch
+patch), alternated, 3 runs of the kernels per pad. `addsat` after the change is faster at every pad (3.92–4.24
+against 5.01–5.29 µs), `scan` (2.04–2.14 against 2.25–2.35) and `matmul` (3.38–3.47 against 3.48–3.60) at 8 of 8,
+`nearest` at 7 of 8. `swizzle` spans 3.09–4.60 before and 2.68–4.05 after, faster at 4 of 8 pads (pooled 3.54 →
+3.25): its loop lost only `mov`s (every `lea eax, [rbx+k]; mov ecx, eax` became `lea ecx, [rbx+k]`), so the
+as-built loss is placement and is not counted either way. CoreMark does not gain beyond the spread, as built or
+over the pads (the investigation's +6.2 % was K, L and Z together; step 2's L alone gave +2.2 %, within the spread).
+
+Corpus (`tools/run_corpus.py --targets jit-x86_64`, 8 alternated pairs, 3 rounds each): results equal (21 of 21
+OK in all 16 runs); every case within the spread (for example x25519 #0 139.5 → 141.1 µs, deflate 8K 396.7 →
+406.3 with ranges 386–420 and 381–429, blake3 8192B 20.3 → 20.0). Compile time (CoreMark and the three corpus
+modules, `jit-x86_64`, median of 10 compilations per run): 178.6 → 186.9 ms (5 alternated pairs) and 185.7 →
+193.6 ms (8 more), +4–5 %, within the +10 % bound; a `pop` without the extra call was measured and did not pay.
+Every CoreMark run "Correct operation validated".

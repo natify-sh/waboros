@@ -32,7 +32,7 @@ from waboros.targets.jit.aarch64.encoder import (
     bitmask,
     invert,
 )
-from waboros.targets.jit.common.backend import SWAP, Dst, Imm, Operand, Reg, Slot
+from waboros.targets.jit.common.backend import SWAP, AddK, Dst, Imm, Operand, Reg, Slot
 from waboros.targets.jit.common.compiler import SUPPORTED
 from waboros.targets.jit.common.context import (
     HOST_BRIDGE,
@@ -272,8 +272,25 @@ class Backend:
         self.a.mov_imm(scratch, v, wide)
         return scratch
 
-    def move(self, dst: Dst, src: Operand, wide: bool) -> None:
+    def _addk(self, d: int, o: AddK) -> None:
+        """d = (o.id + o.k) mod 2**32, zero-extended (S0007 K): one 32-bit add/sub of an imm12
+        (optionally lsl #12), else the constant through x16 and a 32-bit add. No flags."""
+        a, neg = self.a, -o.k & M32
+        if _imm12(o.k):
+            a.addsub_imm("add", d, o.id, o.k, False)
+        elif _imm12(neg):
+            a.addsub_imm("sub", d, o.id, neg, False)
+        else:
+            a.mov_imm(16, o.k, False)
+            a.addsub("add", d, o.id, 16, False)
+
+    def move(self, dst: Dst, src: Operand | AddK, wide: bool) -> None:
         """A register gets the operand's width (32-bit zero-extends); a slot always gets 64 bits."""
+        if isinstance(src, AddK):
+            self._addk(dst.id if isinstance(dst, Reg) else 16, src)
+            if isinstance(dst, Slot):
+                self._word(False, 16, FRAME, 8 * dst.k)
+            return
         if isinstance(dst, Reg):
             if isinstance(src, Imm):
                 self.a.mov_imm(dst.id, src.value & (M64 if wide else M32), wide)
@@ -455,12 +472,13 @@ class Backend:
         self.a.bfm("ubfm", dst.id, self._mem(mem)[1], 16, 63)  # lsr #16
 
     def _bounds(
-        self, f: Frame, addr: Operand, offset: int, size: int, mem: int
+        self, f: Frame, addr: Operand | AddK, offset: int, size: int, mem: int
     ) -> tuple[int, int | None, int]:
         """The bounds check (R3: the one place memory safety rests on). addr + offset (< 2**33)
         and its end are computed in 64 bits, so nothing wraps; the end must be <= the memory's
-        size or the access traps. A register address is copied with a 32-bit move first, so its
-        upper half cannot matter. Returns the access as (base, index register or None, offset)."""
+        size or the access traps. A register address is copied with a 32-bit move first (an
+        `AddK` formed by a 32-bit add, the wasm wrap before `offset`), so its upper half cannot
+        matter. Returns the access as (base, index register or None, offset)."""
         a = self.a
         base, limit = self._mem(mem)
         oob = self._stub(f, TrapCode.MEMORY_OUT_OF_BOUNDS)
@@ -476,10 +494,7 @@ class Backend:
                 return base, None, ea
             a.mov_imm(9, ea)
             return base, 9, 0
-        if isinstance(addr, Reg):
-            a.mov(9, addr.id, False)
-        else:
-            self._r(addr, 9, False)
+        self.move(Reg(9), addr, False)
         if offset:
             self._add_k(9, 9, offset)
         a.addsub_imm("add", 10, 9, size)
@@ -488,8 +503,8 @@ class Backend:
         return base, 9, 0
 
     def load(
-        self, f: Frame, size: int, signed: bool, wide: bool, dst: Reg, addr: Operand, offset: int,
-        mem: int,
+        self, f: Frame, size: int, signed: bool, wide: bool, dst: Reg, addr: Operand | AddK,
+        offset: int, mem: int,
     ) -> None:  # fmt: skip
         base, index, off = self._bounds(f, addr, offset, size, mem)
         if index is None:
@@ -498,7 +513,7 @@ class Backend:
             self.a.ld_idx(dst.id, base, index, size, signed, wide)
 
     def store(
-        self, f: Frame, size: int, addr: Operand, offset: int, src: Operand, mem: int
+        self, f: Frame, size: int, addr: Operand | AddK, offset: int, src: Operand, mem: int
     ) -> None:  # fmt: skip
         base, index, off = self._bounds(f, addr, offset, size, mem)
         r = self._r(src, 13, size == 8)

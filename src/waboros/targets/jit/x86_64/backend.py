@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from typing import cast
 
 from waboros.targets.base import TrapCode
-from waboros.targets.jit.common.backend import NEGATE, SWAP, Dst, Imm, Operand, Reg, Slot
+from waboros.targets.jit.common.backend import NEGATE, SWAP, AddK, Dst, Imm, Operand, Reg, Slot
 from waboros.targets.jit.common.compiler import SUPPORTED
 from waboros.targets.jit.common.context import (
     HOST_BRIDGE,
@@ -186,9 +186,16 @@ class Backend:
         self.a.mov_imm(scratch, o.value & (M64 if wide else M32), w=wide)
         return scratch
 
-    def move(self, dst: Dst, src: Operand, wide: bool) -> None:
-        """A register gets the operand's width (32-bit zero-extends); a slot always gets 64 bits."""
+    def move(self, dst: Dst, src: Operand | AddK, wide: bool) -> None:
+        """A register gets the operand's width (32-bit zero-extends); a slot always gets 64 bits.
+        `AddK` (S0007 K): one `lea r32, [id + k]` (wraps mod 2**32, zero-extends, no flags)."""
         a = self.a
+        if isinstance(src, AddK):
+            r = dst.id if isinstance(dst, Reg) else RCX
+            a.lea(r, Mem(src.id, src.k - (src.k >> 31 << 32)), False)  # k as a signed disp32
+            if isinstance(dst, Slot):
+                a.mov(_slot(dst.k), RCX, w=True)
+            return
         if isinstance(dst, Reg):
             if isinstance(src, Imm):
                 a.mov_imm(dst.id, src.value & (M64 if wide else M32), w=wide)
@@ -710,11 +717,12 @@ class Backend:
         self.a.mov(dst.id, self._mem(mem)[1], w=True)
         self.a.shift("shr", dst.id, 16, w=True)
 
-    def _bounds(self, f: Frame, addr: Operand, offset: int, size: int, mem: int) -> Mem:
+    def _bounds(self, f: Frame, addr: Operand | AddK, offset: int, size: int, mem: int) -> Mem:
         """The bounds check (R3: the one place memory safety rests on). The effective address
         addr + offset (< 2**33) and its end are computed in 64 bits, so nothing wraps; the end
         must be <= the memory's size (r14 for memory 0) or the access traps. A register address
-        is first copied with a 32-bit move, so its upper half cannot matter. The access is
+        is first copied with a 32-bit move (an `AddK` formed by a 32-bit lea, the wasm wrap
+        before `offset` is added), so its upper half cannot matter. The access is
         [r13 + ...] for memory 0, [rcx + ...] with rcx = base (+ address) for another; rdx is
         free afterwards. In guard mode an access the guard catches is `_guarded` instead."""
         assert self._oob is None, "an unchecked access without its fault point"
@@ -753,7 +761,7 @@ class Backend:
         a.alu("add", RCX, base, w=True)
         return Mem(RCX, disp)
 
-    def _guarded(self, f: Frame, addr: Operand, offset: int, mem: int) -> Mem:
+    def _guarded(self, f: Frame, addr: Operand | AddK, offset: int, mem: int) -> Mem:
         """Guard mode (S0006): no check. The address is formed as `_bounds` forms it (a register
         index copied by a 32-bit move, LESSONS 5 not relied on), so it lies inside the memory's
         reservation of 4 GiB + GUARD whose inaccessible part faults; the fault handler resumes
@@ -788,8 +796,8 @@ class Backend:
             self._oob = None
 
     def load(
-        self, f: Frame, size: int, signed: bool, wide: bool, dst: Reg, addr: Operand, offset: int,
-        mem: int,
+        self, f: Frame, size: int, signed: bool, wide: bool, dst: Reg, addr: Operand | AddK,
+        offset: int, mem: int,
     ) -> None:  # fmt: skip
         a, d = self.a, dst.id
         m = self._bounds(f, addr, offset, size, mem)
@@ -807,7 +815,7 @@ class Backend:
             a.movzx(d, m, 8 * size)
 
     def store(
-        self, f: Frame, size: int, addr: Operand, offset: int, src: Operand, mem: int
+        self, f: Frame, size: int, addr: Operand | AddK, offset: int, src: Operand, mem: int
     ) -> None:  # fmt: skip
         a = self.a
         m = self._bounds(f, addr, offset, size, mem)

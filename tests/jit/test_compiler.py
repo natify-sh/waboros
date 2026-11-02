@@ -418,6 +418,51 @@ def test_loads_and_stores_match_pyc(pins: None) -> None:
             assert jit("L64", 92) == pyc("L64", 92) and jit("L64", 65520) == pyc("L64", 65520)
 
 
+ADDK = """(module (memory 1) (data (i32.const 0) "\\01\\02\\03\\04\\05\\06\\07\\08\\09")
+  (func (export "o0") (param i32) (result i32) (i32.load (i32.add (local.get 0) (i32.const -4))))
+  (func (export "o4") (param i32) (result i32)
+    (i32.load offset=4 (i32.add (i32.const -4) (local.get 0))))
+  (func (export "s4") (param i32 i32) (result i32)
+    (i32.store offset=4 (i32.sub (i32.add (local.get 0) (i32.const 1)) (i32.const 5)) (local.get 1))
+    (i32.load (i32.const 0)))
+  (func (export "ops") (param i32 i32) (result i32)
+    (i32.sub (i32.add (local.get 0) (i32.const 3)) (i32.sub (local.get 1) (i32.const 1))))
+  (func (export "sel") (param i32 i32) (result i32)
+    (select (i32.add (local.get 0) (i32.const 1)) (i32.add (local.get 1) (i32.const 2))
+      (i32.lt_u (i32.mul (local.get 0) (local.get 1)) (i32.const 9))))
+  (func (export "tee") (param i32) (result i32)
+    (i32.add (i32.add (local.get 0) (i32.const 8))
+      (i32.sub (local.get 0) (local.tee 0 (i32.add (local.get 0) (i32.const 4))))))
+  (func (export "set") (param i32) (result i32) (local i32)
+    (local.set 1 (i32.add (local.get 0) (i32.const -1)))
+    (i32.add (local.get 0) (i32.const 1)) (local.set 0 (i32.const 0)) (local.get 1) (i32.add))
+  (func (export "br") (param i32) (result i32)
+    (block (result i32) (br_if 0 (i32.add (local.get 0) (i32.const 5)) (local.get 0))
+      (drop) (i32.store8 (i32.add (local.get 0) (i32.const 1))
+        (i32.add (local.get 0) (i32.const 2)))
+      (i32.load8_u (i32.add (local.get 0) (i32.const 1))))))"""
+
+
+def test_addk_wraps_before_the_offset_and_matches_pyc(pins: None) -> None:
+    """S0007 K: local + k (k = 2**32 - 4) wraps in 32 bits before the memarg offset is added (k is
+    never folded into the offset); ADDK entries as operands of one instruction (LESSONS 32), across
+    a tee and a set of their local, as branch values and as store values."""
+    wasm = wat(ADDK)
+    jit, pyc = build(wasm), build(wasm, "pyc")
+    oob = TrapCode.MEMORY_OUT_OF_BOUNDS
+    assert trap_of(jit, "o0", 0) is oob and jit("o0", 4) == [0x04030201]
+    assert trap_of(jit, "o4", 0) is oob and jit("o4", 4) == [0x08070605]  # 0xFFFFFFFC + 4 = 2**32
+    assert trap_of(jit, "s4", 0, 7) is oob and trap_of(pyc, "s4", 0, 7) is oob
+    cases = [("o0", (a,)) for a in (0, 3, 4, 8, 65536, 65539, 65540)]
+    cases += [("o4", (a,)) for a in (0, 3, 4, 65532, 65536)]
+    cases += [("s4", (a, 0x11223344)) for a in (0, 4, 65532, 65533, 65536, M32)]
+    cases += [(n, (a, b)) for n in ("ops", "sel") for a in (0, 1, 3, M32) for b in (0, 2, M32)]
+    cases += [(n, (a,)) for n in ("tee", "set", "br") for a in (0, 1, 7, 65534, M32)]
+    for name, args in cases:
+        assert outcome(jit, name, *args) == outcome(pyc, name, *args), (name, args)
+    assert jit("s4", 4, 7) == [0x04030201] and jit("o0", 8) == [7]
+
+
 def test_globals_and_imported_globals() -> None:
     store = StoreState()
     a = build(wat("""(module

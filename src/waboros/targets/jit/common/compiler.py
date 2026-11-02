@@ -6,9 +6,10 @@ in place); operand-stack entry i lives in slot L + i when it is materialised. Re
 0..m on return. A wasm call puts the callee's frame at the first argument (frame overlap).
 
 The operand stack is lazy: an entry is a constant, a local, the value in the backend's `tos`
-register (at most one entry), a materialised slot, or a pending compare (only ever on top; it is
+register (at most one entry), a materialised slot, a pending compare (only ever on top; it is
 consumed whole by `br_if`/`if`/`select`/`eqz`, else turned into a value before anything else is
-emitted). Every instruction that can trap is emitted when it is reached, so `drop`, `select` and
+emitted), or an i32 pinned local plus a constant (`ADDK`, S0007 K: one instruction where it is
+consumed). Every instruction that can trap is emitted when it is reached, so `drop`, `select` and
 branches never discard a trap (LESSONS 28). At every control-flow edge the whole stack is in
 slots, and pinned locals never move, so merges need no reconciliation; a function return instead
 moves its results straight into slots 0..m (S0007).
@@ -26,7 +27,7 @@ from typing import Any
 
 from waboros.targets.base import TrapCode, Unsupported, ValidModule
 from waboros.targets.jit.common import simd
-from waboros.targets.jit.common.backend import NEGATE, Backend, Imm, Operand, Reg, Slot
+from waboros.targets.jit.common.backend import NEGATE, AddK, Backend, Imm, Operand, Reg, Slot
 from waboros.targets.jit.common.context import (
     DATA_DROP,
     ELEM_DROP,
@@ -42,7 +43,7 @@ NUM = (I32, I64, F32, F64)
 WIDE = (I64, F64)
 NARROW = (I32, F32)  # everything else (i64, f64, references) is a 64-bit value
 M32, M64 = 0xFFFFFFFF, (1 << 64) - 1
-CONST, LOCAL, TOS, SLOT, CMP = range(5)
+CONST, LOCAL, TOS, SLOT, CMP, ADDK = range(6)
 SLOTE = (SLOT, None)
 Entry = tuple[int, Any]
 
@@ -280,6 +281,7 @@ class _Func:
         self.maxh = 0
         self.dead = False
         self.dead_depth = 0
+        self.tos_taken = False  # an operand of the current instruction is in `tos` (LESSONS 32)
         self.f: Any = None  # the backend's frame, from run()
 
     def choose_pins(self) -> dict[int, int]:
@@ -315,6 +317,12 @@ class _Func:
         assert k == SLOT
         return Slot(self.L + i)
 
+    def opnd_k(self, e: Entry, i: int) -> Operand | AddK:
+        """`opnd`, an ADDK entry as an `AddK` (only for `move` and a load/store address)."""
+        if e[0] == ADDK:
+            return AddK(self.pins[e[1][0]], e[1][1])
+        return self.opnd(e, i)
+
     def push(self, e: Entry) -> None:
         st = self.st
         if st and st[-1][0] == CMP:
@@ -342,16 +350,35 @@ class _Func:
             self.uncmp()
         self.spill_tos()
 
-    def pop(self) -> Operand:
+    def pop_k(self) -> Operand | AddK:
+        """The top operand; an ADDK entry stays an `AddK` (for `move` or a load/store address)."""
         st = self.st
         if st[-1][0] == CMP:
             self.uncmp()
         e = st.pop()
-        return self.opnd(e, len(st))
+        if e[0] == TOS:
+            self.tos_taken = True
+        return self.opnd_k(e, len(st))
+
+    def pop(self) -> Operand:
+        """The top operand; an ADDK entry is computed into `tos`, or into its own slot when an
+        operand of this instruction is in `tos` already (LESSONS 32, S0007 `tos_taken`)."""
+        x = self.pop_k()
+        if not isinstance(x, AddK):
+            return x
+        dst: Reg | Slot = Slot(self.L + len(self.st))
+        if not self.tos_taken:
+            self.spill_tos()
+            dst, self.tos_taken = self.TOS, True
+        self.b.move(dst, x, False)
+        return dst
 
     def pop_cond(self) -> tuple[str, Operand, Operand, bool]:
         if self.st[-1][0] == CMP:
-            return self.st.pop()[1]
+            c = self.st.pop()[1]
+            if self.TOS in (c[1], c[2]):
+                self.tos_taken = True
+            return c
         return ("ne", self.pop(), Imm(0), False)
 
     def flush(self) -> None:
@@ -361,20 +388,38 @@ class _Func:
             self.uncmp()
         for i, e in enumerate(st):
             if e[0] != SLOT:
-                self.b.move(Slot(self.L + i), self.opnd(e, i), True)
+                self.b.move(Slot(self.L + i), self.opnd_k(e, i), e[0] != ADDK)
                 st[i] = SLOTE
 
     def set_local(self, j: int, tee: bool) -> None:
-        src = self.pop()
+        src = self.pop_k()
         dst = self.loc(j)
         for i, e in enumerate(self.st):  # earlier reads of local j keep the old value
-            if e[0] == LOCAL and e[1] == j:
-                self.b.move(Slot(self.L + i), dst, True)
+            if e[0] == LOCAL and e[1] == j or e[0] == ADDK and e[1][0] == j:
+                self.b.move(Slot(self.L + i), self.opnd_k(e, i), e[0] == LOCAL)
                 self.st[i] = SLOTE
         if src != dst:
             self.b.move(dst, src, self.ltypes[j] in WIDE)
         if tee:
             self.push((LOCAL, j))
+
+    def fold_addk(self, sub: bool) -> bool:
+        """i32.add/sub of a pinned local (or an ADDK of one) and a constant becomes one ADDK
+        entry (S0007 K); False if the operands are not of that shape."""
+        st = self.st
+        x, y = st[-2], st[-1]
+        if not sub and x[0] == CONST:
+            x, y = y, x
+        if y[0] != CONST:
+            return False
+        if x[0] == LOCAL and x[1] in self.pins:
+            j, k = x[1], 0
+        elif x[0] == ADDK:
+            j, k = x[1]
+        else:
+            return False
+        st[-2:] = [(ADDK, (j, (k - y[1] if sub else k + y[1]) & M32))]
+        return True
 
     # ------------------------------------------------------------------ control
     def arity(self, c: _Ctl) -> int:
@@ -435,13 +480,13 @@ class _Func:
         if n and st[-1][0] == CMP:
             self.uncmp()
         base = len(st) - n
-        srcs = [self.opnd(st[base + k], base + k) for k in range(n)]
+        srcs = [self.opnd_k(st[base + k], base + k) for k in range(n)]
         if any(isinstance(s, Slot) and s.k < n and s.k != k for k, s in enumerate(srcs)):
             self.flush()
             self.moves(c)
             return
         for k, s in enumerate(srcs):  # never writes tos, a pin or a source slot
-            self.b.move(Slot(k), s, True)
+            self.b.move(Slot(k), s, not isinstance(s, AddK))
 
     def end(self) -> None:
         c = self.ctl.pop()
@@ -637,6 +682,7 @@ class _Func:
         tos, push, pop = self.TOS, self.push, self.pop
         for ins in self.insns:
             op = ins[0]
+            self.tos_taken = False
             if self.dead:  # skip to the end (or else) of the block that became unreachable
                 if op in (0x02, 0x03, 0x04):
                     self.dead_depth += 1
@@ -653,6 +699,8 @@ class _Func:
                     simd.get_local(self, ins[1])
                 else:
                     push((LOCAL, ins[1]))
+            elif (op == 0x6A or op == 0x6B) and self.fold_addk(op == 0x6B):
+                pass
             elif op in BINOPS:
                 name, w = BINOPS[op]
                 y = pop()
@@ -677,13 +725,13 @@ class _Func:
                     self.set_local(ins[1], op == 0x22)
             elif op in LOADS:
                 size, signed, w = LOADS[op]
-                addr = pop()
+                addr = self.pop_k()
                 self.need_tos()
                 b.load(f, size, signed, w, tos, addr, ins[1], lay.memory(ins[3]))
                 push((TOS, None))
             elif op in STORES:
                 v = pop()
-                addr = pop()
+                addr = self.pop_k()
                 b.store(f, STORES[op], addr, ins[1], v, lay.memory(ins[3]))
             elif op == 0x45 or op == 0x50:
                 if self.st[-1][0] == CMP:

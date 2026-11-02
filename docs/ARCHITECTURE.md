@@ -107,12 +107,12 @@ a thin IR of our own, and shared by all targets.
 | level | shared by | form | built from |
 |---|---|---|---|
 | **HIR** | every target (`pyc`, `mpy`, JITs) | expression trees (the operand stack resolved), **structured** control flow (block / loop / if / br with targets and arities), annotations from the analyses | validated wasm function bodies |
-| **LIR** | every JIT architecture | the backend's **call interface**, not a materialised list (D26): machine-neutral operations the shared JIT core calls in one pass; operands *imm*, *reg* (pinned or backend-chosen) or *slot*; three-operand; compare-and-branch / compare-and-set as whole operations (no flags); labels, trap points, call sites with their convention | the validated function body (and HIR analyses when they exist), by the shared JIT core |
+| **LIR** | every JIT architecture | the backend's **call interface**, not a materialised list (D26): machine-neutral operations the shared JIT core calls in one pass; operands *imm*, *reg* (pinned or backend-chosen), *slot*, or *addk* (a pinned i32 plus a constant, only as a `move` source or a memory address; S0007); three-operand; compare-and-branch / compare-and-set as whole operations (no flags); labels, trap points, call sites with their convention | the validated function body (and HIR analyses when they exist), by the shared JIT core |
 
 **The lazy operand stack is the JIT core's HIR-lite.** The shared JIT core builds no HIR trees; it
 keeps a lazy operand stack (`common/compiler.py`) whose entries are at most one node deep: a constant,
-a local, `tos`, a slot, or one pending compare of such operands (S0007 adds `local + const` and a
-temporary register). A new entry kind is added only with a measurement that it pays, so any drift
+a local, `tos`, a slot, one pending compare of such operands, or `local + const` (S0007 step 3; S0007
+also plans a temporary register). A new entry kind is added only with a measurement that it pays, so any drift
 towards trees is a recorded decision, not an accident. Stack resolution exists twice today: `pyc`'s tree
 builder (`targets/pyc/codegen.py`) and the JIT core's lazy stack. A real HIR, if a measurement ever
 calls for one, replaces both rather than becoming a third.

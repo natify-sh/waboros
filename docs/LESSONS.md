@@ -313,3 +313,10 @@ What went wrong or surprised us while building the PoC, so it is not found again
     check that each tool really imports the baseline (`waboros.__file__`). For tools that set their own
     path, run a copy of the tool from the baseline tree (`ROOT` = that tree). A "no difference" result
     for a step that changes code is a reason to check the setup. Found: S0007 step 2, 2026-11-02.
+53. **A differential fuzz that traps early tests little.** The first draft of `tests/jit/test_scalar_fuzz.py`
+    ended 91 % of its calls with an out-of-bounds trap at the first random address, so the code after it
+    rarely ran, and the test still passed in 0.6 s. Printing the outcome mix showed it. Rule: count the
+    outcomes of a generated test (values, each trap code), tune it until most code runs (here 30 % of the
+    calls return), and inject a known bug in each path it is meant to cover to check that it fails
+    (here: the ADDK spill on `local.set`, `tos_taken`, a 64-bit `lea`, a wrong disp32, a 64-bit aarch64
+    `add`). Found: S0007 step 3, 2026-11-02.
