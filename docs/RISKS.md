@@ -163,9 +163,9 @@ explicit elsewhere; `WABOROS_JIT_BOUNDS=explicit` installs nothing. **Not detect
 faulthandler that was already enabled when ours was installed (as under pytest), then disabled and re-enabled
 while a library's handler is above ours; a guard fault then reaches faulthandler through that library and ends
 the process (139). faulthandler enabled only after ours, under any foreign handler, is detected (the Q1 error). A
-straddling store may write its in-bounds part before the fault (QEMU's TCG; Arm, RISC-V), so guard mode checks
-every store of 2 bytes or more explicitly; a test checks with objdump that no fault point writes more than one byte
-(LESSONS 50). Open: aarch64, macOS, Windows, Android (S0006 steps 2-5).
+straddling store may write its in-bounds part before the fault where a store is split (QEMU's TCG, possibly box64
+or FEX; Arm, RISC-V); on x86-64 this is accepted as in Wasmtime (D45, LESSONS 50): native faults are precise, and
+CI's qemu64 steps run in explicit mode. Open: aarch64, macOS, Windows, Android (S0006 steps 2-5).
 
 Guard pages need a SIGSEGV handler in the process (ARCHITECTURE.md, "Memory"); the PoC emits it as
 machine code. Risks and possible answers:

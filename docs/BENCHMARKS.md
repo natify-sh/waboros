@@ -381,11 +381,14 @@ guard): scalar builds addsat 7.92 → 6.67 (+18.7 %), scan 3.30 → 2.72 (+21.3 
 real libraries was measured too, but its sub-µs rows spread 2× between rounds: not a basis. This
 measurement is the condition D44 named for making `auto` (guard on verified rows) the default.
 
-**Checked stores in guard mode (LESSONS 50).** In guard mode a store of 2 bytes or more now keeps
-its explicit check, because a straddling store may write part of itself before the fault (QEMU).
+**Checked stores in guard mode (rejected alternative; D45, LESSONS 50).** A prototype in which a
+store of 2 bytes or more keeps its explicit check in guard mode, because a straddling store may
+write part of itself before the fault under QEMU. The maintainer rejected it (D45): stores stay
+fault points, as in Wasmtime, so the guard code in use is *old guard* below.
 2026-11-02 16:52–17:16 UTC, the same Intel Xeon @ 2.10 GHz, 4 vCPU VM, CPython 3.13.17, one
 benchmark process at a time, load average 0.4–1.0. Compared: *old guard* (every access unchecked,
-the code of the D44 switch, from a worktree), *new guard* (this change), *explicit*. CoreMark:
+the code of the D44 switch, from a worktree; the code in use), *new guard* (checked stores, rejected),
+*explicit*. CoreMark:
 `tools/run_coremark_jit.py poc/in/core.wasm`, alternated with the order rotated each round, every
 run "Correct operation validated". Code: explicit 45 055 bytes; old guard 36 058 (−20.0 %, 669
 fault points); new guard 38 457 (−14.6 %, 493 fault points).
@@ -401,7 +404,7 @@ fault points); new guard 38 457 (−14.6 %, 493 fault points).
 | 2 | explicit | 15 175 / 13 869 / 13 662 / 15 768 / 16 221 / 14 578 / 15 084 / 14 781 / 14 893 | 14 893.1 | — |
 
 Checked stores cost **2–3 %** of CoreMark against the old guard code (median −3.2 % and −2.0 %;
-new below old in 8 and 7 rounds of 9); guard stays ahead of explicit by **+4.5 to +6.3 %**
+new below old in 8 and 7 rounds of 9); with them guard would lead explicit by **+4.5 to +6.3 %**
 (median), down from +6.7 to +9.8 % in the same sessions. *Probe* is a scratch prototype of the
 cheaper-looking alternative: no check, a 1-byte read of the store's last byte (`cmp byte
 [addr+n-1], 0`) as the fault point before the store, the store itself unmarked (Wasmtime's open
@@ -428,7 +431,7 @@ the 9 runs (µs per iteration; the 3-run session agrees within a few percent).
 | simd | swizzle | 6.80 | 6.64 | 6.68 | −0.6 % |
 | simd | nearest | 0.60 | 0.53 | 0.56 | −5.4 % |
 
-Load-bound kernels keep their gain (scalar addsat and scan +23–28 % over explicit). Store-heavy
+With checked stores, load-bound kernels keep their gain (scalar addsat and scan +23–28 % over explicit). Store-heavy
 ones lose part of it: scalar swizzle drops from +20 % to +6 % over explicit, and nearest from +20 %
 to +10 %. Raw logs: the session's `bench.log`, `bench2.log`, `simd.log` and `simd9.log`
 (scratchpad, not kept in the repository).

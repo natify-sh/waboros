@@ -106,8 +106,7 @@ def test_every_scalar_access_traps_at_the_edge(which: str) -> None:
     else:
         text, size = _scalar_module("(memory $m0 1) (memory $mx 2)"), 2 * PAGE
     c = compiled(text)
-    # fault points: every load and the 1-byte stores; wider stores are checked (LESSONS 50)
-    assert c.flags == guard.FLAGS and len(c.faults) == len(LOADS) + 2
+    assert c.flags == guard.FLAGS and len(c.faults) == len(LOADS) + len(STORES)
     inst = build(wat(text), imports=imports, store=store)
     for op, n in {**LOADS, **STORES}.items():
         for addr, traps in _edges(size, n):
@@ -129,7 +128,7 @@ def test_simd_accesses_trap_at_the_edge_including_16_bytes() -> None:
             funcs.append(f'(func (export "{i}/{mx}") (param i32) {body}{drop})')
     text = "(module (memory 1) (memory 2)\n" + "\n".join(funcs) + ")"
     c = compiled(text)
-    assert len(c.faults) == 2 * sum("store" not in k or v[0] == 1 for k, v in SIMD.items())
+    assert len(c.faults) == 2 * len(SIMD)
     inst = build(wat(text))
     for i, (name, (n, _)) in enumerate(SIMD.items()):
         for mx, size in (("0", PAGE), ("1", 2 * PAGE)):
@@ -147,8 +146,8 @@ def test_constant_addresses_and_the_guard_threshold() -> None:
       (func (export "k_over") (result i32) (i32.load offset={g - 2} (i32.const 0xFFFFFFFF)))
       (func (export "unchecked") (param i32) (result i32) (i32.load offset={g - 4} (local.get 0)))
       (func (export "checked") (param i32) (result i32) (i32.load offset={g - 3} (local.get 0)))
-      (func (export "v_unchecked") (param i32) (drop (v128.load offset={g - 16} (local.get 0))))
-      (func (export "v_checked") (param i32) (drop (v128.load offset={g - 15} (local.get 0)))))"""
+      (func (export "v_unchecked") (param i32) (v128.store offset={g - 16} (local.get 0) {V0}))
+      (func (export "v_checked") (param i32) (v128.store offset={g - 15} (local.get 0) {V0})))"""
     # unchecked: k_last, k_straddle, k_top (c + off + n = 2**32 + GUARD - 3), unchecked, v_unchecked
     assert len(compiled(text).faults) == 5
     inst = build(wat(text))
@@ -309,9 +308,9 @@ def test_registry_grows_and_forgets_freed_code_and_memories() -> None:
 
 
 def test_a_straddling_store_writes_nothing() -> None:
-    """A store that crosses into the guard traps before any byte of it lands: in guard mode a
-    store of 2 bytes or more keeps its explicit check (S0006). Native x86-64 writes nothing even
-    unchecked; QEMU's `-cpu qemu64` wrote the first 8 bytes of a 16-byte store (LESSONS 50)."""
+    """One instruction per store (S0006): a store that crosses into the guard faults before any
+    byte of it lands. This holds on native x86-64, whose faults are precise; an emulator that
+    splits a wide store (QEMU's `-cpu qemu64`) may tear it, as Arm may (accepted, D45)."""
     inst = build(
         wat("""(module (memory 1)
       (func (export "s8") (param i32) (i64.store (local.get 0) (i64.const -1)))
@@ -328,8 +327,7 @@ def test_a_straddling_store_writes_nothing() -> None:
 
 def _memory_instructions(code: bytes, end: int, tmp: Path) -> list[int]:
     """Offsets of the instructions that address linear memory: a memory operand based on r13
-    (memory 0) or rcx (another memory's base plus the address), except `lea` and stores of 2 bytes
-    or more (checked explicitly in guard mode, LESSONS 50)."""
+    (memory 0) or rcx (another memory's base plus the address), `lea` excepted."""
     import re
 
     from tests.jit.test_encoder import OBJDUMP
@@ -341,8 +339,7 @@ def _memory_instructions(code: bytes, end: int, tmp: Path) -> list[int]:
     found = []
     for line in out.splitlines():
         m = re.match(r"\s*([0-9a-f]+):\t[0-9a-f ]+\t(\S+)\s+(.*)", line)
-        wide_store = m and re.match(r"(?!BYTE)\w+ PTR \[", m.group(3))
-        if m and m.group(2) != "lea" and re.search(r"\[(r13|rcx)\b", m.group(3)) and not wide_store:
+        if m and m.group(2) != "lea" and re.search(r"\[(r13|rcx)\b", m.group(3)):
             found.append(int(m.group(1), 16))
     return found
 
@@ -361,53 +358,6 @@ def test_the_fault_map_is_the_instructions_that_touch_memory(tmp_path: Path) -> 
         assert c.faults and [p for p, _ in c.faults] == _memory_instructions(
             c.code, c.data_start, tmp_path
         )
-
-
-def test_no_fault_point_writes_more_than_one_byte(tmp_path: Path) -> None:
-    """The invariant that keeps a trapping store from writing anything on any CPU or emulator
-    (LESSONS 50): in guard mode a store of 2 bytes or more is checked explicitly, so the only
-    fault points that write memory are 1-byte stores, which cannot straddle. Checked by objdump
-    on every fault point of every spec module and CoreMark, not by hoping a CPU tears a store."""
-    import re
-
-    from tests.jit.test_encoder import OBJDUMP
-    from tests.spec.fetch import CACHE_DIR
-
-    need(OBJDUMP, "GNU objdump")
-    files = sorted((CACHE_DIR / "json").rglob("*.wasm"))
-    if not files:  # a plain skip, not need(): the first REQUIRE step in CI runs before the
-        # cache is fetched; the guard step that runs this file again has it
-        pytest.skip("spec cache missing (tests/spec/fetch.py)")
-    blob, points = bytearray(), []
-    for f in [*files, ROOT / "poc/in/core.wasm"]:
-        try:
-            mod = parse(f.read_bytes())
-            validate(mod)
-            c = base.TARGETS["jit-x86_64"]().compile(mod)
-        except Exception:  # malformed, invalid or unsupported: as in tools/jit_dump.py
-            continue
-        assert isinstance(c, Compiled)
-        points += [len(blob) + p for p, _ in c.faults]
-        blob += c.code[: c.data_start]  # jump tables live in the data area: never disassembled
-    (tmp_path / "code.bin").write_bytes(blob)
-    cmd = [str(OBJDUMP), "-D", "-b", "binary", "-m", "i386:x86-64", "-M", "intel"]
-    out = subprocess.run([*cmd, str(tmp_path / "code.bin")], capture_output=True, text=True).stdout
-    insn = {}
-    for line in out.splitlines():
-        m = re.match(r"\s*([0-9a-f]+):\t[0-9a-f ]+\t(\S+)\s*(.*)", line)
-        if m:
-            insn[int(m.group(1), 16)] = (m.group(2), m.group(3))
-    writes: dict[str, int] = {}
-    reads = 0
-    for p in points:
-        op, args = insn[p]  # a KeyError: the disassembly lost sync, or a point inside an insn
-        dst = args.split(",")[0]
-        if "PTR [" in dst and op not in ("cmp", "test"):
-            writes[dst.split()[0]] = writes.get(dst.split()[0], 0) + 1
-        else:
-            assert "PTR [" in args, (p, op, args)  # a load: the memory operand is the source
-            reads += 1
-    assert reads > 1000 and set(writes) == {"BYTE"}, (reads, writes)
 
 
 # --------------------------------------------------------------------------- not ours (subprocess)

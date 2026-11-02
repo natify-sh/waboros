@@ -82,12 +82,16 @@ jobs:
       # S0005: SIMD on an SSE2-only CPU (QEMU's qemu64 without SSE3/SSSE3/SSE4/popcnt: an
       # instruction above x86-64-v1 is a SIGILL); jit-x86_64 claims simd (5d3), so the explicit
       # `simd` run must pass whole and equal pyc's
+      # explicit bounds: QEMU TCG splits wide stores, so guard mode may tear one (accepted, D45)
       - run: qemu-x86_64 -cpu qemu64,-pni,-ssse3,-sse4.1,-sse4.2,-popcnt .venv/bin/python -m pytest tests/jit/test_simd_abi.py tests/jit/test_simd_x86.py -q
         env:
           WABOROS_JIT_REQUIRE: "1"
+          WABOROS_JIT_BOUNDS: explicit
       - run: |
           qemu-x86_64 -cpu qemu64,-pni,-ssse3,-sse4.1,-sse4.2,-popcnt .venv/bin/python -m tests.spec.run --engine jit-x86_64 --in-process --json simd-qemu64.json simd > /dev/null
           uv run python tools/spec_diff.py pyc simd-qemu64.json simd
+        env:
+          WABOROS_JIT_BOUNDS: explicit
       - run: uv run python tools/isa_all.py
       # S0004: the same gate for the aarch64 code, cross-compiled here (never run; D35): ARMv8.0-A
       - run: uv run python tools/isa_all.py --target jit-aarch64

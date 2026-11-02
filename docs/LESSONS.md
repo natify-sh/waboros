@@ -282,19 +282,19 @@ What went wrong or surprised us while building the PoC, so it is not found again
     Rule: in a test that waits for `weakref.finalize`, collect several times. Found: D44 switch
     (`test_registry_grows_and_forgets_freed_code_and_memories`, failing on PyPy since step 1),
     2026-11-02.
-50. **A store that faults may already have written part of itself: never rely on a guard fault
-    for a store.** Guard mode (S0006 step 1) left every store unchecked, on the belief that a
-    faulting store writes nothing. On native x86-64 that holds: faults are precise (Intel SDM
-    vol. 3A, 6.5: the state is restored to before the faulting instruction), and no width tore on
-    the Xeon here or on the CI runner. But the CI step that runs the SIMD tests under
-    `qemu-x86_64 -cpu qemu64,…` (QEMU 8.2.2, TCG) failed: QEMU splits a 16-byte `movdqu` store into
-    two 8-byte stores, so a `v128.store` at 65 521..65 528 of a 64 KiB memory wrote its first 8
-    bytes before trapping (`-cpu max` does not split; scalar widths did not tear on an x86 host).
-    Arm and RISC-V allow a misaligned store across a page to write its accessible part (Wasmtime
-    issue 7237, design issue 1490, spec issue 1250), and an x86-64 process emulated on an Arm host
-    (Docker's amd64 images under qemu-user) inherits that. Rule: in guard mode a store of 2 bytes
-    or more keeps its explicit check; loads (a trap discards their value) and 1-byte stores (they
-    cannot straddle) stay unchecked. The invariant is checked by objdump over every fault point of
-    the spec modules (`test_no_fault_point_writes_more_than_one_byte`), not by hoping a CPU tears a
-    store; the step-1 test passed on every machine it ran on. aarch64 guard mode (S0006 step 2)
-    starts from this rule. Found: CI `jit` job after the D44 switch, 2026-11-02.
+50. **A store that faults may already have written part of itself, under an emulator or on Arm.**
+    Guard mode (S0006 step 1) leaves every store unchecked, on the belief that a faulting store
+    writes nothing. On native x86-64 that holds: faults are precise (Intel SDM vol. 3A, 6.5: the
+    state is restored to before the faulting instruction), and no width tore on the Xeon here or on
+    the CI runner. But the CI step that runs the SIMD tests under `qemu-x86_64 -cpu qemu64,…`
+    (QEMU 8.2.2, TCG) failed: QEMU splits a 16-byte `movdqu` store into two 8-byte stores, so a
+    `v128.store` at 65 521..65 528 of a 64 KiB memory wrote its first 8 bytes before trapping
+    (`-cpu max` does not split; scalar widths did not tear on an x86 host). Arm and RISC-V allow a
+    misaligned store across a page to write its accessible part (Wasmtime issue 7237, design issue
+    1490, spec issue 1250), and an x86-64 process emulated on an Arm host inherits that. Outcome:
+    checking every store of 2 bytes or more was implemented and measured (CoreMark −2 to −3 %), then
+    rejected by the maintainer (D45): stores rely on guard pages as in Wasmtime, tearing under an
+    emulator is accepted, and CI's qemu64 steps run in explicit mode. Rule: a test that checks a
+    trapping store's memory under an emulator runs in explicit mode; a passing native run says
+    nothing about emulators; aarch64 guard mode decides its stores in S0006 step 2.
+    Found: CI `jit` job after the D44 switch, 2026-11-02.

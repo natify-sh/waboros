@@ -606,14 +606,17 @@ unset. The switch also brought the Q1 check's rule A (`dladdr` tells the interpr
 from a library's, so wasmtime above ours under faulthandler is no error) and the handler's refusal
 to install in a process of another architecture (S0006 Changes).
 
-### D45. In guard mode a store of 2 bytes or more keeps its explicit check
-Status: proposed · Date: 2026-11-02 · Evidence: [S0006](specs/S0006-guard-pages.md) Changes; LESSONS 50; BENCHMARKS.md, "Checked stores in guard mode"
+### D45. In guard mode stores rely on guard pages, as in Wasmtime; a split store may tear
+Status: accepted (maintainer, 2026-11-02) · Date: 2026-11-02 · Supersedes: — · Evidence: [S0006](specs/S0006-guard-pages.md) Changes; LESSONS 50; BENCHMARKS.md, "Checked stores in guard mode (rejected alternative)"
 
-A straddling store may commit its in-bounds part before the fault (QEMU's TCG split a 16-byte
-store in CI; Arm and RISC-V allow it, as Wasmtime's issue 7237 records), and a trapping store must
-write nothing. So in guard mode a store of 2 bytes or more keeps its explicit check and is no
-fault point; loads and 1-byte stores, which cannot straddle, stay unchecked. Rejected: every
-store unchecked (tears where the hardware or an emulator splits it) and a probe (a 1-byte read of
-the store's last byte as the fault point; measured, no faster). Cost: CoreMark −2 to −3 % against
-unchecked stores; guard still leads explicit by +4.5 to +6.3 % (median of 9 rounds, two
-sessions), with 14.6 % less code instead of 20 %. D44 stands: the default stays `auto`.
+In guard mode every store of every width is a fault point, as every load is; nothing checks it
+explicitly. Wasmtime does the same and accepts that a store straddling the end of memory may
+commit its in-bounds part where the hardware allows it (its issue 7237; PR 8221 unmerged;
+WebAssembly/design issue 1490 open). Native x86-64 faults are precise, so a trapping store writes
+nothing there. An emulator that splits wide stores may tear one: QEMU's TCG split a 16-byte store
+in CI (LESSONS 50), and box64 or FEX may too; Arm and RISC-V allow it in hardware. CI's qemu64
+steps therefore run in explicit mode. Rejected: checking stores of 2 bytes or more (CoreMark −2
+to −3 % against unchecked stores; guard would lead explicit by +4.5 to +6.3 % instead of about
++9 %, with 14.6 % less code instead of 20 %), and a probe, a 1-byte read of the store's last byte
+as the fault point (measured, no faster than the check). aarch64 is decided in S0006 step 2.
+D44 stands: the default stays `auto`.

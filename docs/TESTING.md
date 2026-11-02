@@ -105,7 +105,8 @@ on 3.13 again with `WABOROS_JIT_BOUNDS=explicit`, so explicit checks stay covere
 (`tests/jit` with `WABOROS_JIT_REQUIRE=1`; the aarch64 ABI, compiler, tail-call and SIMD tests
 (`test_simd_abi.py`, `test_simd_aarch64.py`) and the spec suite of `jit-aarch64` (it covers `simd/`
 since the 5e2 claim) under QEMU with BTI enforced; the x86 SIMD tests and the explicit `simd` spec run of
-`jit-x86_64` under the SSE2-only `qemu64` CPU, compared with `pyc` by `tools/spec_diff.py` (strict since 5d3);
+`jit-x86_64` under the SSE2-only `qemu64` CPU with `WABOROS_JIT_BOUNDS=explicit` (QEMU splits wide
+stores, D45), compared with `pyc` by `tools/spec_diff.py` (strict since 5d3);
 the spec suite of `jit-x86_64` and `tests/jit/test_guard.py` with `WABOROS_JIT_BOUNDS=guard` named
 explicitly (guard pages, S0006, Linux glibc only; the test file skips on other hosts, but fails under
 `WABOROS_JIT_REQUIRE=1` when `auto` does not give guard pages), so a regression in the
