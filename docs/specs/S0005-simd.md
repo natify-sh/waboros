@@ -466,3 +466,9 @@ Q5 (a), Q6 (a), Q7 (a), Q8 (a). Kept below with their options for the record.
   1.7x (scan 1.6x). The experiments were uncommitted patches with checksums equal to the baseline. Both
   decisions (the 16-byte move amendment, and whether to close Q3 or take up the v2 variant) are open with
   the maintainer; this entry is data, not a decision.
+* 2026-11-02: approved by the maintainer after the slowdown investigation: (1) a D39 amendment, one
+  backend method that moves a v128 (and writes a v128 constant) as one 16-byte access, so the core
+  moves v128 locals, constants and splat results with the width they are read with (the
+  store-forwarding fix, LESSONS 44); both backends in one step, code of modules without v128
+  byte-identical, no ABI or artifact change; (2) Q3 (a vector `tos`) deferred, not closed: re-measure
+  with a prototype that removes the store too, after the fix.
