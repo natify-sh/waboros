@@ -179,7 +179,7 @@ class Compiled:
     module: ValidModule
     code: bytes  # the code, then the data area from `data_start` (jump tables)
     data_start: int
-    funcs: list[tuple[int, int]]  # (code offset, result count) per defined function
+    funcs: list[tuple[int, int]]  # (code offset, result slot count) per defined function
     layout: Layout
     records: list[int]  # the function index of each function record (Layout.record)
     sigs: list[int]  # the type index of each signature word (Layout.sig)

@@ -65,18 +65,23 @@ source, which is why a shipped micro-compiler needs a reproducible build.
 
 ## What gets ported and what stays in the host
 
-Counts are non-blank lines on `phase0-skeleton` at the end of phase 4. The SIMD modules (`frontend/simd.py`, `jit/common/simd.py`, `jit/<arch>/simd.py`, S0005) are compiler-side too and are not counted yet; the SIMD review step (5f) updates this table.
+Counts are non-blank lines on `phase0-skeleton` as of SIMD 5f (2026-11-02). The SIMD modules are compiler-side too and are counted in their own rows.
 
 | ported into the micro-compiler | lines |
 |---|---|
-| `frontend/binary.py` (reader) | 464 |
-| `frontend/validate.py` (validator: a foreign host must not need its own) | 590 |
-| `jit/common/compiler.py` (one-pass core) | 725 |
-| `jit/common/backend.py` (backend interface, frozen by D39) | 114 |
-| `jit/common/context.py` (context layout constants, shared with the runtime) | 49 |
-| **core total** | **~1 940** |
-| `jit/x86_64/{backend,encoder,abi}.py` | ~1 500 |
-| `jit/aarch64/{backend,encoder,abi}.py` | ~1 240 |
+| `frontend/binary.py` (reader) | 469 |
+| `frontend/validate.py` (validator: a foreign host must not need its own) | 598 |
+| `jit/common/compiler.py` (one-pass core) | 751 |
+| `jit/common/backend.py` (backend interface, frozen by D39) | 128 |
+| `jit/common/context.py` (context layout constants, shared with the runtime) | 52 |
+| **core total, without SIMD** | **1 998** |
+| `frontend/simd.py` (v128 operator tables) | 176 |
+| `jit/common/simd.py` | 159 |
+| **core total, with SIMD** | **2 333** |
+| `jit/x86_64/{backend,encoder,abi}.py` | 1 496 |
+| `jit/x86_64/simd.py` | 522 (2 018 in all) |
+| `jit/aarch64/{backend,encoder,abi}.py` | 1 250 |
+| `jit/aarch64/simd.py` | 416 (1 666 in all) |
 
 `abi.py` belongs to the compiler: the trampolines are bytes inside the artifact.
 
@@ -87,8 +92,8 @@ Counts are non-blank lines on `phase0-skeleton` at the end of phase 4. The SIMD 
 | `jit/common/target.py`, `runtime/*`, `targets/base.py` | probe, selection, store, linking |
 | `targets/pyc/*` | another target; its output is Python source |
 
-Estimate: one micro-compiler = core ~1 900 + one backend ~1 200-1 500 = about 3-3.5k lines in
-Zig/C/Rust. The compiler side imports neither `ctypes` nor `mmap` today: keep it that way.
+Estimate: one micro-compiler = core ~2 000 + one backend ~1 200-1 500 = about 3-3.5k lines in
+Zig/C/Rust (without SIMD; with it core ~2 300 + one backend ~1 700-2 000, about 4-4.3k). The compiler side imports neither `ctypes` nor `mmap` today: keep it that way.
 
 ## Requirements on a micro-compiler module
 

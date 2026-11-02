@@ -435,6 +435,7 @@ def emit(
     b: "Backend", f: "Frame", op: int, dst: Dst | None, args: tuple[Operand, ...],
     imm: tuple[int, ...],
 ) -> None:  # fmt: skip
+    global _SHUF
     a = b.a
     if op in (0x23, 0x24):  # (word, indirect): an imported global is a pointer to the owner's
         g = Mem(R15, 8 * imm[0])
@@ -451,8 +452,8 @@ def emit(
         movups(a, run(a, CODE[op, LEVEL]), _slot(dst), True)
         return
     if kind in ("shuffle", "swizzle"):  # class L (5d3): one instruction, or byte by byte
-        if not _SHUF:
-            _SHUF.update({(k, LEVEL): p for k, p in _shuffles().items()})
+        if not _SHUF:  # built locally and published by one assignment: readers see it empty or full
+            _SHUF = {(k, LEVEL): p for k, p in _shuffles().items()}  # pyright: ignore[reportConstantRedefinition]
         lanes = tuple(imm[0] >> 8 * i & 255 for i in range(16)) if imm else ()
         if (lanes, LEVEL) in _SHUF:
             for i, x in enumerate(args):

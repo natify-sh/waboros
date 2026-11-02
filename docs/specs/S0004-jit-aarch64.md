@@ -464,4 +464,4 @@ Resolved by the maintainer on 2026-11-01 (see Changes); none open.
 * 2026-11-01: answered — the python.org 3.13.17 macOS CPython (hardened runtime) runs `jit-aarch64`: it carries `disable-executable-page-protection`; probe None, `auto` → `jit-aarch64`, ABI tests pass (RISKS R2). Phase 4 complete.
 * 2026-11-02: the D31 message for an incomplete JIT says "its expected failures differ from pyc's"
   instead of "integer core only" (no longer true once floats and the rest landed).
-* 2026-11-02: status implemented (phase 4 done: steps 4a-4e, the review, the macOS follow-ups; ROADMAP). The frozen interface of D39 was amended once, by S0005 (step 5c1): the `simd` method and the v128 operand meaning, in both backends.
+* 2026-11-02: status implemented (phase 4 done: steps 4a-4e, the review, the macOS follow-ups; ROADMAP). The frozen interface of D39 was amended twice, by S0005: the `simd` method and the v128 operand meaning (step 5c1, both backends), then `move_v128` (after the SIMD benchmark investigation; DECISIONS D39).

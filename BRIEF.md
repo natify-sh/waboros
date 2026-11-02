@@ -101,9 +101,9 @@ State on branch `phase0-skeleton` (not merged to `main`, the maintainer's choice
 * **Phase 5 under way, SIMD first** (`docs/specs/S0005-simd.md`, D41): the front end and `pyc` are done and
   `pyc` claims `simd/`; `jit-x86_64` compiles every operator with SSE2 only and claims `simd/` at
   parity with `pyc` (5d3); `jit-aarch64` compiles every operator in NEON and claims `simd/` too (5e2);
-  next the SIMD benchmark and the review (5f). **Next, per
-  `docs/ROADMAP.md`:** finish SIMD, the rename to `waboros` as its own step (D40), guard pages (D29), the
-  rest of the opcode set; the public API only in phase 6.
+  SIMD is complete (5a-5f: the benchmark and the review are done) and the rename to `waboros` is done (D40).
+  **Next, per `docs/ROADMAP.md`:** the merge to main and publishing (the maintainer's step), then
+  phase 5 continues: guard pages (D29), the rest of the opcode set; the public API only in phase 6.
 
 1. **Read** this page, then `docs/BENCHMARKS.md`, then `docs/ARCHITECTURE.md` and the spec of the step
    in `docs/specs/`. Skip `docs/API.md` and `docs/FEATURES.md` until phase 6.

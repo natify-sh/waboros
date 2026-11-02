@@ -84,7 +84,7 @@ directories (`test/core/<dir>/`) count only on a target that claims the feature
 * multi-memory (`wasm_multi_memory`): done on every target (D37); **needed for fused components** (D7).
 * memory64 (`wasm_memory64`): addresses are already Python ints in `pyc`.
 * SIMD (`wasm_simd`): `pyc` v128 as an int, correct first (done, claimed); JIT: two slots per v128, SSE2 / NEON at the baseline (D24, D41, S0005; `jit-x86_64` complete and claimed, step 5d3; `jit-aarch64` complete in ARMv8.0-A NEON and
-  claimed, step 5e2; next: the SIMD benchmark and the review of the SIMD steps, 5f).
+  claimed, step 5e2; the SIMD benchmark and the review, 5f, are done: SIMD is complete and claimed on all three targets).
 * relaxed SIMD (`wasm_relaxed_simd`, `_deterministic`): follow Wasmtime's deterministic choice when asked.
 * tail calls (`wasm_tail_call`): done; `pyc` uses a trampoline for functions with `return_call*`; the JIT replaces the frame.
 * custom page sizes (`wasm_custom_page_sizes`): a property of the `Memory` facade.

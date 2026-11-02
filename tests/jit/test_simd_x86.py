@@ -42,19 +42,20 @@ NAN_ARITH = {f"{sh}.{o}" for sh in ("f32x4", "f64x2")
 NAN_ARITH.update(("f32x4.demote_f64x2_zero", "f64x2.promote_low_f32x4"))
 
 
-def _nan_class(name: str, v: int) -> int:
-    """`v` with each NaN lane replaced by a marker, after checking it is arithmetic (quiet)."""
+def _nan_class(name: str, v: int) -> tuple[int | str, ...]:
+    """The lanes of `v`, a NaN lane as "nan" (no lane value equals it); NaNs must be quiet."""
     w = 4 if name.startswith("f32x4") else 8  # the result's lanes
-    bits, out = 8 * w, 0
+    bits = 8 * w
+    out: list[int | str] = []
     m = 23 if w == 4 else 52  # mantissa bits
     exp, quiet = (1 << bits - 1) - (1 << m), 1 << m - 1
     for i in range(16 // w):
         lane = v >> bits * i & (1 << bits) - 1
         if lane & exp == exp and lane & (1 << m) - 1:
             assert lane & quiet, (name, hex(v))
-            lane = 1
-        out |= lane << bits * i
-    return out
+            lane = "nan"
+        out.append(lane)
+    return tuple(out)
 
 
 def _module() -> tuple[str, dict[str, list[tuple[int, ...]]]]:

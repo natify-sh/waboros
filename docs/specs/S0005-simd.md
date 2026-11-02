@@ -2,7 +2,7 @@
 title: Fixed-width SIMD (v128) on pyc, jit-x86_64 and jit-aarch64
 kind: spec
 id: S0005
-status: approved
+status: implemented
 superseded_by:
 related: [D22, D23, D24, D25, D26, D28, D33, D35, D36, D37, D39, R2, R3, S0001, S0002, S0003, S0004]
 owner: maintainer
@@ -98,7 +98,7 @@ v128, a `reviewer` pass):
    ```
    `op` = `0xFD000 + sub` (or `0x23`/`0x24` for a v128 global, `imm = (word, indirect)`); `args` in wasm
    operand order; `imm`: lane, the shuffle lanes as one 128-bit int, `(offset, memory word)` for memory
-   forms. Contract: reads every operand before writing `dst` (`dst` may be the first operand's
+   forms, `(offset, memory word, lane)` for the lane forms. Contract: reads every operand before writing `dst` (`dst` may be the first operand's
    slots); memory forms check bounds as `load`/`store` do (`MEMORY_OUT_OF_BOUNDS`); preserves pool,
    frame, context, memory-0 registers and `tos` unless `dst` is `tos`; leaves no flags and no vector
    register live; may use the **scratch slots** `base + 6 … base + 9` (32 bytes; `base` = `L` + the
@@ -410,7 +410,7 @@ Q5 (a), Q6 (a), Q7 (a), Q8 (a). Kept below with their options for the record.
   passing commands; every other command is `unsupported` (`spec_diff pyc … --allow-unsupported`
   exits 0), and the 43 files without a 5e2 operator pass whole. A program table like x86's: each
   NEON form is a fixed word plus its llvm-mc spelling (`FORMS`), checked form by form; scratch is
-  v0–v3, x9–x12 and x17 (x17 only for far frame offsets, in `ldst_q`/`_lane`). The split of 5e
+  v0–v3, x9–x13, x16 (large memory offsets, via `_bounds`/`_add_k`) and x17 (far frame/context offsets, in `ldst_q`/`_lane`). The split of 5e
   moved: the plan said "data movement and class D first, then the rest"; it is now by side (5e1
   integer, 5e2 float, conversions, rounding, `shuffle`/`swizzle` and the claim; the step table
   above says so). The x86 `jit` CI job runs `test_simd_abi.py` and `test_simd_aarch64.py` and the
@@ -447,7 +447,7 @@ Q5 (a), Q6 (a), Q7 (a), Q8 (a). Kept below with their options for the record.
     `fabs`/`fneg`, which change only the sign bit (NaN bits kept, as `pyc`);
   * `shuffle`: the 16 lane indices go into v2 through x9, x10 (`mov`, `fmov d2, x9`,
     `mov v2.d[1], x10`), then `tbl v3.16b, {v0.16b, v1.16b}, v2.16b`; no one-instruction patterns
-    (no measurement asks for them). Scratch stays v0–v3 and x9–x12, x17;
+    (no measurement asks for them). Scratch stays v0–v3, x9–x13, x16 and x17;
   * NaN bits, measured (a differential of the 54 operators under QEMU against `pyc` and Wasmtime,
     92 489 calls): 0 differences by class; the bits differ only for `add`, `sub`, `mul`, `div`,
     `sqrt`, `min` and `max` (aarch64 propagates the quieted input NaN, x86 Wasmtime gives its
@@ -495,3 +495,4 @@ Q5 (a), Q6 (a), Q7 (a), Q8 (a). Kept below with their options for the record.
   lists: only `json/simd/` lines change (x86-64 112, aarch64 95), CoreMark identical. Measured
   (BENCHMARKS.md, "SIMD benchmark"): `jit-x86_64` matmul 12.10 → 2.17 µs, scan 3.81 → 0.64, dot
   1.49 → 1.03; matmul and scan now beat their scalar builds.
+* 2026-11-02 (5f): status implemented. The review of the whole SIMD implementation in both JITs found no correctness defect. Fixes: `_nan_class` in the tests compared NaN lanes by the marker `1`, a real lane value, and now maps them to `"nan"` in a tuple of lanes; the x86-64 shuffle cache `_SHUF` is built in a local dict and published by one assignment, so a free-threaded reader sees it empty or full (deterministic bytes); generated code unchanged (D35 list identical). Both D39 amendments (`simd`, `move_v128`) are recorded in DECISIONS.
