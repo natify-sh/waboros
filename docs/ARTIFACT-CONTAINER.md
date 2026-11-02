@@ -136,3 +136,11 @@ Q: container of format v1. (a) our own (as written), (b) ELF64 `ET_REL` with a p
 `.waboros.*` sections (Wasmtime's model), (c) our own format plus an export tool that writes an ELF
 for inspection only. (c) gets the tooling without a contract change, but then the shipped artifact
 and the inspected one are two different files, which is weaker for D36 and the micro-compilers.
+
+## Also open: the file extension
+
+D18 names serialized files `<name>.<target>.<ext>` with `.w2a`, "a working extension until the
+project has a name". The project is now waboros (D40), so the extension is decided together with the
+container: e.g. `.wab` for our own container, or an ELF-flavoured name if (b) is chosen. The header,
+not the name, stays authoritative; the name carries what decides whether a file can run (target, ISA
+level, and the bounds mode: guard or explicit, S0006).
