@@ -96,8 +96,10 @@ reference loader as well as from Python; refuse artifacts with an unknown format
 
 Jobs of `.github/workflows/ci.yml`: `lint` (ruff, pyright, `check_docs.py`, `features.py --check`); `test`
 (`pytest -q` on the seven Pythons; `tools/stack_info.py` on 3.13, also in a musl container); `jit`
-(`tests/jit` with `W2PY_JIT_REQUIRE=1`; the aarch64 ABI, compiler and tail-call tests and the spec
-suite on `jit-aarch64` under QEMU with BTI enforced; the SIMD tests and the explicit `simd` spec run of
+(`tests/jit` with `W2PY_JIT_REQUIRE=1`; the aarch64 ABI, compiler, tail-call and SIMD tests
+(`test_simd_abi.py`, `test_simd_aarch64.py`), the spec suite and the explicit `simd` run of
+`jit-aarch64` (compared with `pyc` by `tools/spec_diff.py --allow-unsupported` until it claims `simd`
+in 5e2) under QEMU with BTI enforced; the x86 SIMD tests and the explicit `simd` spec run of
 `jit-x86_64` under the SSE2-only `qemu64` CPU, compared with `pyc` by `tools/spec_diff.py` (strict since 5d3);
 then both ISA gates and the D35 lists); `spec` (the spec run on `wasmtime`, `pyc`, `jit-x86_64`, then
 `auto` under `no_exec.py`); `os`; `arm64`; `macos-pythonorg`; `android`.
@@ -108,7 +110,7 @@ the claims and counts failures as failures. A target claims `simd` only when tha
 listed failures and, for a JIT, equals `pyc` (S0005, "Claiming `simd`"); until then CI watches the
 progress only through the QEMU step above, which fails on a SIGILL, a crash or a difference from `pyc`.
 `jit-x86_64` claims `simd` since step 5d3 (0 failures), so the default spec run and the `spec` job
-include `simd/` for it; `jit-aarch64` is still measured by the explicit run only (5e).
+include `simd/` for it; `jit-aarch64` is still measured by the explicit run only (the QEMU step above, 5e2 claims).
 
 CoreMark on a JIT is checked with `tools/run_coremark_jit.py --check FILE` (the `arm64` job, the
 `android` job): a run is valid with "Correct operation validated", or when the only error is

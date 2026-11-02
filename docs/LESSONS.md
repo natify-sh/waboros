@@ -220,3 +220,13 @@ What went wrong or surprised us while building the PoC, so it is not found again
     caught it. Rule: an operator-by-operator differential test against `pyc` (and a random-lane
     fuzz against Wasmtime) is part of each SIMD step, not only the spec run.
     Found: SIMD step 5d1, 2026-11-02.
+43. **A register in a field the form does not have encodes another instruction.** The NEON
+    programs of `jit/aarch64/simd.py` OR registers into a fixed word. A two-register form
+    (`abs`, `sxtl`, `uaddlp`, `uminv`, ...) has fixed bits where a three-register form has Rm, so
+    a third register there changes the instruction: of the 47 two-register forms with Rm = 16,
+    llvm-mc decodes 22 as other valid instructions (`sxtl v7.8h, v31.8b` becomes
+    `sshll v7.4s, v31.4h, #8`) and 25 as invalid. Only the valid ones would pass the ISA gate. The
+    step's own llvm-mc test did exactly that (it passed a third register to every form). Rule:
+    the encoder refuses operands a form does not have (`_parse` asserts that a third register
+    goes only to a form with Rm), and the encoding tests format each form's own operand list.
+    Found: SIMD step 5e1, 2026-11-02.

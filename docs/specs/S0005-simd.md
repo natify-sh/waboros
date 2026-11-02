@@ -277,7 +277,7 @@ fails there with `Unsupported("simd")`, as today (Q2).
 | 5d1 | `jit/x86_64/simd.py`: class D operators (1–3 SSE2 instructions), encodings vs `llvm-mc`, ISA allowlist, the SSE2-only QEMU job | jit-engineer | files of `simd/` whose hardest operator is class D (18 739 commands) equal `pyc`; run under `qemu64` without SSSE3/SSE4.1 | ~450, tests ~120 |
 | 5d2 | class S operators (4–22 instructions) | jit-engineer | files with S at most (6 150 more commands) equal `pyc` | ~450, tests ~120 |
 | 5d3 | class L operators (`shuffle`, `swizzle`, rounding); claim | jit-engineer | `--engine jit-x86_64 simd` = `pyc`'s failures → claim; `spec_diff pyc jit-x86_64` empty for `simd/`; SIMD benchmark rows | ~250, tests ~80 |
-| 5e1, 5e2 | `jit/aarch64/simd.py`: every operator in NEON, in two parts (data movement and class D first, then the rest; claim in 5e2) | jit-engineer | same on the arm64 runners and under QEMU (BTI); D35 lists equal both ways | ~350 each, tests ~120 each |
+| 5e1, 5e2 | `jit/aarch64/simd.py`: every operator in NEON, in two parts (5e1 the integer operators; 5e2 the float operators, conversions, rounding, `shuffle`/`swizzle` and the claim) | jit-engineer | same on the arm64 runners and under QEMU (BTI); D35 lists equal both ways | ~350 each, tests ~120 each |
 | 5f | review of 5c–5e by a `reviewer` with no access to the implementers' reasoning; D39 amendment recorded; MICRO-COMPILERS.md line counts updated (backends grow to ~2–2.6k lines); this spec `implemented` | reviewer | findings closed; CoreMark rows unchanged | docs |
 
 A step that needs more than its size stops and reports (CLAUDE.md). 5c changes the frozen
@@ -395,3 +395,33 @@ Q5 (a), Q6 (a), Q7 (a), Q8 (a). Kept below with their options for the record.
   5e2. The D25 parity test compares each JIT with `pyc` over the directories both claim, so it
   covers `simd/` for `jit-x86_64` only. `auto` takes a target's own claims and xfail file:
   `jit-x86_64` on x86-64 (it runs `simd/`), `jit-aarch64` on arm64 (it does not).
+* 2026-11-02 (5e1): `jit-aarch64` compiles the 138 integer operators in ARMv8.0-A NEON (182 of 236
+  with data movement): arithmetic, saturating, compares, shifts, `bitmask`, `all_true`, `abs`/`neg`,
+  `min`/`max`, `avgr_u`, `mul`, `dot`, `extmul`, `extadd_pairwise`, extends and extending loads,
+  narrows, `popcnt`, `q15mulr_sat_s`. The explicit `simd` run under QEMU goes from 1 988 to 6 185
+  passing commands; every other command is `unsupported` (`spec_diff pyc … --allow-unsupported`
+  exits 0), and the 43 files without a 5e2 operator pass whole. A program table like x86's: each
+  NEON form is a fixed word plus its llvm-mc spelling (`FORMS`), checked form by form; scratch is
+  v0–v3, x9–x12 and x17 (x17 only for far frame offsets, in `ldst_q`/`_lane`). The split of 5e
+  moved: the plan said "data movement and class D first, then the rest"; it is now by side (5e1
+  integer, 5e2 float, conversions, rounding, `shuffle`/`swizzle` and the claim; the step table
+  above says so). The x86 `jit` CI job runs `test_simd_abi.py` and `test_simd_aarch64.py` and the
+  explicit `simd` run of `jit-aarch64` (`spec_diff --allow-unsupported`) under QEMU with BTI
+  enforced; the v128 tests had not run under QEMU in CI since 5c. Sequences beyond the text above:
+  * `bitmask`: `sshr` spreads each sign, then the lanes are narrowed to bytes or halves (`xtn`, so
+    one 64-bit weight constant fits: `0x8040201008040201` or `0x0008000400020001`, put in both
+    halves by `mov` + `dup .2d`), `and`, one `addv`. `i8x16` adds its two halves in one `addv .8h`
+    after `ext #8` + `zip1` (byte i of the high half becomes the high byte of halfword i);
+    `i64x2.bitmask` is two `lsr #63` and an `orr` in GPRs;
+  * `all_true`: `uminv` over b/h/s lanes; `uminv` has no `.2d`, so `i64x2.all_true` is `cmeq #0` +
+    `umaxv .4s` (zero when no lane is zero); then `fmov`, `cmp`, `cset`. `any_true` stays the GPR
+    form of 5c2;
+  * `i64x2.mul` multiplies both lanes in GPRs (`mul` ×2), the second option above;
+  * `ne` is `cmeq` + `mvn`; `lt`/`le` are `cmgt`/`cmge`/`cmhi`/`cmhs` with the operands swapped;
+    `avgr_u` is `urhadd`; `dot` is `smull` + `smull2` + `addp .4s`; extending loads are `ldr d0`
+    (the upper half zeroed) + `sxtl`/`uxtl`;
+  * shifts as above: the count masked to the lane width in w10, negated for right shifts, `dup` to
+    every lane, `sshl`/`ushl` (only the low byte of each lane counts, as a signed amount).
+
+  No change to `tools/isa_check.py`: its aarch64 side has no mnemonic allowlist (LLVM decodes
+  ARMv8.0-A only); `tools/isa_all.py --target jit-aarch64` passes with these modules compiled.
