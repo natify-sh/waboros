@@ -145,7 +145,7 @@ def target_order(choice: str | None = None) -> list[str]:
         if why is None:
             if getattr(TARGETS[name](), "complete", True):
                 return [name]
-            msg = f"w2py: {name} incomplete (integer core only); using pyc"
+            msg = f"w2py: {name} incomplete (its expected failures differ from pyc's); using pyc"
         elif machine in _MACHINES.get(name, ()):
             msg = f"w2py: {name} unavailable ({why}); using pyc"
     if msg not in _warned:

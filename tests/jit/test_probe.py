@@ -64,6 +64,6 @@ def test_auto_skips_an_incomplete_jit(monkeypatch: pytest.MonkeyPatch) -> None:
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter("always")
         assert target_order("auto") == ["pyc"] == target_order("auto")
-    msg = "w2py: jit-aarch64 incomplete (integer core only); using pyc"
+    msg = "w2py: jit-aarch64 incomplete (its expected failures differ from pyc's); using pyc"
     assert [str(x.message) for x in w] == [msg]
     assert target_order("jit-aarch64") == ["jit-aarch64"]

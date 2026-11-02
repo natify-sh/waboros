@@ -52,7 +52,7 @@ Supported opcodes (the rest raise `Unsupported` with the first missing feature, 
 
 **`auto` does not select `jit-aarch64` until its expected failures equal `pyc`'s (D25).** The target
 carries `complete = False`; `target_order("auto")` skips an incomplete JIT and warns once with
-`w2py: jit-aarch64 incomplete (integer core only); using pyc` (a third D31 message). An explicit
+`w2py: jit-aarch64 incomplete (its expected failures differ from pyc's); using pyc` (a third D31 message). An explicit
 `--engine jit-aarch64` / `W2PY_TARGET=jit-aarch64` runs it. This brings back the readiness guard
 S0002 step 2 had (removed in step 6), as an amendment of S0002.
 
@@ -462,3 +462,5 @@ Resolved by the maintainer on 2026-11-01 (see Changes); none open.
   OSes, and fails unless `auto` selects `jit-aarch64`.
 * 2026-11-01 (step 4e review): no correctness issue (differential float fuzz, bulk/table overlap, tail-call traps, far mode vs Wasmtime aarch64 under QEMU). The float code assumes the default FPCR (round to nearest, FZ=0, DN=0) and never sets it, as the x86-64 code assumes the default MXCSR (S0003); a host import that changes FPCR changes results.
 * 2026-11-01: answered — the python.org 3.13.17 macOS CPython (hardened runtime) runs `jit-aarch64`: it carries `disable-executable-page-protection`; probe None, `auto` → `jit-aarch64`, ABI tests pass (RISKS R2). Phase 4 complete.
+* 2026-11-02: the D31 message for an incomplete JIT says "its expected failures differ from pyc's"
+  instead of "integer core only" (no longer true once floats and the rest landed).
