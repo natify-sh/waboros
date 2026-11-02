@@ -6,7 +6,8 @@ calls. Encodings are emitted as words here; `encoder.py` does not change.
 
 Data movement (step 5c): 16-byte moves by `ldr`/`str q`, bitwise operations on v0-v2, lanes in
 the slots by GPR loads and stores (x9-x13, x17: scratch as in every method), splat by `dup`.
-`v128.const` is the core's (two constant halves).
+`move` is the backend's `move_v128` (the core's v128 locals, constants and `select`): one
+`str q`, so a v128 is written with the width it is read with (LESSONS 44).
 
 Integer operators (step 5e1): a short program over v0-v7 (`PROG`, 1-10 instructions; NEON forms in
 `FORMS`, each a fixed word plus its llvm-mc spelling): the operands are loaded into v0, v1 (wasm
@@ -25,7 +26,7 @@ from typing import TYPE_CHECKING
 from waboros.frontend import simd as fs
 from waboros.targets.jit.aarch64.abi import CTX, FRAME
 from waboros.targets.jit.aarch64.encoder import ZR, Asm
-from waboros.targets.jit.common.backend import Dst, Operand, Reg, Slot
+from waboros.targets.jit.common.backend import Dst, Imm, Operand, Reg, Slot
 from waboros.targets.jit.common.simd import MOVES, shape
 
 if TYPE_CHECKING:
@@ -304,6 +305,27 @@ def _copy(a: Asm, src: int, to: int) -> None:
         ldst_q(a, False, 0, FRAME, to)
 
 
+def move(a: Asm, dst: Slot, src: Slot | Imm) -> None:
+    """The backend's `move_v128`: one 16-byte `str q0`; a constant built in v0 (eor, `dup` of
+    x9, or `fmov d0, x9` and `ins v0.d[1], x10`)."""
+    if isinstance(src, Slot):
+        _copy(a, _slot(src), _slot(dst))
+        return
+    lo, hi = src.value & (1 << 64) - 1, src.value >> 64
+    if lo == hi == 0:
+        vop(a, "xor", 0, 0, 0)
+    elif lo == hi:
+        a.mov_imm(9, lo)
+        dup(a, 0, 9, 8)
+    else:
+        a.mov_imm(9, lo)
+        a.fmov_to(0, 9)  # the upper half zeroed
+        if hi:
+            a.mov_imm(10, hi)
+            a.emit(INS_D1 | 10 << 5 | 0)
+    ldst_q(a, False, 0, FRAME, _slot(dst))
+
+
 def emit(
     b: "Backend", f: "Frame", op: int, dst: Dst | None, args: tuple[Operand, ...],
     imm: tuple[int, ...],
@@ -394,10 +416,10 @@ def emit(
             _mem(a, True, r, acc, size)
         dup(a, 0, r, size)
         ldst_q(a, False, 0, FRAME, _slot(dst))
-    elif kind == "load_zero":
+    elif kind == "load_zero":  # built in d0 (the upper half zeroed), one 16-byte store
         _mem(a, True, 10, acc, size)
-        _lane(a, False, ZR, _slot(dst, 8), 8)
-        _lane(a, False, 10, _slot(dst), 8)
+        a.fmov_to(0, 10)
+        ldst_q(a, False, 0, FRAME, _slot(dst))
     elif kind == "extract":  # an i32 result as a w register: zero-extended (LESSONS 5)
         assert isinstance(dst, Reg)
         _lane(a, True, dst.id, _slot(args[0], imm[0] * size), size, signed)

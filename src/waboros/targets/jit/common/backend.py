@@ -113,6 +113,10 @@ class Backend(Protocol[L, F]):
     def simd(
         self, f: F, op: int, dst: Dst | None, args: tuple[Operand, ...], imm: tuple[int, ...]
     ) -> None: ...  # fmt: skip
+    # a v128 slot pair (`Slot`) or a 128-bit constant (`Imm`) into the pair `dst` by one 16-byte
+    # store, the width the next reader uses (store forwarding, LESSONS 44); no flags, no pool
+    # register or `tos` changed, no vector register left live
+    def move_v128(self, dst: Slot, src: Slot | Imm) -> None: ...
 
     # tables (`word`: the table's `base` word; `size` follows) and bulk memory: bounds checked
     # before anything is written; operands are i32 but table values (64-bit references)

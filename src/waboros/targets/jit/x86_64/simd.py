@@ -7,7 +7,11 @@ through the encoder's ModRM core; `encoder.py` does not change.
 Data movement (step 5c): 16-byte moves by `movups` (slots are only 8-byte aligned, so no packed
 operation takes a memory operand), bitwise operations on xmm0-xmm2, lanes in the slots by GPR
 loads and stores (rcx, rdx: scratch as in every method), splat by a multiply with 0x0101...
-`v128.const` is the core's (two constant halves).
+then `punpcklqdq` in xmm0. `move` is the backend's `move_v128` (the core's v128 locals, constants
+and `select`): one 16-byte store, so the next `movups` can be forwarded (LESSONS 44). Still
+written narrow and read wide: the core's flush, branch moves, calls, block parameters and entry
+arguments (two 8-byte halves), the `swizzle`/`shuffle` scratch and the lane writes of
+`replace_lane`/`load_lane`.
 
 Classes D and S (steps 5d1, 5d2) and the class-L rounding operators (5d3): a short program over
 xmm0-xmm5 (`PROG`, 1-25 instructions): the operands are loaded into xmm0, xmm1 (wasm order), the
@@ -30,7 +34,7 @@ extract/replace/splat/bitselect/any_true, `MOVES`, `OTHER` (docs/ISA-LEVELS.md).
 from typing import TYPE_CHECKING
 
 from waboros.frontend import simd as fs
-from waboros.targets.jit.common.backend import Dst, Operand, Reg, Slot
+from waboros.targets.jit.common.backend import Dst, Imm, Operand, Reg, Slot
 from waboros.targets.jit.common.simd import MOVES, shape
 from waboros.targets.jit.x86_64.encoder import R12, R15, RCX, RDX, Asm, Mem
 
@@ -407,6 +411,26 @@ def _copy(a: Asm, src: Mem, to: Mem) -> None:
         movups(a, 0, to, True)
 
 
+def move(a: Asm, dst: Slot, src: Slot | Imm) -> None:
+    """The backend's `move_v128`: one 16-byte `movups` store; a constant built in xmm0 (xorps,
+    or movq through rcx and `punpcklqdq` for the high half)."""
+    if isinstance(src, Slot):
+        _copy(a, _slot(src), _slot(dst))
+        return
+    lo, hi = src.value & (1 << 64) - 1, src.value >> 64
+    if lo == hi == 0:
+        a.sse("xor", 0, 0, False)  # xorps xmm0, xmm0
+    else:
+        a.mov_imm(RCX, lo, w=True)
+        a.movq_to_xmm(0, RCX, True)  # the upper half zeroed
+        if hi:
+            if hi != lo:
+                a.mov_imm(RCX, hi, w=True)
+                a.movq_to_xmm(1, RCX, True)
+            run(a, _parse(f"punpcklqdq 0 {0 if hi == lo else 1}"))
+    movups(a, 0, _slot(dst), True)
+
+
 def emit(
     b: "Backend", f: "Frame", op: int, dst: Dst | None, args: tuple[Operand, ...],
     imm: tuple[int, ...],
@@ -491,14 +515,13 @@ def emit(
                 a.movzx(RDX, RDX, 8 * size)
         else:
             _ld(a, RDX, m, size)
-        if kind == "load_zero":
-            a.mov_imm(_slot(dst, 8), 0, w=True)
-        elif size < 8:
+        if kind != "load_zero" and size < 8:
             a.mov_imm(RCX, SPLAT[size], w=True)
             a.imul(RDX, RCX, w=True)
-        a.mov(_slot(dst), RDX, w=True)
+        a.movq_to_xmm(0, RDX, True)  # built in xmm0, one 16-byte store (LESSONS 44)
         if kind != "load_zero":
-            a.mov(_slot(dst, 8), RDX, w=True)
+            run(a, _parse("punpcklqdq 0 0"))
+        movups(a, 0, _slot(dst), True)
     elif kind == "extract":  # an i32 result in its 32-bit form: zero-extended (LESSONS 5)
         assert isinstance(dst, Reg)
         v = _slot(args[0], imm[0] * size)
@@ -518,10 +541,8 @@ def emit(
         _ld(a, RDX, _slot(args[1], imm[2] * size), size)
         _st(a, m, RDX, size)
     elif kind == "not":
-        for h in (0, 8):
-            a.mov(RCX, _slot(args[0], h), w=True)
-            a.unary("not", RCX, w=True)
-            a.mov(_slot(dst, h), RCX, w=True)
+        movups(a, 0, _slot(args[0]), False)
+        movups(a, run(a, _parse(NOT.format(0))), _slot(dst), True)
     elif kind in ("and", "andnot", "or", "xor", "bitselect"):
         for i, x in enumerate(args):
             movups(a, i, _slot(x), False)

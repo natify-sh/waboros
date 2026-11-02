@@ -457,5 +457,32 @@ Ranking by gain per complexity (the investigation's, data not a decision):
    bounds checks (guard pages) and keeps values in xmm registers (dot's accumulator, matmul's `b0`..`b3`):
    register allocation, a design topic of its own.
 
-Open: aarch64 likely has the same pattern (two `str x`, then `ldr q`); unmeasured (QEMU only). Flush, branch
-and `select` moves still move v128 halves.
+Open: aarch64 likely has the same pattern (two `str x`, then `ldr q`); unmeasured (QEMU only). Flush and
+branch moves still move v128 halves.
+
+### After the 16-byte move fix (2026-11-02)
+
+The fix (S0005, the D39 amendment `move_v128`; LESSONS 44): v128 locals, constants and `select` move as one
+16-byte access on both JITs; on `jit-x86_64` splat, `load*_splat`, `load*_zero` and `v128.not` are built in xmm0
+and written by one `movups`; on `jit-aarch64` `load*_zero` by `fmov d0` + `str q0`. The `swizzle` scratch is
+unchanged (its fix is the v2 `pshufb`, D42), so `swizzle` stays slower than scalar.
+
+Conditions: 2026-11-02, the machine above (4 cores), CPython 3.13.17, one session. `uv run python
+tools/run_simd_bench.py --targets jit-x86_64,wasmtime --rounds 5`, three runs of the code before the step (a
+worktree of its parent, `PYTHONPATH`) alternated with three runs after it; each run is the median of 5
+alternated rounds, the table the median of the three runs. Microseconds per kernel iteration. All checksums OK
+in every run; the full runner (`pyc` included) also OK after.
+
+| kernel | jit-x86_64 scalar | jit-x86_64 SIMD before | jit-x86_64 SIMD after | SIMD over scalar, after | Wasmtime SIMD |
+|---|---|---|---|---|---|
+| u8 `add_sat` | 7.46 | 0.47 | 0.45 | 16.6 | 0.19 |
+| f32 dot | 2.87 | 1.49 | 1.03 | 2.8 | 0.18 |
+| i8 scan | 3.08 | 3.81 | 0.64 | 4.8 | 0.16 |
+| 4×4 matmul ×64 | 3.87 | 12.10 | 2.17 | 1.8 | 0.40 |
+| `swizzle` lookup | 4.68 | 6.72 | 6.66 | 0.70 | 0.17 |
+| `f32x4.nearest` | 1.80 | 0.63 | 0.59 | 3.1 | 0.14 |
+
+(The scalar and Wasmtime columns: the median of all six runs; the scalar build has no v128 and its code is
+byte-identical before and after.) Matmul is 5.6× and scan 6.0× faster, as the experiment `m` predicted
+(2.25, 0.72); both now beat their scalar builds. CoreMark on `jit-x86_64`: code byte-identical (D35 lists),
+validated before and after (13 434 / 15 734 before, 13 826 / 14 251 after, alternated: noise).

@@ -79,6 +79,17 @@ MOD = """(module
     (return_call $swap (local.get 0) (local.get 1)))
   (func (export "host") (param i32 v128) (result v128 i32)
     (call $h (local.get 0) (local.get 1) (f64.const 2.5)))
+  (func (export "ks") (result v128 v128 v128 v128 v128) (local v128 v128 v128 v128 v128)
+    (local.set 0 (v128.const i64x2 0 0)) (local.set 1 (v128.const i64x2 -1 -1))
+    (local.set 2 (v128.const i64x2 5 0)) (local.set 3 (v128.const i64x2 0 5))
+    (local.set 4 (v128.const i64x2 0x0123456789abcdef 0x7fffffff00000001))
+    (local.get 0) (local.get 1) (local.get 2) (local.get 3) (local.get 4))
+  (func (export "ko") (param v128) (result v128 v128 v128 v128 v128)
+    (v128.xor (local.get 0) (v128.const i64x2 0 0))
+    (v128.xor (local.get 0) (v128.const i64x2 -1 -1))
+    (v128.xor (local.get 0) (v128.const i64x2 5 0))
+    (v128.xor (local.get 0) (v128.const i64x2 0 5))
+    (v128.xor (local.get 0) (v128.const i64x2 -2 0x7fffffff00000001)))
   (func $rec (export "rec") (param i32 v128) (result v128)
     (if (result v128) (i32.eqz (local.get 0)) (then (local.get 1))
       (else (call $rec (i32.sub (local.get 0) (i32.const 1))
@@ -101,6 +112,7 @@ ARGS: dict[str, list[tuple[int, ...]]] = {
     "call": [(A, 9)], "calli": [(B, 1)], "tail": [(A, 2)],
     "host": [(4, A), (5, B)],
     "rec": [(3, A), (40, B)],
+    "ks": [()], "ko": [(A,), (B,)],
 }  # fmt: skip
 
 
@@ -151,6 +163,7 @@ def test_v128_matches_pyc(pins: str, monkeypatch: pytest.MonkeyPatch) -> None:
             if name == "gget":
                 assert jit.inst.global_get(0) == pyc.inst.global_get(0)
     assert run(jit, "ld", 65521) is TrapCode.MEMORY_OUT_OF_BOUNDS
+    assert run(jit, "ks") == [0, M128, 5, 5 << 64, 0x7FFFFFFF00000001_0123456789ABCDEF]
 
 
 # ------------------------------------------------------------- data movement (step 5c2)
@@ -345,6 +358,67 @@ def test_x86_forms_match_llvm_mc() -> None:
     assert ours == _mc("x86_64", [".intel_syntax noprefix", *text]), text
 
 
+# move_v128 (the D39 amendment): every constant shape and a slot move; one 16-byte store each
+KS = [(0, 0), (M64, M64), (5, 0), (0, 5), (A & M64, A >> 64)]
+
+
+def test_x86_move_v128_matches_llvm_mc() -> None:
+    need(LLVM_MC, "llvm-mc")
+    from waboros.targets.jit.common.backend import Imm, Slot
+    from waboros.targets.jit.x86_64 import simd as x
+    from waboros.targets.jit.x86_64.encoder import Asm
+
+    want = {(0, 0): ["xorps xmm0, xmm0"],
+            (M64, M64): ["mov rcx, -1", "movq xmm0, rcx", "punpcklqdq xmm0, xmm0"],
+            (5, 0): ["mov ecx, 5", "movq xmm0, rcx"],
+            (0, 5): ["mov ecx, 0", "movq xmm0, rcx", "mov ecx, 5", "movq xmm1, rcx",
+                     "punpcklqdq xmm0, xmm1"],
+            (A & M64, A >> 64): [f"movabs rcx, {A & M64}", "movq xmm0, rcx",
+                                 f"movabs rcx, {A >> 64}", "movq xmm1, rcx",
+                                 "punpcklqdq xmm0, xmm1"]}  # fmt: skip
+    ours, text = [], []
+    for lo, hi in KS:
+        a = Asm()
+        x.move(a, Slot(3), Imm(lo | hi << 64))
+        ours.append(a.finish())
+        text += [*want[lo, hi], "movups xmmword ptr [r12 + 24], xmm0"]
+    a = Asm()
+    x.move(a, Slot(3), Slot(300))
+    x.move(a, Slot(3), Slot(3))  # nothing
+    ours.append(a.finish())
+    text += ["movups xmm0, xmmword ptr [r12 + 2400]", "movups xmmword ptr [r12 + 24], xmm0"]
+    assert b"".join(ours) == b"".join(_mc("x86_64", [".intel_syntax noprefix", *text])), text
+
+
+def test_aarch64_move_v128_matches_llvm_mc() -> None:
+    need(LLVM_MC, "llvm-mc")
+    from waboros.targets.jit.aarch64 import simd as v
+    from waboros.targets.jit.aarch64.encoder import Asm
+    from waboros.targets.jit.common.backend import Imm, Slot
+
+    want = {(0, 0): ["eor v0.16b, v0.16b, v0.16b"],
+            (M64, M64): ["mov x9, #-1", "dup v0.2d, x9"],
+            (5, 0): ["mov x9, #5", "fmov d0, x9"],
+            (0, 5): ["mov x9, #0", "fmov d0, x9", "mov x10, #5", "mov v0.d[1], x10"],
+            (A & M64, A >> 64): ["movz x9, #0x3210", "movk x9, #0x7654, lsl #16",
+                                 "movk x9, #0xba98, lsl #32", "movk x9, #0xfedc, lsl #48",
+                                 "fmov d0, x9", "movz x10, #0xcdef", "movk x10, #0x89ab, lsl #16",
+                                 "movk x10, #0x4567, lsl #32", "movk x10, #0x123, lsl #48",
+                                 "mov v0.d[1], x10"]}  # fmt: skip
+    ours, text = [], []
+    for lo, hi in KS:
+        a = Asm()
+        v.move(a, Slot(3), Imm(lo | hi << 64))
+        ours.append(a.finish())
+        text += [*want[lo, hi], "stur q0, [x27, #24]"]
+    a = Asm()
+    v.move(a, Slot(4), Slot(300))
+    v.move(a, Slot(4), Slot(4))  # nothing
+    ours.append(a.finish())
+    text += ["ldr q0, [x27, #2400]", "str q0, [x27, #32]"]
+    assert b"".join(ours) == b"".join(_mc("aarch64", text)), text
+
+
 def test_aarch64_forms_match_llvm_mc() -> None:
     need(LLVM_MC, "llvm-mc")
     from waboros.targets.jit.aarch64 import simd as v
@@ -389,3 +463,26 @@ def test_aarch64_forms_match_llvm_mc() -> None:
             text.append(f"dup v{d}.{t}, {g}")
     theirs = _mc("aarch64", text)
     assert b"".join(ours) == b"".join(theirs), text
+
+
+NL = 4300  # v128 locals: the last ones lie past 64 KiB of frame (aarch64: `ldst_q` through x17)
+FAR = f"""(module (memory 1)
+  (func (export "st") (param i32 v128) (v128.store (local.get 0) (local.get 1)))
+  (func (export "far") (param v128 i32) (result v128 v128) (local {" v128" * NL})
+    (local.set {NL} (local.get 0)) (local.set {NL - 1} (v128.const i64x2 -1 3))
+    (local.get {NL}) (local.get {NL - 1}) (local.get 1) (select) (local.get {NL - 1}))
+  (func (export "selk") (param v128 i64) (result v128)
+    (select (v128.const i64x2 7 -1) (local.get 0)
+      (i64.eq (local.get 1) (i64.const 0x123456789abcdef0)))))"""
+
+
+def test_move_v128_far_slots_and_select_on_a_wide_immediate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """move_v128 at frame offsets past the short forms; a constant `t` written before a
+    compare with a 64-bit immediate (no flags or compare operand clobbered)."""
+    jit, pyc = _pair("pinned", monkeypatch, FAR)
+    cases = [("far", (v, c)) for v in VALS[:4] for c in (0, 1)]
+    cases += [("selk", (v, x)) for v in VALS[:3] for x in (0, 0x123456789ABCDEF0, M64)]
+    for name, args in cases:
+        assert run(jit, name, *args) == run(pyc, name, *args), (name, args)

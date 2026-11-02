@@ -776,6 +776,9 @@ class Backend:
     ) -> None:  # fmt: skip
         v128.emit(self, f, op, dst, args, imm)
 
+    def move_v128(self, dst: Slot, src: Slot | Imm) -> None:
+        v128.move(self.a, dst, src)
+
     def ctx_addr(self, dst: Reg, word: int) -> None:
         """dst = the address of context word `word` (a function record: `ref.func`)."""
         self.a.lea(dst.id, Mem(R15, 8 * word))

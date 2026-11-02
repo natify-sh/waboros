@@ -90,8 +90,9 @@ v128, a `reviewer` pass):
    with the 128-bit value; a v128 result is `Slot(k)` (never `tos`). Scalar operands and results
    (lane values, shift counts, addresses, `extract_lane`, `bitmask`, `any_true`, `all_true`) are as
    today: `tos`, a pool register, a slot or an `Imm`, zero-extended.
-2. **One new method** (the only one; a method only new opcodes reach would not by itself be an
-   interface change under D39, the operand meaning above is):
+2. **One new method** (the only one of the first amendment; a method only new opcodes reach would
+   not by itself be an interface change under D39, the operand meaning above is; item 5 adds a
+   second):
    ```python
    def simd(self, f: F, op: int, dst: Dst, args: tuple[Operand, ...], imm: tuple[int, ...]) -> None
    ```
@@ -108,6 +109,13 @@ v128, a `reviewer` pass):
    opcode, as today.
 4. **The core's frame layout**: slot of local j = sum of the widths of locals before j (v128 = 2,
    else 1), arities of blocks, calls and returns in slots. Identical numbers when no v128 exists.
+5. **`move_v128(dst: Slot, src: Slot | Imm) -> None`** (approved 2026-11-02, after the slowdown
+   investigation): the pair `src` (or the 128-bit constant) into the pair `dst` by one 16-byte
+   store, so a v128 is written with the width the next operator reads it with (store-to-load
+   forwarding, LESSONS 44). No flags, pool registers or `tos` changed; the same vector scratch as
+   `simd`. The core calls it for v128 `local.get`/`set`/`tee`, a constant operand of `simd`, and
+   both writes of a v128 `select`; `flush`, branch moves, calls and block parameters still move
+   halves (the core does not know there which entries are v128).
 
 **Vector registers** (scratch inside one `simd` call; none is live across a call or between calls):
 
@@ -133,8 +141,8 @@ CoreMark are identical before and after for both targets (step acceptance).
 | `jit/common/compiler.py` | `type_ok`/`unsupported` (item 3); slot map and arities in slots (item 4: `loc`, `run`'s local init, `enter`, `call*`, `tail_call`, the function's `_Ctl`); `drop`/`select` of v128; `global.get/set` of v128; `op >= 0xFD000` → `jit/common/simd.py` |
 | `jit/common/context.py` | `Layout` global widths |
 | `jit/common/instance.py` | split/join of v128 in `call`, `_host`, global init and `global_get` (helpers in `jit/common/simd.py`) |
-| `jit/common/backend.py` | the `simd` method in the protocol |
-| `jit/x86_64/backend.py`, `jit/aarch64/backend.py` | `simd` delegates to the module; `supported` adds the module's set |
+| `jit/common/backend.py` | the `simd` and `move_v128` methods in the protocol |
+| `jit/x86_64/backend.py`, `jit/aarch64/backend.py` | `simd` and `move_v128` delegate to the module (`emit`, `move`); `supported` adds the module's set |
 | `tools/isa_check.py` | the SSE2 packed mnemonics join the x86-64-v1 allowlist (`pshufb`, `roundps`, `pminsd`, `pmulld`, … stay refused) |
 | `tests/spec/claims.py` | `simd` per target when claimed |
 
@@ -472,3 +480,18 @@ Q5 (a), Q6 (a), Q7 (a), Q8 (a). Kept below with their options for the record.
   store-forwarding fix, LESSONS 44); both backends in one step, code of modules without v128
   byte-identical, no ABI or artifact change; (2) Q3 (a vector `tos`) deferred, not closed: re-measure
   with a prototype that removes the store too, after the fix.
+* 2026-11-02 (the 16-byte move fix, as built): `move_v128` (D39 amendment, item 5) on both backends;
+  x86-64: a slot pair by `movups` load and store; a constant built in xmm0 (`xorps` for zero; `mov
+  rcx` + `movq`, then `punpcklqdq` with itself when both halves are equal or with xmm1 holding the
+  high half; nothing more when the high half is zero) and one `movups` store; aarch64: `ldr`/`str
+  q`, a constant built in v0 (`eor` for zero, `dup v0.2d, x9` for equal halves, else `fmov d0, x9`
+  and `ins v0.d[1], x10` when the high half is not zero) and one `str q0`. Core call sites
+  (`common/simd.py`): `get_local`, `set_local` (and tee), `_pair` (constant operands), `select`.
+  Inside the backends: x86-64 splat, `load*_splat` and `load*_zero` build the value in xmm0 (`movq`,
+  `punpcklqdq`) and `v128.not` runs in xmm0 (`pcmpeqb`/`pxor`), one `movups` store each; aarch64
+  `load*_zero` by `fmov d0` and one `str q0` (its splat already was `dup` + `str q`). Not changed:
+  the `swizzle`/`shuffle` byte-gather scratch (no cheap v1 fix: two GPRs of scratch cannot hold the
+  lanes; its fix is the v2 `pshufb`, D42) and the lane writes of `replace_lane`/`load_lane`. D35
+  lists: only `json/simd/` lines change (x86-64 112, aarch64 95), CoreMark identical. Measured
+  (BENCHMARKS.md, "SIMD benchmark"): `jit-x86_64` matmul 12.10 → 2.17 µs, scan 3.81 → 0.64, dot
+  1.49 → 1.03; matmul and scan now beat their scalar builds.

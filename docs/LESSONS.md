@@ -236,4 +236,8 @@ What went wrong or surprised us while building the PoC, so it is not found again
     per iteration with 16-byte moves), far more than the instruction counts (427 -> 411) suggest.
     Rule: move a v128 through memory with the same width it will be read with, and measure with alternated
     runs before blaming instruction count (BENCHMARKS.md, "Why `jit-x86_64` SIMD is slower than scalar").
+    Fixed by the backend method `move_v128` (S0005, D39 amendment item 5) on both JITs: matmul 12.10 -> 2.17 us,
+    scan 3.81 -> 0.64. Narrow writes read wide remain in the core's flush, branch moves, calls, block parameters
+    and entry arguments (two 8-byte halves; e.g. a v128 constant flushed before a block or call), the
+    `swizzle`/`shuffle` byte-gather scratch and the lane writes of `replace_lane`/`load_lane`.
     Found: SIMD benchmark investigation, 2026-11-02.
