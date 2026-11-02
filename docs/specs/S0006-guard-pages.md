@@ -280,7 +280,7 @@ reservation is a crash, not a trap: the explicit-mode tests and differential run
 4. **Windows x86-64**: the vectored handler; the EH-continuation question answered by a test on a
    CETCOMPAT process. Acceptance: the `windows` job as in 3.
 5. **Android x86_64**: the `android` job runs `test_guard.py`; logcat shows no ART complaint.
-6. **Artifact**: the flag bits and `TRAPMAP` in the serialized format when phase 5 fixes it;
+6. **Artifact** (moved to the artifact-format spec of phase 5, see Changes): the flag bits and `TRAPMAP` in the serialized format when phase 5 fixes it;
    ARTIFACT.md parts 2–3, DECISIONS (D29 amended), a test that a guard artifact is refused where
    guard mode is unavailable and regenerated when fat; the C loader's handler (D36).
 7. **Review** by a `reviewer` (handler, fault points, registry), SIMD rows, RISKS R6 status.
@@ -435,3 +435,6 @@ reservation is a crash, not a trap: the explicit-mode tests and differential run
   guard pages, tearing under emulators (QEMU TCG, possibly box64 or FEX) and on Arm or RISC-V is
   accepted, and the code generation rule above is unchanged. CI's qemu64 pytest and spec steps run
   with `WABOROS_JIT_BOUNDS=explicit`. aarch64 is decided in step 2.
+* 2026-11-02: maintainer: step 6 (the guard flag and `TRAPMAP` in the serialized artifact, the C
+  loader's handler) moves to the artifact-format spec of phase 5, done with the container (ELF or
+  other, ARTIFACT-CONTAINER.md) and the C loader; this spec closes with steps 2–5 and 7.
