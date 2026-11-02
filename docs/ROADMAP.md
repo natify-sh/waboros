@@ -190,7 +190,11 @@ setuptools + setuptools-scm, coverage/publish workflows, dependabot; D40)
 as its own step (D40, done 2026-11-02) -> guard pages (D29) -> the rest below.
 
 * What remains of the opcode set, in stages (TARGETS.md), on **every** JIT target in step:
-  SIMD (under way, above), memory64, relaxed SIMD, exceptions, GC, then the later proposals. What a backend lacks is
+  SIMD (under way, above), memory64, relaxed SIMD, exceptions, GC; then, extending the list
+  (maintainer, 2026-11-03; [WASM-PROPOSALS.md](WASM-PROPOSALS.md): the goal is parity with Wasmtime's
+  defaults, then its flags): **wide arithmetic** and **threads** (both on by default in Wasmtime 50),
+  then the flag-only proposals, each behind an option of ours: custom page sizes, compact imports,
+  stack switching, shared-everything threads. What a backend lacks is
   `unsupported` until it is written (D25). Floats, tables, `memory.grow`, bulk memory, reference types,
   multi-value and tail calls were done in phase 3.
   For the GC spec: at every call the operand stack is in slots (S0007 keeps this: temporaries are
