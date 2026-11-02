@@ -241,3 +241,11 @@ What went wrong or surprised us while building the PoC, so it is not found again
     and entry arguments (two 8-byte halves; e.g. a v128 constant flushed before a block or call), the
     `swizzle`/`shuffle` byte-gather scratch and the lane writes of `replace_lane`/`load_lane`.
     Found: SIMD benchmark investigation, 2026-11-02.
+45. **A fault handler is only as safe as the last one installed.** Measured while drafting S0006
+    (guard pages): the handler installed last runs first. `faulthandler.enable()` after ours makes
+    the next guard fault kill the process; `faulthandler.disable()` resets the signal to its default
+    action and silently removes ours; re-installing ours over `faulthandler` made a foreign fault loop
+    forever. On aarch64, a function recompiled in far mode must drop its fault-table entries with its
+    code. Rule: never assume our handler is still in place; check before entering wasm code, refuse
+    to run a guard-mode instance when it is gone (S0006 Q1), and pass foreign faults on unchanged.
+    Found: S0006 draft experiments, 2026-11-02.
