@@ -693,3 +693,32 @@ Corpus (`tools/run_corpus.py --targets jit-x86_64`, 2 sets of 4 alternated pairs
 in all 16 runs. No case is slower than the baseline beyond the spread. Medians move both ways between the two
 sets (for example `inflate 8K` −14 % then +11 %; x25519 #0 −6 % then −5 %), and some runs of both trees are
 disturbed by about 2×, so the corpus does not show a change. CoreMark: every run "Correct operation validated".
+
+### Step 1b: a block that ends the function writes its results to slots 0..m (2026-11-02; dropped)
+
+Not merged: no gain beyond code placement (S0007's rule); the numbers are kept for a revisit after
+the code-placement work (ROADMAP).
+
+The change (core, both JITs): a block, `if` with `else` or loop at stack height 0 whose `end` only `end`s follow
+(its parent the function or such a block) has its results moved straight into slots 0..m, as a return does.
+`fib`'s two arms each lose a load and a store (`mov [r12+8],rax; mov rcx,[r12+8]; mov [r12],rcx` becomes
+`mov [r12],rax`). 29 spec modules change on each target. CoreMark, the scalar and SIMD kernels and the corpus
+compile to byte-identical code on both targets, so their speed cannot change. Conditions: 2026-11-02
+19:20–19:25 UTC, Intel Xeon @ 2.10 GHz, 4 vCPU VM, CPython 3.13.17, `jit-x86_64` in its default bounds mode
+(guard, D44), one benchmark process at a time, load average 0.3–1.0. Baseline: HEAD (`git archive`, `PYTHONPATH`),
+alternated run by run.
+
+| benchmark | runs | before | after | change |
+|---|---|---|---|---|
+| calls, `fib(27)` (ns per call), as built | 10 pairs × 21 rounds | 2.63 (2.56–2.67) | 2.73 (2.60–2.85) | +4 %, slower in 10 of 10 pairs |
+| calls, `fib(27)`, padding sweep 0–56 bytes | 5 × 8 pairs × 21 rounds | 3.04 | 2.95 | −3 %, faster in 27 of 40 pairs |
+| calls, `leaf` | the same runs | 1.96 / 2.03 | 2.02 / 2.06 | noise (code unchanged) |
+| CoreMark (it/s) | 3 pairs | 17 094 (16 782–17 309) | 17 367 (16 439–17 464) | identical code; every run validated |
+
+Padding control (LESSONS 51): both trees with 0, 8, …, 56 bytes of `int3` before the first function. `fib`
+after the change is faster at pads 16–48 (for example pad 32: 3.09 → 2.92, 5 of 5 pairs) and slower or equal at
+pads 0 and 8 (pad 0: 2.66 → 2.71, 1 of 5). Placement alone moves `fib` by 15 % (2.66 at pad 0, 3.06 at pad 8, base).
+JCC erratum check: the crossings of 32-byte boundaries repeat every 32 bytes (pad 0 and 32 alike: base 3, after
+4, the extra one the base case's `jmp`), but pad 0 and pad 32 go opposite ways, so the erratum does not explain
+the loss at pad 0. The step does not show a gain beyond placement. Compile time (CoreMark and the three corpus
+modules, 3 alternated pairs): 188–198 → 197–203 ms median, minimums equal (182–191 ms).

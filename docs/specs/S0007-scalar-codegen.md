@@ -312,3 +312,13 @@ investigation's.
   change, and they are exactly the modules where `binop` takes the new path. Scalar kernels with a padding
   control: `addsat` −11 %, `scan` −10 %, `nearest` −6 %; CoreMark +2.2 % (within the spread); `fib` +5 % and
   `swizzle` −31 % are code placement (BENCHMARKS.md).
+* 2026-11-02: step 1b (Q7 follow-up, maintainer-approved before step 3), **measured and dropped**:
+  a block, an `if` with an `else` or a loop at stack height 0 that only `end`s follow wrote its
+  results to slots 0..m (`br_if`/`br_table` to it copied on the taken path only, so no path read a
+  clobbered local). Spec parity on both JITs (54 385 pass, 0 fail,
+  91 xfail; explicit mode and `WABOROS_JIT_NOPIN=all` too); D35: 29 modules change on each target,
+  each with such a block; CoreMark, kernels and corpus byte-identical. Calls benchmark `fib`: slower
+  as built (2.63 → 2.73 ns, 10 of 10 pairs), faster at 6 of 8 paddings (−3 % pooled): no gain beyond
+  placement shown (BENCHMARKS.md), so by this spec's rule it is not merged; revisit after the
+  ROADMAP's code-placement item. It would not have covered: a block above other values (height > 0), an `if`
+  without `else`, a block inside an `if` without `else`.
