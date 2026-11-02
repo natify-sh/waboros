@@ -9,6 +9,7 @@ moves, calls and block parameters move halves like any 64-bit value. Only the ba
 method sees a pair, always as `Slot(k)`: a constant pair is written into its own slots first. A
 v128 local is copied into the stack's slots when read (never a lazy local entry)."""
 
+import re
 from collections.abc import Sequence
 from typing import Any
 
@@ -19,6 +20,33 @@ from w2py.targets.jit.common.backend import Imm, Operand, Slot
 V128 = 0x7B
 M64 = (1 << 64) - 1
 SCRATCH = 10  # slots from the base of a SIMD operator's operands: 6 for them, 4 scratch (S0005)
+
+
+# ---------------------------------------------------------------------- for the backends
+_LANE = {"i8x16": 1, "i16x8": 2, "i32x4": 4, "i64x2": 8, "f32x4": 4, "f64x2": 8}
+
+
+def shape(op: int) -> tuple[str, int, bool]:
+    """(kind, bytes per lane or access, signed) of a SIMD operator, from its name: kind is
+    `splat`, `extract`, `replace`, `load_splat`, `load_zero`, `load_lane`, `store_lane`, or the
+    rest of the name (`load`, `and`, `any_true`, ...; 16 bytes)."""
+    pre, _, rest = fs.OPS[op - fs.BASE].name.partition(".")
+    if pre != "v128":  # i8x16.splat, i16x8.extract_lane_s, f64x2.replace_lane, i32x4.add ...
+        return rest.split("_lane")[0], _LANE[pre], rest.endswith("_s")
+    m = re.fullmatch(r"(load|store)(8|16|32|64)_(splat|zero|lane)", rest)
+    if m:  # v128.load8_splat, v128.load32_zero, v128.store16_lane ...
+        return f"{m[1]}_{m[3]}", int(m[2]) // 8, False
+    return rest, 16, False
+
+
+_MOVES = "load store const not and andnot or xor bitselect any_true splat extract replace"
+# the data-movement operators (S0005 step 5c): what both backends compile so far
+MOVES = frozenset(
+    fs.BASE + sub
+    for sub in fs.OPS
+    if shape(fs.BASE + sub)[0] in (*_MOVES.split(), "load_splat", "load_zero", "load_lane",
+                                   "store_lane")
+)  # fmt: skip
 
 
 def width(ts: Sequence[Any]) -> int:

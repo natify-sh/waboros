@@ -4,6 +4,7 @@ functions, calls, blocks, select/drop, locals and globals; `v128.load`/`store` w
 Results are compared with `pyc` (which claims `simd`); linking cases check exact values. The
 SIMD encodings are checked against llvm-mc."""
 
+import itertools
 import re
 import shutil
 import subprocess
@@ -121,10 +122,12 @@ def run(i: Inst, name: str, *args: int) -> list[Raw] | TrapCode:
         return e.code
 
 
-def _pair(pins: str, monkeypatch: pytest.MonkeyPatch) -> tuple[Inst, Inst]:
+def _pair(
+    pins: str, monkeypatch: pytest.MonkeyPatch, text: str = MOD
+) -> tuple[Inst, Inst]:  # fmt: skip
     if pins == "nopin":
         monkeypatch.setenv("W2PY_JIT_NOPIN", "all")
-    w = wat(MOD)
+    w = wat(text)
     imports: dict[str, Any] = {"env": {"h": _host}}
     out = []
     for target in (JIT, "pyc"):
@@ -148,6 +151,111 @@ def test_v128_matches_pyc(pins: str, monkeypatch: pytest.MonkeyPatch) -> None:
             if name == "gget":
                 assert jit.inst.global_get(0) == pyc.inst.global_get(0)
     assert run(jit, "ld", 65521) is TrapCode.MEMORY_OUT_OF_BOUNDS
+
+
+# ------------------------------------------------------------- data movement (step 5c2)
+SHAPES = {"i8x16": ("i32", 16), "i16x8": ("i32", 8), "i32x4": ("i32", 4), "i64x2": ("i64", 2),
+          "f32x4": ("f32", 4), "f64x2": ("f64", 2)}  # fmt: skip
+SCALARS = {"i32": [0, 1, 0x80, 0x1FF, 0x8000, 0xFFFF, 0x7FFFFFFF, 0xFFFFFFFF],
+           "i64": [0, 0x80, 0x8000_0000, 1 << 63, M64, 0x0123456789ABCDEF],
+           "f32": [0, 0x7FA00001, 0xFFC00000, 0x80000000, 0x3F800000],
+           "f64": [0, 0x7FF4000000000001, 1 << 63, 0x3FF0000000000000]}  # fmt: skip
+VK = "(v128.const i64x2 0x0123456789abcdef 0x8070605040302010)"
+EDGES = [0, 1, 7, 65519, 65520, 65528, 65532, 65534, 65535, 65536, 0xFFFFFFFF]
+
+
+def _computed(t: str, e: str) -> str:
+    """`e` as a computed value (in `tos`), its bits unchanged."""
+    if t[0] == "i":
+        return f"({t}.xor {e} ({t}.const 0))"
+    i = "i32" if t == "f32" else "i64"
+    return f"({t}.reinterpret_{i} ({i}.xor ({i}.reinterpret_{t} {e}) ({i}.const 0)))"
+
+
+def _moves() -> tuple[str, dict[str, list[tuple[int, ...]]]]:
+    """Every data-movement operator with constant, local and computed operands, lanes at both
+    ends, memory edges and memory 1."""
+    fs = ['(func (export "ld") (param i32) (result v128) (v128.load (local.get 0)))',
+          '(func (export "st") (param i32 v128) '
+          "(v128.store (local.get 0) (local.get 1)))"]  # fmt: skip
+    args: dict[str, list[tuple[int, ...]]] = {}
+
+    def f(name: str, sig: str, body: str, cases: list[tuple[int, ...]]) -> None:
+        fs.append(f'(func (export "{name}") {sig} {body})')
+        args[name] = cases
+
+    for sh, (t, n) in SHAPES.items():
+        xs = [(x,) for x in SCALARS[t]]
+        f(f"{sh}.splat", f"(param {t}) (result v128)", f"({sh}.splat (local.get 0))", xs)
+        f(f"{sh}.splat/c", f"(param {t}) (result v128)",
+          f"({sh}.splat {_computed(t, '(local.get 0)')})", xs)  # fmt: skip
+        f(f"{sh}.splat/k", "(result v128)", f"({sh}.splat ({t}.const {SCALARS[t][-1]}))", [()])
+        for lane in (0, n - 1):
+            for sfx in ("_s", "_u") if n > 4 else ("",):
+                op = f"{sh}.extract_lane{sfx} {lane}"
+                f(f"{op}", f"(param v128) (result {t})", f"({op} (local.get 0))",
+                  [(v,) for v in VALS])  # fmt: skip
+                f(f"{op}/k", f"(result {t})", f"({op} {VK})", [()])
+            op = f"{sh}.replace_lane {lane}"
+            sig = f"(param v128 {t}) (result v128)"
+            f(op, sig, f"({op} (local.get 0) (local.get 1))", [(A, x) for x in SCALARS[t]])
+            f(f"{op}/c", sig, f"({op} (local.get 0) {_computed(t, '(local.get 1)')})",
+              [(B, x) for x in SCALARS[t][-2:]])  # fmt: skip
+            f(f"{op}/k", "(result v128)", f"({op} {VK} ({t}.const {SCALARS[t][1]}))", [()])
+    for bits in (8, 16, 32, 64):
+        size, n = bits // 8, 128 // bits
+        ok = [(a,) for a in EDGES]
+        for op in (f"v128.load{bits}_splat", f"v128.load{bits}_zero"):
+            if op.endswith("zero") and bits < 32:
+                continue
+            f(op, "(param i32) (result v128)", f"({op} (local.get 0))", ok)
+            f(f"{op}/o", "(param i32) (result v128)", f"({op} offset=3 (local.get 0))", ok)
+            f(f"{op}/k", "(result v128)", f"({op} (i32.const {65536 - size}))", [()])
+            f(f"{op}/m1", "(param i32) (result v128)", f"({op} $m1 (local.get 0))", ok)
+        for lane in (0, n - 1):
+            ld, st = f"v128.load{bits}_lane", f"v128.store{bits}_lane"
+            sig = "(param i32 v128) (result v128)"
+            f(f"{ld} {lane}", sig, f"({ld} {lane} (local.get 0) (local.get 1))",
+              [(a, B) for a in EDGES])  # fmt: skip
+            f(f"{ld} {lane}/c", sig, f"({ld} offset=2 {lane} "
+              f"{_computed('i32', '(local.get 0)')} {VK})", [(a, 0) for a in EDGES])  # fmt: skip
+            f(f"{ld} {lane}/m1", sig, f"({ld} $m1 {lane} (local.get 0) (local.get 1))",
+              [(65536 - size, A), (65537 - size, A)])  # fmt: skip
+            f(f"st{bits} {lane}", "(param i32 v128)", f"({st} {lane} (local.get 0) (local.get 1))",
+              [(a, A) for a in EDGES])  # fmt: skip
+            f(f"st{bits} {lane}/k", "(param i32)", f"({st} offset=1 {lane} (local.get 0) {VK})",
+              [(a,) for a in (0, 65534 - size, 65535 - size)])  # fmt: skip
+    pairs = [(x, y) for x in VALS[1:5] for y in VALS[3:7]]
+    for op in ("and", "andnot", "or", "xor"):
+        f(f"v128.{op}", "(param v128 v128) (result v128)",
+          f"(v128.{op} (local.get 0) (local.get 1))", pairs)  # fmt: skip
+        f(f"v128.{op}/k", "(param v128) (result v128)", f"(v128.{op} {VK} (local.get 0))",
+          [(v,) for v in VALS])  # fmt: skip
+    f("v128.not", "(param v128) (result v128)", "(v128.not (local.get 0))", [(v,) for v in VALS])
+    f("v128.not/k", "(result v128)", f"(v128.not {VK})", [()])
+    f("v128.bitselect", "(param v128 v128 v128) (result v128)",
+      "(v128.bitselect (local.get 0) (local.get 1) (local.get 2))",
+      [(x, y, c) for x, y in pairs[:6] for c in (0, M64, A)])  # fmt: skip
+    f("v128.bitselect/k", "(param v128) (result v128)",
+      f"(v128.bitselect {VK} (local.get 0) (v128.const i64x2 -1 0))", [(B,)])  # fmt: skip
+    f("v128.any_true", "(param v128) (result i32)", "(v128.any_true (local.get 0))",
+      [(v,) for v in (*VALS, 1 << 64, 1 << 63)])  # fmt: skip
+    f("v128.any_true/k", "(result i32)", f"(v128.any_true {VK})", [()])
+    return "(module (memory 1) (memory $m1 1)\n" + "\n".join(fs) + ")", args
+
+
+@pytest.mark.parametrize("pins", ["pinned", "nopin"])
+def test_data_movement_matches_pyc(pins: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    text, cases = _moves()
+    jit, pyc = _pair(pins, monkeypatch, text)
+    for name, arglist in cases.items():
+        for args in arglist:
+            got, want = run(jit, name, *args), run(pyc, name, *args)
+            assert got == want, (name, args, got, want)
+            if name.startswith("st"):
+                for a in (0, 65520):
+                    assert run(jit, "ld", a) == run(pyc, "ld", a), (name, args, a)
+    assert run(jit, "v128.load8_lane 0", 65536, 0) is TrapCode.MEMORY_OUT_OF_BOUNDS
 
 
 def test_deep_recursion_with_v128_is_stack_overflow() -> None:
@@ -229,6 +337,11 @@ def test_x86_forms_match_llvm_mc() -> None:
                 ours.append(a.finish())
                 ops = (f"xmmword ptr [{t}]", f"xmm{reg}")
                 text.append("movups " + ", ".join(ops[::-1] if not store else ops))
+    for d, r in ((0, 1), (5, 2), (2, 0)):
+        a = Asm()
+        x.andnps(a, d, r)
+        ours.append(a.finish())
+        text.append(f"andnps xmm{d}, xmm{r}")
     assert ours == _mc("x86_64", [".intel_syntax noprefix", *text]), text
 
 
@@ -256,5 +369,23 @@ def test_aarch64_forms_match_llvm_mc() -> None:
         v.ldst_q(a, load, 0, 27, 8 * 5001)
         ours.append(a.finish())
         text.append(f"mov x17, #{8 * 5001}\n{op} q0, [x27, x17]")
+    names = {"and": "and", "andnot": "bic", "or": "orr", "xor": "eor", "bsl": "bsl"}
+    for op, (d, n, m) in itertools.product(names, ((0, 1, 2), (2, 0, 1), (31, 7, 16))):
+        a = Asm()
+        v.vop(a, op, d, n, m)
+        ours.append(a.finish())
+        text.append(f"{names[op]} v{d}.16b, v{n}.16b, v{m}.16b")
+    for d, n in ((0, 0), (31, 17)):
+        a = Asm()
+        v.vop(a, "not", d, n)
+        ours.append(a.finish())
+        text.append(f"mvn v{d}.16b, v{n}.16b")
+    for size, t in ((1, "16b"), (2, "8h"), (4, "4s"), (8, "2d")):
+        for d, r in ((0, 10), (5, 31), (31, 3)):
+            a = Asm()
+            v.dup(a, d, r, size)
+            ours.append(a.finish())
+            g = ("x" if size == 8 else "w") + ("zr" if r == 31 else str(r))
+            text.append(f"dup v{d}.{t}, {g}")
     theirs = _mc("aarch64", text)
     assert b"".join(ours) == b"".join(theirs), text
