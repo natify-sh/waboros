@@ -100,6 +100,33 @@ QuickJS, PolyBench/C, SQLite, CPython-wasi. And because fusedwasi also runs on W
 differential run uses **the same host on both engines**, so a divergence is the engine's, not the
 host's.
 
+**One WASI state per Store, one guest per instance.** fusedwasi has the same two levels as
+Wasmtime, and the binding keeps them apart from the start, even before the Store exists:
+
+| Wasmtime | fusedwasi | how many |
+|---|---|---|
+| `WasiCtx` in the `Store` (`Store.set_wasi(WasiConfig)`) | `State`: args, env, stdio, preopens, descriptor tables, clocks, random | **one per Store** |
+| the `Caller`'s instance and its memory | `Guest`: the instance's memories, `cabi_realloc`, the hooks `trap` / `exit` / `wait` | **one per instance** |
+
+`Guest`'s docstring says so: "One for each instance, made once; many guests may point to one state".
+So every instance of a Store sees one descriptor table, one stdout and the same preopens: a file
+opened by one module is the same fd in another, as in Wasmtime.
+
+Rule for the binding written now:
+
+* the `State` is created outside the binding (today by the harness that plays the Store; later by
+  `Store.set_wasi(config)`), and the binding **takes** it;
+* the binding creates one `Guest(state, memory)` per instance when it is instantiated, and binds
+  each import to `partial(fn, guest)` (`fusedwasi.signatures.find_import(module, name)` gives the
+  function); the memory is the target's own (`pyc`: the `bytearray`; JIT: a `memoryview` over the
+  mapping, or a callable returning it, so `memory.grow` needs no rebind);
+* in phase 6 the binding moves into `Linker.define_wasi()` and the `State` into
+  `Store.set_wasi()`, unchanged;
+* integers: fusedwasi expects unsigned values (README); the binding masks signed i32/i64 arguments
+  where a target passes them signed;
+* no locking: one thread per Store (ARCHITECTURE.md, "Long calls and the GIL"), so a `State` shared by
+  the instances of one Store is only ever used from one thread.
+
 To decide (ROADMAP q2, D8): fusedwasi as an optional extra (`waboros[wasi]`), vendored, or allowed as
 a dependency; the cost of p1 over p2 on a hot `fd_write` loop (measure).
 
