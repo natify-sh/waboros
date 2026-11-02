@@ -472,3 +472,7 @@ reservation is a crash, not a trap: the explicit-mode tests and differential run
     guard list from QEMU on arm64 equals the x86-64 host's. `isa_all --target jit-aarch64` is clean
     in guard mode. CoreMark under QEMU passes its self-check in both modes; code 37 372 → 29 284
     bytes (−21.6 %), 669 fault points (BENCHMARKS.md).
+* 2026-11-02: CI's native `ubuntu-24.04-arm` runner, guard mode: `test_a_straddling_store_writes_nothing`
+  passed with no torn store recorded (the 16-byte store included), the spec suite and `test_guard.py`
+  passed; so that hardware faults before writing, unlike QEMU (LESSONS 54). Arm still allows a tear
+  (D45); other cores may differ.
