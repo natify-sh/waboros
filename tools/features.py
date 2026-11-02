@@ -115,7 +115,7 @@ def table(upstream: dict[str, Any], ours: dict[str, Any]) -> str:
     wt = upstream["browsers"]["Wasmtime"]["features"]
     rt = ours["runtimes"]
     rows = [
-        "| feature | phase | Wasmtime | " + " | ".join(TARGETS) + " |",
+        "| feature | W3C phase | Wasmtime | " + " | ".join(TARGETS) + " |",
         "|---" * (3 + len(TARGETS)) + "|",
     ]
     for k, f in upstream["features"].items():

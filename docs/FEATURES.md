@@ -15,7 +15,8 @@ The checklist below is generated: `python3 tools/features.py` writes `features.j
 the WebAssembly website's [features.json](https://webassembly.org/features/), pinned in
 `docs/upstream/`) and the table. A feature is "yes" on a target only if its spec tests pass there;
 "partial" lists the failing tests in `features.json`; "-" is not supported or its spec tests are not
-run yet. Wasmtime's column is the upstream data. `pyc` is computed from `tests/spec/xfail/pyc.txt`
+run yet. "W3C phase" is the proposal's stage in the WebAssembly Community Group process (5 =
+standardized), from the upstream data, not a w2py roadmap phase. Wasmtime's column is the upstream data. `pyc` is computed from `tests/spec/xfail/pyc.txt`
 and the command counts in `tests/spec/counts.json`; each cell shows `ok/total` commands. Proposal
 directories (`test/core/<dir>/`) count only on a target that claims the feature
 (`tests/spec/claims.py`); an unclaimed feature is "-". `jit-x86_64` and `jit-aarch64` are computed the same way from their `tests/spec/xfail/<target>.txt`; they claim the same directories as `pyc` (D25 parity). Every registered target has a column (`tests/test_features.py`). `mpy` is not listed yet.
@@ -23,7 +24,7 @@ directories (`test/core/<dir>/`) count only on a target that claims the feature
 ## Proposals
 
 <!-- features:begin -->
-| feature | phase | Wasmtime | pyc | jit-x86_64 | jit-aarch64 |
+| feature | W3C phase | Wasmtime | pyc | jit-x86_64 | jit-aarch64 |
 |---|---|---|---|---|---|
 | Acquire-Release Atomics (`acquireReleaseAtomics`) | 2 | - | - | - | - |
 | JS BigInt to Wasm i64 Integration (`bigInt`) | 5 | - | - | - | - |
