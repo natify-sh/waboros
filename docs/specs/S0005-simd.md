@@ -368,3 +368,30 @@ Q5 (a), Q6 (a), Q7 (a), Q8 (a). Kept below with their options for the record.
   words and shifts by n + 8; `i64x2.shr_s` is `(x >>u n ^ m) - m` with `m = 2^63 >>u n`;
   `trunc_sat_f64x2_u_zero` rounds by the 2^52 magic add and subtracts 1 where that rounded up;
   `f32x4.convert_i32x4_u` converts `(x - lo) / 2` and `lo` exactly and rounds once.
+* 2026-11-02 (5d3): `jit-x86_64` compiles the 10 class-L operators with SSE2 only and claims `simd`
+  (`CLAIMS["jit-x86_64"]`; no `simd/` line in `xfail/jit-x86_64.txt`, as `pyc`): the explicit run
+  goes from 24 809 to 25 481 passing commands, 0 failures, natively and under the SSE2-only `qemu64`;
+  `spec_diff pyc jit-x86_64 simd` is empty without `--allow-unsupported`; the claimed run is 54 385
+  pass, 91 expected failures, as `pyc`. Sequences that differ from the text above:
+  * rounding: the same program for both shapes, no `cvttps2dq` for f32 lanes. `(v + s) − s` with
+    `s = 2^23` or `2^52` gives nearest-even (v = |x| for `trunc`/`nearest`; v = x and s with x's sign
+    for `floor`/`ceil`); `floor`, `ceil` and `trunc` then subtract or add 1.0 where that went the
+    wrong way. The 1.0 is the compare mask shifted left, then right by 2. Lanes with |x| ≥ 2^N, inf
+    or NaN keep `x + 0.0`, which quiets a NaN to the bits of `pyc`'s `x * 1.0`; 25 instructions at
+    most. Wasmtime's NaN bits depend on the CPU: natively (SSE4.1, `roundps`) they equal ours; on an
+    SSE2-only CPU its libcalls return the canonical NaN (sNaN `0x7f800001` → `0x7fc00000`, ours
+    `0x7fc00001`). Both are arithmetic NaNs, which the spec allows; comparisons are by class;
+  * `shuffle`: the one-instruction table is built on the first shuffle from each instruction's own
+    lane definition: `pshufd`, `pshuflw`, `pshufhw` (one operand), `shufps`, `punpckl/h` of `bw`,
+    `wd` and `dq` (both orders), `psrldq` + `pslldq` + `por`, and a plain copy. 2 080 lane patterns
+    in all; `punpck*qdq` patterns are `shufps` ones. Any other pattern is gathered into the scratch
+    slots (`movzx` + byte store, 32 instructions), then copied to `dst`;
+  * `swizzle`: `movzx; cmp 16; sbb; and 15; and edx, [a + rcx]; mov byte` per lane into the scratch
+    slots. The 32-bit `and` reads up to 3 bytes past `a`, which are the index operand's slot, and
+    keeps only the low byte;
+  * the x86-64-v1 allowlist of `tools/isa_check.py` gained `pshufhw shufps psrldq pslldq` (SSE/SSE2).
+
+  `jit-aarch64` keeps its claims (no `simd`), so the two JITs claim different directories until
+  5e2. The D25 parity test compares each JIT with `pyc` over the directories both claim, so it
+  covers `simd/` for `jit-x86_64` only. `auto` takes a target's own claims and xfail file:
+  `jit-x86_64` on x86-64 (it runs `simd/`), `jit-aarch64` on arm64 (it does not).

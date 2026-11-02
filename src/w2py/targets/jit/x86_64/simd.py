@@ -9,13 +9,18 @@ operation takes a memory operand), bitwise operations on xmm0-xmm2, lanes in the
 loads and stores (rcx, rdx: scratch as in every method), splat by a multiply with 0x0101...
 `v128.const` is the core's (two constant halves).
 
-Classes D and S (steps 5d1, 5d2): every other operator but the 10 of class L as a short program
-over xmm0-xmm4 (`PROG`, 1-22 instructions): the operands are loaded into xmm0, xmm1 (wasm
-order), the destination of the last step is the result. A program's `k` step puts a 64-bit
+Classes D and S (steps 5d1, 5d2) and the class-L rounding operators (5d3): a short program over
+xmm0-xmm5 (`PROG`, 1-25 instructions): the operands are loaded into xmm0, xmm1 (wasm order), the
+destination of the last step is the result. A program's `k` step puts a 64-bit
 constant into both halves of a register through rcx (no constant pool). Shifts (`SHIFT`: the
 count masked in rcx, then `movd` into xmm1), `bitmask`, `all_true` and the extending loads add a
 GPR or a memory step around a program. Sequences: Cranelift's x64 lowering for the SSE2 forms
-(S0005)."""
+(S0005).
+
+Class L (5d3), no SSSE3/SSE4.1: rounding by the 2^23 / 2^52 magic add (a program, above);
+`i8x16.shuffle` by one instruction when its lanes match one (`_shuffles`), else a byte gather
+into the scratch slots (base + 6, 7); `i8x16.swizzle` per lane by `cmp`/`sbb` and a masked byte
+load, into the scratch slots. Both copy the scratch slots to `dst` last."""
 
 from typing import TYPE_CHECKING
 
@@ -48,8 +53,10 @@ FORMS = {
         psrlq d3 psraw e1 psrad e2 pshufd 70 cvtpd2ps 5a punpcklqdq 6c pand db pandn df por eb
         pmulhw e5 pmulhuw e4 cvttpd2dq e6""",
     ),
-    **_forms(b"", "movaps 28 andps 54 andnps 55 orps 56 xorps 57 cvtdq2ps 5b cvtps2pd 5a"),
-    **_forms(b"\xf3", "cvtdq2pd e6 cvttps2dq 5b movq 7e"),
+    **_forms(
+        b"", "movaps 28 andps 54 andnps 55 orps 56 xorps 57 cvtdq2ps 5b cvtps2pd 5a shufps c6"
+    ),
+    **_forms(b"\xf3", "cvtdq2pd e6 cvttps2dq 5b movq 7e pshufhw 70"),
     **_forms(b"\xf2", "pshuflw 70"),
 }
 for _n, _c in (("add", 0x58), ("sub", 0x5C), ("mul", 0x59), ("div", 0x5E), ("min", 0x5D),
@@ -58,6 +65,7 @@ for _n, _c in (("add", 0x58), ("sub", 0x5C), ("mul", 0x59), ("div", 0x5E), ("min
 # shifts by an immediate: 66 0F 71/72/73 /ext ib
 SHIFTS = {f"ps{d}{s}i": (0x71 + j, ext) for j, s in enumerate("wdq")
           for d, ext in (("rl", 2), ("ra", 4), ("ll", 6)) if (d, s) != ("ra", "q")}  # fmt: skip
+SHIFTS.update(psrldqi=(0x73, 3), pslldqi=(0x73, 7))  # whole register, by bytes
 
 # Programs over xmm0-xmm5 ("mnemonic d s [imm]; ..."): xmm0 = the first operand, xmm1 = the
 # second; the last step's destination is the result. `k d v`: the 64-bit v in both halves of
@@ -215,6 +223,27 @@ for _sh, _p, _w, _n in (("f32x4", "ps", "d", 10), ("f64x2", "pd", "q", 13)):
             f"movaps 2 0; {_o}{_p} 2 1; movaps 3 1; {_o}{_p} 3 0;"
             f" {_b}ps 2 3" + UNORD.format(p=_p, w=_w, n=_n)
         )
+# class L rounding (5d3), no roundps: xmm1 = |x|, xmm2 = the sign, xmm4 = |x| < 2^N (false for
+# NaN), xmm3 = 2^N; (v + s) - s rounds v to nearest even (MXCSR's default), with v = x and
+# s = 2^N of x's sign (floor, ceil) or v = |x|, s = 2^N (trunc, nearest); floor, ceil and
+# trunc then add or subtract 1.0 (a compare mask shifted into 1.0) where that went the wrong
+# way. The sign is or-ed back (-0, ceil(-0.5) = -0); lanes out of range keep x + 0: a NaN
+# quieted as pyc's x * 1.0 does.
+for _sh, _p, _w, _k, _one in (("f32x4", "ps", "d", 0x4B0000004B000000, 25),
+                              ("f64x2", "pd", "q", 0x4330000000000000, 54)):  # fmt: skip
+    _head = (f"pcmpeqb 2 2; psrl{_w}i 2 1; movaps 1 0; andps 1 2; andnps 2 0; k 3 {_k};"
+             f" movaps 4 1; cmp{_p} 4 3 1; ")  # fmt: skip
+    _r0 = f"movaps 5 {{}}; add{_p} 5 3; sub{_p} 5 3; "
+    _fix = f"cmp{_p} 1 {{}} 1; psll{_w}i 1 {_one}; psrl{_w}i 1 2; {{}}{_p} 5 1; "
+    _tail = f"orps 5 2; pxor 3 3; add{_p} 0 3; pand 5 4; pandn 4 0; por 4 5"
+    PROG.update({
+        f"{_sh}.floor": _head + "orps 3 2; " + _r0.format(0) + "movaps 1 0; "
+                        + _fix.format(5, "sub") + _tail,  # x < r: r - 1
+        f"{_sh}.ceil": _head + "orps 3 2; " + _r0.format(0) + "movaps 1 5; "
+                       + _fix.format(0, "add") + _tail,  # r < x: r + 1
+        f"{_sh}.trunc": _head + _r0.format(1) + _fix.format(5, "sub") + _tail,  # |x| < r: r - 1
+        f"{_sh}.nearest": _head + _r0.format(1) + _tail,
+    })  # fmt: skip
 # extending loads: 8 bytes by movq into xmm0, then the extend program
 LOADS = {"load8x8_s": PROG["i16x8.extend_low_i8x16_s"],
          "load8x8_u": PROG["i16x8.extend_low_i8x16_u"],
@@ -237,7 +266,7 @@ SHIFT.update({
                    " packsswb 0 2",
 })  # fmt: skip
 OTHER = [f"{s}.{o}" for s in ("i8x16", "i16x8", "i32x4", "i64x2") for o in ("all_true", "bitmask")]
-OTHER.extend(f"v128.{k}" for k in LOADS)
+OTHER.extend([*(f"v128.{k}" for k in LOADS), "i8x16.shuffle", "i8x16.swizzle"])
 Step = tuple[str, int, int, int | None]
 
 
@@ -259,6 +288,41 @@ SHIFTC = {fs.BASE + sub: _parse(SHIFT[o.name]) for sub, o in fs.OPS.items() if o
 SUPPORTED = (
     MOVES | set(CODE) | set(SHIFTC) | {fs.BASE + s for s, o in fs.OPS.items() if o.name in OTHER}
 )
+
+
+_SHUF: dict[tuple[int, ...], str] = {}
+
+
+def _shuffles() -> dict[tuple[int, ...], str]:
+    """`i8x16.shuffle` lanes -> a program over xmm0 = a, xmm1 = b that one SSE2 instruction
+    (or a byte shift of each and `por`) does; the lanes follow from each instruction's
+    definition. Built on the first shuffle."""
+    out: dict[tuple[int, ...], str] = {}
+
+    def add(prog: str, size: int, elems: list[int]) -> None:  # elements of `size` bytes
+        out.setdefault(tuple(size * e + t for e in elems for t in range(size)), prog)
+
+    for r in (0, 1):
+        add(f"movaps 0 {r}", 1, [16 * r + i for i in range(16)])
+        for imm in range(256):
+            q = [imm >> 2 * j & 3 for j in range(4)]
+            add(f"pshufd 0 {r} {imm}", 4, [4 * r + e for e in q])
+            add(f"pshuflw 0 {r} {imm}", 2, [8 * r + e for e in (*q, 4, 5, 6, 7)])
+            add(f"pshufhw 0 {r} {imm}", 2, [8 * r + e for e in (0, 1, 2, 3, *(4 + e for e in q))])
+    for d, s in ((0, 1), (1, 0), (0, 0), (1, 1)):
+        for imm in range(256):  # two dwords of d, then two of s
+            q = [imm >> 2 * j & 3 for j in range(4)]
+            add(f"shufps {d} {s} {imm}", 4, [4 * (d, d, s, s)[j] + q[j] for j in range(4)])
+        for size, t in ((1, "bw"), (2, "wd"), (4, "dq")):  # qdq: shufps does the same
+            n = 16 // size
+            for h, lo in (("l", 0), ("h", n // 2)):  # the low or high halves interleaved
+                ks = [k for i in range(lo, lo + n // 2) for k in (n * d + i, n * s + i)]
+                add(f"punpck{h}{t} {d} {s}", size, ks)
+    for n in range(1, 16):  # bytes n.. of one operand, then the first ones of the other
+        for d, s in ((0, 1), (1, 0)):
+            add(f"psrldqi {d} {n}; pslldqi {s} {16 - n}; por {d} {s}", 1,
+                [(16 * d + n + i) % 32 for i in range(16)])  # fmt: skip
+    return out
 
 
 def run(a: Asm, prog: tuple[Step, ...]) -> int:
@@ -350,6 +414,30 @@ def emit(
         for i, x in enumerate(args):
             movups(a, i, _slot(x), False)
         movups(a, run(a, CODE[op]), _slot(dst), True)
+        return
+    if kind in ("shuffle", "swizzle"):  # class L (5d3): one instruction, or byte by byte
+        if not _SHUF:
+            _SHUF.update(_shuffles())
+        lanes = tuple(imm[0] >> 8 * i & 255 for i in range(16)) if imm else ()
+        if lanes in _SHUF:
+            for i, x in enumerate(args):
+                movups(a, i, _slot(x), False)
+            movups(a, run(a, _parse(_SHUF[lanes])), _slot(dst), True)
+            return
+        sc = _slot(dst, 48)  # the scratch slots: disjoint from the operands, read first
+        for i in range(16):
+            if lanes:  # a byte of a or b
+                a.movzx(RCX, _slot(args[lanes[i] >> 4], lanes[i] & 15), 8)
+                a.store8(Mem(R12, sc.disp + i), RCX)
+                continue
+            # swizzle: a's byte at the index, and-ed with (index < 16 ? -1 : 0); cmp -> sbb
+            a.movzx(RCX, _slot(args[1], i), 8)
+            a.alu_imm("cmp", RCX, 16)
+            a.alu("sbb", RDX, RDX)
+            a.alu_imm("and", RCX, 15)
+            a.alu("and", RDX, Mem(R12, _slot(args[0]).disp, RCX))  # up to 3 bytes past a: b's
+            a.store8(Mem(R12, sc.disp + i), RDX)
+        _copy(a, sc, _slot(dst))
         return
     if kind in LOADC:
         movq_load(a, 0, b._bounds(f, args[0], imm[0], 8, imm[1]))

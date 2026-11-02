@@ -331,7 +331,8 @@ def test_claims(tmp_path: Path) -> None:
 
     assert claims.claimed("pyc", claims.CORE)
     assert claims.claimed("wasmtime", "gc") and claims.claimed("wasmtime", "simd")
-    assert claims.claimed("pyc", "simd") and not claims.claimed("jit-x86_64", "simd")
+    assert claims.claimed("pyc", "simd") and claims.claimed("jit-x86_64", "simd")
+    assert not claims.claimed("jit-aarch64", "simd")  # until S0005 step 5e2
     assert not claims.claimed("pyc", "memory64") and not claims.claimed("nope", "gc")
 
 

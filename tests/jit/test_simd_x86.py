@@ -69,6 +69,8 @@ def _module() -> tuple[str, dict[str, list[tuple[int, ...]]]]:
     for op in sorted(x.SUPPORTED - x.MOVES):
         o = fs.OPS[op - fs.BASE]
         n, res = o.name, "v128" if o.res == fs.V else "i32"
+        if o.imm == fs.SHUFFLE:  # its own test below
+            continue
         if o.imm == fs.MEM:  # an extending load: edges of memory 0, an offset, a constant
             ok = [(a,) for a in (0, 1, 65527, 65528, 65529, 0xFFFFFFFF)]
             f(n, "(param i32) (result v128)", f"({n} (local.get 0))", ok)
@@ -110,7 +112,7 @@ def test_class_d_and_s_operators_match_pyc(pins: str, monkeypatch: pytest.Monkey
                 got, want = [_nan_class(name, g) for g in got], [_nan_class(name, w) for w in want]
             assert got == want, (key, [hex(a) for a in args], got, want)
     assert run(jit, "v128.load8x8_s", 65529) is TrapCode.MEMORY_OUT_OF_BOUNDS
-    assert len(x.SUPPORTED) == 226  # every operator but the 10 of class L (S0005)
+    assert len(x.SUPPORTED) == 236  # every operator (S0005)
 
 
 def _forms() -> tuple[list[bytes], list[str]]:
@@ -127,7 +129,7 @@ def _forms() -> tuple[list[bytes], list[str]]:
     for name in x.FORMS:
         for d, s in ((0, 1), (5, 2), (3, 3)):
             imm = {0: 0, 5: 4, 3: 2}[d] if name[:3] == "cmp" else None
-            imm = 0xFA if name.startswith("pshuf") else imm
+            imm = 0xFA if "shuf" in name else imm
             want = f"{name} xmm{d}, xmm{s}" + ("" if imm is None else f", {imm}")
             emit(x.run, ((name, d, s, imm),), want=want)
     for name in x.SHIFTS:
@@ -166,3 +168,68 @@ def test_isa_check_sse2_forms_pass_v1_and_sse4_does_not(tmp_path: Path) -> None:
                        ("pmovsxbw", "660f3820c1")):  # fmt: skip
         p = run_isa_check(tmp_path, bytes.fromhex(hexa))
         assert p.returncode == 1 and name in p.stdout, p.stdout + p.stderr
+
+
+def _bounds(bits: int, m: int) -> list[int]:
+    """Every exponent with mantissas 0, 1, half - 1, half, max; both signs; then x.5 values."""
+    h = 1 << m - 1
+    out = [s << bits - 1 | e << m | f for s in (0, 1) for e in range(1 << bits - m - 1)
+           for f in (0, 1, h - 1, h, 2 * h - 1)]  # fmt: skip
+    fmt = "<f" if bits == 32 else "<d"
+    for k in range(9):  # +-0.5, +-1.5, ..., +-8.5: ties to even and the +-1 fixes
+        for v in (k + 0.5, -k - 0.5):
+            out.append(int.from_bytes(struct.pack(fmt, v), "little"))
+    return out
+
+
+def test_class_l_operators_match_pyc(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Shuffles of each one-instruction class and random gathers, swizzle over every index
+    byte, rounding over every exponent (2^23, 2^52, +-0, NaN, sNaN, inf): bit for bit."""
+    native("jit-x86_64")
+    import random
+
+    rnd = random.Random(5)
+    table = x._shuffles()
+    by: dict[str, list[tuple[int, ...]]] = {}
+    for lanes, prog in table.items():
+        by.setdefault(prog.split()[0], []).append(lanes)
+    picks = [ls for g in by.values() for ls in rnd.sample(g, min(4, len(g)))]
+    gathers = [tuple(rnd.randrange(32) for _ in range(16)) for _ in range(12)]
+    gathers += [tuple(rnd.randrange(16) for _ in range(16)), (31,) * 16, (5, 21) * 8]
+    assert len(by) == 12 and not set(gathers) & set(table)  # punpck*qdq: shufps first
+    fs_ = ['(func (export "st") (param i32 v128) (v128.store (local.get 0) (local.get 1)))',
+           '(func (export "swz") (param v128 v128) (result v128)'
+           " (i8x16.swizzle (local.get 0) (local.get 1)))"]  # fmt: skip
+    for j, ls in enumerate(picks + gathers):
+        k = " ".join(map(str, ls))
+        fs_.append(f'(func (export "s{j}") (param v128 v128) (result v128)'
+                   f" (i8x16.shuffle {k} (local.get 0) (local.get 1)))")  # fmt: skip
+    fs_.append('(func (export "sk") (param v128) (result v128)'
+               f" (i8x16.shuffle {' '.join(map(str, gathers[0]))} (v128.const i64x2 7 9)"
+               " (local.get 0)))")  # fmt: skip
+    for sh in ("f32x4", "f64x2"):
+        for o in ("ceil", "floor", "trunc", "nearest"):
+            fs_.append(f'(func (export "{sh}.{o}") (param v128) (result v128)'
+                       f" ({sh}.{o} (local.get 0)))")  # fmt: skip
+    jit, pyc = _pair("pinned", monkeypatch, "(module (memory 1)\n" + "\n".join(fs_) + ")")
+    a, b = _v("<16B", list(range(0x10, 0x20))), _v("<16B", list(range(0xA0, 0xB0)))
+    ab = a | b << 128
+    for j, ls in enumerate(picks + gathers):
+        want = sum((ab >> 8 * lane & 255) << 8 * i for i, lane in enumerate(ls))
+        for args in ((a, b), (b, a), (V[2], V[3])):
+            got = run(jit, f"s{j}", *args)
+            assert got == run(pyc, f"s{j}", *args), (ls, table.get(ls))
+        assert run(jit, f"s{j}", a, b) == [want], (ls, table.get(ls))
+    assert run(jit, "sk", a) == run(pyc, "sk", a)
+    for i0 in range(0, 256, 16):  # every index byte; >= 16 gives 0
+        for idx in (
+            _v("<16B", list(range(i0, i0 + 16))),
+            _v("<16B", list(range(i0 + 15, i0 - 1, -1))),
+        ):
+            assert run(jit, "swz", a, idx) == run(pyc, "swz", a, idx), hex(idx)
+    for sh, fmt, vals in (("f32x4", "<4I", _bounds(32, 23)), ("f64x2", "<2Q", _bounds(64, 52))):
+        n = 4 if sh == "f32x4" else 2
+        for i in range(0, len(vals), n):
+            v = _v(fmt, (vals[i : i + n] + vals[:n])[:n])
+            for o in ("ceil", "floor", "trunc", "nearest"):
+                assert run(jit, f"{sh}.{o}", v) == run(pyc, f"{sh}.{o}", v), (sh, o, hex(v))

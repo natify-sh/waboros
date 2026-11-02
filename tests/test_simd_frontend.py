@@ -154,9 +154,10 @@ def test_jit_targets_accept_v128(name: str, data: bytes) -> None:
     m = parse(data)
     validate(m)
     assert base.TARGETS[name]().supports(m) is None
-    m = parse(mod(b"", b"", CONST + CONST + b"\xfd\x0e" + DROP))  # i8x16.swizzle: not yet
+    m = parse(mod(b"", b"", CONST + CONST + b"\xfd\x0e" + DROP))  # i8x16.swizzle: 5d3, 5e2
     validate(m)
-    assert base.TARGETS[name]().supports(m) == "opcode 0xfd00e"
+    want = None if name == "jit-x86_64" else "opcode 0xfd00e"
+    assert base.TARGETS[name]().supports(m) == want
 
 
 def test_module_without_v128_is_not_refused() -> None:

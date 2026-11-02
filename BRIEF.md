@@ -99,8 +99,9 @@ State on branch `phase0-skeleton` (not merged to `main`, the maintainer's choice
   (interface frozen, D39); the macOS arm64 follow-ups (the python.org CPython runs the JIT); Android x86_64
   checked in CI (RISKS R2).
 * **Phase 5 under way, SIMD first** (`docs/specs/S0005-simd.md`, D41): the front end and `pyc` are done and
-  `pyc` claims `simd/`; the JITs have the data-movement operators on both architectures and the
-  class-D operators on x86-64 (SSE2 only), and claim `simd/` at the end of 5d and 5e. **Next, per
+  `pyc` claims `simd/`; `jit-x86_64` compiles every operator with SSE2 only and claims `simd/` at
+  parity with `pyc` (5d3); `jit-aarch64` has the data-movement operators and claims `simd/` at the
+  end of 5e. **Next, per
   `docs/ROADMAP.md`:** finish SIMD, the rename to `waboros` as its own step (D40), guard pages (D29), the
   rest of the opcode set; the public API only in phase 6.
 

@@ -20,7 +20,7 @@ CLAIMS: dict[str, frozenset[str]] = {
         {"simd", "relaxedSimd", "multiMemory", "memory64", "bulkMemory", "exceptionsFinal", "gc"}
     ),
     "pyc": frozenset({"bulkMemory", "multiMemory", "simd"}),  # memory64: not implemented yet
-    "jit-x86_64": frozenset({"bulkMemory", "multiMemory"}),  # parity with pyc (D25)
+    "jit-x86_64": frozenset({"bulkMemory", "multiMemory", "simd"}),  # parity with pyc (D25)
     "jit-aarch64": frozenset({"bulkMemory", "multiMemory"}),  # bulk memory unsupported until 4e
 }
 

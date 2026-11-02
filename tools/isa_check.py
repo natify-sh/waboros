@@ -46,6 +46,8 @@ _SSE = (
     " cvtdq2pd cvtps2pd cvtpd2ps"
     # and of the class-S sequences (step 5d2)
     " punpcklqdq pshuflw pmulhw pmulhuw cvttps2dq cvttpd2dq cmpunordps cmpunordpd"
+    # and of class L (step 5d3): shuffles by one instruction, byte shifts
+    " pshufhw shufps psrldq pslldq"
 ).split()
 V1 = frozenset(
     _INT + _SSE + [p + c for p in ("j", "set", "cmov") for c in _CC + _CC_ALIASES]

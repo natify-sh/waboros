@@ -98,7 +98,7 @@ Jobs of `.github/workflows/ci.yml`: `lint` (ruff, pyright, `check_docs.py`, `fea
 (`pytest -q` on the seven Pythons; `tools/stack_info.py` on 3.13, also in a musl container); `jit`
 (`tests/jit` with `W2PY_JIT_REQUIRE=1`; the aarch64 ABI, compiler and tail-call tests and the spec
 suite on `jit-aarch64` under QEMU with BTI enforced; the SIMD tests and the explicit `simd` spec run of
-`jit-x86_64` under the SSE2-only `qemu64` CPU, compared with `pyc` by `tools/spec_diff.py --allow-unsupported`;
+`jit-x86_64` under the SSE2-only `qemu64` CPU, compared with `pyc` by `tools/spec_diff.py` (strict since 5d3);
 then both ISA gates and the D35 lists); `spec` (the spec run on `wasmtime`, `pyc`, `jit-x86_64`, then
 `auto` under `no_exec.py`); `os`; `arm64`; `macos-pythonorg`; `android`.
 
@@ -107,6 +107,8 @@ default spec run and not in CI; the explicit run `python -m tests.spec.run --eng
 the claims and counts failures as failures. A target claims `simd` only when that run has at most 25
 listed failures and, for a JIT, equals `pyc` (S0005, "Claiming `simd`"); until then CI watches the
 progress only through the QEMU step above, which fails on a SIGILL, a crash or a difference from `pyc`.
+`jit-x86_64` claims `simd` since step 5d3 (0 failures), so the default spec run and the `spec` job
+include `simd/` for it; `jit-aarch64` is still measured by the explicit run only (5e).
 
 CoreMark on a JIT is checked with `tools/run_coremark_jit.py --check FILE` (the `arm64` job, the
 `android` job): a run is valid with "Correct operation validated", or when the only error is
@@ -114,7 +116,7 @@ CoreMark's "at least 10 secs" rule and the CRCs are the 2K-performance values (a
 slow runner took 9.6 s). The interrupt-latency test (`tests/jit/test_abi.py`) allows 1 s, not 0.05 s,
 for loaded runners.
 
-The `jit` job runs `tools/isa_all.py` (739 blobs at SIMD step 5d2; the count grows with the code): it compiles every
+The `jit` job runs `tools/isa_all.py` (747 blobs at SIMD step 5d3; the count grows with the code): it compiles every
 spec module of **every directory, claimed or not** (so `simd/` too), and CoreMark, through `tools/jit_dump.py` with
 `W2PY_JIT_DUMP` and disassembles each blob with `tools/isa_check.py` (code ranges only), failing on any
 instruction above x86-64-v1 (D24). `isa_all.py --target jit-aarch64` does the same for aarch64 code,
