@@ -259,8 +259,6 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29) -> the rest below.
 10. **Version skew** — settled by D18: no embedded runtime, exact match or regenerate; fat files carry
    the wasm. Left: the known-bad compiler list (where it lives, how it is updated).
 11. **Components on the fly**: accept a component and fuse it at load time (then compile and cache the
-   Alternative without fusion (a component front end of our own as a wasm module, Wasmtime/jco model):
-   [COMPONENTS.md](COMPONENTS.md) (draft); meld stays the plan.
    core module by the component's hash) by running **meld compiled to wasm on waboros itself**, shipped
    as a data file in the wheel (Apache-2.0): no native dependency and no second fuser to keep in sync.
    **Checked (meld 0.66.0, BENCHMARKS.md):** meld builds without patches for `wasm32-wasip1` (CLI,
@@ -273,6 +271,8 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29) -> the rest below.
    PyPy and 253 s on CPython (wasmtime 1.05 s) — acceptable once per component with the cache, and the
    JIT will cut it. Still open: its coverage (resources, string transcoding, p3 async). Exports remain
    core functions; Python values need our own canonical-ABI lift at the boundary.
+   Alternative without fusion (a component front end of our own as a wasm module, Wasmtime/jco model):
+   [COMPONENTS.md](COMPONENTS.md) (draft); meld stays the plan.
 12. **Targets in one Store**: one shared representation of memories, tables and globals with
    per-module fallback, or one target per Store (ARCHITECTURE.md, "State shared across targets")?
    Settled by D25: one target per engine and store. Left: `pyc` on a reserved `mmap` against a
