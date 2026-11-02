@@ -61,6 +61,8 @@ Rules:
 ## 2. Artifact format (version 1)
 
 A little-endian binary container. Self-contained: a host needs **no wasm parser** to instantiate it.
+Open before the format is fixed (phase 5): our own container or ELF64 as a container only, as
+Wasmtime does; see [ARTIFACT-CONTAINER.md](ARTIFACT-CONTAINER.md) (maintainer's note, draft).
 
 **Header** (fixed size):
 

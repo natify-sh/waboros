@@ -198,7 +198,8 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29) -> the rest below.
   waiting main thread.
 * The contract of ARTIFACT.md (format v1, context ABI v1, baseline-ISA sequences, CPU feature
   detection) is **fixed here**, after two architectures have shaped it, together with artifact
-  serialization; the C reference loader runs in CI and the runtime services are specified (D36).
+  serialization; the C reference loader runs in CI and the runtime services are specified (D36). The
+  container (our own or ELF64, [ARTIFACT-CONTAINER.md](ARTIFACT-CONTAINER.md)) is decided in that spec first.
 * Win64 hardening (the second entry trampoline and `VirtualAlloc` exist; CI runs `tests/jit` on
   `windows-latest` and `macos-26-intel` and both are green, TARGETS.md; Windows ACG is open, RISKS R2);
   macOS arm64 and Windows on ARM are done in phase 4.
