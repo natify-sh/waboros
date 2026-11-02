@@ -85,7 +85,7 @@ lacks a feature reports it through `Target.supports` and the module runs on anot
 | later | each new proposal enters with its spec tests green on every target that claims it |
 
 ## Phase 0 — repository from the PoC
-*Status: done (branch `phase0-skeleton`, not merged to `main`).*
+*Status: done (branch `phase0-skeleton`, merged to `main` on 2026-11-02 with phases 1-4 and SIMD; 0.0.0 published).*
 
 * Package layout of ARCHITECTURE.md; move the PoC's reader, decoder and stack-to-tree builder out of
   `w2py.py` into `frontend/` and `ir/`; the code generators become `targets/pyc` and `targets/jit/x86_64`.
