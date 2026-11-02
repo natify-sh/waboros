@@ -19,6 +19,8 @@ Check, in this order:
 3. Scope: changes outside the goal, new abstractions without a second use, new dependencies, public
    API work before its phase.
 4. Contracts: format/ABI changes with a version bump and updated documents.
+5. Docs: every document the diff makes untrue is updated (specs' Changes, TARGETS, TESTING,
+   FEATURES, BENCHMARKS, LESSONS, ROADMAP); a stale statement is a finding.
 
 Do not edit code. Report findings ranked by severity, each with the file and line, a concrete
 failure scenario (input, state, wrong result), and how you confirmed it. Say plainly when you found

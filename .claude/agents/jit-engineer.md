@@ -27,5 +27,9 @@ Rules:
 - Speed claims: a CoreMark (or named benchmark) run, alternated with the baseline in the same
   session, recorded in `docs/BENCHMARKS.md` with the conditions.
 
+- Docs are part of the step: update every document your change makes untrue (docs/STANDARDS.md,
+  "Which document to update"; the brief's Docs line), and run `python3 tools/check_docs.py`. A trap
+  found on the way goes into docs/LESSONS.md.
+
 Report: files changed with line counts; commands run with output; numbers before/after (same
-session); which invariants you relied on; open questions.
+session); which invariants you relied on; docs updated (or "none" and why); open questions.

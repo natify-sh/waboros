@@ -98,7 +98,11 @@ Scope:       <files/directories that may change>      Out of scope: <what must n
 Budget:      <~N lines of diff; stop and report if more is needed>
 Acceptance:  <exact commands + expected result, e.g. pytest -k "i64 and pyc" → 0 failures;
               CoreMark still passes its self-check; BENCHMARKS row added if speed changed>
-Report:      files changed, commands run with output, numbers before/after, open questions
+Docs:        <the documents this step makes untrue and must update (docs/STANDARDS.md, "Which
+              document to update"): spec Changes, TARGETS/TESTING/FEATURES, BENCHMARKS, LESSONS…;
+              "none" only with the reason>
+Report:      files changed, commands run with output, numbers before/after, docs updated,
+             open questions
 ```
 
 ### Against over-engineering (applies to every agent)
