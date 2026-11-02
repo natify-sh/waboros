@@ -113,7 +113,9 @@ a thin IR of our own, and shared by all targets.
 keeps a lazy operand stack (`common/compiler.py`) whose entries are at most one node deep: a constant,
 a local, `tos`, a slot, or one pending compare of such operands (S0007 adds `local + const` and a
 temporary register). A new entry kind is added only with a measurement that it pays, so any drift
-towards trees is a recorded decision, not an accident.
+towards trees is a recorded decision, not an accident. Stack resolution exists twice today: `pyc`'s tree
+builder (`targets/pyc/codegen.py`) and the JIT core's lazy stack. A real HIR, if a measurement ever
+calls for one, replaces both rather than becoming a third.
 
 Per architecture only the implementation of that interface (instruction selection) and the encoder
 remain; an allocator over a materialised LIR is added only if a measurement shows it pays (D26). With copy-and-patch
