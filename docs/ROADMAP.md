@@ -195,6 +195,10 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29) -> the rest below.
   for stack overflow; the default where verified (D44, which supersedes D43's opt-in), explicit checks the
   only mode of a new architecture; the steps in S0006 (step 1, Linux glibc x86-64, done);
   bounds-check elimination where guard pages are not available.
+* **Code placement** (after the S0007 steps; LESSONS 51): a loop's speed moves by up to ±10 % when
+  code before it changes size (S0007 step 1, `swizzle`). Align loop headers (and perhaps function
+  entries) to 16 or 32 bytes with NOPs, kept only if a measurement over CoreMark, the kernels and the
+  corpus shows a gain beyond the spread and a smaller spread between builds; aarch64 too.
 * Trap frames, fuel and epoch checks (the interrupt word is polled already, phase 3); Ctrl+C via the
   waiting main thread.
 * The contract of ARTIFACT.md (format v1, context ABI v1, baseline-ISA sequences, CPU feature
