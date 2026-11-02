@@ -20,7 +20,7 @@ import os
 import struct
 from collections import Counter
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from waboros.targets.base import TrapCode, Unsupported, ValidModule
@@ -186,6 +186,8 @@ class Compiled:
     thunks: dict[
         int, int
     ]  # imported function -> code offset of its host thunk (its record if host)
+    flags: int = 0  # artifact header flags: guard.BOUNDS_GUARD | GUARD_LOG2 << 8 (S0006)
+    faults: list[tuple[int, int]] = field(default_factory=lambda: [])  # S0006 fault map
 
 
 @dataclass(slots=True)

@@ -476,7 +476,9 @@ def emit(
         _copy(a, sc, _slot(dst))
         return
     if (kind, LEVEL) in LOADC:
-        movq_load(a, 0, b._bounds(f, args[0], imm[0], 8, imm[1]))
+        m = b._bounds(f, args[0], imm[0], 8, imm[1])
+        b._fault_point()  # S0006: each access below is marked just before its instruction
+        movq_load(a, 0, m)
         movups(a, run(a, LOADC[kind, LEVEL]), _slot(dst), True)
         return
     if (op, LEVEL) in SHIFTC:  # the count first: it may be in tos (LESSONS 32)
@@ -506,15 +508,19 @@ def emit(
     if kind in ("load", "store", "load_splat", "load_zero", "load_lane", "store_lane"):
         m = b._bounds(f, args[0], imm[0], size, imm[1])
     if kind == "load":
+        b._fault_point()
         _copy(a, m, _slot(dst))
     elif kind == "store":
-        _copy(a, _slot(args[1]), m)
+        movups(a, 0, _slot(args[1]), False)
+        b._fault_point()
+        movups(a, 0, m, True)
     elif kind in ("splat", "load_splat", "load_zero"):
         if kind == "splat":  # the lane's bits zero-extended into rdx
             b.move(Reg(RDX), args[0], size == 8)
             if size < 4:
                 a.movzx(RDX, RDX, 8 * size)
         else:
+            b._fault_point()
             _ld(a, RDX, m, size)
         if kind != "load_zero" and size < 8:
             a.mov_imm(RCX, SPLAT[size], w=True)
@@ -535,11 +541,13 @@ def emit(
         _copy(a, _slot(args[0]), _slot(dst))
         _st(a, _slot(dst, imm[0] * size), RDX, size)
     elif kind == "load_lane":  # dst overlaps the vector operand (one slot up): copied whole
+        b._fault_point()
         _ld(a, RDX, m, size)
         _copy(a, _slot(args[1]), _slot(dst))
         _st(a, _slot(dst, imm[2] * size), RDX, size)
     elif kind == "store_lane":
         _ld(a, RDX, _slot(args[1], imm[2] * size), size)
+        b._fault_point()
         _st(a, m, RDX, size)
     elif kind == "not":
         movups(a, 0, _slot(args[0]), False)

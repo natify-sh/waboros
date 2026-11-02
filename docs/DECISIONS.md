@@ -581,10 +581,21 @@ CPU model, and the same spec parity as `pyc` (D25). Not planned: XOP, ARMv7 NEON
 AVX-512 only on a measurement.
 
 ### D43. Guard pages are opt-in; explicit bounds checks stay the default
-Status: accepted (maintainer, 2026-11-02) · Date: 2026-11-02 · Supersedes: D29 (only its "guard by default where verified") · Evidence: [S0006](specs/S0006-guard-pages.md) measurements (CoreMark +7.5 % median over 9 alternated pairs, the PoC's own pair +6.9 % on this machine; code −21 %)
+Status: superseded by D44 (maintainer, 2026-11-02; accepted 2026-11-02) · Date: 2026-11-02 · Supersedes: D29 (only its "guard by default where verified") · Evidence: [S0006](specs/S0006-guard-pages.md) measurements (CoreMark +7.5 % median over 9 alternated pairs, the PoC's own pair +6.9 % on this machine; code −21 %)
 
 Guard pages (S0006) are a JIT option chosen explicitly (`bounds = "guard"` or `"auto"`); the default
 stays `explicit`. The rest of D29 holds: the mode is a compile-time property recorded in the artifact
 and the cache key, explicit checks are the only mode of a new architecture, of memory64 and of hosts
 without a verified handler. Making `guard` (or `auto`) the default needs measurements on several
 machines and a new decision.
+
+### D44. Guard pages by default where verified (`bounds = "auto"`); explicit checks by flag
+Status: accepted (maintainer, 2026-11-02) · Date: 2026-11-02 · Supersedes: D43 · Evidence: [S0006](specs/S0006-guard-pages.md) step 1 (CoreMark +14.3 % median over 7 alternated pairs on a loaded machine, +7.5 % on a quiet one in the draft; code −20 %)
+
+As in Wasmtime (`signals_based_traps` on by default), the JIT's default bounds mode becomes `auto`:
+guard pages on every (OS, architecture, libc) row whose handler is verified in CI, explicit checks
+elsewhere, silently. `bounds = "explicit"` turns guard pages off; `"guard"` requires them. The switch
+lands in its own step after step 1's review and a measurement on a quiet machine; until then the
+default stays `explicit` (D43). The rest of D29 holds. The handler's chaining follows Wasmtime with
+one deliberate difference: a sent signal whose previous action is the default is re-sent with
+`raise`, so the process ends as it would without us (S0006 Changes, LESSONS 46).

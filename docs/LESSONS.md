@@ -249,3 +249,11 @@ What went wrong or surprised us while building the PoC, so it is not found again
     code. Rule: never assume our handler is still in place; check before entering wasm code, refuse
     to run a guard-mode instance when it is gone (S0006 Q1), and pass foreign faults on unchanged.
     Found: S0006 draft experiments, 2026-11-02.
+46. **"Restore the default and return" only repeats a fault, not a sent signal.** A chaining
+    handler whose previous action is SIG_DFL puts it back and returns, so the faulting instruction
+    runs again and the default action happens. A SIGSEGV sent with `kill`/`raise` (si_code <= 0) does
+    not recur: the process went on running (`os.kill(os.getpid(), SIGSEGV)` exited 0 with our
+    handler, -11 without). Rule: for a sent signal, re-send it with libc's `raise` after restoring
+    the action (it stays pending until the handler returns). Wasmtime only restores and returns, so a
+    sent SIGSEGV is survived there and its handler is lost; we differ on purpose (S0006, D44).
+    Found: S0006 step 1, 2026-11-02.

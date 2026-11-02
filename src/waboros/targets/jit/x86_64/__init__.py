@@ -35,6 +35,21 @@ class JitX86_64Target(JitTarget):
     def trampolines(self) -> "Trampolines":
         return trampolines()
 
+    guard_rows = frozenset({"linux-glibc"})  # S0006 step 1; `verified` stays empty until review
+
+    def guard_backend(self) -> Any:
+        from waboros.targets.jit.x86_64.backend import Backend
+
+        return Backend(guard=True)
+
+    def fault_handler(self, tables: int, prev: int, sigaction: int, reraise: int) -> bytes:
+        from waboros.targets.jit.x86_64.abi import fault_handler
+        from waboros.targets.jit.x86_64.encoder import Asm
+
+        a = Asm()
+        fault_handler(a, tables, prev, sigaction, reraise)
+        return a.finish()
+
 
 @cache
 def trampolines() -> "Trampolines":

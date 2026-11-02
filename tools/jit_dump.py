@@ -2,7 +2,8 @@
 """Cross-compilation check (D35, S0004 step 4c): compile, never run, every module of the spec cache
 (`tests/spec/fetch.py`) and CoreMark with one JIT target, on any host, and write one line per
 module: `<path> <sha256 of the whole Compiled> <data_start>` (code,
-data_start, funcs, records, sigs, thunks, layout), or `<path> rejected|unsupported: <feature>`.
+data_start, funcs, records, sigs, thunks, layout; flags and fault map in guard mode,
+WABOROS_JIT_BOUNDS=guard), or `<path> rejected|unsupported: <feature>`.
 The lists of two hosts must be identical:
 
     python3 tools/jit_dump.py --target jit-aarch64 OUT.txt      # PYTHONPATH=src
@@ -56,6 +57,8 @@ def main() -> int:
         )
         if c.layout.wide:  # v128 globals: not in Layout's repr, so non-SIMD lines stay as before
             everything += repr(c.layout.wide)
+        if c.flags:  # guard mode (S0006): the flags and the fault map; explicit lines unchanged
+            everything += repr((c.flags, c.faults))
         digest = hashlib.sha256(c.code + everything.encode()).hexdigest()
         lines.append(f"{name} {digest} {c.data_start}")
     args.out.write_text("\n".join(lines) + "\n", encoding="utf-8")

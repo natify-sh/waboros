@@ -90,6 +90,13 @@ class Asm:
             raise ValueError(f"label {label.id} bound twice")
         self._labels[label.id] = len(self.buf)
 
+    def position(self, label: Label) -> int:
+        """The offset a bound label stands for (the fault map's resume offsets, S0006)."""
+        pos = self._labels[label.id]
+        if pos is None:
+            raise ValueError(f"label {label.id} never bound")
+        return pos
+
     def _rel(self, label: Label, size: int) -> None:
         self._fixups.append((len(self.buf), size, label))
         self.buf += bytes(size)

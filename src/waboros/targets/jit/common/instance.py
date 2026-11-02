@@ -17,7 +17,7 @@ from typing import Any, cast
 from waboros.frontend import validate
 from waboros.runtime.store import StoreState
 from waboros.targets.base import Extern, HostError, HostFunc, Raw, Trap, TrapCode
-from waboros.targets.jit.common import simd
+from waboros.targets.jit.common import guard, simd
 from waboros.targets.jit.common.compiler import M32, M64, NARROW, Compiled, f32_bits, f64_bits
 from waboros.targets.jit.common.context import (
     DATA_DROP,
@@ -43,9 +43,9 @@ from waboros.targets.jit.common.execmem import ExecMem, Reservation, load
 ENTRY = ctypes.CFUNCTYPE(ctypes.c_int32, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)
 HOST = ctypes.CFUNCTYPE(ctypes.c_int32, ctypes.c_void_p, ctypes.c_void_p)
 VSTACK_BYTES = 1 << 20  # per store
-MEMORY_RESERVATION = (
-    1 << 32
-)  # Wasmtime's default `memory_reservation` (crates/environ/src/tunables.rs)
+# Wasmtime's default `memory_reservation` (crates/environ/src/tunables.rs) and its 64-bit
+# `memory_guard_size`, for every memory in either mode, so any memory serves guard code (S0006)
+MEMORY_RESERVATION = guard.RESERVATION
 MAX_PAGES = 1 << 16
 DEFAULT_BUDGET = 512 << 10  # Wasmtime's default `max_wasm_stack` (D6)
 UNKNOWN_STACK_BUDGET = 128 << 10  # when the thread's stack bounds cannot be read or are implausible
@@ -106,6 +106,7 @@ class _StoreStacks:
         self.vsp = self.vstack.addr  # next free slot: above the innermost host call's slots
         self.nlimit = 0
         self.active = 0  # JIT entries in progress (wasm -> host -> wasm nests them)
+        self.guard = False  # guard-mode code in the store: check the handler at every entry
         # reference values at the boundary (S0002: opaque objects, None = null): an externref is
         # a handle (index + 1) of the object kept here for the store's lifetime; a funcref is a
         # record address, seen by the host as a `FuncRef` (one object per address)
@@ -240,8 +241,8 @@ def native_budget(sp: int, low: int | None, budget: int) -> int:
 
 
 class Memory:
-    """A 32-bit linear memory: 4 GiB of address space reserved, pages committed on grow; the base
-    never changes. `grow` rewrites the size word of every context bound to it."""
+    """A 32-bit linear memory: 4 GiB + GUARD of address space reserved (S0006), pages committed on
+    grow; the base never changes. `grow` rewrites the size word of every context bound to it."""
 
     def __init__(self, pages: int, maximum: int | None) -> None:
         self.res = Reservation(MEMORY_RESERVATION, pages << 16)
@@ -387,6 +388,8 @@ class Instance:
         store, st, ctx = self.store, _stacks(self.store), self.ctx
         depth, active = store.depth, st.active  # restored as they were, whatever interrupts us
         try:
+            if st.guard:  # records cross within a store: any entry may reach guard code
+                guard.check()
             store.enter()
             st.active += 1
             if st.active == 1:  # no JIT frame below, whatever the store's depth
@@ -470,6 +473,10 @@ class Instance:
             status = STATUS_HOST_ERROR
             try:
                 status = serve(slots)
+                why = st.guard and not status and guard.broken()  # back into guard code
+                if why:
+                    store.pending = RuntimeError(f"{guard.LOST} ({why})")
+                    status = STATUS_HOST_ERROR
             except BaseException as e:
                 store.pending = store.pending or e
             finally:
@@ -595,6 +602,11 @@ class JitInstance(Instance):
         ng = len(self.gtypes)
         super().__init__(store, tramp, c.code, c.funcs, hosts, memories, ng, c.layout)
         lay, ctx = self.layout, self.ctx
+        if c.flags & guard.BOUNDS_GUARD:  # before any of its code can run (S0006)
+            guard.add_code(self.code, c.faults)
+            for m in memories:
+                guard.add_reservation(m.res)
+            st.guard = True
         base = ctypes.addressof(ctx)
         self.records = {f: base + 8 * lay.record(r) for r, f in enumerate(c.records)}
         for f, addr in self.records.items():

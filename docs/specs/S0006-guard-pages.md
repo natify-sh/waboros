@@ -341,3 +341,41 @@ reservation is a crash, not a trap: the explicit-mode tests and differential run
   wasm raises an error only for the cases that break the chain and that are cheap to recognise from
   Python: SIGSEGV/SIGBUS reset to `SIG_DFL`/`SIG_IGN`, `faulthandler` enabled after ours, or a
   Python-level handler on those signals; any other handler is assumed to chain (as in Wasmtime).
+* 2026-11-02: step 1 built (Linux glibc x86-64), with the Q1/Q8 revision. As built:
+  `WABOROS_JIT_BOUNDS=explicit|guard|auto` (`common/guard.py`), read by `JitTarget.compile`;
+  `guard` on a target without the mode (`jit-aarch64` until step 2) is a `ValueError` at compile,
+  on a host without a handler a `RuntimeError` at instantiation; `auto` is `explicit` (no row in
+  `verified` yet). The backend takes `guard=True`; `_bounds` hands the access to `_guarded` under
+  the thresholds above and each access site marks its one memory instruction (`_fault_point`);
+  `Compiled.flags` (`1 | 25 << 8`) and `Compiled.faults` stand for the header bits and `TRAPMAP`
+  until step 6, and `tools/jit_dump.py` hashes them only when the flags are set, so the explicit
+  lists are unchanged line for line. The handler (`x86_64/abi.py` `fault_handler`) is 324 bytes
+  (rough PoC: 119), emitted at the first guard instantiation. Deviations, each for the contract's
+  "exactly as if the handler were absent": (1) when the saved action is SIG_DFL/SIG_IGN and the
+  signal was sent (`si_code <= 0`), the handler also calls libc's `raise(sig)` after `sigaction`,
+  because a sent signal does not recur on return (measured: `os.kill(getpid(), SIGSEGV)` was
+  survived; LESSONS 46); (2) the registry is per copy of the package (module state), the handler
+  embeds its copy's tables, and "ours" is the PC on a fault point of that copy's code with the
+  address in that copy's reservations: no per-thread state, since a PC in a copy's code can only
+  be that copy's wasm; (3) Linux installs SIGSEGV only. The Q1 check (`guard.broken`, before every
+  entry and after every host call that returns success into a store with guard code) raises for
+  SIG_DFL/SIG_IGN, a Python-level handler set after ours (a different object from
+  `signal.getsignal` at our install), or `faulthandler` enabled while another handler is above ours
+  (its handler's address cannot be told from a foreign one, so this errs on the side of a false
+  error: e.g. faulthandler enabled, then a chaining foreign handler on top of ours; the step-1
+  review found that remembering the handler under ours as faulthandler's let faulthandler, re-enabled
+  on top, take a guard fault and end the process with 139). Every memory is reserved
+  4 GiB + 32 MiB in either mode; a memory is registered when a guard instance binds it.
+* 2026-11-02: the maintainer approved two decisions. (1) **The re-send of a sent signal** (step 1's
+  deviation): when the saved action is SIG_DFL/SIG_IGN and `si_code <= 0` (a signal sent with
+  `kill`/`raise`, not a fault), the handler restores the action with `sigaction` and calls libc's
+  `raise(sig)`, which is async-signal-safe; the signal stays pending until the handler returns, so
+  the process ends exactly as it would without us. This deliberately differs from Wasmtime
+  (`delegate_signal_to_previous_handler`, `crates/wasmtime/src/runtime/vm/sys/unix/signals.rs`,
+  read 2026-11-02), which restores the action and returns: a real fault then repeats and kills the
+  process, but a sent SIGSEGV is survived and Wasmtime's own handler stays replaced by SIG_DFL, so
+  its next wasm trap kills the process. The handler may therefore call exactly three things: the
+  previous handler, `sigaction` and `raise` (LESSONS 46). (2) **`bounds = "auto"` becomes the
+  default** (D44, superseding D43) once step 1's review is closed and a measurement on a quiet
+  machine confirms the gain; `auto` gives `guard` only on rows verified in CI (Linux glibc x86-64
+  first) and `explicit` everywhere else, silently; `bounds = "explicit"` is the opt-out.

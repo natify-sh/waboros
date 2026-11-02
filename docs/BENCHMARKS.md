@@ -346,6 +346,21 @@ Machine code 39 357 → 30 403 bytes. The switch VM (not memory-bound) does not 
 M ops/s, wasmtime 432–485). With explicit checks on both sides the PoC JIT and Cranelift are level:
 the gap was the bounds checks, not the code.
 
+**Package `jit-x86_64`, S0006 step 1** (`WABOROS_JIT_BOUNDS=guard` vs the default `explicit`):
+2026-11-02, Intel Xeon @ 2.10 GHz, 4 vCPU VM, CPython 3.13.17, `uv run python
+tools/run_coremark_jit.py poc/in/core.wasm`, 7 pairs alternated in one session, every run
+"Correct operation validated". Another agent's spec run shared the machine during part of the
+session (load average ~2.5), so treat the spread with care.
+
+| mode | runs (it/s) | median | mean |
+|---|---|---|---|
+| explicit | 13 879 / 13 854 / 13 924 / 13 979 / 14 507 / 14 322 / 13 540 | 13 924 | 14 001 |
+| guard | 16 088 / 15 773 / 16 194 / 15 912 / 15 613 / 16 202 / 13 985 | 15 912 | 15 681 |
+
+Guard **+14.3 %** (median; mean +12.0 %; per pair +3.3 to +16.3 %), above S0006's +7.5 % from the
+drafter's session: the gain depends on the session and the machine. Code 45 055 → 36 058 bytes
+(−20.0 %), 669 fault points (the fault map, 8 bytes each).
+
 ## `wasm-opt -O3` (binaryen 125) on CoreMark
 
 `wasm-opt --enable-nontrapping-float-to-int --enable-sign-ext --enable-mutable-globals -O3`: 29 → 10

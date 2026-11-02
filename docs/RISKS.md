@@ -154,8 +154,12 @@ know, otherwise recompile" is the simplest robust rule. It needs the wasm at han
 
 ## R6. A signal handler of our own (guard pages in the JIT)
 
-**Status at HEAD: open, not started in the package.** `jit-x86_64` uses explicit bounds checks only; guard
-pages and the handler are phase 5 (D29).
+**Status at HEAD: partly mitigated, Linux glibc x86-64 only, opt-in.** S0006 step 1: `WABOROS_JIT_BOUNDS=guard`
+compiles guard code on `jit-x86_64`; the handler is emitted machine code (`x86_64/abi.py`) reading this copy's
+registry (`common/guard.py`), chaining every fault it does not claim (tests: `tests/jit/test_guard.py`, foreign
+faults with and without `faulthandler`, a broken chain, a foreign chaining handler, two copies of the package
+in either order). Explicit checks stay the default (D43); `auto` gives `explicit` until a row is verified.
+Open: aarch64, macOS, Windows, Android (S0006 steps 2-5), the review (step 7).
 
 Guard pages need a SIGSEGV handler in the process (ARCHITECTURE.md, "Memory"); the PoC emits it as
 machine code. Risks and possible answers:
@@ -166,14 +170,18 @@ machine code. Risks and possible answers:
   platform, verified by a test that traps on purpose; explicit checks where no entry exists.
 * **Other handlers in the process**: `faulthandler`, other runtimes (wasmtime-py, wasmext modules,
   JVM/.NET embedded), a later `sigaction` by someone else that replaces ours. Answer: chain to the
-  previous handler (the PoC does), re-check at each entry that ours is still installed (cheap
-  `sigaction` query) and fall back to explicit checks if not; never install when the user asks not to.
+  previous handler (the PoC does), re-check at each entry and after each host call (a `sigaction`
+  query) and raise when the chain is recognisably broken (SIG_DFL/SIG_IGN, `faulthandler` enabled
+  with another handler above ours, a Python-level handler set after ours; S0006 Q1 as revised; a
+  false error is preferred to a crash); any other handler is assumed to chain, as
+  Wasmtime assumes; never install when the user asks not to (`explicit`, the default, installs nothing).
 * **Threads**: the handler is per process; the fault address and the code range identify the module,
   so it works from any thread; stack-overflow detection needs `sigaltstack` per thread (not done).
 * **A fault not of ours inside our code range** (a bug of the JIT): becomes a wasm trap instead of a
-  crash. Answer: only addresses inside a reservation are taken; differential tests against Wasmtime.
-* **Several modules**: one handler with a table of (reservation, code range, stub), or one per module
-  chained — the PoC has one per module.
+  crash. Answer: only fault points of the fault map with an address inside a reservation are taken
+  (S0006); differential tests against Wasmtime.
+* **Several modules**: one handler per copy of the package with a table of code ranges (fault maps)
+  and reservations; several copies chain (S0006 Q8 as revised; tested with a renamed copy).
 * **CET / BTI**: the handler is entered indirectly by the kernel; with IBT enforced it needs `endbr64`
   (R2).
 

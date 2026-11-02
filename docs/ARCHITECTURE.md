@@ -183,8 +183,9 @@ memory without knowing the target.
 
 * `pyc`: a `bytearray` subclass (grows in place with `extend`; struct `unpack_from`/`pack_into` on it).
   Temporary `memoryview`s are fine; a long-lived export blocks `extend` on CPython (`BufferError`).
-* JIT: a raw mapping whose address the code holds in a register (r13). At HEAD it is a 4 GiB
-  reservation per 32-bit memory (`MEMORY_RESERVATION`, Wasmtime's default) committed on `memory.grow`,
+* JIT: a raw mapping whose address the code holds in a register (r13). At HEAD it is a 4 GiB + 32 MiB
+  reservation per 32-bit memory in either bounds mode (`MEMORY_RESERVATION`, Wasmtime's 64-bit
+  `memory_reservation` plus its guard, S0006) committed on `memory.grow`,
   which never moves the base; `memory.grow` is a libcall through the host bridge (S0003). Growth must not
   move it while code runs: reserve the maximum address range up front (wasm32: 4 GiB + slack on a
   64-bit host; less, with explicit checks, on 32-bit hosts) and commit pages on `memory.grow`
@@ -192,15 +193,19 @@ memory without knowing the target.
   without committing portably, so the reservation goes through ctypes.
 * `memory64`, `multi-memory`, shared memory (threads) and custom page sizes are properties of the
   facade and of the code generators, not of separate paths.
-* Bounds checks: explicit in `pyc`/`mpy`, and, at HEAD, in the JIT too. **The JIT can use guard pages without a native dependency**
+* Bounds checks: explicit in `pyc`/`mpy`, and by default in the JIT. **The JIT can use guard pages without a native dependency**
   (measured, `poc/w2jit_guard.py`): an 8 GiB `PROT_NONE` reservation with only the wasm pages
   read/write, and a SIGSEGV handler that is **machine code emitted by the JIT** (a Python handler
   cannot run inside a signal) and installed with `sigaction` through ctypes. It resumes a fault at a
   reserved address raised by this module's code in the out-of-bounds trap stub (it rewrites RIP in the
   `ucontext`, as Wasmtime does), and passes everything else to the previous handler or restores the
-  default action. In the package this is phase 5 (D29). CoreMark in the PoC: +20–25 % (91 % of Wasmtime instead of 78 %), 23 % less machine code
-  (BENCHMARKS.md, "Guard pages"). Explicit checks stay the fallback (offsets ≥ 2 GiB, platforms
-  without the handler yet, `memory64`); risks in RISKS.md, R6.
+  default action. In the package (S0006): `WABOROS_JIT_BOUNDS=guard` on `jit-x86_64`, Linux glibc,
+  since step 1 — accesses with `offset + size ≤ 32 MiB` unchecked, a fault map of the instructions
+  that touch memory, a handler (`x86_64/abi.py`, registry in `common/guard.py`) that resumes at the
+  function's own out-of-bounds stub and chains every other fault; explicit is the default until
+  D44's `auto` lands. CoreMark: +14 % on the package (BENCHMARKS.md, "Guard pages"; the PoC measured
+  +20–25 % on another day), 20 % less machine code. Explicit checks stay the fallback (larger offsets,
+  platforms without the handler yet, `memory64`); risks in RISKS.md, R6.
 
 ## State shared across targets
 

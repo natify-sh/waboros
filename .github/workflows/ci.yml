@@ -63,6 +63,16 @@ jobs:
       # step 4e: the whole spec suite on jit-aarch64 with BTI enforced (call_indirect, tail calls
       # and jump tables land on their pads; simd/ since 5e2), in-process under QEMU; about 1 min
       - run: python3 tools/run_arm64.py -m tests.spec.run --engine jit-aarch64 --in-process
+      # S0006 step 1: guard pages (opt-in, D43) on Linux glibc x86-64: the spec suite with the
+      # fault handler doing the bounds checks, then the fault tests (foreign faults, a broken
+      # chain, two copies of the package) in the same mode
+      - run: uv run python -m tests.spec.run --engine jit-x86_64
+        env:
+          WABOROS_JIT_BOUNDS: guard
+      - run: uv run pytest tests/jit/test_guard.py -v -rs
+        env:
+          WABOROS_JIT_BOUNDS: guard
+          WABOROS_JIT_REQUIRE: "1"
       # S0005: SIMD on an SSE2-only CPU (QEMU's qemu64 without SSE3/SSSE3/SSE4/popcnt: an
       # instruction above x86-64-v1 is a SIGILL); jit-x86_64 claims simd (5d3), so the explicit
       # `simd` run must pass whole and equal pyc's

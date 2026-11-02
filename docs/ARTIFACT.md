@@ -152,7 +152,7 @@ the phase-3 meaning of each word and the register roles are in [S0003](specs/S00
 | 8 | `HOST_BRIDGE` | host → code | address of the host-call bridge for the host's calling convention |
 | 9 | `TAIL_SWITCH` | host → code | address of the cross-context tail-call trampoline (below; D30) |
 | 10–15 | reserved | | zero |
-| 16 … | per memory *i*: `base`, `size_bytes` (2 words) | host ↔ code | imported memories first; the base never moves (4 GiB reserved, committed on grow); code that keeps a memory in registers (x86-64: memory 0 in r13/r14) reloads them after every host call, any other memory is read here at each access |
+| 16 … | per memory *i*: `base`, `size_bytes` (2 words) | host ↔ code | imported memories first; the base never moves (4 GiB + 32 MiB reserved, committed on grow; S0006); code that keeps a memory in registers (x86-64: memory 0 in r13/r14) reloads them after every host call, any other memory is read here at each access |
 | … | per table *i*: `base`, `size` (2 words) | host ↔ code | `base`: the element words (one per element), `size`: elements; `table.grow` may move the elements, so code reads both words at each use and never keeps them across a host call. A `funcref` element (and value) is 0 (null) or the address of a function record (below); an `externref` element is a host handle (0 = null) |
 | … | per global *i*: 1 word (2 for v128) | both | imported globals: a pointer to the owner's word instead |
 | … | per function import *i*: 1 word | host → code | address of a host function (signature below) |
