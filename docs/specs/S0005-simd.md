@@ -445,3 +445,15 @@ Q5 (a), Q6 (a), Q7 (a), Q8 (a). Kept below with their options for the record.
     `sqrt`, `min` and `max` (aarch64 propagates the quieted input NaN, x86 Wasmtime gives its
     "indefinite" NaN, `pyc` its own); rounding, `demote`, `promote`, `pmin`/`pmax`, `abs`/`neg`,
     the conversions, `shuffle` and `swizzle` equal both bit for bit.
+* 2026-11-02 (SIMD benchmark): `poc/bench/simd/` (`kernels.c`, `build.sh`, the two built `.wasm`) and
+  `tools/run_simd_bench.py` exist; rows in BENCHMARKS.md, "SIMD benchmark". Checksums equal on `pyc`,
+  `jit-x86_64`, Wasmtime and (QEMU) `jit-aarch64`, both builds. Data for the open questions, not
+  decisions: Q4/D42: the class-L and class-S sequences are where `jit-x86_64` loses most to Wasmtime
+  (`swizzle` 6.7 µs vs 0.16 µs per pass, 26 ns per vector, SIMD build slower than its own scalar
+  build; scan with `bitmask` 15 ns per vector, also slower than scalar), and `nearest` is 3.7× Wasmtime;
+  a v2 variant (`pshufb`, `roundps`) would target `swizzle` and rounding; `bitmask` is not a v2 matter
+  (`pmovmskb` is SSE2), so its cost is the sequence around it. Q3: kernels made
+  of cheap operators (`add_sat`: 1.8 ns per vector, SIMD 16× over scalar) are within 2.5× of Wasmtime
+  with slot round trips, and matmul (52 cheap operators per matrix) runs ≈ 3 ns per operator, 30× behind;
+  this benchmark does not separate the slot round trip from the code length, so it does not by itself
+  show that a vector `tos` pays.

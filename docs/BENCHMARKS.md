@@ -357,3 +357,57 @@ w2lua output loaded as source or as `string.dump` bytecode (stripped) inside lup
   83.7 / 90.6 (HEAD / new). The two series disagree in sign; the run order (HEAD first) and a
   ±5 % noise dominate. Conclusion: no cost measurable on this machine; the check is required by the
   spec (BAD_SIGNATURE, INDIRECT_CALL_TO_NULL, TABLE_OUT_OF_BOUNDS) regardless.
+
+## SIMD benchmark (S0005, `poc/bench/simd/`)
+
+Six kernels in `poc/bench/simd/kernels.c` (u8 saturating add over 4 096 bytes, f32 dot product of 1 024,
+i8 scan with `eq` + `bitmask`, 4×4 f32 matrix multiply ×64, byte table lookup with `swizzle` over
+4 096 bytes, `f32x4.nearest` over 1 024 with ties), each built twice by `poc/bench/simd/build.sh`:
+`clang --target=wasm32 -O3 -nostdlib` (Ubuntu clang 18.1.3, wasm-ld 18) without and with `-msimd128`;
+the SIMD build uses `wasm_simd128.h` intrinsics, the scalar one plain loops. Runner:
+`uv run python tools/run_simd_bench.py --rounds 5` (the package API for `pyc` and `jit-x86_64`,
+wasmtime-py 50.0.1 for Wasmtime); `--ops` lists the v128 operators. Every kernel's checksum is equal on
+`pyc`, `jit-x86_64` and Wasmtime for both builds (the runner fails otherwise), and on `jit-aarch64`
+under QEMU (`python3 tools/run_arm64.py tools/run_simd_bench.py --targets jit-aarch64,wasmtime,pyc
+--rounds 1`; its timings are meaningless and not listed).
+
+Conditions: 2026-11-02, the machine above, CPython 3.13.17, one session; every configuration run once
+per round, 5 rounds alternated, median. Microseconds per kernel iteration (one pass over the buffers;
+`pyc` ran 5 iterations per call, the others 2 000). The checksum is computed once per call.
+
+| kernel | pyc scalar | pyc SIMD | jit-x86_64 scalar | jit-x86_64 SIMD | Wasmtime scalar | Wasmtime SIMD |
+|---|---|---|---|---|---|---|
+| u8 `add_sat` | 1 381 | 1 412 | 7.26 | 0.45 | 2.87 | 0.18 |
+| f32 dot | 1 006 | 2 792 | 2.87 | 1.49 | 0.74 | 0.18 |
+| i8 scan (`eq`+`bitmask`) | 462 | 1 360 | 3.04 | 3.85 | 2.02 | 0.16 |
+| 4×4 matmul ×64 | 2 505 | 9 986 | 3.96 | 12.06 | 1.39 | 0.40 |
+| `swizzle` lookup | 1 048 | 639 | 4.62 | 6.74 | 2.56 | 0.16 |
+| `f32x4.nearest` | 1 208 | 2 473 | 1.87 | 0.59 | 0.52 | 0.16 |
+
+Speed-up of the SIMD build over the scalar build (scalar time / SIMD time):
+
+| kernel | pyc | jit-x86_64 | Wasmtime |
+|---|---|---|---|
+| u8 `add_sat` | 0.98 | 16.1 | 15.9 |
+| f32 dot | 0.36 | 1.9 | 4.1 |
+| i8 scan | 0.34 | 0.79 | 12.6 |
+| matmul | 0.25 | 0.33 | 3.5 |
+| `swizzle` | 1.64 | 0.69 | 16.0 |
+| `nearest` | 0.49 | 3.2 | 3.3 |
+
+SIMD instructions in the SIMD build (`--ops`; the scalar build has none): `add_sat` 8
+(`i8x16.add_sat_u`, `v128.load`, `v128.store`); dot 21 (`f32x4.add`, `f32x4.mul`,
+`f32x4.extract_lane`, `v128.load`, `v128.const`); scan 7 (`i8x16.eq`, `i8x16.bitmask`,
+`v128.load8_splat`, `v128.load`); matmul 52 (`f32x4.add`, `f32x4.mul`, `v128.load32_splat`,
+`v128.load`, `v128.store`); `swizzle` 13 (`i8x16.swizzle`, `v128.load`, `v128.store`); `nearest` 57
+(`f32x4.nearest`, `i8x16.shuffle`, `f32x4.convert_i32x4_s`, `i32x4.trunc_sat_f32x4_s`,
+`i32x4.add`, `i32x4.mul`, `i32x4.extract_lane`, `v128.load`, `v128.store`, `v128.const`).
+
+Reading: `pyc` SIMD is slower than scalar on four of six kernels, as expected (a lane operation through
+`struct`); it wins only on `swizzle` (1.6×) and ties on `add_sat`.
+`jit-x86_64` SIMD is 16× faster than its scalar build on `add_sat` (as fast as ~2.5× Wasmtime's SIMD
+time), but slower than its scalar build on scan, matmul and `swizzle`, and 24–42× behind Wasmtime's
+SIMD on those (scan 24×, matmul 30×, `swizzle` 42×). The scalar builds on `jit-x86_64` are 1.5–3.9×
+behind Wasmtime's scalar builds. Per v128 operator in the hot loop: `add_sat` ≈ 1.8 ns per
+vector (3 operators), matmul ≈ 3 ns per operator, scan ≈ 15 ns per vector, `swizzle` ≈ 26 ns per vector.
+CoreMark is not affected (no `src/` change in this step).
