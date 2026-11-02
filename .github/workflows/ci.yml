@@ -376,11 +376,17 @@ jobs:
       # android.py enables KVM for the emulator on GitHub Actions itself, installs the SDK
       # packages and the system image through Gradle, boots the emulator, runs the app and
       # returns the exit code of the Python command. -v adds Gradle and logcat (SELinux avc lines).
+      # One retry: the emulator's own failures (a corrupt SDK download, an app that never starts
+      # within android.py's timeout) are not ours; a failure of tools.android_check repeats.
       - name: run in the testbed app on the emulator (Android 15, API 35, x86_64)
         run: |
           set -o pipefail
-          python3 pkg/android.py test --managed maxVersion -v --site-packages "$PWD/stage/site-packages" \
-            --cwd "$PWD/stage/cwd" -- -m tools.android_check 2>&1 | tee android.log
+          for attempt in 1 2; do
+            python3 pkg/android.py test --managed maxVersion -v --site-packages "$PWD/stage/site-packages" \
+              --cwd "$PWD/stage/cwd" -- -m tools.android_check 2>&1 | tee -a android.log && exit 0
+            echo "attempt $attempt failed" | tee -a android.log
+          done
+          exit 1
       - if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
