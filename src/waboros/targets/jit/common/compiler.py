@@ -10,7 +10,8 @@ register (at most one entry), a materialised slot, or a pending compare (only ev
 consumed whole by `br_if`/`if`/`select`/`eqz`, else turned into a value before anything else is
 emitted). Every instruction that can trap is emitted when it is reached, so `drop`, `select` and
 branches never discard a trap (LESSONS 28). At every control-flow edge the whole stack is in
-slots, and pinned locals never move, so merges need no reconciliation.
+slots, and pinned locals never move, so merges need no reconciliation; a function return instead
+moves its results straight into slots 0..m (S0007).
 
 Test-only switch: `WABOROS_JIT_NOPIN=all` or `=<function indices>` compiles those functions without
 pinned locals (bisecting a pinning bug; D25 rules out mixing targets per function).
@@ -425,16 +426,33 @@ class _Func:
         del self.st[c.h :]
         self.st += [SLOTE] * c.nparams
 
+    def ret(self, c: _Ctl) -> None:
+        """The results straight into slots 0..n (S0007, "Returns"). The entries below them are
+        not flushed: each is a value already computed or a compare, so nothing can trap (LESSONS
+        28). Several results fall back to flush + moves when a source is a slot in 0..n other
+        than its own (writing one result would overwrite another's source)."""
+        st, n = self.st, c.nres
+        if n and st[-1][0] == CMP:
+            self.uncmp()
+        base = len(st) - n
+        srcs = [self.opnd(st[base + k], base + k) for k in range(n)]
+        if any(isinstance(s, Slot) and s.k < n and s.k != k for k, s in enumerate(srcs)):
+            self.flush()
+            self.moves(c)
+            return
+        for k, s in enumerate(srcs):  # never writes tos, a pin or a source slot
+            self.b.move(Slot(k), s, True)
+
     def end(self) -> None:
         c = self.ctl.pop()
-        if not self.dead:
-            self.flush()
         if c.kind == "func":
             if not self.dead:
-                self.moves(c)
+                self.ret(c)
             self.b.bind(c.label)
             self.b.ret_ok(self.f)
             return
+        if not self.dead:
+            self.flush()
         if c.kind == "if":  # no else: the false path arrives with the parameters as results
             self.b.bind(c.else_label)
         if c.kind != "loop":
@@ -446,8 +464,11 @@ class _Func:
 
     def br(self, depth: int) -> None:
         c = self.ctl[-1 - depth]
-        self.flush()
-        self.moves(c)
+        if c.kind == "func":  # return: br_if and br_table to it are unchanged (S0007 Q7)
+            self.ret(c)
+        else:
+            self.flush()
+            self.moves(c)
         self.b.jump(c.label)
         c.used, self.dead = True, True
 

@@ -191,8 +191,9 @@ uv run python tools/run_corpus.py --targets pyc,jit-x86_64          # results eq
 ```
 * **D35.** The lists of an x86-64 host and an aarch64 runner stay identical (CI). Against the
   baseline's list, a module may change only if it contains the step's pattern (returns: a function
-  with results; K: an i32 add/sub of a pinned local and a constant; R: a `tos` spill); a scratch
-  script in the step's report checks this, it is not committed.
+  return, with results or after values left on the stack, as in `ref_func.3`; K: an i32 add/sub of
+  a pinned local and a constant; R: a `tos` spill); a scratch script in the step's report checks
+  this, it is not committed.
 * **Differential fuzz** `tests/jit/test_scalar_fuzz.py` (new, ~120 lines): fixed seeds generate WAT
   functions with i32/i64 params and locals, `local ± const` addresses with constants near 0, 2³¹ and
   2³² − 1 and offsets up to and past `GUARD`, loads/stores of every width in a one-page memory (so
@@ -296,3 +297,12 @@ investigation's.
   save set of R comes from a second compilation pass, only for functions that used temporaries (the
   allocation does not depend on the save set, so the second pass reproduces the body); Q1–Q3, Q6, Q7
   as recommended. The spec is approved (with the D39 amendment it describes, byte identity waived).
+* 2026-11-02: step 1 done (results straight to slots 0..m at `end` and `return`, `ret()` in the core;
+  no backend change). Spec parity on both JITs (54 385 pass, 0 fail, 91 xfail; explicit mode too);
+  D35: 301 modules change on each target, each with a function that has results or a `return` that
+  leaves values below them (`ref_func.3`: six `ref.func`, then `return`; the step's pattern is the
+  return, not only results). Calls benchmark (new, `poc/bench/calls/`, `tools/run_calls_bench.py`):
+  `leaf` 2.30 → 2.16 ns (faster in 12 of 13 pairs, but the run ranges overlap), `fib` 3.22 → 2.60 ns
+  per call (no overlap); CoreMark +0.9 % (noise); corpus within noise; scalar `swizzle` +10 % from
+  code placement only (BENCHMARKS.md, LESSONS 51). The orchestrator widened the D35 pattern to
+  "a function return" (Test plan) and kept the step on `fib`'s gain.

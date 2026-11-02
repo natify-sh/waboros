@@ -298,3 +298,11 @@ What went wrong or surprised us while building the PoC, so it is not found again
     trapping store's memory under an emulator runs in explicit mode; a passing native run says
     nothing about emulators; aarch64 guard mode decides its stores in S0006 step 2.
     Found: CI `jit` job after the D44 switch, 2026-11-02.
+51. **A change elsewhere in the module can move a kernel by 10 % through code placement.** S0007
+    step 1 shortened every function's return; the scalar `swizzle` kernel, whose own code changed
+    only in its return (run once per 2 000 iterations), measured 4.09 → 4.49 µs, outside the spread,
+    in two alternated sessions. Its hot loop had moved 66 bytes down. The same code with 2 bytes of
+    padding at the module start (the loop back at the baseline's offset mod 64) ran at 4.06. Rule:
+    before attributing a speed change in code the step did not touch, compare the function's
+    disassembly and run a padding control that restores the old alignment; report placement
+    effects as such, not as a regression of the change. Found: S0007 step 1, 2026-11-02.

@@ -610,3 +610,43 @@ in every run; the full runner (`pyc` included) also OK after.
 byte-identical before and after.) Matmul is 5.6× and scan 6.0× faster, as the experiment `m` predicted
 (2.25, 0.72); both now beat their scalar builds. CoreMark on `jit-x86_64`: code byte-identical (D35 lists),
 validated before and after (13 434 / 15 734 before, 13 826 / 14 251 after, alternated: noise).
+
+## Scalar code generation (S0007)
+
+One row per step of [S0007](specs/S0007-scalar-codegen.md), each against the commit before it, alternated in
+the same session.
+
+### Step 1: results straight to slots 0..m (2026-11-02)
+
+The change: at a function's `end` and at `return`, the results are moved straight into slots 0..m (a result
+in `tos` is one store instead of a store, a load and a store through `rcx`); the entries below them are no
+longer flushed. Conditions: 2026-11-02 17:58–18:14 UTC, Intel Xeon @ 2.10 GHz, 4 vCPU VM, CPython 3.13.17,
+wasmtime-py 50.0.1, `jit-x86_64` in its default bounds mode (guard, D44), one benchmark process at a time,
+load average 0.5–0.8. Baseline: HEAD (`git archive` into a scratch directory, `PYTHONPATH`), alternated run
+by run with the step's code.
+
+| benchmark | runs | before | after | change |
+|---|---|---|---|---|
+| calls, `leaf` (ns per call) | 5 runs × 11 rounds | 2.24 | 2.15 | −4 % |
+| calls, `leaf` | 8 runs × 21 rounds | 2.30 | 2.16 | −6 % |
+| calls, `fib(27)` (ns per call) | 5 runs × 11 rounds | 3.14 (3.05–3.19) | 2.56 (2.51–2.67) | −18 % |
+| calls, `fib(27)` | 8 runs × 21 rounds | 3.22 (3.09–3.72) | 2.60 (2.51–2.78) | −19 % |
+| CoreMark (it/s) | 5 | 16 694 (16 458–17 222) | 16 849 (16 469–17 259) | +0.9 % (noise) |
+
+Calls: `tools/run_calls_bench.py`, the median over runs of each run's median; `leaf` was faster after in 12
+of the 13 alternated pairs (its run medians overlap: 2.19–2.95 before, 2.08–2.57 after), `fib` in all 13
+with no overlap. Wasmtime in the same runs: `leaf` 1.39, `fib` 2.64 ns per call. CoreMark: `tools/
+run_coremark_jit.py poc/in/core.wasm`, every run "Correct operation validated"; code 36 058 → 35 788 bytes
+(aarch64 39 152 → 38 960).
+
+Scalar kernels (`tools/run_simd_bench.py --targets jit-x86_64 --rounds 5`, 8 alternated runs, median µs per
+iteration of the scalar build): addsat 5.82 → 5.94, dot 2.89 → 2.88, scan 2.70 → 2.65, matmul 3.65 → 3.62,
+nearest 1.56 → 1.54 (noise), **swizzle 4.09 → 4.49**. Swizzle's code differs only in its return, which runs
+once per 2 000 iterations; the other functions' returns shrink, so its loop moves by 66 bytes. A control
+(8 alternated runs of four builds) settles it: before 4.09, after 4.61, after with 66 bytes of padding at the
+start of the module (swizzle at the baseline's offset) 4.14, after with 2 bytes (its offset ≡ the baseline's
+mod 64) 4.06. The loss is code placement, not the change (LESSONS 51).
+
+Corpus (`tools/run_corpus.py --targets jit-x86_64`, 2 alternated runs of 3 rounds each, same session): results
+equal; every case within the spread of the two baseline runs (for example x25519 143.4 → 141.9–147.0 µs,
+sha256 4096B 42.6 → 41.1–41.9, deflate 8K 430.3–438.2 → 418.7–450.7).

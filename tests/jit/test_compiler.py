@@ -277,6 +277,47 @@ def test_traps_are_never_dropped() -> None:
     assert trap_of(jit, "br", 0) is TrapCode.INTEGER_DIVISION_BY_ZERO
 
 
+RETURNS = """(module (memory 1)
+  (func (export "swap") (param i32 i64) (result i64 i32) (local.get 1) (local.get 0))
+  (func (export "swap_ret") (param i32 i32) (result i32 i32)
+    (block (local.get 1) (local.get 0) (return)) (unreachable))
+  (func (export "rot3") (param i32 i32 i32) (result i32 i32 i32)
+    (local.get 2) (local.get 0) (local.get 1))
+  (func (export "in_place") (param i32 i32) (result i32 i32) (local.get 0) (local.get 1))
+  (func (export "mixed") (param i32 i32) (result i32 i64 i32 i32)
+    (i32.add (local.get 0) (local.get 1)) (i64.const -5) (local.get 1)
+    (i32.lt_s (local.get 0) (local.get 1)))
+  (func (export "below") (param i32 i32) (result i32 i32)
+    (i32.mul (local.get 0) (i32.const 3)) (local.get 1) (local.get 0) (return))
+  (func (export "load_below") (param i32) (result i32)
+    (i32.load (local.get 0)) (i32.const 7) (return))
+  (func (export "div_below") (param i32) (result i32)
+    (block (result i32) (i32.div_s (i32.const 1) (local.get 0)) (i32.const 7) (return)))
+  (func (export "cmp") (param i32 i32) (result i32) (i32.lt_s (local.get 0) (local.get 1)))
+  (func (export "high") (param i32 i32 i32) (result i32) (local.get 2))
+  (func (export "v128") (param i32) (result v128 i32)
+    (i32x4.splat (local.get 0)) (i32.add (local.get 0) (i32.const 1))))"""
+
+
+def test_returns_match_pyc(pins: None) -> None:
+    """S0007 "Returns": results go straight to slots 0..m (a compare on top, a slot source at or
+    above m, a v128); with locals in slots, a swap falls back to flush + moves; a trapping entry
+    below the results still traps (LESSONS 28)."""
+    wasm = wat(RETURNS)
+    jit, pyc = build(wasm), build(wasm, "pyc")
+    cases: list[tuple[str, tuple[int, ...]]] = [
+        ("swap", (3, -9)), ("swap_ret", (1, 2)), ("rot3", (1, 2, 3)), ("in_place", (4, 5)),
+        ("mixed", (1, 2)), ("mixed", (5, -2)), ("below", (6, 7)),
+        ("load_below", (0,)), ("load_below", (65536,)), ("div_below", (0,)), ("div_below", (2,)),
+        ("cmp", (1, 2)), ("cmp", (2, 1)), ("high", (1, 2, 3)), ("v128", (7,)),
+    ]  # fmt: skip
+    for name, args in cases:
+        assert outcome(jit, name, *args) == outcome(pyc, name, *args), (name, args)
+    assert jit("rot3", 1, 2, 3) == [3, 1, 2] and jit("swap", 3, 9) == [9, 3]
+    assert trap_of(jit, "load_below", 65536) is TrapCode.MEMORY_OUT_OF_BOUNDS
+    assert trap_of(jit, "div_below", 0) is TrapCode.INTEGER_DIVISION_BY_ZERO
+
+
 def test_deep_recursion_is_stack_overflow() -> None:
     jit = build(
         wat("""(module
