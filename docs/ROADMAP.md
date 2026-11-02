@@ -203,7 +203,9 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29) -> the rest below.
 * Win64 hardening (the second entry trampoline and `VirtualAlloc` exist; CI runs `tests/jit` on
   `windows-latest` and `macos-26-intel` and both are green, TARGETS.md; Windows ACG is open, RISKS R2);
   macOS arm64 and Windows on ARM are done in phase 4.
-* Differential fuzzing against wasmtime (`wasm-smith`) from the first widened stage on.
+* Differential fuzzing against wasmtime (`wasm-smith`) from the first widened stage on. With a corpus
+  of real programs, the scalar-gap investigation and WASI through fusedwasi, all of which can run
+  beside phase 5: [REAL-PROGRAMS.md](REAL-PROGRAMS.md) (maintainer's note, draft).
 
 ## Phase 6 — runtime API, WASI, CLI
 *Status: not started.*

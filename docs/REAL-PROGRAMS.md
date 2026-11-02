@@ -1,0 +1,116 @@
+---
+title: Real programs beyond CoreMark - a corpus, the scalar gap, and work that can run beside phase 5
+kind: reference
+status: draft
+updated: 2026-11-02
+---
+
+# Real programs beyond CoreMark: a corpus, the scalar gap, and parallel work
+
+A note from the maintainer's discussion, for the orchestrator. **Nothing here is approved for
+implementation.** It records three items that so far exist only in conversation, and which of them
+can run in parallel with phase 5 because they touch none of its files (`jit/common/compiler.py`, the
+backends, the artifact format).
+
+## What is recorded today and what is not
+
+| item | in the docs |
+|---|---|
+| differential fuzzing with `wasm-smith` against Wasmtime | yes, as a plan: ROADMAP phase 5 ("from the first widened stage on") and its exit criteria, TESTING, RISKS. No infrastructure yet |
+| a corpus of real programs with a check that needs no Wasmtime | no. TESTING says "real programs" in general only |
+| why scalar code on `jit-x86_64` is 1.5-3.9x behind Wasmtime | only as a measured fact (BENCHMARKS, SIMD benchmark: "The scalar builds on `jit-x86_64` are 1.5-3.9x behind Wasmtime's scalar builds"); no task |
+
+What runs today besides the spec suite: CoreMark, meld-core without WASI (`poc/bench/meld`), the
+SIMD kernels (`poc/bench/simd`), `vm.wasm` (`poc/bench/switch`). Nothing with WASI.
+
+## 1. A corpus of freestanding libraries (no WASI)
+
+Programs that do real work, build with the same toolchain as the SIMD kernels
+(`clang --target=wasm32 -O3 -nostdlib`, a small `malloc` inside where needed), and whose results can
+be checked **without Wasmtime**, against the Python standard library:
+
+| library | work | checked against |
+|---|---|---|
+| Monocypher (needs no libc) | BLAKE2b, X25519, ChaCha20-Poly1305 | `hashlib.blake2b`; known test vectors; Wasmtime |
+| miniz or zlib's inflate/deflate | compression | `zlib.compress` / `zlib.decompress` round trips |
+| SHA-256, xxHash, BLAKE3 (portable C) | hashing | `hashlib.sha256`; reference vectors |
+| QOI, stb_image (decoding) | image decoding | the reference decoder's output, checksums |
+
+Why these:
+
+* This is the main use case of the project: wasm as a replacement for a native Python extension.
+* They stress what CoreMark and the spec suite do not: i64 arithmetic, shifts and rotates, tight
+  loops over memory, larger functions.
+* The results are self-checking, so they also run where Wasmtime is absent (QEMU jobs, Android).
+
+Layout, as the SIMD kernels: `poc/bench/<name>/` with the sources or a pinned fetch, a `build.sh`,
+the built `.wasm` committed, a runner that checks the results on every target and prints timings
+(alternated rounds, median, as `tools/run_simd_bench.py`). The same modules join the differential
+run below.
+
+## 2. Why scalar code is 1.5-3.9x behind Wasmtime (investigation, no code change)
+
+The same method as the SIMD slowdown investigation (BENCHMARKS, LESSONS 44): hot-loop disassembly of
+both engines (`WABOROS_JIT_DUMP` + `objdump`; Wasmtime from the ELF of `Module.serialize()`),
+instruction counts by category, and controlled experiments as uncommitted patches whose checksums
+must equal the baseline's.
+
+Inputs: the scalar builds of the six SIMD kernels (already measured), CoreMark, and the corpus of
+section 1.
+
+Questions to answer with data:
+
+* How much is **bounds checks**? The SIMD investigation's `B` experiment (no bounds checks at all)
+  changed little on these kernels, so guard pages may not close this gap; measure on the scalar
+  builds directly.
+* How much is **register allocation**: pinned locals versus spills to slots; values live across
+  loop back-edges; the lazy value stack flushing at branches.
+* How much is **instruction selection**: address modes (`[base + index*scale + disp]` versus separate
+  adds), compare-and-branch fusion, `lea` for arithmetic, zero-extension moves after 32-bit ops.
+* How much is **loop shape**: back-edge polling of the interrupt word (cost per iteration), block
+  layout, loop alignment.
+* **Store forwarding and partial registers** (the SIMD lesson): narrow writes read wide, `setcc`
+  without a zeroing idiom.
+
+Output: a ranking by gain per complexity, as the SIMD investigation gave, and decisions for the
+maintainer. The ranking decides what goes into phase 5 next to guard pages, or later.
+
+## 3. Differential fuzzing and the corpus together
+
+Infrastructure beside the code, not in it:
+
+* `wasm-tools smith` modules on every target and on Wasmtime; results compared value by value, NaN
+  lanes by class (TESTING, S0005); a divergence is minimised (`wasm-tools shrink`) and becomes a test.
+* The corpus of section 1 and, once WASI is bound (below), real programs, run the same way.
+* A CI job with a time budget, and a longer local run before each phase closes (ROADMAP phase 5 exit
+  criterion: "differential fuzzing finds no divergence over an agreed number of hours").
+
+## 4. WASI through fusedwasi, beside phase 5
+
+fusedwasi 0.1.0a1 (PyPI, checked 2026-11-02) does not depend on any runtime object: its Python twin
+imports only the standard library; every WASI import is a flat function `fn(guest, ...)` over
+`Guest(state, memories, realloc=..., trap=..., exit=..., wait=...)`. A memory is a writable buffer,
+a callable returning one, or an object with `read`/`write` and a size. WASI 0.1 is built on the
+0.2 host, so one binding serves both.
+
+So binding it needs only the internal engine interface (`instantiate(module, imports)` with
+`partial(fn, guest)` per import, and a call of the guest's `cabi_realloc` for p2), **not** the
+public wasmtime-py-shaped API of phase 6. This opens the corpus to programs that need WASI: Lua,
+QuickJS, PolyBench/C, SQLite, CPython-wasi. And because fusedwasi also runs on Wasmtime, the
+differential run uses **the same host on both engines**, so a divergence is the engine's, not the
+host's.
+
+To decide (ROADMAP q2, D8): fusedwasi as an optional extra (`waboros[wasi]`), vendored, or allowed as
+a dependency; the cost of p1 over p2 on a hot `fd_write` loop (measure).
+
+## What can run in parallel with phase 5, and what cannot
+
+| item | parallel? | why |
+|---|---|---|
+| QEMU smoke of `pyc` on s390x, riscv64, ppc64le | yes | CI only; s390x is big-endian and finds byte-order bugs that x86 and ARM never show |
+| corpus (section 1) and its runner | yes | `poc/bench/` and `tools/` only |
+| scalar-gap investigation (section 2) | yes | no committed code change |
+| fuzzing infrastructure (section 3) | yes | `tools/`, CI |
+| WASI binding through fusedwasi (section 4) | yes, after the maintainer's decision on the dependency | a new `wasi` area over the internal engine interface |
+| micro-compilers, the C reference loader | no | wait for the fixed artifact format (D36) |
+| a third architecture | no | the backend interface still changes (exceptions, GC, memory64) |
