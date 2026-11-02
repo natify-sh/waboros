@@ -544,7 +544,7 @@ code and docs keep `w2py`. The step uses `waboros` everywhere at once, repositor
 (`natify-sh/waboros`), without waiting for the GitHub repository: the maintainer renames it last
 (GitHub then redirects the old URLs; the new ones resolve only after that rename).
 Packaging lands with the rename (maintainer, 2026-11-02), following the other natify-sh repositories
-(py-wasmhost, py-wasmext): a LICENSE, `pyproject.toml` ready for publishing, the build backend
+(py-wasmhost, py-wasmext): a LICENSE (MIT, copyright natify-sh, as fusedwasi), `pyproject.toml` ready for publishing, the build backend
 setuptools + setuptools-scm (version from git tags), and `.github/workflows/coverage.yml`,
 `publish.yml` and `.github/dependabot.yml`. The runtime keeps no dependency.
 
