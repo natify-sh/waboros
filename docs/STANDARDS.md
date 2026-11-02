@@ -75,6 +75,7 @@ one with `Supersedes: Dn` and mark the old one `superseded by Dm`.
 | a new danger or its answer | RISKS.md |
 | overview of how things fit | ARCHITECTURE.md, TARGETS.md |
 | tests, expected failures | TESTING.md |
+| a feature's state on a target (claims, xfail, a step of a proposal) | FEATURES.md: the table via `tools/features.py` **and** the hand-written notes below it; TARGETS.md |
 | order of work | ROADMAP.md |
 
 ## Steps, briefs and commits
