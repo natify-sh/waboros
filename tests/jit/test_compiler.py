@@ -161,6 +161,35 @@ def test_integer_operators_match_pyc(t: str, pins: None) -> None:
     assert checked > 5000
 
 
+@pytest.mark.parametrize("t", ["i32", "i64"])
+def test_add_sub_as_lea_match_pyc(t: str, pins: None) -> None:
+    """S0007 L: add/sub of a local and an immediate (fits disp32 or not) and add of two registers
+    become one lea; the i32 result must wrap mod 2**32 and stay zero-extended (LESSONS 5)."""
+    ks = [0, 1, -1, 0x7FFFFFFF, -0x80000000, 0x80000000, M32]
+    if t == "i64":
+        ks += [-0x80000001, 1 << 32, 0x123456789A, -(1 << 63), (1 << 63) - 1]
+    ext = "(i64.extend_i32_u)" if t == "i32" else ""
+    funcs = [f'(func (export "r") (param {t} {t}) (result i64) '
+             f"({t}.add (local.get 0) ({t}.mul (local.get 1) ({t}.const 3))) {ext})"]  # fmt: skip
+    for p, q in ((0, 1), (1, 0), (1, 1)):  # two pinned registers (rbp as base swaps to index)
+        funcs.append(f'(func (export "rr{p}{q}") (param {t} {t}) (result i64) '
+                     f"({t}.add (local.get {p}) (local.get {q})) {ext})")  # fmt: skip
+    for i, k in enumerate(ks):
+        for op in ("add", "sub"):
+            funcs.append(f'(func (export "{op}{i}") (param {t} {t}) (result i64) '
+                         f"({t}.{op} (local.get 0) ({t}.const {k})) {ext})")  # fmt: skip
+            funcs.append(f'(func (export "{op}{i}/tos") (param {t} {t}) (result i64) '
+                         f"({t}.{op} ({t}.mul (local.get 1) (local.get 0)) ({t}.const {k})) "
+                         f"{ext})")  # fmt: skip
+    wasm = wat("(module " + "\n".join(funcs) + ")")
+    jit, pyc = build(wasm), build(wasm, "pyc")
+    edge = EDGE32 if t == "i32" else EDGE64
+    for name in [n for n, k, _ in jit.mod["exports"] if k == 0]:
+        for a in edge:
+            for b in (1, 3, a):
+                assert outcome(jit, name, a, b) == outcome(pyc, name, a, b), (name, a, b)
+
+
 @pytest.mark.parametrize("t,bits", [("i32", 32), ("i64", 64)])
 def test_division_edge_cases(t: str, bits: int) -> None:
     jit = build(

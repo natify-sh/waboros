@@ -306,3 +306,10 @@ What went wrong or surprised us while building the PoC, so it is not found again
     before attributing a speed change in code the step did not touch, compare the function's
     disassembly and run a padding control that restores the old alignment; report placement
     effects as such, not as a regression of the change. Found: S0007 step 1, 2026-11-02.
+52. **A tool that puts the checkout's `src` on `sys.path` ignores a `PYTHONPATH` baseline.**
+    `tools/jit_dump.py` inserts `ROOT/src` ahead of everything, so running it with `PYTHONPATH`
+    pointed at a `git archive` of HEAD compiled the new code twice. The D35 comparison then reported
+    "no module changed" for a step that changed 61 modules. Rule: before comparing against a baseline,
+    check that each tool really imports the baseline (`waboros.__file__`). For tools that set their own
+    path, run a copy of the tool from the baseline tree (`ROOT` = that tree). A "no difference" result
+    for a step that changes code is a reason to check the setup. Found: S0007 step 2, 2026-11-02.

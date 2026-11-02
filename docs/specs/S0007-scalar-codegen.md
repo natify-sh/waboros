@@ -306,3 +306,9 @@ investigation's.
   per call (no overlap); CoreMark +0.9 % (noise); corpus within noise; scalar `swizzle` +10 % from
   code placement only (BENCHMARKS.md, LESSONS 51). The orchestrator widened the D35 pattern to
   "a function return" (Test plan) and kept the step on `fib`'s gain.
+* 2026-11-02: step 2 done (L, `jit-x86_64` `binop` only: add/sub of a register and a disp32 immediate, or
+  add of two registers, is one `lea`). Spec parity (54 385 pass, 0 fail, 91 xfail; explicit mode and
+  `WABOROS_JIT_NOPIN=all` too); D35: the aarch64 list is identical to the baseline's. 61 x86-64 modules
+  change, and they are exactly the modules where `binop` takes the new path. Scalar kernels with a padding
+  control: `addsat` −11 %, `scan` −10 %, `nearest` −6 %; CoreMark +2.2 % (within the spread); `fib` +5 % and
+  `swizzle` −31 % are code placement (BENCHMARKS.md).

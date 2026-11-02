@@ -650,3 +650,46 @@ mod 64) 4.06. The loss is code placement, not the change (LESSONS 51).
 Corpus (`tools/run_corpus.py --targets jit-x86_64`, 2 alternated runs of 3 rounds each, same session): results
 equal; every case within the spread of the two baseline runs (for example x25519 143.4 → 141.9–147.0 µs,
 sha256 4096B 42.6 → 41.1–41.9, deflate 8K 430.3–438.2 → 418.7–450.7).
+
+### Step 2: add/sub as one `lea` (L) (2026-11-02)
+
+The change (`jit-x86_64` only): `binop` add/sub of a register `x` other than the destination and an immediate
+that fits a sign-extended disp32 at the operand's width, or add of two registers, is one `lea` instead of
+`mov` + `add`/`sub` (for example `lea eax, [rbx-0x1]`). aarch64 code is unchanged (its `jit_dump` list is
+identical to the baseline's); on x86-64, 61 modules change (CoreMark included), exactly the modules where
+`binop` takes the new path. Conditions: 2026-11-02 18:39–18:50 UTC, Intel Xeon @ 2.10 GHz, 4 vCPU VM,
+CPython 3.13.17, `jit-x86_64` in its default bounds mode (guard, D44), one benchmark process at a time, load
+average 0.5–1.0. Baseline: HEAD (`git archive` into a scratch directory, `PYTHONPATH`), alternated run by run
+with the step's code.
+
+| benchmark | runs | before | after | change |
+|---|---|---|---|---|
+| CoreMark (it/s) | 8 pairs | 16 250 (14 623–16 989) | 16 610 (16 313–16 818) | +2.2 % (within the spread) |
+| scalar `addsat` (µs per iteration) | 16 pairs × 5 rounds | 5.94 | 5.27 | −11 %, faster in 15 of 16 pairs |
+| scalar `scan` | 16 pairs | 2.64 | 2.38 | −10 %, 14 of 16 |
+| scalar `nearest` | 16 pairs | 1.55 | 1.46 | −6 %, 12 of 16 |
+| scalar `dot`, `matmul` | 16 pairs | 2.91, 3.64 | 2.90, 3.62 | noise |
+| scalar `swizzle` | 16 pairs | 4.54 | 3.15 | code placement (below) |
+| calls, `leaf` (ns per call) | 16 pairs × 11 rounds | 2.17 | 2.12 | noise |
+| calls, `fib(27)` | 16 pairs × 11 rounds | 2.65 | 2.79 | code placement (below) |
+
+Padding control (LESSONS 51): both trees were built with 0, 8, …, 56 bytes of `int3` before the first function
+(a scratch patch), alternated, 3 runs per pad. `addsat` after the change is faster at every pad (5.04–5.30 µs
+against 5.91–8.64); `scan` (2.26–2.39 against 2.59–2.65) and `nearest` (1.38–1.45 against 1.53–1.58) at 7 of 8
+pads. `swizzle` spans 3.82–4.78 before and 3.16–4.56 after, so its gain is placement and is not claimed. `fib`'s
+code changes only in two `lea`s, each 1 byte shorter, and it starts 3 bytes earlier. With 3 bytes of padding
+(fib back at the baseline's offset), 16 alternated triples gave base 2.60, after 2.75, after+3 2.61: the loss is
+placement. JCC erratum check (the code area is page-aligned, so module offsets mod
+32 are absolute): in the slow build fib's return `jmp` (run on every call) spans 0x19d–0x1a2, crossing a 32-byte
+boundary. In the padded build, as fast as the baseline, it spans 0x1a0–0x1a5. That `jmp` is the only
+difference between those two builds: the two `test`+`jne` status checks after the calls cross a boundary in
+both, and in neither of them in the baseline. So the padded build has two crossings more than the baseline
+and is just as fast; the erratum explains `fib` at most in part. For `swizzle` (ROADMAP, "Code placement", first check), the
+inner loop's back edge does not cross a boundary in the slow baseline build (0x2ec7–0x2ed0), but it does in the
+fast build after the change (0x2e1c–0x2e25). Both inner loops have three crossing branches. So the back edge
+alone does not explain swizzle.
+
+Corpus (`tools/run_corpus.py --targets jit-x86_64`, 2 sets of 4 alternated pairs, 3 rounds each): results equal
+in all 16 runs. No case is slower than the baseline beyond the spread. Medians move both ways between the two
+sets (for example `inflate 8K` −14 % then +11 %; x25519 #0 −6 % then −5 %), and some runs of both trees are
+disturbed by about 2×, so the corpus does not show a change. CoreMark: every run "Correct operation validated".
