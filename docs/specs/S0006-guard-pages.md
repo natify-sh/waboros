@@ -167,7 +167,9 @@ trap).
   written with its `hi` last, and removed (zeroed) before its code area or reservation is unmapped, so
   a reused address is never misclassified. A reader that sees a half-written entry treats the fault
   as foreign, which can only happen to a thread running code it was not synchronised with.
-* **Installation**: lazily, at the first guard-mode instantiation, under the registry lock:
+* **Installation**: lazily, once per process, under the install lock: under `auto` at the first
+  compile that would give guard code (`auto` needs to know that the handler installed before it
+  chooses the mode), under `guard` at the first guard-mode instantiation:
   `sigaction(SIGSEGV)` (and `SIGBUS` on macOS/BSD) with `SA_SIGINFO | SA_ONSTACK`, the previous
   action saved for chaining. No `SA_NODEFER`: a fault inside the handler kills the process. Never
   uninstalled. Windows: `AddVectoredExceptionHandler(1, h)`.
@@ -205,20 +207,22 @@ trap).
 ### Selection and fallback
 * The mode is a compile-time property of the code (D29). Before phase 6 it is chosen by a JIT option
   `bounds = "explicit" | "guard" | "auto"` (environment `WABOROS_JIT_BOUNDS` for tests and CI;
-  S0002's interface is unchanged). **`"explicit"` is the default: guard pages are opt-in** (the
-  maintainer, 2026-11-02; D43). `"auto"` (opt-in too) gives `guard` when all hold: the (OS,
-  architecture, libc) row is **verified** in the table below; the handler is installed (or installs)
-  and is ours; the reservation of 4 GiB + GUARD succeeds; the embedding has not forbidden handlers.
-  Otherwise `explicit`, **silently** (Q6): it is a full mode, not a degraded target, so D31's warning
-  does not apply. `"guard"` where it cannot work is an error, never a crash. `"explicit"` installs
-  nothing.
+  S0002's interface is unchanged; an empty value counts as unset). **`"auto"` is the default**
+  (D44, which superseded D43's opt-in). `"auto"` gives `guard` when all hold: the (OS,
+  architecture, libc) row is **verified** in the table below; the process is of the target's
+  architecture (a cross-compile gets `explicit`); the handler is installed (or installs) and is
+  ours; the embedding has not forbidden handlers. Otherwise `explicit`, **silently** (Q6): it is a
+  full mode, not a degraded target, so D31's warning does not apply. `"guard"` where it cannot work
+  is an error, never a crash. `"explicit"` installs nothing and is the opt-out.
+* The memory reservation (4 GiB + GUARD) is made in **both** modes (Memory reservation above), so a
+  failed reservation fails an `explicit` module the same way: it is not a reason to fall back.
 * **Verified** means a CI job on that platform runs the fault tests and the spec suite in guard
   mode. Until a row is verified, `auto` there means `explicit`, and `explicit` is the only mode of a
-  new architecture (D29). Initial table (all "not yet"; each step flips its rows):
+  new architecture (D29). The table (each step flips its rows):
 
 | OS / libc | x86-64 | aarch64 | CI |
 |---|---|---|---|
-| Linux glibc | step 1 | step 2 | `jit`, `arm64` native runner, QEMU |
+| Linux glibc | **verified** (D44) | step 2 | `jit`, `arm64` native runner, QEMU |
 | Linux musl | later | later | none yet |
 | macOS | step 3 | step 3 | `macos-x64`, `macos-pythonorg` |
 | Windows | step 4 | later | `windows` |
@@ -379,3 +383,40 @@ reservation is a crash, not a trap: the explicit-mode tests and differential run
   default** (D44, superseding D43) once step 1's review is closed and a measurement on a quiet
   machine confirms the gain; `auto` gives `guard` only on rows verified in CI (Linux glibc x86-64
   first) and `explicit` everywhere else, silently; `bounds = "explicit"` is the opt-out.
+* 2026-11-02: **`auto` is the default** (D44), after step 1's review and a measurement on a quiet
+  machine (CoreMark +9.35 % median over 9 alternated pairs; BENCHMARKS.md, "Guard pages").
+  * The row Linux glibc x86-64 is **verified** (`verified` of `jit-x86_64`); every other row stays
+    `explicit`.
+  * **glibc detection**: the row is `linux-` plus `platform.libc_ver()[0]`. That function first asks
+    glibc's `confstr(_CS_GNU_LIBC_VERSION)`, which musl lacks, so musl (and anything unnamed) gets
+    another row and stays `explicit`.
+  * `WABOROS_JIT_BOUNDS=` (empty) counts as unset. Any failure to install the handler under `auto`
+    (`sigaction`, executable memory) gives `explicit` silently.
+  * **Architecture check**: `install` refuses a process that is not of the target's architecture
+    (`platform.machine()` among the target's machines, 64-bit). Without it, `auto` in an arm64
+    Linux process cross-compiling `jit-x86_64` (`tools/jit_dump.py`, D35) would have installed x86
+    machine code as the process's SIGSEGV handler; under `guard` the same mistake waited at
+    instantiation (LESSONS 48).
+  * **Q1, rule A** (the maintainer): when the current SIGSEGV handler is not ours, `dladdr` names
+    the object that holds it. Inside the interpreter's own image (the image of `Py_IncRef`, or
+    `PyPy_IncRef`: the executable or libpython/libpypy, where faulthandler and the `signal`
+    module's handler live) the chain is broken and the Q1 error is raised. In any other shared
+    object (wasmtime), or in anonymous memory (another waboros copy's emitted handler, another
+    JIT's), it is assumed to chain, as Wasmtime assumes. SIG_DFL/SIG_IGN and a Python-level
+    handler set after ours stay errors. So does faulthandler enabled now but not when ours was
+    installed, with any foreign handler on top: faulthandler then sits between that handler and
+    ours, and a library's handler chaining to it ends the process on a guard fault (found by the
+    step's review: ours, `faulthandler.enable()`, then a wasmtime store gave 139; now the Q1 error).
+    Whether faulthandler was enabled is recorded at our install. Where `dladdr` or the interpreter's symbol is missing, the
+    step-1 rule stays (faulthandler enabled under any foreign handler is a break). The step-1 rule
+    made the default unusable under pytest with wasmtime in the process: pytest enables
+    faulthandler, wasmtime installs its handler above ours, and every guard call raised although
+    wasmtime chains to us (LESSONS 47).
+  * **Residual case, not detected**: faulthandler that was already enabled when ours was installed
+    (pytest), then disabled and re-enabled while a library's handler is above ours. The library's
+    handler then chains to faulthandler, which re-raises a guard fault instead of chaining, so the
+    process ends (139). RISKS R6.
+  * CI: `jit` keeps one run of the spec suite and `test_guard.py` with `WABOROS_JIT_BOUNDS=guard`;
+    `test` (3.13) runs pytest and `spec` runs the jit-x86_64 spec suite with
+    `WABOROS_JIT_BOUNDS=explicit`; the D35 lists of `jit-x86_64` are made with the mode named, in
+    both modes, on both hosts.

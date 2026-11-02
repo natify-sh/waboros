@@ -590,7 +590,7 @@ without a verified handler. Making `guard` (or `auto`) the default needs measure
 machines and a new decision.
 
 ### D44. Guard pages by default where verified (`bounds = "auto"`); explicit checks by flag
-Status: accepted (maintainer, 2026-11-02) · Date: 2026-11-02 · Supersedes: D43 · Evidence: [S0006](specs/S0006-guard-pages.md) step 1 (CoreMark +14.3 % median over 7 alternated pairs on a loaded machine, +7.5 % on a quiet one in the draft; code −20 %)
+Status: accepted (maintainer, 2026-11-02) · Date: 2026-11-02 · Supersedes: D43 · Evidence: [S0006](specs/S0006-guard-pages.md) step 1 (CoreMark +14.3 % median over 7 alternated pairs on a loaded machine, +7.5 % on a quiet one in the draft; code −20 %); BENCHMARKS.md, "Guard pages" (quiet machine, 9 pairs: +9.35 % median)
 
 As in Wasmtime (`signals_based_traps` on by default), the JIT's default bounds mode becomes `auto`:
 guard pages on every (OS, architecture, libc) row whose handler is verified in CI, explicit checks
@@ -599,3 +599,9 @@ lands in its own step after step 1's review and a measurement on a quiet machine
 default stays `explicit` (D43). The rest of D29 holds. The handler's chaining follows Wasmtime with
 one deliberate difference: a sent signal whose previous action is the default is re-sent with
 `raise`, so the process ends as it would without us (S0006 Changes, LESSONS 46).
+
+**Done** (2026-11-02): `auto` is the default; Linux glibc x86-64 is the first verified row (glibc
+named by `platform.libc_ver()`, so musl stays explicit); an empty `WABOROS_JIT_BOUNDS` counts as
+unset. The switch also brought the Q1 check's rule A (`dladdr` tells the interpreter's handlers
+from a library's, so wasmtime above ours under faulthandler is no error) and the handler's refusal
+to install in a process of another architecture (S0006 Changes).

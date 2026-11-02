@@ -32,6 +32,11 @@ jobs:
         run: uv run python tools/stack_info.py
       - if: matrix.python == '3.13'
         run: docker run --rm -v "$PWD:/w" -w /w python:3.13-alpine python tools/stack_info.py
+      # D44: the default is guard pages here (Linux glibc x86-64); explicit checks stay covered
+      - if: matrix.python == '3.13'
+        run: uv run pytest -q
+        env:
+          WABOROS_JIT_BOUNDS: explicit
   jit:
     runs-on: ubuntu-latest
     steps:
@@ -63,9 +68,10 @@ jobs:
       # step 4e: the whole spec suite on jit-aarch64 with BTI enforced (call_indirect, tail calls
       # and jump tables land on their pads; simd/ since 5e2), in-process under QEMU; about 1 min
       - run: python3 tools/run_arm64.py -m tests.spec.run --engine jit-aarch64 --in-process
-      # S0006 step 1: guard pages (opt-in, D43) on Linux glibc x86-64: the spec suite with the
-      # fault handler doing the bounds checks, then the fault tests (foreign faults, a broken
-      # chain, two copies of the package) in the same mode
+      # S0006: guard pages, named explicitly although `auto` (the default, D44) gives them here,
+      # so a regression in the verified-row check cannot silently turn them off: the spec suite
+      # with the fault handler doing the bounds checks, then the fault tests (foreign faults, a
+      # broken chain, two copies of the package)
       - run: uv run python -m tests.spec.run --engine jit-x86_64
         env:
           WABOROS_JIT_BOUNDS: guard
@@ -86,11 +92,14 @@ jobs:
       # S0004: the same gate for the aarch64 code, cross-compiled here (never run; D35): ARMv8.0-A
       - run: uv run python tools/isa_all.py --target jit-aarch64
       # D35: the code of every module and CoreMark per target as a sha256 list; the `arm64` job
-      # compiles the same modules on arm64 and diffs its lists with these (both ways)
+      # compiles the same modules on arm64 and diffs its lists with these (both ways). The bounds
+      # mode is named for jit-x86_64 on both hosts (`auto` gives guard only in an x86-64 process),
+      # and both modes are listed
       - run: |
           mkdir dump
           uv run python tools/jit_dump.py --target jit-aarch64 dump/x86-host-jit-aarch64.txt
-          uv run python tools/jit_dump.py --target jit-x86_64 dump/x86-host-jit-x86_64.txt
+          WABOROS_JIT_BOUNDS=guard uv run python tools/jit_dump.py --target jit-x86_64 dump/x86-host-jit-x86_64.txt
+          WABOROS_JIT_BOUNDS=explicit uv run python tools/jit_dump.py --target jit-x86_64 dump/x86-host-jit-x86_64-explicit.txt
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: jit-dump-x86
@@ -109,6 +118,10 @@ jobs:
       - run: uv run python -m tests.spec.run --engine wasmtime --json spec-wasmtime.json
       - run: uv run python -m tests.spec.run --engine pyc --json spec-pyc.json
       - run: uv run python -m tests.spec.run --engine jit-x86_64 --json spec-jit-x86_64.json
+      # D44: the default above is guard pages; explicit checks stay covered
+      - run: uv run python -m tests.spec.run --engine jit-x86_64
+        env:
+          WABOROS_JIT_BOUNDS: explicit
       # executable memory forbidden (MDWE): `auto` must warn once and give pyc's numbers
       - run: uv run python tools/no_exec.py -- uv run python -m tests.spec.run --engine auto
   os:
@@ -217,9 +230,11 @@ jobs:
         run: |
           mkdir dump
           uv run python tools/jit_dump.py --target jit-aarch64 dump/arm64-host-jit-aarch64.txt
-          uv run python tools/jit_dump.py --target jit-x86_64 dump/arm64-host-jit-x86_64.txt
+          WABOROS_JIT_BOUNDS=guard uv run python tools/jit_dump.py --target jit-x86_64 dump/arm64-host-jit-x86_64.txt
+          WABOROS_JIT_BOUNDS=explicit uv run python tools/jit_dump.py --target jit-x86_64 dump/arm64-host-jit-x86_64-explicit.txt
           diff x86-dump/x86-host-jit-aarch64.txt dump/arm64-host-jit-aarch64.txt
           diff x86-dump/x86-host-jit-x86_64.txt dump/arm64-host-jit-x86_64.txt
+          diff x86-dump/x86-host-jit-x86_64-explicit.txt dump/arm64-host-jit-x86_64-explicit.txt
   macos-pythonorg:
     # ROADMAP phase 4, after 4e: does jit-aarch64 run under the python.org installer's CPython (a
     # notarized, hardened-runtime build) on Apple Silicon? Both answers pass this job as long as the

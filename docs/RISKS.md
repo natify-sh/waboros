@@ -154,12 +154,16 @@ know, otherwise recompile" is the simplest robust rule. It needs the wasm at han
 
 ## R6. A signal handler of our own (guard pages in the JIT)
 
-**Status at HEAD: partly mitigated, Linux glibc x86-64 only, opt-in.** S0006 step 1: `WABOROS_JIT_BOUNDS=guard`
-compiles guard code on `jit-x86_64`; the handler is emitted machine code (`x86_64/abi.py`) reading this copy's
-registry (`common/guard.py`), chaining every fault it does not claim (tests: `tests/jit/test_guard.py`, foreign
-faults with and without `faulthandler`, a broken chain, a foreign chaining handler, two copies of the package
-in either order). Explicit checks stay the default (D43); `auto` gives `explicit` until a row is verified.
-Open: aarch64, macOS, Windows, Android (S0006 steps 2-5), the review (step 7).
+**Status at HEAD: partly mitigated, Linux glibc x86-64 only, the default there.** S0006 step 1: guard code on
+`jit-x86_64`; the handler is emitted machine code (`x86_64/abi.py`) reading this copy's registry
+(`common/guard.py`), chaining every fault it does not claim (tests: `tests/jit/test_guard.py`, foreign faults
+with and without `faulthandler`, a broken chain, a foreign chaining handler, wasmtime above ours, two copies of
+the package in either order). Since D44 `auto` is the default: guard on the verified row (Linux glibc x86-64),
+explicit elsewhere; `WABOROS_JIT_BOUNDS=explicit` installs nothing. **Not detected** (rule A, S0006 Changes):
+faulthandler that was already enabled when ours was installed (as under pytest), then disabled and re-enabled
+while a library's handler is above ours; a guard fault then reaches faulthandler through that library and ends
+the process (139). faulthandler enabled only after ours, under any foreign handler, is detected (the Q1 error). Open: aarch64, macOS, Windows, Android (S0006
+steps 2-5).
 
 Guard pages need a SIGSEGV handler in the process (ARCHITECTURE.md, "Memory"); the PoC emits it as
 machine code. Risks and possible answers:
@@ -171,10 +175,10 @@ machine code. Risks and possible answers:
 * **Other handlers in the process**: `faulthandler`, other runtimes (wasmtime-py, wasmext modules,
   JVM/.NET embedded), a later `sigaction` by someone else that replaces ours. Answer: chain to the
   previous handler (the PoC does), re-check at each entry and after each host call (a `sigaction`
-  query) and raise when the chain is recognisably broken (SIG_DFL/SIG_IGN, `faulthandler` enabled
-  with another handler above ours, a Python-level handler set after ours; S0006 Q1 as revised; a
-  false error is preferred to a crash); any other handler is assumed to chain, as
-  Wasmtime assumes; never install when the user asks not to (`explicit`, the default, installs nothing).
+  query) and raise when the chain is recognisably broken (SIG_DFL/SIG_IGN, a handler inside the
+  interpreter's own image by `dladdr` — faulthandler, the `signal` module —, faulthandler enabled
+  after ours under a foreign handler, a Python-level handler set after ours; S0006 Q1, rule A); any other handler is assumed to chain, as Wasmtime assumes;
+  never install when the user asks not to (`explicit` installs nothing).
 * **Threads**: the handler is per process; the fault address and the code range identify the module,
   so it works from any thread; stack-overflow detection needs `sigaltstack` per thread (not done).
 * **A fault not of ours inside our code range** (a bug of the JIT): becomes a wasm trap instead of a

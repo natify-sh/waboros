@@ -10,10 +10,11 @@ replaces. A handler claims a fault only when the PC is a fault point of its own 
 address lies in one of its own reservations; everything else goes to the saved action. So copies
 work in either install order and nested.
 
-Opt-in (D43): `WABOROS_JIT_BOUNDS=explicit` (the default) | `guard` | `auto`. `explicit` installs
-nothing. `guard` compiles guard code wherever the backend has the mode and fails at instantiation
-where the handler is not available, never crashes. `auto` gives `guard` only on a host row that is
-verified (`JitTarget.verified`: none yet, S0006 "Selection"), silently `explicit` otherwise (Q6).
+Mode (D44): `WABOROS_JIT_BOUNDS=auto` (the default; empty counts as unset) | `explicit` | `guard`.
+`explicit` installs nothing. `guard` compiles guard code wherever the backend has the mode and fails
+at instantiation where the handler is not available, never crashes. `auto` gives `guard` only in a
+process of the target's architecture on a host row that is verified (`JitTarget.verified`, S0006
+"Selection") and once the handler is installed and ours; silently `explicit` otherwise (Q6).
 
 Registry: per kind (code areas, reservations) one table `[capacity, entries...]` of 64-bit words
 that never moves, published through one pointer word (`heads`); a full table is replaced by a
@@ -50,7 +51,7 @@ LOST = (
 
 
 def mode() -> str:
-    m = os.environ.get("WABOROS_JIT_BOUNDS", "explicit")
+    m = os.environ.get("WABOROS_JIT_BOUNDS") or "auto"
     if m not in MODES:
         raise ValueError(f"WABOROS_JIT_BOUNDS={m!r}: expected one of {', '.join(MODES)}")
     return m
@@ -58,7 +59,9 @@ def mode() -> str:
 
 @functools.cache
 def host_row() -> str:
-    """This host's row of the S0006 table: `<os>-<libc>` (e.g. `linux-glibc`)."""
+    """This host's row of the S0006 table: `<os>-<libc>` (e.g. `linux-glibc`). glibc is what
+    `platform.libc_ver()` names (glibc's `confstr(_CS_GNU_LIBC_VERSION)`, which musl lacks); musl
+    and anything unnamed get another row, so `auto` stays explicit there."""
     if sys.platform.startswith("linux"):
         return "linux-" + (platform.libc_ver()[0] or "unknown")
     return sys.platform
@@ -79,7 +82,7 @@ def wanted(target: Any) -> bool:
             return False
         try:
             install(target)
-        except (OSError, RuntimeError):
+        except Exception:  # any failure to install: explicit, silently (S0006 "Selection")
             return False
         return broken() is None
     return True
@@ -160,10 +163,14 @@ def install(target: Any) -> None:
     with _install_lock:
         if _handler:
             return
-        if host_row() not in target.guard_rows:
+        # the handler is the target's machine code: never installed in another architecture's
+        # process (jit_dump cross-compiles, D35)
+        machine = platform.machine().lower()
+        native = machine in target.machines and sys.maxsize > 1 << 32
+        if host_row() not in target.guard_rows or not native:
             raise RuntimeError(
                 f"guard-mode code (WABOROS_JIT_BOUNDS=guard) cannot run here: {target.name} has "
-                f"no fault handler for {host_row()} (S0006)"
+                f"no fault handler for {host_row()} on {machine} (S0006)"
             )
         libc = ctypes.CDLL(None, use_errno=True)
         sigaction = libc.sigaction
@@ -185,16 +192,54 @@ def install(target: Any) -> None:
         # a Python-level handler set before ours is only chained to: not a break later
         py = signal.getsignal(signal.SIGSEGV)
         _handler.update(code=mem, addr=mem.addr, prev=prev, sigaction=sigaction, py=py)
+        _handler["fh"] = faulthandler.is_enabled()  # enabled before ours: it sits below us
+        _handler.update(_image_finder(libc))
+
+
+class _DlInfo(ctypes.Structure):
+    _fields_ = [
+        ("fname", ctypes.c_char_p),
+        ("fbase", ctypes.c_void_p),
+        ("sname", ctypes.c_char_p),
+        ("saddr", ctypes.c_void_p),
+    ]
+
+
+def _image_finder(libc: Any) -> dict[str, Any]:
+    """`dladdr` and the load address of the interpreter's own image (the executable or
+    libpython/libpypy: where faulthandler and the `signal` module's handler live), found through
+    `Py_IncRef`; empty where either is missing (then broken() keeps the conservative rule)."""
+    try:
+        dladdr = libc.dladdr
+        dladdr.argtypes = [ctypes.c_void_p, ctypes.POINTER(_DlInfo)]
+        for name in ("Py_IncRef", "PyPy_IncRef"):
+            if hasattr(libc, name):
+                at = ctypes.cast(getattr(libc, name), ctypes.c_void_p).value
+                base = _image(dladdr, at or 0)
+                return {"dladdr": dladdr, "python": base} if base else {}
+    except (AttributeError, OSError):
+        pass
+    return {}
+
+
+def _image(dladdr: Any, addr: int) -> int:
+    """The load address of the shared object that holds `addr`; 0 for anonymous memory."""
+    info = _DlInfo()
+    return (info.fbase or 0) if dladdr(addr, ctypes.byref(info)) else 0
 
 
 def broken() -> str | None:
-    """Is the chain to our handler recognisably broken (S0006 Q1 as revised)? Our handler still
-    the SIGSEGV action: no. Otherwise only these break it: the action reset to SIG_DFL/SIG_IGN;
-    `faulthandler` enabled (it re-raises instead of chaining; its handler's address cannot be
-    told from another one, so with any foreign handler on top an enabled faulthandler counts as
-    a break: a false error rather than a crash); a Python-level handler set after ours (it only
-    sets a flag, the access faults forever). Any other handler is assumed to chain, as Wasmtime
-    assumes."""
+    """Is the chain to our handler recognisably broken (S0006 Q1, rule A)? Our handler still the
+    SIGSEGV action: no. Otherwise these break it: the action reset to SIG_DFL/SIG_IGN; a
+    Python-level handler set after ours (it only sets a flag, the access faults forever); a
+    handler inside the interpreter's own image (`dladdr`): faulthandler, which re-raises instead
+    of chaining, or the `signal` module's; faulthandler enabled now but not at our install, with
+    any foreign handler on top (faulthandler then sits between it and us). A handler in any other
+    shared object (wasmtime, another library) or in anonymous memory (another waboros copy's
+    emitted handler, another JIT's) is otherwise assumed to chain, as Wasmtime assumes. Not
+    detected: faulthandler already enabled at our install, then disabled and re-enabled while a
+    library's handler is above ours (S0006 Changes, RISKS R6). Without `dladdr`: any foreign
+    handler with faulthandler enabled counts as a break (a false error rather than a crash)."""
     if not _handler:
         return "not installed"
     cur = _Sigaction()
@@ -204,11 +249,15 @@ def broken() -> str | None:
         return None
     if h <= 1:
         return "SIGSEGV reset to SIG_DFL/SIG_IGN"
-    if faulthandler.is_enabled():
-        return "faulthandler enabled and another handler above ours"
     py = signal.getsignal(signal.SIGSEGV)
     if callable(py) and py is not _handler["py"]:
         return "a Python-level SIGSEGV handler set after ours"
+    if faulthandler.is_enabled() and ("python" not in _handler or not _handler["fh"]):
+        return "faulthandler enabled after ours and another handler above ours"
+    if "python" not in _handler:
+        return None
+    if _image(_handler["dladdr"], h) == _handler["python"]:
+        return "an interpreter's handler (faulthandler or signal) above ours"
     return None
 
 

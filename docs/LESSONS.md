@@ -257,3 +257,28 @@ What went wrong or surprised us while building the PoC, so it is not found again
     the action (it stays pending until the handler returns). Wasmtime only restores and returns, so a
     sent SIGSEGV is survived there and its handler is lost; we differ on purpose (S0006, D44).
     Found: S0006 step 1, 2026-11-02.
+47. **"faulthandler is enabled and someone is above us" is the normal state under pytest.** pytest
+    enables faulthandler at start; wasmtime-py, used in-process as the oracle, installs its SIGSEGV
+    handler above ours at its first store. Step 1's Q1 check could not tell faulthandler's handler
+    from any other, so it called every such chain broken: with `auto` as the default, 12 tests failed
+    with the Q1 error while wasmtime did chain to us (with the check bypassed, the traps arrived).
+    Rule: name the handler's owner (`dladdr`): the interpreter's own image (faulthandler, `signal`)
+    breaks the chain, another object is assumed to chain. But the owner of the top handler is not
+    the whole chain: the review found ours, then `faulthandler.enable()`, then wasmtime on top, a
+    library handler chaining into faulthandler, and the next guard fault ended the process (139).
+    So also record whether faulthandler was enabled at our install: enabled only later means it
+    sits below the foreign handler and above ours. Test a default with the other runtimes and
+    tools that share the process, in every install order (S0006 Changes, rule A). Found: D44
+    switch and its review, 2026-11-02.
+48. **A host-side service for a target must check that the process is that target's architecture.**
+    `install` checked the OS/libc row but not the machine, and `jit_dump` cross-compiles
+    `jit-x86_64` on arm64 (D35): with `auto` and a verified `linux-glibc` row it would have
+    installed x86 machine code as the SIGSEGV handler of an arm64 process, and the next fault would
+    have jumped into it. Rule: anything that runs a target's code in this process (a handler, a
+    probe) checks `platform.machine()` against the target first; compiling stays allowed anywhere.
+    Found: D44 switch, 2026-11-02.
+49. **PyPy runs finalizers late.** A test that frees instances and checks that their registry
+    entries are gone needed three `gc.collect()` calls on PyPy 3.11 (one is enough on CPython).
+    Rule: in a test that waits for `weakref.finalize`, collect several times. Found: D44 switch
+    (`test_registry_grows_and_forgets_freed_code_and_memories`, failing on PyPy since step 1),
+    2026-11-02.

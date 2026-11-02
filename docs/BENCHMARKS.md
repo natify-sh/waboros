@@ -346,7 +346,7 @@ Machine code 39 357 → 30 403 bytes. The switch VM (not memory-bound) does not 
 M ops/s, wasmtime 432–485). With explicit checks on both sides the PoC JIT and Cranelift are level:
 the gap was the bounds checks, not the code.
 
-**Package `jit-x86_64`, S0006 step 1** (`WABOROS_JIT_BOUNDS=guard` vs the default `explicit`):
+**Package `jit-x86_64`, S0006 step 1** (`WABOROS_JIT_BOUNDS=guard` vs `explicit`, then the default):
 2026-11-02, Intel Xeon @ 2.10 GHz, 4 vCPU VM, CPython 3.13.17, `uv run python
 tools/run_coremark_jit.py poc/in/core.wasm`, 7 pairs alternated in one session, every run
 "Correct operation validated". Another agent's spec run shared the machine during part of the
@@ -360,6 +360,26 @@ session (load average ~2.5), so treat the spread with care.
 Guard **+14.3 %** (median; mean +12.0 %; per pair +3.3 to +16.3 %), above S0006's +7.5 % from the
 drafter's session: the gain depends on the session and the machine. Code 45 055 → 36 058 bytes
 (−20.0 %), 669 fault points (the fault map, 8 bytes each).
+
+**Guard vs explicit, quiet machine (the D44 switch).** 2026-11-02 15:17–15:24 UTC, the same Intel
+Xeon @ 2.10 GHz, 4 vCPU VM, CPython 3.13.17, one benchmark process at a time, load average 0.53 at
+the start and 1.00 at the end. CoreMark: `tools/run_coremark_jit.py poc/in/core.wasm`, 9 pairs
+alternated (explicit first in each), the mode set by `WABOROS_JIT_BOUNDS`, every run "Correct
+operation validated". Raw log: the session's `session.log` (scratchpad, not kept in the repository).
+
+| mode | runs (it/s) | median | mean |
+|---|---|---|---|
+| explicit | 15 581 / 15 324 / 15 742 / 15 072 / 14 183 / 14 702 / 13 486 / 14 825 / 13 240 | 14 824.7 | 14 683.9 |
+| guard | 16 265 / 17 721 / 16 331 / 15 879 / 16 211 / 17 091 / 15 486 / 14 412 / 15 407 | 16 211.4 | 16 089.4 |
+
+Guard **+9.35 %** (median; mean +9.57 %). The ranges overlap and pair 8 goes the other way, but
+eight pairs of nine favour guard. SIMD benchmark (`tools/run_simd_bench.py --targets jit-x86_64
+--rounds 5`, three alternated rounds per mode, median of the three; µs per iteration, explicit →
+guard): scalar builds addsat 7.92 → 6.67 (+18.7 %), scan 3.30 → 2.72 (+21.3 %), nearest 1.84 →
+1.58 (+16.5 %), matmul 4.14 → 3.74 (+10.7 %), dot and swizzle 0–3 %; SIMD builds addsat 0.51 →
+0.43 and nearest 0.63 → 0.56, the others 0–3 %, scan 0.70 → 0.73 (−4.1 %, noise). The corpus of
+real libraries was measured too, but its sub-µs rows spread 2× between rounds: not a basis. This
+measurement is the condition D44 named for making `auto` (guard on verified rows) the default.
 
 ## `wasm-opt -O3` (binaryen 125) on CoreMark
 

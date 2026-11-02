@@ -10,6 +10,7 @@ import os
 import subprocess
 import sys
 import threading
+import warnings
 from pathlib import Path
 from typing import Any, cast
 
@@ -52,8 +53,12 @@ SIMD = {  # name -> (access size, expression of the address `A`, result is v128)
 @pytest.fixture(autouse=True)
 def _guard(monkeypatch: pytest.MonkeyPatch) -> None:
     native("jit-x86_64")
-    if guard.host_row() not in base.TARGETS["jit-x86_64"]().guard_rows:  # pyright: ignore[reportAttributeAccessIssue]
-        pytest.skip(f"no guard-page handler for {guard.host_row()} yet (S0006)")
+    tgt = base.TARGETS["jit-x86_64"]()
+    # under WABOROS_JIT_REQUIRE=1 (the CI `jit` job, Linux glibc x86-64) a skip is a failure: the
+    # row check or `auto` must not stop engaging unnoticed
+    need(guard.host_row() in tgt.guard_rows, f"a guard-page handler for {guard.host_row()}")  # pyright: ignore[reportAttributeAccessIssue]
+    monkeypatch.setenv("WABOROS_JIT_BOUNDS", "auto")
+    need(guard.wanted(tgt), f"`auto` giving guard pages on {guard.host_row()}")
     monkeypatch.setenv("WABOROS_JIT_BOUNDS", "guard")
 
 
@@ -154,19 +159,60 @@ def test_constant_addresses_and_the_guard_threshold() -> None:
             assert trap_of(inst, name, addr) is OOB
 
 
-def test_explicit_and_auto_compile_explicit_code(monkeypatch: pytest.MonkeyPatch) -> None:
-    text = (
-        '(module (memory 1) (func (export "f") (param i32) (result i32) (i32.load (local.get 0))))'
-    )
-    for m in ("explicit", "auto"):  # auto: no verified row yet (S0006 step 7)
-        monkeypatch.setenv("WABOROS_JIT_BOUNDS", m)
-        c = compiled(text)
-        assert (c.flags, c.faults) == (0, [])
-    monkeypatch.setenv("WABOROS_JIT_BOUNDS", "guard")
-    assert compiled(text).faults
+LOAD = '(module (memory 1) (func (export "f") (param i32) (result i32) (i32.load (local.get 0))))'
+
+
+def test_the_modes_and_the_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """D44: `auto` is the default (unset or empty) and gives guard on this verified row;
+    `explicit` opts out; anything else is an error."""
+    for m in (None, "", "auto", "guard"):
+        if m is None:
+            monkeypatch.delenv("WABOROS_JIT_BOUNDS")
+        else:
+            monkeypatch.setenv("WABOROS_JIT_BOUNDS", m)
+        assert guard.mode() == (m or "auto")
+        c = compiled(LOAD)
+        assert c.flags == guard.FLAGS and c.faults, m
+    monkeypatch.setenv("WABOROS_JIT_BOUNDS", "explicit")
+    assert (compiled(LOAD).flags, compiled(LOAD).faults) == (0, [])
     monkeypatch.setenv("WABOROS_JIT_BOUNDS", "fast")
     with pytest.raises(ValueError, match="WABOROS_JIT_BOUNDS"):
-        compiled(text)
+        compiled(LOAD)
+
+
+@pytest.mark.parametrize("why", ["unverified row", "musl", "install fails", "foreign process"])
+def test_auto_is_explicit_silently_where_guard_cannot_be(
+    why: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """S0006 "Selection": an unverified row, musl, a handler that does not install, a process of
+    another architecture (cross-compiling): `auto` compiles explicit code, with no warning, and
+    it runs; `guard` there compiles but refuses to instantiate."""
+    monkeypatch.setenv("WABOROS_JIT_BOUNDS", "auto")
+    tgt = type(base.TARGETS["jit-x86_64"]())
+    if why == "unverified row":
+        monkeypatch.setattr(tgt, "verified", frozenset())
+    elif why == "musl":
+        monkeypatch.setattr(guard, "host_row", lambda: "linux-musl")
+    else:  # as if the handler were not installed yet in this process
+        monkeypatch.setattr(guard, "_handler", {})
+        if why == "install fails":
+            monkeypatch.setattr(guard, "load", _no_exec)
+        else:
+            monkeypatch.setattr(guard.platform, "machine", lambda: "aarch64")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        c = compiled(LOAD)
+        assert (c.flags, c.faults) == (0, [])
+        assert trap_of(build(wat(LOAD)), "f", 0xFFFFFFFF) is OOB
+    if why in ("install fails", "foreign process"):
+        assert not guard._handler  # nothing half-installed  # pyright: ignore[reportPrivateUsage]
+        monkeypatch.setenv("WABOROS_JIT_BOUNDS", "guard")
+        with pytest.raises((OSError, RuntimeError)):
+            build(wat(LOAD))
+
+
+def _no_exec(code: bytes) -> Any:
+    raise OSError("executable memory refused")
 
 
 def test_guard_on_a_target_without_it_is_an_error() -> None:
@@ -253,7 +299,8 @@ def test_registry_grows_and_forgets_freed_code_and_memories() -> None:
     freed = {cast(Any, i.inst).code.addr for i in keep[5:30]}
     assert freed <= live()
     del keep[5:30]
-    gc.collect()
+    for _ in range(5):  # PyPy runs the finalizers only on the third collection (measured)
+        gc.collect()
     assert not freed & live()
     keep += [build(wasm, store=StoreState()) for _ in range(30)]
     for inst in keep:
@@ -405,6 +452,50 @@ def test_a_foreign_chaining_handler_after_ours_is_no_error() -> None:
                "print('x', flush=True)\nctypes.string_at(16)\n")  # fmt: skip
     assert p.returncode == -11, p
     assert p.stdout == "trap MEMORY_OUT_OF_BOUNDS\n" * 3 + "x\n"
+
+
+_WASMTIME = """
+import wasmtime
+st = wasmtime.Store()
+m = wasmtime.Module(st.engine, '(module (memory 1) (func (export "g") (param i32) (result i32)'
+                    ' (i32.load (local.get 0))))')
+try:
+    wasmtime.Instance(st, m, []).exports(st)["g"](st, 65536)
+except wasmtime.Trap:
+    print("wasmtime trap", flush=True)
+"""
+
+
+@pytest.mark.parametrize("above", ["wasmtime", "anonymous"])
+def test_a_library_handler_after_ours_under_faulthandler_is_no_error(above: str) -> None:
+    """Rule A (S0006 Q1): with faulthandler enabled (pytest does it) a handler set after ours
+    outside the interpreter's image (wasmtime's, in its shared object; one in anonymous memory, as
+    another waboros copy's) is assumed to chain; guard traps keep working."""
+    if above == "wasmtime":
+        pytest.importorskip("wasmtime")
+    p = _child((_WASMTIME if above == "wasmtime" else _CHAINER)
+               + "from waboros.targets.jit.common import guard\nprint('broken', guard.broken())\n"
+               + "for a in (65536, 65533):\n    try:\n        inst('f', a)\n"
+               "    except Trap as e:\n        print('trap', e.code.name, flush=True)\n",
+               faulthandler=True)  # fmt: skip
+    assert p.returncode == 0, p
+    head = "trap MEMORY_OUT_OF_BOUNDS\n" + ("wasmtime trap\n" if above == "wasmtime" else "")
+    assert p.stdout == head + "broken None\n" + "trap MEMORY_OUT_OF_BOUNDS\n" * 2
+
+
+@pytest.mark.parametrize("above", ["wasmtime", "anonymous"])
+def test_faulthandler_enabled_after_ours_then_a_library_handler_is_an_error(above: str) -> None:
+    """The reviewer's crash: ours, then faulthandler enabled, then a library's handler on top.
+    The library chains to faulthandler, which re-raises a guard fault (139): rule A alone saw a
+    library handler and let the call run. faulthandler enabled after our install is a break."""
+    if above == "wasmtime":
+        pytest.importorskip("wasmtime")
+    p = _child("faulthandler.enable()\n" + (_WASMTIME if above == "wasmtime" else _CHAINER)
+               + "try:\n    inst('f', 65536)\nexcept RuntimeError as e:\n    print('error', e)\n",
+               bounds="auto")  # fmt: skip
+    assert p.returncode == 0, p
+    assert "trap MEMORY_OUT_OF_BOUNDS" in p.stdout
+    assert "error the guard-page fault handler" in p.stdout, p
 
 
 def test_faulthandler_back_on_top_of_a_foreign_handler_is_an_error_not_a_crash() -> None:

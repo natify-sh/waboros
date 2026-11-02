@@ -38,7 +38,7 @@ What passes (details: [`docs/FEATURES.md`](docs/FEATURES.md), [`docs/ROADMAP.md`
   `hashlib`, `zlib` and Wasmtime.
 
 Not there yet: the public API, the CLI and WASI (phase 6), memory64, relaxed SIMD, exceptions, GC,
-threads, fuel and epochs, the `mpy` (MicroPython) target, other architectures. Guard pages (S0006) are being added as an opt-in mode; the default stays explicit bounds checks.
+threads, fuel and epochs, the `mpy` (MicroPython) target, other architectures. Bounds checks use guard pages by default on Linux glibc x86-64 (S0006) and explicit checks elsewhere: there the first JIT compile installs a process-wide SIGSEGV handler, never removed, that passes every fault not raised by waboros's own code on to the previous handler; `WABOROS_JIT_BOUNDS=explicit` opts out and installs nothing.
 
 ## Install
 

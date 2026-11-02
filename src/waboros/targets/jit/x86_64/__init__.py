@@ -35,7 +35,8 @@ class JitX86_64Target(JitTarget):
     def trampolines(self) -> "Trampolines":
         return trampolines()
 
-    guard_rows = frozenset({"linux-glibc"})  # S0006 step 1; `verified` stays empty until review
+    guard_rows = frozenset({"linux-glibc"})  # S0006 step 1
+    verified = frozenset({"linux-glibc"})  # `auto` gives guard here (D44; CI job `jit`)
 
     def guard_backend(self) -> Any:
         from waboros.targets.jit.x86_64.backend import Backend

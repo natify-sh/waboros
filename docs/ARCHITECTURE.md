@@ -148,8 +148,8 @@ Other languages are **not in scope** now; this only keeps the door open cheaply.
 after unconditional branches; compare + branch fusion; in-place updates of pinned locals (`x op= y`);
 loads straight into a pinned local; and, the one that matters most for JITs, **bounds-check
 elimination** — e.g. one check per loop for a pointer that advances monotonically, or for accesses with
-a common base and small constant offsets — because the package's JIT uses explicit checks until guard
-pages arrive in phase 5 (D29), and where guard pages are unavailable these checks stay a large part of
+a common base and small constant offsets — because where guard pages are unavailable (every row but
+Linux glibc x86-64 today, D44) the package's JIT uses explicit checks, and these checks stay a large part of
 the ~20 % gap to Cranelift.
 
 ## The object model (after Wasmtime)
@@ -193,18 +193,19 @@ memory without knowing the target.
   without committing portably, so the reservation goes through ctypes.
 * `memory64`, `multi-memory`, shared memory (threads) and custom page sizes are properties of the
   facade and of the code generators, not of separate paths.
-* Bounds checks: explicit in `pyc`/`mpy`, and by default in the JIT. **The JIT can use guard pages without a native dependency**
+* Bounds checks: explicit in `pyc`/`mpy`; in the JIT guard pages by default where verified (D44),
+  explicit checks elsewhere. **The JIT can use guard pages without a native dependency**
   (measured, `poc/w2jit_guard.py`): an 8 GiB `PROT_NONE` reservation with only the wasm pages
   read/write, and a SIGSEGV handler that is **machine code emitted by the JIT** (a Python handler
   cannot run inside a signal) and installed with `sigaction` through ctypes. It resumes a fault at a
   reserved address raised by this module's code in the out-of-bounds trap stub (it rewrites RIP in the
   `ucontext`, as Wasmtime does), and passes everything else to the previous handler or restores the
-  default action. In the package (S0006): `WABOROS_JIT_BOUNDS=guard` on `jit-x86_64`, Linux glibc,
-  since step 1 — accesses with `offset + size ≤ 32 MiB` unchecked, a fault map of the instructions
+  default action. In the package (S0006): guard code on `jit-x86_64`, Linux glibc, since step 1 — accesses with `offset + size ≤ 32 MiB` unchecked, a fault map of the instructions
   that touch memory, a handler (`x86_64/abi.py`, registry in `common/guard.py`) that resumes at the
-  function's own out-of-bounds stub and chains every other fault; explicit is the default until
-  D44's `auto` lands. CoreMark: +14 % on the package (BENCHMARKS.md, "Guard pages"; the PoC measured
-  +20–25 % on another day), 20 % less machine code. Explicit checks stay the fallback (larger offsets,
+  function's own out-of-bounds stub and chains every other fault. The mode is `auto` by default (D44):
+  guard on the verified row (Linux glibc x86-64), explicit elsewhere, silently; `WABOROS_JIT_BOUNDS=explicit`
+  opts out, `=guard` requires it. CoreMark: +9 % on the package on a quiet machine (BENCHMARKS.md, "Guard
+  pages"; +14 % on a loaded one, the PoC measured +20–25 % on another day), 20 % less machine code. Explicit checks stay the fallback (larger offsets,
   platforms without the handler yet, `memory64`); risks in RISKS.md, R6.
 
 ## State shared across targets
