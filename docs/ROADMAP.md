@@ -207,6 +207,10 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29) -> the rest below.
   the spread and a smaller spread between builds; aarch64 (no such erratum) measured separately.
 * Trap frames, fuel and epoch checks (the interrupt word is polled already, phase 3); Ctrl+C via the
   waiting main thread.
+* **One LIR vocabulary** before porting to the micro-compilers (MICRO-COMPILERS.md): the operation
+  names that are strings today in several places become one enumerated list, defined once,
+  together with fixing the artifact format in this phase; in C or Zig they become enums anyway, so
+  one list is ported instead of several naming schemes.
 * The contract of ARTIFACT.md (format v1, context ABI v1, baseline-ISA sequences, CPU feature
   detection) is **fixed here**, after two architectures have shaped it, together with artifact
   serialization; the C reference loader runs in CI and the runtime services are specified (D36). The

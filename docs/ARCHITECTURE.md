@@ -109,6 +109,12 @@ a thin IR of our own, and shared by all targets.
 | **HIR** | every target (`pyc`, `mpy`, JITs) | expression trees (the operand stack resolved), **structured** control flow (block / loop / if / br with targets and arities), annotations from the analyses | validated wasm function bodies |
 | **LIR** | every JIT architecture | the backend's **call interface**, not a materialised list (D26): machine-neutral operations the shared JIT core calls in one pass; operands *imm*, *reg* (pinned or backend-chosen) or *slot*; three-operand; compare-and-branch / compare-and-set as whole operations (no flags); labels, trap points, call sites with their convention | the validated function body (and HIR analyses when they exist), by the shared JIT core |
 
+**The lazy operand stack is the JIT core's HIR-lite.** The shared JIT core builds no HIR trees; it
+keeps a lazy operand stack (`common/compiler.py`) whose entries are at most one node deep: a constant,
+a local, `tos`, a slot, or one pending compare of such operands (S0007 adds `local + const` and a
+temporary register). A new entry kind is added only with a measurement that it pays, so any drift
+towards trees is a recorded decision, not an accident.
+
 Per architecture only the implementation of that interface (instruction selection) and the encoder
 remain; an allocator over a materialised LIR is added only if a measurement shows it pays (D26). With copy-and-patch
 (TARGETS.md) each LIR operation would become a stencil.
