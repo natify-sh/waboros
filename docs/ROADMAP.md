@@ -190,7 +190,7 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29) -> the rest below.
   `unsupported` until it is written (D25). Floats, tables, `memory.grow`, bulk memory, reference types,
   multi-value and tail calls were done in phase 3.
 * **Guard pages with a JIT-emitted signal handler** (`poc/w2jit_guard.py`: +20–25 % on CoreMark, the gap
-  to Cranelift was mostly the bounds checks), per OS and architecture (Linux/BSD `sigaction` +
+  to Cranelift was mostly the bounds checks), per OS and architecture (Linux `sigaction` +
   `ucontext` offsets, macOS also SIGBUS, Windows a vectored exception handler), `sigaltstack` per thread
   for stack overflow; the default where verified (D44, which supersedes D43's opt-in), explicit checks the
   only mode of a new architecture; the steps in S0006 (step 1, Linux glibc x86-64, and step 2, Linux glibc aarch64, done);
