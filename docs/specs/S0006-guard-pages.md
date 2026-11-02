@@ -332,3 +332,12 @@ reservation is a crash, not a trap: the explicit-mode tests and differential run
   (D43, which supersedes D29's "default where verified"). The measured gain here is +7–9 % on
   CoreMark (not the +20–25 % of the older PoC row); making guard the default needs a measurement on
   several machines and a decision.
+* 2026-11-02: Q1 and Q8 revised by the maintainer after checking Wasmtime (source at main and
+  measured: each copy of libwasmtime installs its own handler, saves the previous one, claims a fault
+  only when this thread is inside its own wasm and the PC is on one of its own trap sites, and chains
+  everything else; two copies in one process work in either order, nested too; it never re-checks
+  its handler). **Q8**: several waboros copies (sub-interpreters, vendored copies) are supported by
+  the same chain-and-claim rule per copy: no process-wide registry. **Q1**: the check before entering
+  wasm raises an error only for the cases that break the chain and that are cheap to recognise from
+  Python: SIGSEGV/SIGBUS reset to `SIG_DFL`/`SIG_IGN`, `faulthandler` enabled after ours, or a
+  Python-level handler on those signals; any other handler is assumed to chain (as in Wasmtime).
