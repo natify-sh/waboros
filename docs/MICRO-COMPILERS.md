@@ -113,6 +113,9 @@ Language choice is about safety and ergonomics, not architecture: Zig (already i
 
 ## Bootstrap paths
 
+Shipping the native micro-compilers pre-compiled, with bootstrap as the fallback and a check
+anyone can run: [MICRO-COMPILERS-SHIPPING.md](MICRO-COMPILERS-SHIPPING.md) (maintainer's note, draft).
+
 1. **Short** (x86-64, aarch64): the Python JIT compiles the micro-compiler to native directly.
 2. **Long** (no Python backend): `pyc` runs `<arch>.wasm` (~150x slower than native, once per
    machine), it compiles itself, the artifact is cached (key: waboros version, architecture, ISA level).

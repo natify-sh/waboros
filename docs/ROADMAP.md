@@ -281,6 +281,7 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29) -> the rest below.
    large modules"). Costs: a patchable call path, compilation in the middle of a call (re-entrancy,
    the GIL, executable-memory growth). Compare with eager compilation + cache before deciding.
 14. **A self-hosting compiler in wasm, one module per architecture (research, after phases 4–6).**
+   Shipping them pre-compiled: [MICRO-COMPILERS-SHIPPING.md](MICRO-COMPILERS-SHIPPING.md) (draft).
    The full note is [MICRO-COMPILERS.md](MICRO-COMPILERS.md) (maintainer).
    The maintainer's idea: our own compiler written in a language that compiles to wasm, shipped as one
    module per architecture — `x64.wasm`, `arm64.wasm`, … (or a shared `core.wasm` plus a backend
