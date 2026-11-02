@@ -189,6 +189,9 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29) -> the rest below.
   SIMD (under way, above), memory64, relaxed SIMD, exceptions, GC, then the later proposals. What a backend lacks is
   `unsupported` until it is written (D25). Floats, tables, `memory.grow`, bulk memory, reference types,
   multi-value and tail calls were done in phase 3.
+  For the GC spec: at every call the operand stack is in slots (S0007 keeps this: temporaries are
+  flushed before calls), but pinned locals stay in pool registers across calls; either
+  reference-typed locals are never pinned, or stack maps cover the pinned registers.
 * **Guard pages with a JIT-emitted signal handler** (`poc/w2jit_guard.py`: +20–25 % on CoreMark, the gap
   to Cranelift was mostly the bounds checks), per OS and architecture (Linux `sigaction` +
   `ucontext` offsets, macOS also SIGBUS, Windows a vectored exception handler), `sigaltstack` per thread
