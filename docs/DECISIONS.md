@@ -579,3 +579,12 @@ code's tables (each program carries its ISA level; today all are the baseline), 
 declared in the artifact (D33), with the baseline artifact byte-identical, its own ISA gate and QEMU
 CPU model, and the same spec parity as `pyc` (D25). Not planned: XOP, ARMv7 NEON, wider vectors;
 AVX-512 only on a measurement.
+
+### D43. Guard pages are opt-in; explicit bounds checks stay the default
+Status: accepted (maintainer, 2026-11-02) · Date: 2026-11-02 · Supersedes: D29 (only its "guard by default where verified") · Evidence: [S0006](specs/S0006-guard-pages.md) measurements (CoreMark +7.5 % median over 9 alternated pairs, the PoC's own pair +6.9 % on this machine; code −21 %)
+
+Guard pages (S0006) are a JIT option chosen explicitly (`bounds = "guard"` or `"auto"`); the default
+stays `explicit`. The rest of D29 holds: the mode is a compile-time property recorded in the artifact
+and the cache key, explicit checks are the only mode of a new architecture, of memory64 and of hosts
+without a verified handler. Making `guard` (or `auto`) the default needs measurements on several
+machines and a new decision.

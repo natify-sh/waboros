@@ -2,7 +2,7 @@
 title: Guard pages instead of explicit bounds checks on jit-x86_64 and jit-aarch64
 kind: spec
 id: S0006
-status: draft
+status: approved
 superseded_by:
 related: [D10, D23, D25, D29, D31, D33, D35, D36, D37, D39, D42, R2, R3, R6, S0003, S0004, S0005]
 owner: maintainer
@@ -204,8 +204,9 @@ trap).
 
 ### Selection and fallback
 * The mode is a compile-time property of the code (D29). Before phase 6 it is chosen by a JIT option
-  `bounds = "auto" | "guard" | "explicit"` (environment `WABOROS_JIT_BOUNDS` for tests and CI;
-  S0002's interface is unchanged). `"auto"` (the default) gives `guard` when all hold: the (OS,
+  `bounds = "explicit" | "guard" | "auto"` (environment `WABOROS_JIT_BOUNDS` for tests and CI;
+  S0002's interface is unchanged). **`"explicit"` is the default: guard pages are opt-in** (the
+  maintainer, 2026-11-02; D43). `"auto"` (opt-in too) gives `guard` when all hold: the (OS,
   architecture, libc) row is **verified** in the table below; the handler is installed (or installs)
   and is ours; the reservation of 4 GiB + GUARD succeeds; the embedding has not forbidden handlers.
   Otherwise `explicit`, **silently** (Q6): it is a full mode, not a degraded target, so D31's warning
@@ -326,3 +327,8 @@ reservation is a crash, not a trap: the explicit-mode tests and differential run
 
 ## Changes
 * 2026-11-02: created (draft).
+* 2026-11-02: approved by the maintainer with every recommendation (Q1–Q9), and with guard pages
+  **opt-in**: `bounds = "explicit"` stays the default; `"guard"` and `"auto"` are chosen explicitly
+  (D43, which supersedes D29's "default where verified"). The measured gain here is +7–9 % on
+  CoreMark (not the +20–25 % of the older PoC row); making guard the default needs a measurement on
+  several machines and a decision.
