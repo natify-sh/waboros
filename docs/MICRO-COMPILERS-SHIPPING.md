@@ -92,6 +92,16 @@ measured. Three architectures add in the order of 1-2 MB uncompressed to the whe
 the pre-compiled files can move to an optional extra (`waboros[compilers]`) while the `.wasm` stays
 in the main wheel.
 
+## Bounds-check mode of the shipped files
+
+A micro-compiler takes the bounds mode (explicit checks or guard pages, S0006) as an input, like the
+ISA level; which one an artifact uses is the host's choice, because guard code relies on the host's
+reservation and fault handler (D29, D44). The **shipped pre-compiled micro-compilers use explicit
+checks**: they then run on any host, including other-language hosts (D36) and hosts that may not
+install a signal handler, with no contract beyond the loader. A host that supports guard pages may
+compile a guard variant for itself. A new architecture's micro-compiler starts with explicit checks
+only (D29).
+
 ## Open questions for the spec
 
 1. Which ISA levels are shipped pre-compiled: the baseline only (one file per architecture), or
