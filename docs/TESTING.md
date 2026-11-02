@@ -101,21 +101,26 @@ reference loader as well as from Python; refuse artifacts with an unknown format
 
 A newer push to the same ref cancels a `ci.yml` or `coverage.yml` run in progress (`concurrency`);
 `publish.yml` runs one release per ref and is never cancelled. Jobs of `.github/workflows/ci.yml`: `lint` (ruff, pyright, `check_docs.py`, `features.py --check`); `test`
-(`pytest -q` on the seven Pythons, in the default bounds mode, `auto` (D44: guard pages on Linux glibc x86-64);
+(`pytest -q` on the seven Pythons, in the default bounds mode, `auto` (D44: guard pages on Linux glibc x86-64
+and aarch64);
 on 3.13 again with `WABOROS_JIT_BOUNDS=explicit`, so explicit checks stay covered; `tools/stack_info.py` on
 3.13, also in a musl container); `jit`
 (`tests/jit` with `WABOROS_JIT_REQUIRE=1`; the aarch64 ABI, compiler, tail-call and SIMD tests
-(`test_simd_abi.py`, `test_simd_aarch64.py`) and the spec suite of `jit-aarch64` (it covers `simd/`
-since the 5e2 claim) under QEMU with BTI enforced; the x86 SIMD tests and the explicit `simd` spec run of
+(`test_simd_abi.py`, `test_simd_aarch64.py`, in explicit mode: QEMU splits a straddling 16-byte store,
+D45) and the spec suite of `jit-aarch64` (it covers `simd/` since the 5e2 claim) in both bounds modes, then
+`test_guard.py` in guard mode, under QEMU with BTI enforced (its subprocess cases skip without binfmt); the x86 SIMD tests and the explicit `simd` spec run of
 `jit-x86_64` under the SSE2-only `qemu64` CPU with `WABOROS_JIT_BOUNDS=explicit` (QEMU splits wide
 stores, D45), compared with `pyc` by `tools/spec_diff.py` (strict since 5d3);
 the spec suite of `jit-x86_64` and `tests/jit/test_guard.py` with `WABOROS_JIT_BOUNDS=guard` named
-explicitly (guard pages, S0006, Linux glibc only; the test file skips on other hosts, but fails under
+explicitly (guard pages, S0006, Linux glibc only; the test file runs on the JIT of the machine and skips
+on other hosts, but fails under
 `WABOROS_JIT_REQUIRE=1` when `auto` does not give guard pages), so a regression in the
 verified-row check cannot silently turn guard pages off;
-then both ISA gates and the D35 lists, the `jit-x86_64` ones in both bounds modes, named on both hosts);
+then both ISA gates and the D35 lists of both targets in both bounds modes, named on both hosts);
 `spec` (the spec run on `wasmtime`, `pyc`, `jit-x86_64` in the default mode and with
-`WABOROS_JIT_BOUNDS=explicit`, then `auto` under `no_exec.py`); `os`; `arm64`; `macos-pythonorg`; `android`.
+`WABOROS_JIT_BOUNDS=explicit`, then `auto` under `no_exec.py`); `os`; `arm64` (on the Linux runner also the
+`jit-aarch64` spec suite in both bounds modes, `test_guard.py` in guard mode and `tests/jit` in explicit
+mode, S0006 step 2); `macos-pythonorg`; `android`.
 
 Packaging workflows (D40): `.github/workflows/coverage.yml` runs `pytest --cov` on Python 3.13 and keeps
 `coverage.xml` as an artifact and to Codecov (OIDC); `publish.yml` runs on a `v*` tag, builds the sdist and the wheel,

@@ -8,7 +8,7 @@ the context), w0 status. Every trampoline keeps sp 16-byte aligned at all times 
 record {x29, x30} (tail_switch: a {x28, x30} restore frame); every `ret` returns to its `bl`/`blr`.
 """
 
-from waboros.targets.jit.aarch64.encoder import FP, LR, SP, Asm
+from waboros.targets.jit.aarch64.encoder import FP, LR, SP, ZR, Asm
 from waboros.targets.jit.common.context import (
     HOST_BRIDGE,
     HOST_ERROR,
@@ -143,3 +143,117 @@ def assemble() -> tuple[bytes, list[int]]:
         offsets.append(len(a.buf))
         emit(a)
     return a.finish(), offsets
+
+
+# The S0006 fault handler, Linux aarch64: the kernel's siginfo_t and ucontext_t (the same for
+# glibc, musl and bionic: uc_flags, uc_link, uc_stack (24 bytes), uc_sigmask with its padding to
+# 128 bytes, then the 16-aligned `struct sigcontext` {fault_address, regs[31], sp, pc, ...}).
+SI_CODE, SI_ADDR = 8, 16  # si_signo, si_errno, si_code, padding, then si_addr
+UC_PC = 176 + 8 + 8 * 31 + 8  # uc_mcontext at 176: fault_address, x0-x30, sp, then pc
+
+
+def fault_handler(a: Asm, tables: int, prev: int, sigaction: int, reraise: int) -> None:
+    """void handler(int sig, siginfo_t *si, ucontext_t *uc), installed with SA_SIGINFO: the
+    contract of x86_64/abi.py `fault_handler` (S0006 "The handler contract") in A64. A fault is
+    ours when si_code > 0, the PC is a fault point of a registered code area (binary search of
+    its map of u32 pairs) and si_addr lies in a registered reservation: the PC in `uc` becomes
+    the resume address and the handler returns. Otherwise the previous action: a handler is
+    reached by `br x16` (a `bti c` pad accepts it, R2) with x0-x2, sp and x30 untouched; SIG_DFL
+    or SIG_IGN is put back with libc's `sigaction` and, for a sent signal (si_code <= 0), sent
+    again with libc's `raise` (LESSONS 46), under a frame record that keeps x30 (the kernel's
+    sigreturn) and sp 16-aligned. Only x9-x17 and x29 are written (x0-x2 before those calls);
+    x18, the platform register, never; no lock, no allocation. It starts with `bti c`: the
+    kernel enters it by a branch that BTI checks (measured under QEMU, S0006); the resume point
+    needs no pad (sigreturn is not a branch). Wasmtime's aarch64 Linux path (read, not copied)
+    likewise rewrites `pc` in the saved mcontext and returns."""
+    notours, scan, skip, search, bisect, below, found, rscan, rskip, ours, dfl, done = (
+        a.label() for _ in range(12)
+    )
+    a.bti("c")
+    a.ld(9, 1, SI_CODE, 4)
+    a.addsub_imm("subs", ZR, 9, 0, False)  # cmp w9, #0: signed
+    a.bcc("le", notours)  # kill/raise/sigqueue: never ours
+    a.ld(10, 2, UC_PC)  # x10 = pc
+    a.mov_imm(11, tables)
+    a.ld(11, 11)
+    a.ld(12, 11)  # capacity
+    a.addsub_imm("add", 11, 11, 8)
+    a.bind(scan)  # the code area holding the pc (a free entry has hi = 0)
+    a.cbz(12, notours)
+    a.ld(13, 11)  # lo
+    a.cmp(10, 13)
+    a.bcc("lo", skip)
+    a.ld(14, 11, 8)
+    a.cmp(10, 14)
+    a.bcc("lo", search)
+    a.bind(skip)
+    a.addsub_imm("add", 11, 11, 32)
+    a.addsub_imm("sub", 12, 12, 1)
+    a.b(scan)
+    a.bind(search)  # x9 = pc - lo, x11 = map; [x12, x14) holds the candidates
+    a.addsub("sub", 9, 10, 13)
+    a.ld(14, 11, 24)
+    a.ld(11, 11, 16)
+    a.mov_imm(12, 0)
+    a.bind(bisect)
+    a.cmp(12, 14)
+    a.bcc("hs", notours)  # a pc in our code that is not a fault point: a crash, not a trap
+    a.addsub("add", 15, 12, 14)
+    a.bfm("ubfm", 15, 15, 1, 63)  # lsr #1
+    a.addsub("add", 17, 11, 15, sh="lsl", amount=3)  # the pair
+    a.ld(16, 17, 0, 4)  # its fault offset, zero-extended
+    a.cmp(9, 16)
+    a.bcc("eq", found)
+    a.bcc("lo", below)
+    a.addsub_imm("add", 12, 15, 1)
+    a.b(bisect)
+    a.bind(below)
+    a.mov(14, 15)
+    a.b(bisect)
+    a.bind(found)
+    a.ld(16, 17, 4, 4)  # the resume offset
+    a.addsub("add", 13, 13, 16)  # x13 = code base + resume offset
+    a.ld(9, 1, SI_ADDR)
+    a.mov_imm(11, tables)
+    a.ld(11, 11, 8)
+    a.ld(12, 11)
+    a.addsub_imm("add", 11, 11, 8)
+    a.bind(rscan)  # the fault address in any registered reservation (S0006 Q3)
+    a.cbz(12, notours)
+    a.ld(14, 11)
+    a.cmp(9, 14)
+    a.bcc("lo", rskip)
+    a.ld(14, 11, 8)
+    a.cmp(9, 14)
+    a.bcc("lo", ours)
+    a.bind(rskip)
+    a.addsub_imm("add", 11, 11, 16)
+    a.addsub_imm("sub", 12, 12, 1)
+    a.b(rscan)
+    a.bind(ours)
+    a.st(13, 2, UC_PC)
+    a.ret()
+    a.bind(notours)
+    a.mov_imm(16, prev)
+    a.ld(16, 16)  # its sa_handler / sa_sigaction
+    a.addsub_imm("subs", ZR, 16, 1)
+    a.bcc("ls", dfl)
+    a.br(16)  # x0, x1, x2 as the kernel passed them
+    a.bind(dfl)  # sigaction(sig, prev, NULL); w0 is still the signal
+    a.pair(False, FP, LR, SP, -32, "pre")
+    a.mov(FP, SP)
+    a.pair(False, 0, 1, SP, 16)
+    a.mov_imm(1, prev)
+    a.mov_imm(2, 0)
+    a.mov_imm(16, sigaction)
+    a.blr(16)
+    a.ld(1, SP, 24)
+    a.ld(9, 1, SI_CODE, 4)
+    a.addsub_imm("subs", ZR, 9, 0, False)
+    a.bcc("gt", done)  # a fault: the instruction faults again
+    a.ld(0, SP, 16)
+    a.mov_imm(16, reraise)
+    a.blr(16)  # raise(sig)
+    a.bind(done)
+    a.pair(True, FP, LR, SP, 32, "post")
+    a.ret()

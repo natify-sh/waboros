@@ -154,22 +154,25 @@ know, otherwise recompile" is the simplest robust rule. It needs the wasm at han
 
 ## R6. A signal handler of our own (guard pages in the JIT)
 
-**Status at HEAD: partly mitigated, Linux glibc x86-64 only, the default there.** S0006 step 1: guard code on
-`jit-x86_64`; the handler is emitted machine code (`x86_64/abi.py`) reading this copy's registry
+**Status at HEAD: partly mitigated, Linux glibc x86-64 and aarch64 only, the default there.** S0006 step 1:
+guard code on `jit-x86_64`; step 2 the same on `jit-aarch64` (`aarch64/abi.py`, verified under QEMU, the native
+runner to confirm). The handler is emitted machine code (`x86_64/abi.py`, `aarch64/abi.py`) reading this copy's registry
 (`common/guard.py`), chaining every fault it does not claim (tests: `tests/jit/test_guard.py`, foreign faults
 with and without `faulthandler`, a broken chain, a foreign chaining handler, wasmtime above ours, two copies of
-the package in either order). Since D44 `auto` is the default: guard on the verified row (Linux glibc x86-64),
+the package in either order). Since D44 `auto` is the default: guard on the verified rows (Linux glibc x86-64
+and aarch64),
 explicit elsewhere; `WABOROS_JIT_BOUNDS=explicit` installs nothing. **Not detected** (rule A, S0006 Changes):
 faulthandler that was already enabled when ours was installed (as under pytest), then disabled and re-enabled
 while a library's handler is above ours; a guard fault then reaches faulthandler through that library and ends
 the process (139). faulthandler enabled only after ours, under any foreign handler, is detected (the Q1 error). A
 straddling store may write its in-bounds part before the fault where a store is split (QEMU's TCG, possibly box64
 or FEX; Arm, RISC-V); on x86-64 this is accepted as in Wasmtime (D45, LESSONS 50): native faults are precise, and
-CI's qemu64 steps run in explicit mode. Under FEX or box64 on an Arm server an x86-64 Python sees
+CI's qemu64 steps run in explicit mode. aarch64 follows the same rule (D45): under QEMU a straddling 16-byte
+store wrote its first 8 bytes, and native Arm hardware is allowed to do the same. Under FEX or box64 on an Arm server an x86-64 Python sees
 x86_64 and glibc, the verified row, so `auto` turns guard pages on exactly where a store may tear;
 Wasmtime does not detect this either. Open: detect an emulator (`/proc/cpuinfo`, FEX's and box64's
 environment variables) and fall back to explicit, or keep it a documented limitation (D45). Open:
-aarch64, macOS, Windows, Android (S0006 steps 2-5).
+macOS, Windows, Android (S0006 steps 3-5), musl and the BSDs.
 
 Guard pages need a SIGSEGV handler in the process (ARCHITECTURE.md, "Memory"); the PoC emits it as
 machine code. Risks and possible answers:

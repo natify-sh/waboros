@@ -60,6 +60,7 @@ def _module(n: int, around: bool = False) -> bytes:
 
 
 def test_far_branches_compile_again_and_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("WABOROS_JIT_BOUNDS", "explicit")  # the sizes below; guard: test_guard.py
     rewinds: list[int] = []
     rewind = Backend.rewind
 
@@ -88,6 +89,7 @@ def test_a_bytecode_vm_matches_pyc() -> None:
 
 
 def test_far_retry_of_a_function_at_a_non_zero_offset(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("WABOROS_JIT_BOUNDS", "explicit")  # the sizes below; guard: test_guard.py
     rewinds: list[int] = []
     rewind = Backend.rewind
 

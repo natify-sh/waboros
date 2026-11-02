@@ -157,7 +157,7 @@ after unconditional branches; compare + branch fusion; in-place updates of pinne
 loads straight into a pinned local; and, the one that matters most for JITs, **bounds-check
 elimination** — e.g. one check per loop for a pointer that advances monotonically, or for accesses with
 a common base and small constant offsets — because where guard pages are unavailable (every row but
-Linux glibc x86-64 today, D44) the package's JIT uses explicit checks, and these checks stay a large part of
+Linux glibc x86-64 and aarch64 today, D44) the package's JIT uses explicit checks, and these checks stay a large part of
 the ~20 % gap to Cranelift.
 
 ## The object model (after Wasmtime)
@@ -208,10 +208,10 @@ memory without knowing the target.
   cannot run inside a signal) and installed with `sigaction` through ctypes. It resumes a fault at a
   reserved address raised by this module's code in the out-of-bounds trap stub (it rewrites RIP in the
   `ucontext`, as Wasmtime does), and passes everything else to the previous handler or restores the
-  default action. In the package (S0006): guard code on `jit-x86_64`, Linux glibc, since step 1 — accesses with `offset + size ≤ 32 MiB` unchecked (stores too, as in Wasmtime: precise on native x86-64, an emulator that splits a store may tear it; D45), a fault map of the instructions
-  that touch memory, a handler (`x86_64/abi.py`, registry in `common/guard.py`) that resumes at the
+  default action. In the package (S0006): guard code on Linux glibc, `jit-x86_64` since step 1 and `jit-aarch64` since step 2 — accesses with `offset + size ≤ 32 MiB` unchecked (stores too, as in Wasmtime: precise on native x86-64; an emulator that splits a store, or Arm hardware, may tear it; D45), a fault map of the instructions
+  that touch memory, a handler (`x86_64/abi.py`, `aarch64/abi.py`, registry in `common/guard.py`) that resumes at the
   function's own out-of-bounds stub and chains every other fault. The mode is `auto` by default (D44):
-  guard on the verified row (Linux glibc x86-64), explicit elsewhere, silently; `WABOROS_JIT_BOUNDS=explicit`
+  guard on the verified rows (Linux glibc x86-64 and aarch64), explicit elsewhere, silently; `WABOROS_JIT_BOUNDS=explicit`
   opts out, `=guard` requires it. CoreMark: +9 % on the package on a quiet machine (BENCHMARKS.md, "Guard
   pages"; +14 % on a loaded one, the PoC measured +20–25 % on another day), 20 % less machine code. Explicit checks stay the fallback (larger offsets,
   platforms without the handler yet, `memory64`); risks in RISKS.md, R6.

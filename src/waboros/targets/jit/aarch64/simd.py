@@ -369,6 +369,7 @@ def emit(
         return
     if kind in LOADC:  # 8 bytes into d0 (the upper half zeroed), then the extend
         base, index, off = b._bounds(f, args[0], imm[0], 8, imm[1])
+        b._fault_point()  # S0006: each access below is marked just before its instruction
         ld_d(a, 0, base, off, index)
         ldst_q(a, False, run(a, LOADC[kind]), FRAME, _slot(dst))
         return
@@ -403,20 +404,24 @@ def emit(
         acc = b._bounds(f, args[0], imm[0], size, imm[1])  # the address read first (x9-x12)
     base, index, off = acc
     if kind == "load":
+        b._fault_point()
         ldst_q(a, True, 0, base, off, index)
         ldst_q(a, False, 0, FRAME, _slot(dst))
     elif kind == "store":
         ldst_q(a, True, 0, FRAME, _slot(args[1]))
+        b._fault_point()
         ldst_q(a, False, 0, base, off, index)
     elif kind in ("splat", "load_splat"):
         if kind == "splat":
             r = b._r(args[0], 10, size == 8)
         else:
             r = 10
+            b._fault_point()
             _mem(a, True, r, acc, size)
         dup(a, 0, r, size)
         ldst_q(a, False, 0, FRAME, _slot(dst))
     elif kind == "load_zero":  # built in d0 (the upper half zeroed), one 16-byte store
+        b._fault_point()
         _mem(a, True, 10, acc, size)
         a.fmov_to(0, 10)
         ldst_q(a, False, 0, FRAME, _slot(dst))
@@ -428,11 +433,13 @@ def emit(
         _copy(a, _slot(args[0]), _slot(dst))
         _lane(a, False, r, _slot(dst, imm[0] * size), size)
     elif kind == "load_lane":  # dst overlaps the vector operand (one slot up): copied whole
+        b._fault_point()
         _mem(a, True, 10, acc, size)
         _copy(a, _slot(args[1]), _slot(dst))
         _lane(a, False, 10, _slot(dst, imm[2] * size), size)
     elif kind == "store_lane":
         _lane(a, True, 13, _slot(args[1], imm[2] * size), size)
+        b._fault_point()
         _mem(a, False, 13, acc, size)
     elif kind in VOP or kind == "bitselect":
         for i, x in enumerate(args):

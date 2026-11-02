@@ -436,6 +436,15 @@ ones lose part of it: scalar swizzle drops from +20 % to +6 % over explicit, and
 to +10 %. Raw logs: the session's `bench.log`, `bench2.log`, `simd.log` and `simd9.log`
 (scratchpad, not kept in the repository).
 
+**Package `jit-aarch64`, S0006 step 2: code size, no speed claim.** 2026-11-02, `poc/in/core.wasm`
+compiled by `jit-aarch64` (cross-compiled on the Intel Xeon host; the D35 lists show that QEMU on
+arm64 gives the same code), `WABOROS_JIT_BOUNDS=explicit` vs `=guard`: code 37 372 → 29 284 bytes
+(−21.6 %), 669 fault points (the fault map, 8 bytes each). The emitted fault handler is 304 bytes
+(x86-64: 324). CoreMark under QEMU 8.2.2 user mode (`python3 tools/run_arm64.py
+tools/run_coremark_jit.py poc/in/core.wasm --target jit-aarch64`, one run per mode): "Correct operation
+validated" in both modes. The it/s (guard 3 606, explicit 2 154) come from TCG emulation and are not a
+measurement of either mode. The native number comes from the `arm64` CI runner.
+
 ## `wasm-opt -O3` (binaryen 125) on CoreMark
 
 `wasm-opt --enable-nontrapping-float-to-int --enable-sign-ext --enable-mutable-globals -O3`: 29 → 10

@@ -55,10 +55,12 @@ jobs:
       - run: uv python install cpython-3.13-linux-aarch64-gnu
       - run: python3 tools/run_arm64.py -m pytest tests/jit/test_abi_aarch64.py tests/jit/test_compiler.py tests/jit/test_compiler_aarch64.py tests/jit/test_tail.py -q
       # S0005: the v128 boundary tests and the NEON operators (5c, 5e1, 5e2) against pyc, BTI
-      # enforced; about 2.5 min
+      # enforced; about 2.5 min. Explicit bounds: QEMU TCG splits a straddling 16-byte store, so
+      # guard mode may tear one (accepted, D45; `auto` gives guard in an aarch64 process)
       - run: python3 tools/run_arm64.py -m pytest tests/jit/test_simd_abi.py tests/jit/test_simd_aarch64.py -q
         env:
           WABOROS_JIT_REQUIRE: "1"
+          WABOROS_JIT_BOUNDS: explicit
       # D24: every spec module and CoreMark compiled by jit-x86_64 has only x86-64-v1 instructions
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
@@ -66,8 +68,19 @@ jobs:
           key: spec-${{ runner.os }}-${{ hashFiles('tests/spec/fetch.py', 'tests/spec/spectest.wat') }}
       - run: uv run python tests/spec/fetch.py
       # step 4e: the whole spec suite on jit-aarch64 with BTI enforced (call_indirect, tail calls
-      # and jump tables land on their pads; simd/ since 5e2), in-process under QEMU; about 1 min
+      # and jump tables land on their pads; simd/ since 5e2), in-process under QEMU; about 1 min.
+      # Both bounds modes named (S0006 step 2), then the fault tests under QEMU (the subprocess
+      # ones skip without binfmt; the arm64 runner runs them natively)
       - run: python3 tools/run_arm64.py -m tests.spec.run --engine jit-aarch64 --in-process
+        env:
+          WABOROS_JIT_BOUNDS: explicit
+      - run: python3 tools/run_arm64.py -m tests.spec.run --engine jit-aarch64 --in-process
+        env:
+          WABOROS_JIT_BOUNDS: guard
+      - run: python3 tools/run_arm64.py -m pytest tests/jit/test_guard.py -q -rs
+        env:
+          WABOROS_JIT_BOUNDS: guard
+          WABOROS_JIT_REQUIRE: "1"
       # S0006: guard pages, named explicitly although `auto` (the default, D44) gives them here,
       # so a regression in the verified-row check cannot silently turn them off: the spec suite
       # with the fault handler doing the bounds checks, then the fault tests (foreign faults, a
@@ -97,11 +110,12 @@ jobs:
       - run: uv run python tools/isa_all.py --target jit-aarch64
       # D35: the code of every module and CoreMark per target as a sha256 list; the `arm64` job
       # compiles the same modules on arm64 and diffs its lists with these (both ways). The bounds
-      # mode is named for jit-x86_64 on both hosts (`auto` gives guard only in an x86-64 process),
-      # and both modes are listed
+      # mode is named on both hosts (`auto` gives guard only in a process of the target's
+      # architecture), and both modes are listed
       - run: |
           mkdir dump
-          uv run python tools/jit_dump.py --target jit-aarch64 dump/x86-host-jit-aarch64.txt
+          WABOROS_JIT_BOUNDS=guard uv run python tools/jit_dump.py --target jit-aarch64 dump/x86-host-jit-aarch64.txt
+          WABOROS_JIT_BOUNDS=explicit uv run python tools/jit_dump.py --target jit-aarch64 dump/x86-host-jit-aarch64-explicit.txt
           WABOROS_JIT_BOUNDS=guard uv run python tools/jit_dump.py --target jit-x86_64 dump/x86-host-jit-x86_64.txt
           WABOROS_JIT_BOUNDS=explicit uv run python tools/jit_dump.py --target jit-x86_64 dump/x86-host-jit-x86_64-explicit.txt
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
@@ -199,10 +213,13 @@ jobs:
           sys.exit(platform.machine().lower() not in ('arm64', 'aarch64') or why is not None
           or target_order('auto') != ['jit-aarch64'])"
       # every tests/jit test runs or fails; only the x86-64 ISA checks are left out (they need
-      # GNU objdump with x86-64, which these runners lack)
+      # GNU objdump with x86-64, which these runners lack). Explicit bounds: Arm may tear a
+      # straddling 16-byte store in guard mode (D45), which test_simd_abi compares; guard mode is
+      # covered by the spec suite and test_guard.py below
       - run: uv run pytest tests/jit -v -rs -k "not isa_check and not isa_levels"
         env:
           WABOROS_JIT_REQUIRE: "1"
+          WABOROS_JIT_BOUNDS: explicit
       - if: ${{ !cancelled() }}
         run: uv run python tools/stack_info.py
       # step 4e: CoreMark on jit-aarch64, natively (the number for BENCHMARKS.md); it must pass
@@ -221,6 +238,22 @@ jobs:
       - run: uv run python tests/spec/fetch.py
       - run: uv run python -m tests.spec.run --engine jit-aarch64 --json spec-jit-aarch64.json
       - run: uv run python -m tests.spec.run --engine auto
+      # S0006 step 2: Linux glibc aarch64 is a verified row (`auto` above gives guard pages
+      # there); both modes named, the fault tests natively (foreign faults, chains, two copies),
+      # (tests/jit runs in explicit mode above)
+      - if: runner.os == 'Linux'
+        run: uv run python -m tests.spec.run --engine jit-aarch64
+        env:
+          WABOROS_JIT_BOUNDS: guard
+      - if: runner.os == 'Linux'
+        run: uv run python -m tests.spec.run --engine jit-aarch64
+        env:
+          WABOROS_JIT_BOUNDS: explicit
+      - if: runner.os == 'Linux'
+        run: uv run pytest tests/jit/test_guard.py -v -rs
+        env:
+          WABOROS_JIT_BOUNDS: guard
+          WABOROS_JIT_REQUIRE: "1"
       - if: runner.os == 'Linux'
         run: uv run python tools/no_exec.py -- uv run python -m tests.spec.run --engine auto
       - if: runner.os == 'Linux'
@@ -233,10 +266,12 @@ jobs:
       - if: runner.os == 'Linux'
         run: |
           mkdir dump
-          uv run python tools/jit_dump.py --target jit-aarch64 dump/arm64-host-jit-aarch64.txt
+          WABOROS_JIT_BOUNDS=guard uv run python tools/jit_dump.py --target jit-aarch64 dump/arm64-host-jit-aarch64.txt
+          WABOROS_JIT_BOUNDS=explicit uv run python tools/jit_dump.py --target jit-aarch64 dump/arm64-host-jit-aarch64-explicit.txt
           WABOROS_JIT_BOUNDS=guard uv run python tools/jit_dump.py --target jit-x86_64 dump/arm64-host-jit-x86_64.txt
           WABOROS_JIT_BOUNDS=explicit uv run python tools/jit_dump.py --target jit-x86_64 dump/arm64-host-jit-x86_64-explicit.txt
           diff x86-dump/x86-host-jit-aarch64.txt dump/arm64-host-jit-aarch64.txt
+          diff x86-dump/x86-host-jit-aarch64-explicit.txt dump/arm64-host-jit-aarch64-explicit.txt
           diff x86-dump/x86-host-jit-x86_64.txt dump/arm64-host-jit-x86_64.txt
           diff x86-dump/x86-host-jit-x86_64-explicit.txt dump/arm64-host-jit-x86_64-explicit.txt
   macos-pythonorg:

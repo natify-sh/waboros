@@ -606,6 +606,12 @@ unset. The switch also brought the Q1 check's rule A (`dladdr` tells the interpr
 from a library's, so wasmtime above ours under faulthandler is no error) and the handler's refusal
 to install in a process of another architecture (S0006 Changes).
 
+**Linux glibc aarch64** (2026-11-02, S0006 step 2): the second row in `verified` (`jit-aarch64`),
+so `auto` gives guard pages in an aarch64 Linux glibc process (QEMU user mode included); the
+spec suite passes in both modes under QEMU, and CI's native `arm64` runner runs it and
+`test_guard.py` in both modes. The row holds once the step's review and that runner confirm it.
+Every other aarch64 row stays explicit.
+
 ### D45. In guard mode stores rely on guard pages, as in Wasmtime; a split store may tear
 Status: accepted (maintainer, 2026-11-02) · Date: 2026-11-02 · Supersedes: — · Evidence: [S0006](specs/S0006-guard-pages.md) Changes; LESSONS 50; BENCHMARKS.md, "Checked stores in guard mode (rejected alternative)"
 
@@ -618,5 +624,10 @@ in CI (LESSONS 50), and box64 or FEX may too; Arm and RISC-V allow it in hardwar
 steps therefore run in explicit mode. Rejected: checking stores of 2 bytes or more (CoreMark −2
 to −3 % against unchecked stores; guard would lead explicit by +4.5 to +6.3 % instead of about
 +9 %, with 14.6 % less code instead of 20 %), and a probe, a 1-byte read of the store's last byte
-as the fault point (measured, no faster than the check). aarch64 is decided in S0006 step 2.
-D44 stands: the default stays `auto`.
+as the fault point (measured, no faster than the check). D44 stands: the default stays `auto`.
+
+**aarch64** (S0006 step 2): the same rule, as the brief decided: every store is a fault point. Under
+QEMU 8.2.2 a straddling 16-byte `str q` wrote its first 8 bytes before the trap (scalar and 8-byte
+stores wrote nothing). On aarch64 `test_guard.py` records a torn store rather than failing, and
+CI's QEMU SIMD step runs in explicit mode. What native Arm hardware does is shown by the `arm64`
+runner, not assumed.

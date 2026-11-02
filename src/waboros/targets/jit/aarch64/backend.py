@@ -42,6 +42,7 @@ from waboros.targets.jit.common.context import (
     TAIL_SWITCH,
     VSTACK_LIMIT,
 )
+from waboros.targets.jit.common.guard import GUARD
 
 POOL = (19, 20, 21, 22, 23, 24, 2, 3, 4, 5, 6, 7, 8)
 CC = {"eq": "eq", "ne": "ne", "lt_s": "lt", "lt_u": "lo", "gt_s": "gt", "gt_u": "hi", "le_s": "le",
@@ -71,10 +72,14 @@ class Backend:
     tos = 0
     supported = SUPPORTED | v128.SUPPORTED
 
-    def __init__(self) -> None:
+    def __init__(self, *, guard: bool = False) -> None:
         self.a = Asm()
         self.far = False
         self.tables: list[tuple[Label, list[Label], int]] = []  # (table, pads, code offset)
+        self.guard = guard  # S0006: accesses the reservation's guard catches go unchecked
+        self.faults: list[tuple[int, int]] = []  # (fault offset, resume offset), by `finish`
+        self._faults: list[tuple[int, Label]] = []
+        self._oob: Label | None = None  # the stub of the unchecked access `_bounds` just formed
 
     def new_label(self) -> Label:
         return self.a.label()
@@ -147,8 +152,10 @@ class Backend:
         return not a.out_of_range(f.start)
 
     def rewind(self, pos: int) -> None:
+        """Drop the code from `pos` on, with its jump tables and fault points (S0006)."""
         self.a.rewind(pos)
         self.tables = [t for t in self.tables if t[2] < pos]
+        self._faults = [x for x in self._faults if x[0] < pos]
 
     def finish(self) -> tuple[bytes, int]:
         """The code, then the data area: jump tables of 32-bit offsets of their pads from the
@@ -158,6 +165,7 @@ class Backend:
         for table, pads, _ in self.tables:
             a.bind(table)
             a.buf += b"".join(struct.pack("<i", a.pos(p) - a.pos(table)) for p in pads)
+        self.faults = [(pos, a.pos(stub)) for pos, stub in self._faults]
         try:
             return a.finish(), data
         except OutOfRange as e:  # code beyond ±128 MiB of a bl/b: refused, not a crash (S0004)
@@ -478,18 +486,31 @@ class Backend:
         and its end are computed in 64 bits, so nothing wraps; the end must be <= the memory's
         size or the access traps. A register address is copied with a 32-bit move first (an
         `AddK` formed by a 32-bit add, the wasm wrap before `offset`), so its upper half cannot
-        matter. Returns the access as (base, index register or None, offset)."""
+        matter. Returns the access as (base, index register or None, offset). In guard mode
+        (S0006) an access the guard catches is formed the same way without the compare and
+        branch, and the caller marks its one memory instruction with `_fault_point`."""
+        assert self._oob is None, "an unchecked access without its fault point"
         a = self.a
         base, limit = self._mem(mem)
         oob = self._stub(f, TrapCode.MEMORY_OUT_OF_BOUNDS)
+        unchecked = self.guard and (
+            (addr.value & M32) + offset + size <= (1 << 32) + GUARD
+            if isinstance(addr, Imm)
+            else offset + size <= GUARD
+        )
+        if unchecked:  # inside the reservation of 4 GiB + GUARD: the handler resumes at `oob`
+            self._oob = oob
         if isinstance(addr, Imm):
             ea = (addr.value & M32) + offset
-            if _imm12(ea + size):
+            if unchecked:
+                pass
+            elif _imm12(ea + size):
                 a.addsub_imm("subs", ZR, limit, ea + size)
+                self._bcc("lo", oob)
             else:
                 a.mov_imm(10, ea + size)
                 a.cmp(limit, 10)
-            self._bcc("lo", oob)
+                self._bcc("lo", oob)
             if not ea % size and ea // size < 1 << 12:
                 return base, None, ea
             a.mov_imm(9, ea)
@@ -497,16 +518,25 @@ class Backend:
         self.move(Reg(9), addr, False)
         if offset:
             self._add_k(9, 9, offset)
-        a.addsub_imm("add", 10, 9, size)
-        a.cmp(10, limit)
-        self._bcc("hi", oob)
+        if not unchecked:
+            a.addsub_imm("add", 10, 9, size)
+            a.cmp(10, limit)
+            self._bcc("hi", oob)
         return base, 9, 0
+
+    def _fault_point(self) -> None:
+        """The next instruction is the access `_bounds` formed: in guard mode, a fault point
+        (S0006 fault map); in explicit mode nothing."""
+        if self._oob is not None:
+            self._faults.append((len(self.a.buf), self._oob))
+            self._oob = None
 
     def load(
         self, f: Frame, size: int, signed: bool, wide: bool, dst: Reg, addr: Operand | AddK,
         offset: int, mem: int,
     ) -> None:  # fmt: skip
         base, index, off = self._bounds(f, addr, offset, size, mem)
+        self._fault_point()
         if index is None:
             self.a.ld(dst.id, base, off, size, signed, wide)
         else:
@@ -517,6 +547,7 @@ class Backend:
     ) -> None:  # fmt: skip
         base, index, off = self._bounds(f, addr, offset, size, mem)
         r = self._r(src, 13, size == 8)
+        self._fault_point()  # one instruction per store (S0006)
         if index is None:
             self.a.st(r, base, off, size)
         else:

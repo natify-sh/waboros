@@ -204,7 +204,7 @@ trap).
 * **Partial stores**: Arm does not promise that a misaligned store crossing into a faulting page
   writes nothing (nor does RISC-V; Wasmtime issue 7237), and QEMU's TCG splits 16-byte x86 stores
   (LESSONS 50). On x86-64 this is accepted as in Wasmtime (D45: native faults are precise, emulators
-  may tear; CI's qemu64 steps run in explicit mode); aarch64 is decided in step 2.
+  may tear; CI's qemu64 steps run in explicit mode); aarch64 the same (step 2, D45).
 
 ### Selection and fallback
 * The mode is a compile-time property of the code (D29). Before phase 6 it is chosen by a JIT option
@@ -224,7 +224,7 @@ trap).
 
 | OS / libc | x86-64 | aarch64 | CI |
 |---|---|---|---|
-| Linux glibc | **verified** (D44) | step 2 | `jit`, `arm64` native runner, QEMU |
+| Linux glibc | **verified** (D44) | **verified** (step 2; the native runner confirms) | `jit` (aarch64 under QEMU), `arm64` native runner |
 | Linux musl | later | later | none yet |
 | macOS | step 3 | step 3 | `macos-x64`, `macos-pythonorg` |
 | Windows | step 4 | later | `windows` |
@@ -247,7 +247,8 @@ reservation is a crash, not a trap: the explicit-mode tests and differential run
 * `uv run python -m tests.spec.run --engine jit-x86_64` with `WABOROS_JIT_BOUNDS=guard` and
   `=explicit`, then `uv run python tools/spec_diff.py pyc <each>`: no difference (D25), both modes
   every claimed directory (`simd/`, `multi-memory/` included). The same for `jit-aarch64` under QEMU
-  (`tools/run_arm64.py`, `--in-process`) and on the native arm64 runner.
+  (`tools/run_arm64.py`, `--in-process`; CI `jit`) and on the native arm64 runner (CI `arm64`,
+  Linux). CI runs QEMU's SIMD pytest step in explicit mode: QEMU splits a straddling 16-byte store.
 * `tests/jit/test_guard.py` (both architectures; QEMU for aarch64): every load/store width and
   signedness and every SIMD memory operator trapping at `size - n + 1 … size - 1` (straddling),
   `size`, `0xFFFFFFFF + off`, and at `off = GUARD - n` (unchecked) and `GUARD - n + 1` (checked);
@@ -438,3 +439,36 @@ reservation is a crash, not a trap: the explicit-mode tests and differential run
 * 2026-11-02: maintainer: step 6 (the guard flag and `TRAPMAP` in the serialized artifact, the C
   loader's handler) moves to the artifact-format spec of phase 5, done with the container (ELF or
   other, ARTIFACT-CONTAINER.md) and the C loader; this spec closes with steps 2–5 and 7.
+* 2026-11-02: **step 2 built (Linux glibc aarch64)**. As built:
+  * **Backend.** `Backend(guard=True)` in `aarch64/backend.py`. `_bounds` forms the address as in
+    explicit mode (`move(Reg(9), addr)`, then `add x9, x9, #offset`; a constant as an immediate
+    offset or through x9). Under the thresholds it drops the `cmp`/`b.cond` and records the stub.
+    Each scalar and SIMD access site (`backend.py`, `simd.py`) marks its one memory instruction with
+    `_fault_point`. `rewind` drops the fault points at or after the rewound position, so a function
+    compiled again in far mode keeps each access once. Explicit code is unchanged: the D35 lists of
+    `jit-aarch64` in explicit mode equal HEAD's.
+  * **Handler.** `aarch64/abi.py` `fault_handler`, 304 bytes; the contract of the x86-64 one. It
+    uses the kernel's offsets: `si_code` 8, `si_addr` 16, `uc_mcontext` at 176, `pc` at 440. It
+    starts with `bti c`, writes only x9–x17 and x29 (and x0–x2 before its calls), and never writes
+    x18. It chains by `br x16` with x0–x2, sp and x30 untouched. For SIG_DFL/SIG_IGN it calls
+    `sigaction` and `raise` under a frame record, with sp 16-aligned.
+  * **Rows.** `guard_rows` and `verified` of `jit-aarch64` are `{"linux-glibc"}`, so `auto` gives
+    guard in an aarch64 Linux glibc process, QEMU user mode included. `common/guard.py` needed one
+    fix: `install` now checks the architecture before "already installed". Before, a process whose
+    own handler was installed answered `auto` with guard code for the other architecture's target
+    when cross-compiling (LESSONS 48 again; a test covers it).
+  * **Stores (D45 for aarch64).** Stores rely on guard pages, as on x86-64. Measured under QEMU
+    8.2.2 (TCG, BTI enforced): a straddling 16-byte `str q` at 65 521..65 528 of a 64 KiB memory
+    wrote its first 8 bytes before trapping. The 8-byte scalar and lane stores wrote nothing, so
+    the "nothing written" row of the table above holds only for widths up to 8. On aarch64,
+    `test_a_straddling_store_writes_nothing` records a torn store as a warning instead of failing,
+    and still checks that only the store's own bytes landed. CI's QEMU SIMD step runs in explicit
+    mode; the native runner shows what the hardware does.
+  * **Tests.** `test_guard.py` runs on the JIT of the machine. A far-mode case checks that a
+    function compiled again keeps each fault point once, and that a fault in far code still
+    resumes. `test_compiler_aarch64`'s far tests pin explicit mode, because their module sizes
+    need far mode only with checks.
+  * **Results.** Spec under QEMU: 54 385 pass, 0 fail, 91 expected failures in both modes. The D35
+    guard list from QEMU on arm64 equals the x86-64 host's. `isa_all --target jit-aarch64` is clean
+    in guard mode. CoreMark under QEMU passes its self-check in both modes; code 37 372 → 29 284
+    bytes (−21.6 %), 669 fault points (BENCHMARKS.md).

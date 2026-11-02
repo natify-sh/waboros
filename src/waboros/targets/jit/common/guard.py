@@ -1,8 +1,8 @@
 """Guard pages (docs/specs/S0006): the bounds mode of JIT code, this copy's registry the fault
 handler reads, the handler's installation and the check that the chain to it is not broken. Host
 side only: the code is the same on every OS (D23); the handler is machine code from the
-architecture's emitter (x86_64/abi.py), never Python (a Python handler would take the GIL inside a
-signal).
+architecture's emitter (x86_64/abi.py, aarch64/abi.py), never Python (a Python handler would take
+the GIL inside a signal).
 
 Chain and claim (Q8, as Wasmtime): every copy of waboros in the process (a vendored copy, a
 sub-interpreter) has its own registry and installs its own handler, which saves the action it
@@ -89,7 +89,7 @@ def wanted(target: Any) -> bool:
 
 
 class _Sigaction(ctypes.Structure):
-    """glibc's `struct sigaction` on x86-64 and aarch64 (sa_handler first)."""
+    """glibc's `struct sigaction` on x86-64 and aarch64 (the generic layout, sa_handler first)."""
 
     _fields_ = [
         ("handler", ctypes.c_void_p),
@@ -158,20 +158,21 @@ _handler: dict[str, Any] = {}  # the handler's code area, its address, the saved
 def install(target: Any) -> None:
     """Install the process's fault handler once (S0006 "Installation"), or raise RuntimeError
     where this host has none for `target`'s architecture."""
+    # the handler is the target's machine code: never installed in another architecture's
+    # process (jit_dump cross-compiles, D35); checked before "already installed", which is the
+    # native target's handler (LESSONS 48)
+    machine = platform.machine().lower()
+    native = machine in target.machines and sys.maxsize > 1 << 32
+    if host_row() not in target.guard_rows or not native:
+        raise RuntimeError(
+            f"guard-mode code (WABOROS_JIT_BOUNDS=guard) cannot run here: {target.name} has "
+            f"no fault handler for {host_row()} on {machine} (S0006)"
+        )
     if _handler:
         return
     with _install_lock:
         if _handler:
             return
-        # the handler is the target's machine code: never installed in another architecture's
-        # process (jit_dump cross-compiles, D35)
-        machine = platform.machine().lower()
-        native = machine in target.machines and sys.maxsize > 1 << 32
-        if host_row() not in target.guard_rows or not native:
-            raise RuntimeError(
-                f"guard-mode code (WABOROS_JIT_BOUNDS=guard) cannot run here: {target.name} has "
-                f"no fault handler for {host_row()} on {machine} (S0006)"
-            )
         libc = ctypes.CDLL(None, use_errno=True)
         sigaction = libc.sigaction
         sigaction.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p]

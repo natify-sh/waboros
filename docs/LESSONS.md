@@ -320,3 +320,18 @@ What went wrong or surprised us while building the PoC, so it is not found again
     calls return), and inject a known bug in each path it is meant to cover to check that it fails
     (here: the ADDK spill on `local.set`, `tos_taken`, a 64-bit `lea`, a wrong disp32, a 64-bit aarch64
     `add`). Found: S0007 step 3, 2026-11-02.
+54. **A measurement of some store widths says nothing about the others.** S0006's draft table recorded
+    "a straddling store writes nothing" under QEMU 8.2.2 aarch64, measured with scalar stores. Step 2
+    ran every width: a 16-byte `str q` at 65 521..65 528 of a 64 KiB memory wrote its first 8 bytes,
+    then trapped. TCG splits it into two 8-byte stores, as it splits x86's `movdqu` (LESSONS 50). The
+    8-byte scalar and lane stores wrote nothing. Rule: a claim about faulting accesses names the
+    widths and the machine it was measured on, and a test sweeps every width. Found: S0006 step 2
+    (`test_simd_abi.py::test_v128_matches_pyc` and `test_guard.py` under QEMU in guard mode),
+    2026-11-02.
+55. **A cached "already done" can skip a check that depends on the caller.** `guard.install(target)`
+    returned at once when a handler was installed, before its architecture check. In an x86-64
+    process with our handler installed, `auto` for a cross-compiled `jit-aarch64` therefore saw an
+    installed handler and compiled guard code for an architecture it cannot run. While aarch64 had no
+    verified row nothing reached this path; step 2's row made it reachable. Rule: checks that depend
+    on the argument run before the once-per-process shortcut (LESSONS 48). Found: S0006 step 2,
+    2026-11-02.

@@ -1,5 +1,6 @@
 # pyright: reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false
-"""Guard pages on jit-x86_64 (S0006 step 1, Linux glibc): accesses the reservation's guard catches
+"""Guard pages on the JIT of this machine (S0006 steps 1-2, Linux glibc, jit-x86_64 and
+jit-aarch64; aarch64 also under QEMU, tools/run_arm64.py): accesses the reservation's guard catches
 go unchecked and the emitted fault handler turns their faults into MEMORY_OUT_OF_BOUNDS at the
 function's own trap stub. Every trapping access kind at the edge of memory, scalar and SIMD, on
 memory 0, memory n and an imported memory; deep frames, inner entries, threads; and faults that
@@ -17,7 +18,7 @@ from typing import Any, cast
 import pytest
 
 from tests.jit import native, need
-from tests.jit.test_compiler import Inst, build, outcome, trap_of, wat
+from tests.jit.test_compiler import JIT, Inst, build, outcome, trap_of, wat
 from tests.jit.test_tables import provider
 from waboros.frontend.binary import parse
 from waboros.frontend.validate import validate
@@ -52,10 +53,12 @@ SIMD = {  # name -> (access size, expression of the address `A`, result is v128)
 
 @pytest.fixture(autouse=True)
 def _guard(monkeypatch: pytest.MonkeyPatch) -> None:
-    native("jit-x86_64")
-    tgt = base.TARGETS["jit-x86_64"]()
-    # under WABOROS_JIT_REQUIRE=1 (the CI `jit` job, Linux glibc x86-64) a skip is a failure: the
-    # row check or `auto` must not stop engaging unnoticed
+    native(JIT)
+    tgt = base.TARGETS[JIT]()
+    if not sys.platform.startswith("linux"):  # macOS, Windows: S0006 steps 3-4
+        pytest.skip(f"no guard pages on {sys.platform} yet")
+    # under WABOROS_JIT_REQUIRE=1 (the CI `jit` and `arm64` jobs, Linux glibc) a skip is a
+    # failure: the row check or `auto` must not stop engaging unnoticed
     need(guard.host_row() in tgt.guard_rows, f"a guard-page handler for {guard.host_row()}")  # pyright: ignore[reportAttributeAccessIssue]
     monkeypatch.setenv("WABOROS_JIT_BOUNDS", "auto")
     need(guard.wanted(tgt), f"`auto` giving guard pages on {guard.host_row()}")
@@ -65,7 +68,7 @@ def _guard(monkeypatch: pytest.MonkeyPatch) -> None:
 def compiled(text: str) -> Compiled:
     mod = parse(wat(text))
     validate(mod)
-    c = base.TARGETS["jit-x86_64"]().compile(mod)
+    c = base.TARGETS[JIT]().compile(mod)
     assert isinstance(c, Compiled)
     return c
 
@@ -188,7 +191,7 @@ def test_auto_is_explicit_silently_where_guard_cannot_be(
     another architecture (cross-compiling): `auto` compiles explicit code, with no warning, and
     it runs; `guard` there compiles but refuses to instantiate."""
     monkeypatch.setenv("WABOROS_JIT_BOUNDS", "auto")
-    tgt = type(base.TARGETS["jit-x86_64"]())
+    tgt = type(base.TARGETS[JIT]())
     if why == "unverified row":
         monkeypatch.setattr(tgt, "verified", frozenset())
     elif why == "musl":
@@ -198,7 +201,7 @@ def test_auto_is_explicit_silently_where_guard_cannot_be(
         if why == "install fails":
             monkeypatch.setattr(guard, "load", _no_exec)
         else:
-            monkeypatch.setattr(guard.platform, "machine", lambda: "aarch64")
+            monkeypatch.setattr(guard.platform, "machine", lambda: "riscv64")
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         c = compiled(LOAD)
@@ -215,11 +218,27 @@ def _no_exec(code: bytes) -> Any:
     raise OSError("executable memory refused")
 
 
-def test_guard_on_a_target_without_it_is_an_error() -> None:
+def test_guard_on_a_target_without_it_is_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
     mod = parse(wat("(module (memory 1))"))
     validate(mod)
+    tgt = base.TARGETS[JIT]()
+    monkeypatch.setattr(type(tgt), "guard_rows", frozenset())  # as a target without the mode
     with pytest.raises(ValueError, match="no guard mode"):
-        base.TARGETS["jit-aarch64"]().compile(mod)  # cross-compiles anywhere (D35)
+        tgt.compile(mod)
+
+
+def test_auto_cross_compiles_explicit_with_our_handler_installed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The other architecture's target (jit_dump, D35) gets explicit code under `auto` although
+    this process's handler is installed: that handler is not its code (LESSONS 48)."""
+    build(wat(LOAD))  # our handler installed
+    other = next(n for n in ("jit-x86_64", "jit-aarch64") if n != JIT)
+    monkeypatch.setenv("WABOROS_JIT_BOUNDS", "auto")
+    mod = parse(wat(LOAD))
+    validate(mod)
+    c = base.TARGETS[other]().compile(mod)
+    assert isinstance(c, Compiled) and (c.flags, c.faults) == (0, [])
 
 
 RECURSE = """(module (memory 1)
@@ -228,6 +247,41 @@ RECURSE = """(module (memory 1)
       (then (i32.load (local.get 1)))
       (else (i32.add (i32.const 1) (call $f (i32.sub (local.get 0) (i32.const 1)) (local.get 1))))))
   (func $inf (export "inf") (param i32) (result i32) (i32.load (call $inf (local.get 0)))))"""
+
+
+@pytest.mark.parametrize("around", [False, True])
+def test_far_mode_drops_the_fault_points_of_the_first_attempt(
+    around: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """aarch64 compiles a function again in far mode (S0004) after `rewind`: the fault points of
+    the first attempt go with its code (S0006), so the map holds each access once, sorted, and a
+    fault in the far code still resumes at its stub. 80 000 loads of 16 bytes each need far mode
+    in guard code (without checks: 28 bytes each in explicit code)."""
+    if JIT != "jit-aarch64":
+        pytest.skip("x86-64 has no far mode")
+    from tests.jit.test_compiler_aarch64 import _module  # pyright: ignore[reportPrivateUsage]
+    from waboros.targets.jit.aarch64.backend import Backend
+
+    rewinds: list[int] = []
+    rewind = Backend.rewind
+
+    def counted(self: Backend, pos: int) -> None:
+        rewinds.append(pos)
+        rewind(self, pos)
+
+    monkeypatch.setattr(Backend, "rewind", counted)
+    n = 80_000
+    mod = parse(_module(n, around))
+    validate(mod)
+    c = base.TARGETS[JIT]().compile(mod)
+    assert isinstance(c, Compiled) and len(rewinds) == 1 and (rewinds[0] > 0) == around
+    at = [p for p, _ in c.faults]
+    assert len(at) == n and at == sorted(set(at)) and at[-1] < c.data_start
+    inst = build(_module(n, around))
+    assert inst("f", 1, 7) == [7]  # the far br_if
+    assert trap_of(inst, "f", 0, 30_000) is OOB  # 35 536 loads, then the guard
+    if around:
+        assert inst("g", 0, 4) == [5]
 
 
 def test_trap_deep_in_recursion_and_stack_overflow() -> None:
@@ -310,26 +364,42 @@ def test_registry_grows_and_forgets_freed_code_and_memories() -> None:
 def test_a_straddling_store_writes_nothing() -> None:
     """One instruction per store (S0006): a store that crosses into the guard faults before any
     byte of it lands. This holds on native x86-64, whose faults are precise; an emulator that
-    splits a wide store (QEMU's `-cpu qemu64`) may tear it, as Arm may (accepted, D45)."""
+    splits a wide store (QEMU's `-cpu qemu64`) may tear it, as Arm may (accepted, D45). On
+    aarch64 the architecture allows the accessible part to be written, so there the test records
+    (a warning naming the torn stores) rather than asserts; a byte written is still the store's
+    own (S0006 step 2: QEMU 8.2.2 tore only the 16-byte store, LESSONS 54)."""
     inst = build(
         wat("""(module (memory 1)
       (func (export "s8") (param i32) (i64.store (local.get 0) (i64.const -1)))
       (func (export "s16") (param i32) (v128.store (local.get 0) (v128.const i64x2 -1 -1)))
       (func (export "sl") (param i32) (v128.store64_lane 0 (local.get 0) (v128.const i64x2 -1 -1)))
-      (func (export "ld") (param i32) (result i32) (i32.load8_u (local.get 0))))""")
+      (func (export "ld") (param i32) (result i32) (i32.load8_u (local.get 0)))
+      (func (export "st") (param i32) (i32.store8 (local.get 0) (i32.const 0))))""")
     )
+    torn = []
     for f, n in (("s8", 8), ("s16", 16), ("sl", 8)):
         for k in range(1, n):
             a = PAGE - n + k
             assert trap_of(inst, f, a) is OOB
-            assert all(inst("ld", b) == [0] for b in range(a, PAGE)), (f, a)
+            got = [inst("ld", b)[0] for b in range(a, PAGE)]
+            if any(got):  # recorded on aarch64 only; even then only the store's own bytes
+                assert JIT == "jit-aarch64" and set(got) <= {0, 0xFF}, (f, a, got)
+                torn.append((f, a))
+                for b in range(a, PAGE):  # clean for the next case
+                    inst("st", b)
+    if torn:
+        msg = f"aarch64: a straddling store wrote part of itself (D45): {torn}"
+        warnings.warn(msg, stacklevel=1)
 
 
 def _memory_instructions(code: bytes, end: int, tmp: Path) -> list[int]:
-    """Offsets of the instructions that address linear memory: a memory operand based on r13
-    (memory 0) or rcx (another memory's base plus the address), `lea` excepted."""
+    """Offsets of the instructions that address linear memory: x86-64, a memory operand based on
+    r13 (memory 0) or rcx (another memory's base plus the address), `lea` excepted; aarch64
+    (llvm-mc), a load or store based on x26 (memory 0) or x11 (another memory's base)."""
     import re
 
+    if JIT == "jit-aarch64":
+        return _a64_memory_instructions(code[:end])
     from tests.jit.test_encoder import OBJDUMP
 
     need(OBJDUMP, "GNU objdump")
@@ -342,6 +412,20 @@ def _memory_instructions(code: bytes, end: int, tmp: Path) -> list[int]:
         if m and m.group(2) != "lea" and re.search(r"\[(r13|rcx)\b", m.group(3)):
             found.append(int(m.group(1), 16))
     return found
+
+
+def _a64_memory_instructions(code: bytes) -> list[int]:
+    import re
+    import shutil
+
+    mc = shutil.which("llvm-mc")
+    need(mc, "llvm-mc")
+    words = " ".join(f"0x{b:02x}" for b in code)
+    cmd = [str(mc), "-triple=aarch64", "-mattr=+bti", "--disassemble"]
+    out = subprocess.run(cmd, input=words, capture_output=True, text=True, check=True).stdout
+    lines = [ln.strip() for ln in out.splitlines() if ln.strip() and not ln.strip().startswith(".")]
+    assert len(lines) == len(code) // 4, "one line per instruction"
+    return [4 * i for i, ln in enumerate(lines) if re.match(r"(ld|st)\S*\s.*\[x(26|11)\b", ln)]
 
 
 def test_the_fault_map_is_the_instructions_that_touch_memory(tmp_path: Path) -> None:
@@ -385,8 +469,12 @@ def _child(
     env = {k: v for k, v in os.environ.items() if k != "PYTHONFAULTHANDLER"}
     env["WABOROS_JIT_BOUNDS"] = bounds
     fh = ["-X", "faulthandler"] if faulthandler else []
-    cmd = [sys.executable, *fh, "-c", "import ctypes, faulthandler, signal\n" + pre + _SETUP + body]
-    return subprocess.run(cmd, cwd=ROOT, env=env, capture_output=True, text=True, timeout=120)
+    head = "import ctypes, faulthandler, platform, signal\n"
+    cmd = [sys.executable, *fh, "-c", head + pre + _SETUP + body]
+    try:
+        return subprocess.run(cmd, cwd=ROOT, env=env, capture_output=True, text=True, timeout=120)
+    except OSError as e:  # QEMU user mode without binfmt cannot start a child interpreter
+        pytest.skip(f"no child interpreter: {e}")
 
 
 @pytest.mark.parametrize("fh", [False, True], ids=["plain", "faulthandler"])
@@ -433,14 +521,22 @@ def test_a_broken_chain_during_a_host_call_fails_that_call() -> None:
 _CHAINER = """
 from waboros.targets.jit.common.execmem import load
 from waboros.targets.jit.common.guard import _Sigaction
-from waboros.targets.jit.x86_64.encoder import RAX, Asm, Mem
 libc = ctypes.CDLL(None)
 prev, act = _Sigaction(), _Sigaction()
 libc.sigaction(11, None, ctypes.byref(prev))
-a = Asm()
-a.endbr64()
-a.mov_imm(RAX, ctypes.addressof(prev), w=True)
-a.jmp(Mem(RAX))  # a foreign handler that passes every fault on
+if platform.machine().lower() in ("aarch64", "arm64"):
+    from waboros.targets.jit.aarch64.encoder import Asm
+    a = Asm()
+    a.bti("c")
+    a.mov_imm(16, ctypes.addressof(prev))
+    a.ld(16, 16)
+    a.br(16)  # a foreign handler that passes every fault on
+else:
+    from waboros.targets.jit.x86_64.encoder import RAX, Asm, Mem
+    a = Asm()
+    a.endbr64()
+    a.mov_imm(RAX, ctypes.addressof(prev), w=True)
+    a.jmp(Mem(RAX))  # a foreign handler that passes every fault on
 code = load(a.finish())
 act.handler, act.flags = code.addr, 4 | 0x08000000
 libc.sigaction(11, ctypes.byref(act), None)
@@ -538,7 +634,7 @@ def make(pkg, cb):
     m = lambda name: importlib.import_module(pkg + name)
     mod = m(".frontend.binary").parse(bytes(wasmtime.wat2wasm(TEXT)))
     m(".frontend.validate").validate(mod)
-    t = m(".targets.base").TARGETS["jit-x86_64"]()
+    t = m(".targets.base").TARGETS[sys.argv[3]]()
     ext = m(".runtime.link").resolve(mod, {"h": {"cb": cb}})
     inst = t.instantiate(t.compile(mod), ext, m(".runtime.store").StoreState())
     names = {n: i for n, k, i in mod["exports"] if k == 0}
@@ -580,8 +676,11 @@ def test_two_copies_of_waboros_chain_in_either_order(order: int, tmp_path: Path)
         text = f.read_text(encoding="utf-8")
         f.write_text(re.sub(r"\bwaboros(\.| import)", r"waboros_b\1", text), encoding="utf-8")
     env = {**os.environ, "WABOROS_JIT_BOUNDS": "guard"}
-    cmd = [sys.executable, "-c", _COPIES, str(tmp_path), str(order)]
-    p = subprocess.run(cmd, cwd=ROOT, env=env, capture_output=True, text=True, timeout=120)
+    cmd = [sys.executable, "-c", _COPIES, str(tmp_path), str(order), JIT]
+    try:
+        p = subprocess.run(cmd, cwd=ROOT, env=env, capture_output=True, text=True, timeout=120)
+    except OSError as e:  # QEMU user mode without binfmt cannot start a child interpreter
+        pytest.skip(f"no child interpreter: {e}")
     assert p.returncode == 0, p
     lines = sorted(p.stdout.splitlines())
     want = ["handlers 2"] + ["inner MEMORY_OUT_OF_BOUNDS"] * 2
