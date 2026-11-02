@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 
 from w2py.targets.base import TrapCode, Unsupported
 from w2py.targets.jit.aarch64 import abi
+from w2py.targets.jit.aarch64 import simd as v128
 from w2py.targets.jit.aarch64.abi import CTX, FRAME, MBASE, MEM0, MSIZE
 from w2py.targets.jit.aarch64.encoder import FP, LR, SP, ZR, Asm, Label, OutOfRange, bitmask, invert
 from w2py.targets.jit.common.backend import SWAP, Dst, Imm, Operand, Reg, Slot
@@ -58,7 +59,7 @@ class Frame:
 class Backend:
     pool = POOL
     tos = 0
-    supported = SUPPORTED
+    supported = SUPPORTED | v128.SUPPORTED
 
     def __init__(self) -> None:
         self.a = Asm()
@@ -510,6 +511,11 @@ class Backend:
             self.a.st(r, 9)
         else:
             self._word(False, r, CTX, 8 * word)
+
+    def simd(
+        self, f: Frame, op: int, dst: Dst | None, args: tuple[Operand, ...], imm: tuple[int, ...]
+    ) -> None:  # fmt: skip
+        v128.emit(self, f, op, dst, args, imm)
 
     def ctx_addr(self, dst: Reg, word: int) -> None:
         """dst = the address of context word `word` (a function record: `ref.func`)."""

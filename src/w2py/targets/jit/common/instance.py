@@ -17,6 +17,7 @@ from typing import Any, cast
 from w2py.frontend import validate
 from w2py.runtime.store import StoreState
 from w2py.targets.base import Extern, HostError, HostFunc, Raw, Trap, TrapCode
+from w2py.targets.jit.common import simd
 from w2py.targets.jit.common.compiler import M32, M64, NARROW, Compiled, f32_bits, f64_bits
 from w2py.targets.jit.common.context import (
     DATA_DROP,
@@ -530,6 +531,20 @@ def _ref_host(st: _StoreStacks, f: HostFunc, ps: Sequence[Any], rs: Sequence[Any
     return cast(HostFunc, call)
 
 
+def _v128_host(f: HostFunc, ps: Sequence[Any], rs: Sequence[Any]) -> HostFunc:
+    """A host function whose signature has v128: it gets and returns ints, the code two slots."""
+
+    def call(args: Sequence[Raw]) -> list[Raw]:
+        return simd.split(rs, f(simd.join(ps, args)))
+
+    return cast(HostFunc, call)
+
+
+def _masks(ts: Sequence[Any]) -> list[int]:
+    """One mask per slot of values of the types `ts`."""
+    return [m for t in ts for m in (mask(t),) * (1 + (t == simd.V128))]
+
+
 class JitInstance(Instance):
     """An instance of a compiled module (S0002 `TargetInstance`): imports wired into the
     context, function records and signature ids written, tables bound, globals initialised,
@@ -562,7 +577,9 @@ class JitInstance(Instance):
                 self.hosts.append(f)
                 if any(isref(t) for t in (*ps, *rs)):
                     f = _ref_host(st, f, ps, rs)
-                hosts.append((f, len(ps), [mask(t) for t in rs]))
+                if simd.V128 in (*ps, *rs):
+                    f = _v128_host(f, ps, rs)
+                hosts.append((f, simd.width(ps), _masks(rs)))
             elif im[0] == "mem":
                 memories.append(cast(Memory, ext.value))
             elif im[0] == "table":
@@ -599,7 +616,10 @@ class JitInstance(Instance):
                 self.gaddr.append(self.cells[i].addr)
             else:
                 t, _, init = mod["globals"][i - len(self.cells)]
-                ctx[word] = self._const(init) & mask(t)
+                if t == simd.V128:
+                    ctx[word : word + 2] = simd.split([t], [self._const(init)])
+                else:
+                    ctx[word] = self._const(init) & mask(t)
                 self.gaddr.append(base + 8 * word)
         for (mn, mx), init in zip(mod["tables"], mod["tinit"], strict=True):
             tables.append(Table(mn, mx, 0 if init is None else self._const(init), store))
@@ -641,7 +661,7 @@ class JitInstance(Instance):
 
     def _const(self, e: tuple[Any, ...]) -> int:
         k = e[0]
-        if k in ("i32", "i64"):
+        if k in ("i32", "i64", "v128"):
             return e[1]
         if k == "f32":
             return f32_bits(e[1])
@@ -649,7 +669,7 @@ class JitInstance(Instance):
             return f64_bits(e[1])
         if k == "global":
             g: int = e[1]
-            return ctypes.c_uint64.from_address(self.gaddr[g]).value
+            return self._read_global(g)
         if k == "func":
             return self.records[e[1]]
         if k == "null":
@@ -699,11 +719,11 @@ class JitInstance(Instance):
             finally:
                 self.store.depth = depth
         ps, rs = self.module["types"][self.ftypes[func_index]]
-        if not any(isref(t) for t in (*ps, *rs)):
+        if not any(isref(t) or t == simd.V128 for t in (*ps, *rs)):
             return super().call(func_index, args)
         st = _stacks(self.store)
         raw = [st.to_raw(t, a) if isref(t) else a for t, a in zip(ps, args, strict=True)]
-        res = super().call(func_index, raw)
+        res = simd.join(rs, super().call(func_index, simd.split(ps, raw)))
         return [st.from_raw(t, r) if isref(t) else r for t, r in zip(rs, res, strict=True)]  # pyright: ignore[reportReturnType]
 
     def export(self, name: str) -> Extern:
@@ -731,7 +751,14 @@ class JitInstance(Instance):
                 return self.memories[idx].pages, self.memories[idx].declared
         raise LookupError(f"no exported memory or table {name}")
 
+    def _read_global(self, g: int) -> int:
+        """The value of global g (a v128 from its two words)."""
+        if self.gtypes[g] == simd.V128:
+            lo, hi = (ctypes.c_uint64 * 2).from_address(self.gaddr[g])
+            return lo | hi << 64
+        return ctypes.c_uint64.from_address(self.gaddr[g]).value
+
     def global_get(self, global_index: int) -> Raw:
-        r = ctypes.c_uint64.from_address(self.gaddr[global_index]).value
+        r = self._read_global(global_index)
         t = self.gtypes[global_index]
         return _stacks(self.store).from_raw(t, r) if isref(t) else r  # pyright: ignore[reportReturnType]

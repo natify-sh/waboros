@@ -343,3 +343,7 @@ Q5 (a), Q6 (a), Q7 (a), Q8 (a). Kept below with their options for the record.
   boundary split/join, the `simd` method in both backends with `v128.const`, `load`, `store`,
   `select`, `drop`, globals) and 5c2 (the other data-movement operators: lanes, splat,
   `load*_splat`/`_zero`/`_lane`, `store*_lane`, bitwise, `any_true`); extending loads move to 5d1.
+* 2026-11-02 (5c1 review): v128 operands reach `simd` as `Slot(k)` only (the core writes a constant
+  pair to its slots first); `Imm(v)` stays allowed by this spec and is added to the backends only if
+  a later step measures a gain. `tools/jit_dump.py` hashes `Layout.wide` explicitly (it is not in
+  `Layout`'s repr, which keeps the D35 lines of modules without v128 unchanged).

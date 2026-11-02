@@ -54,6 +54,8 @@ def main() -> int:
         everything = repr(
             (c.data_start, c.funcs, c.records, c.sigs, sorted(c.thunks.items()), c.layout)
         )
+        if c.layout.wide:  # v128 globals: not in Layout's repr, so non-SIMD lines stay as before
+            everything += repr(c.layout.wide)
         digest = hashlib.sha256(c.code + everything.encode()).hexdigest()
         lines.append(f"{name} {digest} {c.data_start}")
     args.out.write_text("\n".join(lines) + "\n", encoding="utf-8")

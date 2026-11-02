@@ -103,6 +103,17 @@ class Backend(Protocol[L, F]):
 
     def ctx_addr(self, dst: Reg, word: int) -> None: ...  # a function record (ref.func)
 
+    # SIMD (S0005, the D39 amendment): `op` = 0xFD000 + sub-opcode, or 0x23/0x24 for a v128
+    # global (`imm` = (word, indirect)); `args` in wasm order. A v128 operand or result is
+    # `Slot(k)` (slots k, k+1, low half first); scalars as everywhere else; `dst` None for an
+    # operator without a result. Reads every operand before writing `dst`; checks bounds as `load`
+    # and `store`; preserves pool, frame, context, memory-0 registers and `tos` (unless `dst`);
+    # leaves no flags and no vector register live; may use the 4 slots from 6 above the base of
+    # its operands. `imm`: lane, `(offset, memory word[, lane])`, the shuffle lanes as one int.
+    def simd(
+        self, f: F, op: int, dst: Dst | None, args: tuple[Operand, ...], imm: tuple[int, ...]
+    ) -> None: ...  # fmt: skip
+
     # tables (`word`: the table's `base` word; `size` follows) and bulk memory: bounds checked
     # before anything is written; operands are i32 but table values (64-bit references)
     def table_get(self, f: F, dst: Reg, word: int, index: Operand) -> None: ...

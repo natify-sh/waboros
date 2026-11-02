@@ -127,7 +127,8 @@ int32_t entry(uint64_t *ctx, uint64_t *frame, const void *code_of_function);
 
 * `frame` points into the host-allocated **value stack**; the arguments are written to `frame[0..n)`,
   the results come back in `frame[0..m)`, one 64-bit slot per value (i32 zero-extended in the low half;
-  i64 as is; f32/f64 as bit patterns; v128 takes two slots; references as pointer-sized values).
+  i64 as is; f32/f64 as bit patterns; v128 takes two slots, the low 64 bits (bytes 0–7) in the first
+  slot or word, as for a v128 global; references as pointer-sized values).
 * The return value is `0` or a trap code (below). On a trap the machine stack is unwound to the
   trampoline, which returns normally: the host never sees a signal or a non-local jump.
 * **Re-entrant**: the trampoline keeps nothing in the context but `TRAP_CODE`, so wasm → host → wasm

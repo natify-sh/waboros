@@ -149,10 +149,14 @@ def test_drop_and_select_are_annotated_for_v128_only() -> None:
         mod(b"", b"", b"", extra=sec(6, b"\x01" + V + b"\x00" + CONST + b"\x0b")),  # a v128 global
     ],
 )
-def test_targets_refuse_v128(name: str, data: bytes) -> None:
+def test_jit_targets_accept_v128(name: str, data: bytes) -> None:
+    """Since S0005 step 5c1 the JITs compile v128; an operator they lack is named."""
     m = parse(data)
     validate(m)
-    assert base.TARGETS[name]().supports(m) == "simd"
+    assert base.TARGETS[name]().supports(m) is None
+    m = parse(mod(b"", b"", CONST + CONST + b"\xfd\x0e" + DROP))  # i8x16.swizzle: not yet
+    validate(m)
+    assert base.TARGETS[name]().supports(m) == "opcode 0xfd00e"
 
 
 def test_module_without_v128_is_not_refused() -> None:

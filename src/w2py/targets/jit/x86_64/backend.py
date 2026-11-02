@@ -26,6 +26,7 @@ from w2py.targets.jit.common.context import (
     TAIL_SWITCH,
     VSTACK_LIMIT,
 )
+from w2py.targets.jit.x86_64 import simd as v128
 from w2py.targets.jit.x86_64.abi import MEM0
 from w2py.targets.jit.x86_64.encoder import (
     R8,
@@ -81,7 +82,7 @@ def _imm32(o: Operand, wide: bool) -> int | None:
 class Backend:
     pool = POOL
     tos = RAX
-    supported = SUPPORTED
+    supported = SUPPORTED | v128.SUPPORTED
 
     def __init__(self, check_align: bool = False) -> None:
         self.a = Asm()
@@ -769,6 +770,11 @@ class Backend:
             self.a.mov(dst.id, Mem(RCX), w=True)
         else:
             self.a.mov(dst.id, Mem(R15, 8 * word), w=True)
+
+    def simd(
+        self, f: Frame, op: int, dst: Dst | None, args: tuple[Operand, ...], imm: tuple[int, ...]
+    ) -> None:  # fmt: skip
+        v128.emit(self, f, op, dst, args, imm)
 
     def ctx_addr(self, dst: Reg, word: int) -> None:
         """dst = the address of context word `word` (a function record: `ref.func`)."""

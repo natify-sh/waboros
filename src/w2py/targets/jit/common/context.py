@@ -7,7 +7,7 @@ A table element and a `funcref` value are one word: 0 (null) or the address of a
 (one per function it can take a reference to) and the canonical type ids its `call_indirect`s
 expect (one word per signature) live in its own context, written by the runtime."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 SAVED_SP, TRAP_CODE, INTERRUPT, FUEL, EPOCH_DEADLINE = 0, 1, 2, 3, 4
 VSTACK_LIMIT, NSTACK_LIMIT, HOST_ERROR, HOST_BRIDGE = 5, 6, 7, 8
@@ -30,10 +30,13 @@ class Layout:
 
     memories: int = 0
     tables: int = 0  # 2 words each
-    globals: int = 0  # 1 word each
+    globals: int = 0  # 1 word each (2 for one in `wide`)
     imports: int = 0
     sigs: int = 0  # canonical type ids that call_indirect compares against, 1 word each
     records: int = 0  # function records, RECORD words each
+    # defined v128 globals (2 words each, S0005); not in the repr, so the D35 lists of modules
+    # without v128 stay as they were (the word numbers in the code show it anyway)
+    wide: tuple[int, ...] = field(default=(), repr=False)
 
     def memory(self, i: int) -> int:
         """`base`; `size_bytes` is the next word."""
@@ -45,10 +48,10 @@ class Layout:
 
     def global_(self, i: int) -> int:
         """Global i (imports first): its value, or for an imported one the address of it."""
-        return FIRST_VAR + 2 * self.memories + 2 * self.tables + i
+        return FIRST_VAR + 2 * self.memories + 2 * self.tables + i + sum(w < i for w in self.wide)
 
     def import_(self, i: int) -> int:
-        return FIRST_VAR + 2 * self.memories + 2 * self.tables + self.globals + i
+        return FIRST_VAR + 2 * self.memories + 2 * self.tables + self.globals + len(self.wide) + i
 
     def libcall(self, j: int) -> int:
         return self.import_(self.imports) + j

@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from w2py.targets.base import TrapCode, Unsupported, ValidModule
+from w2py.targets.jit.common import simd
 from w2py.targets.jit.common.backend import NEGATE, Backend, Imm, Operand, Reg, Slot
 from w2py.targets.jit.common.context import (
     DATA_DROP,
@@ -127,7 +128,13 @@ def type_ok(t: Any) -> str | None:
 
 
 def unsupported(mod: ValidModule, ops: frozenset[int]) -> str | None:
-    """The first feature of `mod` that a backend compiling the opcodes `ops` cannot, or None."""
+    """The first feature of `mod` that a backend compiling the opcodes `ops` cannot, or None. v128
+    is compiled where the backend compiles some SIMD operator (S0005)."""
+    vec = any(op >= 0xFD000 for op in ops)
+
+    def bad(t: Any) -> str | None:
+        return None if vec and t == simd.V128 else type_ok(t)
+
     if not mod.get("validated"):
         return "module not fully validated"
     imps: list[tuple[Any, ...]] = mod["imports"]
@@ -135,12 +142,12 @@ def unsupported(mod: ValidModule, ops: frozenset[int]) -> str | None:
     vts += [g[0] for g in mod["globals"]] + [im[3][0] for im in imps if im[0] == "global"]
     vts += [t for locs, _ in mod["codes"] for t in locs] + list(mod["ttypes"])
     for t in vts:
-        if type_ok(t):
-            return type_ok(t)
+        if bad(t):
+            return bad(t)
     for insns in mod["insns"]:
         for ins in insns:
             op = ins[0]
-            if op >= 0xFD000:  # a SIMD operator (S0005 step 5c)
+            if op >= 0xFD000 and not vec:
                 return "simd"
             if op not in ops:
                 return feature(op)
@@ -150,8 +157,8 @@ def unsupported(mod: ValidModule, ops: frozenset[int]) -> str | None:
             elif op == 0x1B and len(ins) > 1:  # typed select
                 ts = ins[1]
             for t in ts:
-                if type_ok(t):
-                    return type_ok(t)
+                if bad(t):
+                    return bad(t)
     return None
 
 
@@ -224,10 +231,11 @@ def compile_module(mod: ValidModule, b: Backend[Any, Any], target: str) -> Compi
     refd = {e[1] for e in inits if e[0] == "func"} | set(range(len(fimps)))
     refd |= {i[1] for insns in mod["insns"] for i in insns if i[0] == 0xD2}
     sigs = sorted({i[1] for insns in mod["insns"] for i in insns if i[0] in (0x11, 0x13)})
+    wide = tuple(len(gimps) + i for i, g in enumerate(mod["globals"]) if g[0] == simd.V128)
     layout = Layout(
         memories=nmem, tables=len(mod["ttypes"]),
         globals=len(gimps) + len(mod["globals"]), imports=len(fimps), sigs=len(sigs),
-        records=len(refd),
+        records=len(refd), wide=wide,
     )  # fmt: skip
     m = _Mod(
         b, mod["types"], fimps + mod["funcs"], len(fimps), [b.new_label() for _ in mod["funcs"]],
@@ -240,7 +248,7 @@ def compile_module(mod: ValidModule, b: Backend[Any, Any], target: str) -> Compi
         fidx = len(fimps) + k
         pin = not (nopin == "all" or str(fidx) in nopin.split(","))
         pos = b.here()
-        funcs.append((pos, len(m.types[m.ftypes[fidx]][1])))
+        funcs.append((pos, simd.width(m.types[m.ftypes[fidx]][1])))
         if not _Func(m, fidx, locs, insns, pin).run(False):  # a branch does not reach
             b.rewind(pos)
             far_ok = _Func(m, fidx, locs, insns, pin).run(True)  # never inside an assert (-O)
@@ -257,7 +265,10 @@ class _Func:
         ps, self.results = m.types[m.ftypes[fidx]]
         self.nparams = len(ps)
         self.ltypes: list[Any] = [*ps, *locs]
-        self.L = len(self.ltypes)
+        self.slot = [0]  # slot of each local (a v128 takes two), then the count of slots
+        for t in self.ltypes:
+            self.slot.append(self.slot[-1] + 1 + (t == simd.V128))
+        self.L = self.slot.pop()
         self.label = m.labels[fidx - m.nimp]
         self.TOS = Reg(self.b.tos)
         self.pins = self.choose_pins() if pin else {}
@@ -288,7 +299,7 @@ class _Func:
     # ------------------------------------------------------------------ the lazy stack
     def loc(self, j: int) -> Reg | Slot:
         r = self.pins.get(j)
-        return Slot(j) if r is None else Reg(r)
+        return Slot(self.slot[j]) if r is None else Reg(r)
 
     def opnd(self, e: Entry, i: int) -> Operand:
         k = e[0]
@@ -390,9 +401,9 @@ class _Func:
         ps, rs = self.block_type(bt)
         cond = self.pop_cond() if op == 0x04 else None
         self.flush()
-        h = len(self.st) - len(ps)
+        h = len(self.st) - simd.width(ps)
         kind = {0x02: "block", 0x03: "loop", 0x04: "if"}[op]
-        c = _Ctl(kind, b.new_label(), h, len(ps), len(rs), self.L + h)
+        c = _Ctl(kind, b.new_label(), h, simd.width(ps), simd.width(rs), self.L + h)
         if cond is not None:
             c.else_label = b.new_label()
             b.cmp_branch(NEGATE[cond[0]], cond[1], cond[2], c.else_label, cond[3])
@@ -478,7 +489,7 @@ class _Func:
     def call(self, fi: int) -> None:
         m, b = self.m, self.b
         ps, rs = m.types[m.ftypes[fi]]
-        n, nres = len(ps), len(rs)
+        n, nres = simd.width(ps), simd.width(rs)
         self.flush()
         h0 = len(self.st) - n
         del self.st[h0:]
@@ -492,7 +503,7 @@ class _Func:
     def call_indirect(self, ti: int, table: int) -> None:
         m, b = self.m, self.b
         ps, rs = m.types[ti]
-        n, nres = len(ps), len(rs)
+        n, nres = simd.width(ps), simd.width(rs)
         index = self.pop()  # stays valid across flush (br_table does the same)
         self.flush()
         h0 = len(self.st) - n
@@ -503,7 +514,7 @@ class _Func:
 
     def call_ref(self, ti: int) -> None:
         ps, rs = self.m.types[ti]
-        n, nres = len(ps), len(rs)
+        n, nres = simd.width(ps), simd.width(rs)
         ref = self.pop()  # stays valid across flush, as call_indirect's index
         self.flush()
         h0 = len(self.st) - n
@@ -519,7 +530,7 @@ class _Func:
         m, b = self.m, self.b
         fi: int = ins[1]
         ti = m.ftypes[fi] if op == 0x12 else fi
-        n = len(m.types[ti][0])
+        n = simd.width(m.types[ti][0])
         x = None if op == 0x12 else self.pop()  # the index or the reference
         self.flush()
         h0 = len(self.st) - n
@@ -593,12 +604,13 @@ class _Func:
         b, L, lay = self.b, self.L, self.m.layout
         self.f = f = b.func_begin(self.label, tuple(self.pins.values()), far)
         for j, r in self.pins.items():
-            src = Slot(j) if j < self.nparams else Imm(0)
+            src = Slot(self.slot[j]) if j < self.nparams else Imm(0)
             b.move(Reg(r), src, self.ltypes[j] in WIDE)
-        for j in range(self.nparams, L):
+        for j in range(self.nparams, len(self.ltypes)):
             if j not in self.pins:
-                b.move(Slot(j), Imm(0), True)
-        self.ctl.append(_Ctl("func", b.new_label(), 0, 0, len(self.results), 0))
+                for k in range(self.slot[j], self.slot[j] + 1 + (self.ltypes[j] == simd.V128)):
+                    b.move(Slot(k), Imm(0), True)
+        self.ctl.append(_Ctl("func", b.new_label(), 0, 0, simd.width(self.results), 0))
         tos, push, pop = self.TOS, self.push, self.pop
         for ins in self.insns:
             op = ins[0]
@@ -614,7 +626,10 @@ class _Func:
                     self.else_()
                 continue
             if op == 0x20:
-                push((LOCAL, ins[1]))
+                if self.ltypes[ins[1]] == simd.V128:
+                    simd.get_local(self, ins[1])
+                else:
+                    push((LOCAL, ins[1]))
             elif op in BINOPS:
                 name, w = BINOPS[op]
                 y = pop()
@@ -633,7 +648,10 @@ class _Func:
                 x = pop()
                 push((CMP, (name, x, y, w)))
             elif op in (0x21, 0x22):
-                self.set_local(ins[1], op == 0x22)
+                if self.ltypes[ins[1]] == simd.V128:
+                    simd.set_local(self, ins[1], op == 0x22)
+                else:
+                    self.set_local(ins[1], op == 0x22)
             elif op in LOADS:
                 size, signed, w = LOADS[op]
                 addr = pop()
@@ -671,12 +689,16 @@ class _Func:
             elif op == 0x23 or op == 0x24:
                 g = ins[1]
                 word, indirect = self.m.layout.global_(g), g < self.m.nimpg
-                if op == 0x23:
+                if self.m.gtypes[g] == simd.V128:
+                    simd.global_get(self, op, word, indirect)
+                elif op == 0x23:
                     self.need_tos()
                     b.ctx_load(tos, word, indirect)
                     push((TOS, None))
                 else:
                     b.ctx_store(word, pop(), indirect)
+            elif op == 0x1B and len(ins) > 1 and ins[1][0] == simd.V128:
+                simd.select(self)
             elif op == 0x1B:  # both values are computed already; 64-bit moves suit every type
                 cond, x, y, w = self.pop_cond()
                 e = pop()
@@ -684,6 +706,8 @@ class _Func:
                 self.need_tos()
                 b.select_cmp(cond, x, y, w, tos, t, e, True)
                 push((TOS, None))
+            elif op == 0x1A and len(ins) > 1:  # annotated: a v128 (S0005)
+                simd.drop(self)
             elif op == 0x1A:
                 self.st.pop()  # every entry is a computed value or a compare: nothing can trap
             elif op == 0x0E:
@@ -780,6 +804,8 @@ class _Func:
                 self.service(DATA_DROP, 0, [ins[1]], 0)
             elif op in REINTERPRET or op == 0x01:
                 pass
+            elif op >= 0xFD000:
+                simd.op(self, ins)
             else:  # unsupported() already refused it
                 raise AssertionError(f"opcode {op:#x}")
         assert not self.ctl
