@@ -18,14 +18,18 @@ test oracle and, in phase 6, the shape of the public API.
 
 ## Status
 
-**0.0.0, pre-alpha.** There is **no public API yet** (phase 6): the `0.0.0` release on PyPI is a name
-reservation and a preview, not something to build on. What exists is the compiler and the test machinery
+**Pre-alpha.** There is **no public API yet** (phase 6): the release on PyPI is a name reservation and a
+preview, not something to build on. What exists is the compiler and the test machinery
 around it, run from a checkout.
 
 What passes (details: [`docs/FEATURES.md`](docs/FEATURES.md), [`docs/ROADMAP.md`](docs/ROADMAP.md)):
 
-* The pinned WebAssembly spec suite on `pyc`, `jit-x86_64` and `jit-aarch64`. With SIMD, 54 385 commands
-  pass on each JIT with 91 expected failures (listed in `tests/spec/xfail/`), the same as `pyc`.
+* The pinned WebAssembly spec suite has 65 353 commands. The directories our targets claim (the core,
+  SIMD, bulk memory, multiple memories) hold 55 647 of them, 1 171 of which are text-format checks
+  skipped for every engine; of the remaining 54 476, `pyc`, `jit-x86_64` and `jit-aarch64` each pass
+  54 385, and the other 91 are expected failures (listed in `tests/spec/xfail/`, mostly tests that use
+  GC or exception types). Not claimed yet: memory64 (8 719 commands), GC (798), exceptions (110),
+  relaxed SIMD (79).
 * Claimed and complete on all three targets: fixed-width SIMD (25 990 commands), multiple memories,
   multi-value, tail calls, typed function references, extended constants, sign extension, non-trapping
   float-to-int. Bulk memory, reference types and mutable globals are partial (a few commands listed as
