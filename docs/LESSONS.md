@@ -230,3 +230,10 @@ What went wrong or surprised us while building the PoC, so it is not found again
     the encoder refuses operands a form does not have (`_parse` asserts that a third register
     goes only to a form with Rm), and the encoding tests format each form's own operand list.
     Found: SIMD step 5e1, 2026-11-02.
+44. **A v128 written narrow and read wide fails store-to-load forwarding.** The `jit-x86_64` core wrote a
+    v128 slot as two 8-byte stores (or 16 byte stores for the `swizzle` scratch) and read it back with one
+    16-byte `movups`; the load waits for the stores to retire. That cost the 4x4 matmul 5.4x (12.03 -> 2.25 us
+    per iteration with 16-byte moves), far more than the instruction counts (427 -> 411) suggest.
+    Rule: move a v128 through memory with the same width it will be read with, and measure with alternated
+    runs before blaming instruction count (BENCHMARKS.md, "Why `jit-x86_64` SIMD is slower than scalar").
+    Found: SIMD benchmark investigation, 2026-11-02.

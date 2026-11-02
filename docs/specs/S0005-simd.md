@@ -457,3 +457,12 @@ Q5 (a), Q6 (a), Q7 (a), Q8 (a). Kept below with their options for the record.
   with slot round trips, and matmul (52 cheap operators per matrix) runs ≈ 3 ns per operator, 30× behind;
   this benchmark does not separate the slot round trip from the code length, so it does not by itself
   show that a vector `tos` pays.
+* 2026-11-02 (SIMD slowdown investigation; data in BENCHMARKS.md, "Why `jit-x86_64` SIMD is slower than
+  scalar"): the main cause of SIMD builds slower than scalar on `jit-x86_64` is store-to-load forwarding: a v128
+  written as two 8-byte stores (or byte stores) and read by one 16-byte `movups`. With 16-byte moves (a D39
+  amendment, one Backend method; no ABI, artifact or ISA change) matmul is 5.4x faster (12.03 -> 2.25 us),
+  scan 5.6x, dot 1.4x. Q3: on top of that, a proxy for a vector `tos` (skipping a reload right after a
+  store) gains 0-16 %. Q4: a v2 variant (`pshufb`, `roundps`, `popcnt`) gains `swizzle` 13x and `nearest`
+  1.7x (scan 1.6x). The experiments were uncommitted patches with checksums equal to the baseline. Both
+  decisions (the 16-byte move amendment, and whether to close Q3 or take up the v2 variant) are open with
+  the maintainer; this entry is data, not a decision.

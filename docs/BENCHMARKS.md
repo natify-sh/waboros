@@ -411,3 +411,51 @@ SIMD on those (scan 24×, matmul 30×, `swizzle` 42×). The scalar builds on `ji
 behind Wasmtime's scalar builds. Per v128 operator in the hot loop: `add_sat` ≈ 1.8 ns per
 vector (3 operators), matmul ≈ 3 ns per operator, scan ≈ 15 ns per vector, `swizzle` ≈ 26 ns per vector.
 CoreMark is not affected (no `src/` change in this step).
+
+### Why `jit-x86_64` SIMD is slower than scalar on some kernels (investigation, 2026-11-02)
+
+Method: hot-loop disassembly (`WABOROS_JIT_DUMP` + `objdump`), instruction counts per category, and
+controlled experiments. The experiments were patches to the code generator that were never committed;
+every experiment's checksums equal the baseline's. Wasmtime's disassembly comes from the ELF of
+`Module.serialize()`. Conditions: the tip before the rename (the code is identical after it), 7 alternated
+rounds, median, one session, microseconds per inner iteration (a separate session from the table above,
+so the `base` column differs from it a little).
+
+Experiments: `m` = v128 local get/set and constants by one 16-byte `movups`, splat built in xmm (`movq` +
+`punpcklqdq`); `p` = skip a slot reload right after a store to it (a stand-in for a vector `tos`); `b` / `B` =
+no bounds check on v128 accesses / on all accesses; `s` = `swizzle` by `paddusb 0x70` + `pshufb` (x86-64-v2);
+`r` = `nearest` by `roundps` (v2); `c` = `popcnt` (v2). Letters combine (`mpsrc` = m+p+s+r+c).
+
+| kernel | scalar | base | m | ms | mc | mr | mp | mps | mpsrc | mpsrcb | mpsrcB | Wasmtime |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| addsat | 7.78 | 0.49 | 0.45 | 0.46 | 0.56 | 0.46 | 0.47 | 0.47 | 0.53 | 0.39 | 0.40 | 0.31 |
+| dot | 3.15 | 1.54 | 1.11 | 1.21 | 1.12 | 1.10 | 0.93 | 0.92 | 0.91 | 0.90 | 0.98 | 0.27 |
+| scan | 3.20 | 4.01 | 0.72 | 0.79 | 0.45 | 0.67 | 0.62 | 0.62 | 0.49 | 0.39 | 0.48 | 0.22 |
+| matmul | 4.22 | 12.03 | 2.25 | 2.20 | 2.19 | 2.19 | 2.17 | 2.20 | 2.19 | 2.23 | 2.22 | 0.48 |
+| swizzle | 4.60 | 6.78 | 6.82 | 0.52 | 6.75 | 6.77 | 6.83 | 0.50 | 0.52 | 0.50 | 0.50 | 0.23 |
+| nearest | 1.83 | 0.61 | 0.61 | 0.60 | 0.60 | 0.36 | 0.68 | 0.73 | 0.33 | 0.30 | 0.29 | 0.19 |
+
+Instructions per inner iteration, base -> m -> mpsrc: scan 77 -> 73 -> 43; matmul 427 -> 411 -> 407
+(slot moves 192, operators 60, memory 24, bounds checks 72, scalar 78); `swizzle` 483 -> 475 -> 115
+(the scalar part is 414 = 16 lanes x 6); dot 114 -> 110 -> 109; `add_sat` 65; `nearest` 162 -> 162 -> 86.
+
+Cause: store-to-load forwarding failures. A v128 is written as two 8-byte stores (`get_local`/`set_local` in
+`common/simd.py` through two `b.move` of 64-bit halves; constant pairs from `_pair`; splat and `load_splat`:
+`imul` then two `mov [slot]`) or as 16 byte stores (the `swizzle` scratch), then read back by one 16-byte
+`movups`. Per iteration: matmul 28 such pairs, scan 2, `swizzle` 4, dot 1. With 16-byte moves matmul goes
+427 -> 411 instructions and runs 5.4x faster, so the cost is the forwarding stall, not the instruction count.
+
+Ranking by gain per complexity (the investigation's, data not a decision):
+
+1. 16-byte v128 moves in the core and splat in xmm: matmul 5.4x, scan 5.6x, dot 1.4x; matmul and scan then
+   beat their scalar builds. About 40-60 lines and one Backend method (a 16-byte slot move / constant write):
+   a D39 amendment; no ABI, artifact or ISA change.
+2. An x86-64-v2 variant (D42): `swizzle` 13x, `nearest` 1.7x, scan 1.6x on top of 1. Needs its own spec; opt-in.
+3. A vector `tos` (S0005 Q3): the proxy `p` gives 0-16 % on top of 1. High complexity, low gain.
+4. Bounds checks: 0-20 %; guard pages (D29).
+5. The remaining 2-5x to Wasmtime: Wasmtime compiles for the host ISA (AVX/AVX2, `popcnt`, `vpshufb`), has no
+   bounds checks (guard pages) and keeps values in xmm registers (dot's accumulator, matmul's `b0`..`b3`):
+   register allocation, a design topic of its own.
+
+Open: aarch64 likely has the same pattern (two `str x`, then `ldr q`); unmeasured (QEMU only). Flush, branch
+and `select` moves still move v128 halves.
