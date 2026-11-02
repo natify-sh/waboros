@@ -102,7 +102,7 @@ reference loader as well as from Python; refuse artifacts with an unknown format
 A newer push to the same ref cancels a `ci.yml` or `coverage.yml` run in progress (`concurrency`);
 `publish.yml` runs one release per ref and is never cancelled. Jobs of `.github/workflows/ci.yml`: `lint` (ruff, pyright, `check_docs.py`, `features.py --check`); `test`
 (`pytest -q` on the seven Pythons, in the default bounds mode, `auto` (D44: guard pages on Linux glibc x86-64
-and aarch64);
+and aarch64, Linux musl x86-64);
 on 3.13 again with `WABOROS_JIT_BOUNDS=explicit`, so explicit checks stay covered; `tools/stack_info.py` on
 3.13, also in a musl container); `jit`
 (`tests/jit` with `WABOROS_JIT_REQUIRE=1`; the aarch64 ABI, compiler, tail-call and SIMD tests
@@ -112,7 +112,8 @@ D45) and the spec suite of `jit-aarch64` (it covers `simd/` since the 5e2 claim)
 `jit-x86_64` under the SSE2-only `qemu64` CPU with `WABOROS_JIT_BOUNDS=explicit` (QEMU splits wide
 stores, D45), compared with `pyc` by `tools/spec_diff.py` (strict since 5d3);
 the spec suite of `jit-x86_64` and `tests/jit/test_guard.py` with `WABOROS_JIT_BOUNDS=guard` named
-explicitly (guard pages, S0006, Linux glibc only; the test file runs on the JIT of the machine and skips
+explicitly (guard pages, S0006; the same two in a `python:3.13-alpine` container for Linux musl
+x86-64, `MUSL_GUARD`; the test file runs on the JIT of the machine and skips
 on other hosts, but fails under
 `WABOROS_JIT_REQUIRE=1` when `auto` does not give guard pages), so a regression in the
 verified-row check cannot silently turn guard pages off;

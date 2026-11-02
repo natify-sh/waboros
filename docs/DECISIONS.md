@@ -612,6 +612,13 @@ spec suite passes in both modes under QEMU, and CI's native `arm64` runner runs 
 `test_guard.py` in both modes. The row holds once the step's review and that runner confirm it.
 Every other aarch64 row stays explicit.
 
+**Linux musl x86-64** (2026-11-02, S0006's musl step): a third row in `verified` (`jit-x86_64`).
+musl is detected positively, by its mapped `ld-musl-<arch>.so.1`, because `platform.libc_ver()`
+names only glibc. musl's `struct sigaction` and its `sigaction`/`raise` were checked against its
+source and agree with glibc's. CI `jit` runs the spec suite and `test_guard.py` in guard mode in a
+`python:3.13-alpine` container. Linux musl aarch64 stays explicit: `jit-aarch64` needs libgcc's
+`__clear_cache`, which the stock Alpine image lacks (S0004, S0006 Changes).
+
 ### D45. In guard mode stores rely on guard pages, as in Wasmtime; a split store may tear
 Status: accepted (maintainer, 2026-11-02) · Date: 2026-11-02 · Supersedes: — · Evidence: [S0006](specs/S0006-guard-pages.md) Changes; LESSONS 50; BENCHMARKS.md, "Checked stores in guard mode (rejected alternative)"
 

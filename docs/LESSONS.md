@@ -335,3 +335,12 @@ What went wrong or surprised us while building the PoC, so it is not found again
     verified row nothing reached this path; step 2's row made it reachable. Rule: checks that depend
     on the argument run before the once-per-process shortcut (LESSONS 48). Found: S0006 step 2,
     2026-11-02.
+56. **A dependency the test setup installs can hide that the product needs it.** To run
+    wasmtime's musllinux wheel in `python:3.13-alpine`, `libgcc_s.so.1` had to be added (`apk add
+    libgcc`). After that, `jit-aarch64` passed the spec suite in guard mode on musl under QEMU, and
+    the row looked ready. The stock image has no libgcc, so `jit-aarch64`, which flushes the
+    instruction cache with libgcc's `__clear_cache`, does not run there at all (`auto` gives `pyc`).
+    The coordinator's question about S0004's note found it; the test run did not. Rule: before
+    claiming a platform, run the product's probe on the platform's stock image with nothing added.
+    List every package the test setup installs and ask which of them the product itself loads.
+    Found: S0006 musl step, 2026-11-02.

@@ -150,7 +150,7 @@ trap).
   area, from a small per-architecture emitter and a per-(OS, architecture) offset table: `si_code`,
   `si_addr`, the PC in `ucontext`/`CONTEXT`. The `ucontext` is the kernel's frame (Linux: the same
   for glibc, musl and bionic); the `struct sigaction` used to install is the libc's (a layout per
-  libc). The handler reads only the registry and the context, calls nothing but the previous handler
+  libc; glibc's and musl's are the same on x86-64 and aarch64). The handler reads only the registry and the context, calls nothing but the previous handler
   or libc's `sigaction` (async-signal-safe; never a raw syscall, which would bypass Android's
   libsigchain and needs per-OS numbers), takes no lock, allocates nothing. It starts with `endbr64`
   (x86-64) or `bti c` (aarch64; measured: without it the kernel's entry raises SIGILL under BTI).
@@ -225,10 +225,12 @@ trap).
 | OS / libc | x86-64 | aarch64 | CI |
 |---|---|---|---|
 | Linux glibc | **verified** (D44) | **verified** (step 2; the native runner confirms) | `jit` (aarch64 under QEMU), `arm64` native runner |
-| Linux musl | later | later | none yet |
+| Linux musl | **verified** (musl step) | explicit: `jit-aarch64` needs libgcc's `__clear_cache`, absent from the stock image (Changes) | `jit` (`python:3.13-alpine` container) |
 | macOS | step 3 | step 3 | `macos-x64`, `macos-pythonorg` |
-| Windows | step 4 | later | `windows` |
-| Android (bionic, libsigchain) | step 5 | device only | `android` (x86_64 emulator) |
+| Windows | step 4 | with step 4 | `windows`, `arm64` (`windows-11-arm`) |
+| Android (bionic, libsigchain) | step 5 | explicit (documented limitation) | `android` (x86_64 emulator) |
+
+The BSDs are not a target (TARGETS.md), so they have no row.
 
 * **Artifacts**: a host that cannot run guard code refuses a `BOUNDS_GUARD` artifact as it refuses
   an ISA level (D33, D42): a thin file is refused naming the reason; the cache and fat files are
@@ -276,9 +278,12 @@ reservation is a crash, not a trap: the explicit-mode tests and differential run
    `auto` still `explicit` until the review is done, then the row is verified.
 2. **Linux aarch64**: the same in the aarch64 backend (far-mode rewind drops entries) and an aarch64
    handler. Acceptance: QEMU and native-runner spec parity; `jit_dump` lists identical across hosts.
+2b. **Linux musl** (added, maintainer 2026-11-02): musl named by its mapped image; x86-64 verified
+   in an Alpine container in CI; aarch64 explicit while stock Alpine arm64 has no `__clear_cache`
+   (S0004). Acceptance: the container runs the spec suite and `test_guard.py` in guard mode.
 3. **macOS x86-64 and arm64**: SIGBUS, Darwin offsets, `MAP_JIT`. Acceptance: the CI jobs run
    `test_guard.py` and the spec suite in guard mode.
-4. **Windows x86-64**: the vectored handler; the EH-continuation question answered by a test on a
+4. **Windows x86-64 and arm64** (arm64 joined, maintainer 2026-11-02): the vectored handler; the EH-continuation question answered by a test on a
    CETCOMPAT process. Acceptance: the `windows` job as in 3.
 5. **Android x86_64**: the `android` job runs `test_guard.py`; logcat shows no ART complaint.
 6. **Artifact** (moved to the artifact-format spec of phase 5, see Changes): the flag bits and `TRAPMAP` in the serialized format when phase 5 fixes it;
@@ -476,3 +481,52 @@ reservation is a crash, not a trap: the explicit-mode tests and differential run
   passed with no torn store recorded (the 16-byte store included), the spec suite and `test_guard.py`
   passed; so that hardware faults before writing, unlike QEMU (LESSONS 54). Arm still allows a tear
   (D45); other cores may differ.
+* 2026-11-02: **Linux musl** (its own step, the maintainer's platform decisions of 2026-11-02). As
+  built:
+  * **Detection.** `host_row()` takes only `glibc` from `platform.libc_ver()`. Without glibc's
+    `confstr` that function scans the executable's bytes and may answer `libc`. musl is named
+    positively by its mapped image: a `/proc/self/maps` path whose file name starts with
+    `ld-musl-` or `libc.musl-` (musl's libc is its dynamic linker). Anything else, a statically
+    linked musl interpreter included, is `linux-unknown` and stays explicit. A test feeds recorded
+    maps, so it runs on any host.
+  * **Checked against musl 1.2.6** (Debian's `musl_1.2.6.orig.tar.gz`; Alpine 3.24's
+    `python:3.13-alpine` runs 1.2.6). `struct sigaction` compiled with musl's headers on x86-64:
+    152 bytes, `sa_handler` 0, `sa_mask` 8 (128 bytes), `sa_flags` 136, `sa_restorer` 144, as
+    glibc's and our `_Sigaction`. aarch64's `bits/signal.h` gives the same generic layout.
+    `src/signal/sigaction.c`: the old action gets `sa_handler`, `sa_flags` and the mask, not
+    `sa_restorer`. A new one always gets musl's own restorer, so re-installing the saved action
+    (the SIG_DFL/SIG_IGN path) works. SIGSEGV takes no lock (only SIGABRT does), and the call is
+    a plain `rt_sigaction` after a one-time unmask. `raise` blocks the application signals, calls
+    `tkill` and restores the mask. Inside our handler SIGSEGV stays blocked, so the re-sent
+    signal waits until the handler returns, as with glibc (LESSONS 46). `sigaction`, `raise`,
+    `dladdr`, `sigaltstack` and `Py_IncRef` resolve through `ctypes.CDLL(None)`, so rule A works
+    unchanged. The handlers are unchanged (a comment in `x86_64/abi.py`).
+  * **Stack.** Nothing changes: S0003 already handles musl's stacks, and `tools/stack_info.py`
+    runs in the musl container. The reservations are ordinary `mmap`s placed below the kernel's
+    mmap base, which leaves the main stack its RLIMIT_STACK gap, and musl thread stacks are
+    fixed mappings. In the container the spec suite and `test_guard.py`, with its fault at
+    recursion depth 10 000 and its 8 threads, pass in guard mode.
+  * **Rows.** `linux-musl` is in `guard_rows` and `verified` of `jit-x86_64`. Results in
+    `python:3.13-alpine` (x86-64, Alpine 3.24.3, CPython 3.13.18): the row is detected and `auto`
+    gives guard. The spec suite in guard mode gives 54 385 pass, 0 fail, 91 expected failures,
+    as on glibc. `test_guard.py` in guard mode with `WABOROS_JIT_REQUIRE=1`: 40 passed, 2 skipped
+    (aarch64's far mode). CI `jit` runs these checks in that container (`MUSL_GUARD` in
+    `ci.yml`).
+  * **aarch64 musl stays explicit.** The stock `python:3.13-alpine` arm64 image has no libgcc.
+    `jit-aarch64` takes its instruction-cache flush from libgcc's `__clear_cache` (S0004), so
+    there its probe fails ("no instruction-cache flush function") and `auto` gives `pyc` with
+    the D31 warning. With libgcc installed (`apk add libgcc`; wasmtime's musllinux wheel needs it
+    too), the same image under QEMU 8.2.2 detects `linux-musl`. With the row enabled for that
+    run, the spec suite in guard mode passed (54 385 pass, 0 fail, 91 expected failures).
+    `test_guard.py` gave 21 passed and 21 skipped: the subprocess cases need binfmt, and the
+    16-byte straddling store tore under TCG, as on glibc (LESSONS 54). The row waits for an
+    instruction-cache flush that does not depend on libgcc (S0004 Alternatives, "own I-cache
+    routine"), then a CI step on the `arm64` runner.
+  * **wasmtime** has musllinux wheels (50.0.1, x86-64 and aarch64), and so does
+    `wasm-tools-package`. No test is skipped on musl. The wasmtime wheel's `_libwasmtime.so`
+    needs `libgcc_s.so.1`, which the CI step installs (LESSONS 56).
+  * **The maintainer's platform decisions (2026-11-02).** Linux musl is its own step (this one).
+    Windows arm64 is done together with step 4 (Windows x64). Android arm64 stays explicit, a
+    documented limitation: CI has no arm64 emulator, bionic's `struct sigaction` differs, and
+    libsigchain sits in between. The BSDs are not a target (TARGETS.md, cibuildwheel's map), so
+    they have no row.

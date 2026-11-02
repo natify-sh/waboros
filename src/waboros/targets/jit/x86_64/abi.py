@@ -154,7 +154,8 @@ def assemble(win64: bool) -> tuple[bytes, list[int]]:
 
 
 # The S0006 fault handler, Linux x86-64: the kernel's siginfo_t and ucontext_t (the same for
-# glibc, musl and bionic); the saved `struct sigaction` is glibc's (sa_handler first).
+# glibc, musl and bionic); the saved `struct sigaction` is the libc's (glibc's and musl's agree:
+# sa_handler first).
 SI_CODE, SI_ADDR = 8, 16  # si_signo, si_errno, si_code, padding, then si_addr
 UC_RIP = 40 + 8 * 16  # uc_flags, uc_link, uc_stack (24 bytes), then mcontext gregs[REG_RIP = 16]
 

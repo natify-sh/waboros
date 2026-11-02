@@ -4,6 +4,19 @@ on: [push, pull_request]
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+env:
+  # S0006, Linux musl x86-64 (job `jit`): inside `python:3.13-alpine` the row is detected and
+  # `auto` gives guard pages, then the spec suite and the fault tests in guard mode. wasmtime's
+  # musllinux wheel needs libgcc_s; the fault-map test disassembles with GNU objdump (binutils).
+  # Not aarch64: jit-aarch64 needs libgcc's __clear_cache, absent from the stock image (S0006)
+  MUSL_GUARD: |
+    apk add -q libgcc binutils
+    pip install -q --root-user-action=ignore --group dev
+    export PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 WABOROS_JIT_REQUIRE=1
+    python -c "import platform; from waboros.targets.base import TARGETS; from waboros.targets.jit.common import guard; t = TARGETS['jit-' + platform.machine()](); print(guard.host_row(), guard.wanted(t)); assert guard.host_row() == 'linux-musl' and guard.wanted(t)"
+    export WABOROS_JIT_BOUNDS=guard
+    python -m tests.spec.run --engine "jit-$(uname -m)"
+    python -m pytest -p no:cacheprovider tests/jit/test_guard.py -v -rs
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -92,6 +105,8 @@ jobs:
         env:
           WABOROS_JIT_BOUNDS: guard
           WABOROS_JIT_REQUIRE: "1"
+      # the same on Linux musl x86-64 (MUSL_GUARD above)
+      - run: docker run --rm -v "$PWD:/w" -w /w -e MUSL_GUARD python:3.13-alpine sh -euxc "$MUSL_GUARD"
       # S0005: SIMD on an SSE2-only CPU (QEMU's qemu64 without SSE3/SSSE3/SSE4/popcnt: an
       # instruction above x86-64-v1 is a SIGILL); jit-x86_64 claims simd (5d3), so the explicit
       # `simd` run must pass whole and equal pyc's

@@ -59,12 +59,33 @@ def mode() -> str:
 
 @functools.cache
 def host_row() -> str:
-    """This host's row of the S0006 table: `<os>-<libc>` (e.g. `linux-glibc`). glibc is what
-    `platform.libc_ver()` names (glibc's `confstr(_CS_GNU_LIBC_VERSION)`, which musl lacks); musl
-    and anything unnamed get another row, so `auto` stays explicit there."""
+    """This host's row of the S0006 table: `<os>-<libc>` (`linux-glibc`, `linux-musl`). glibc is
+    what `platform.libc_ver()` names (glibc's `confstr(_CS_GNU_LIBC_VERSION)`); musl, which has
+    no such call, is named by its mapped image (`_libc_of`); anything else is `linux-unknown`,
+    so `auto` stays explicit there. Only `glibc` is taken from `libc_ver`: without the confstr it
+    scans the executable's bytes and may answer `libc` for any libc."""
     if sys.platform.startswith("linux"):
-        return "linux-" + (platform.libc_ver()[0] or "unknown")
+        libc = platform.libc_ver()[0]
+        if libc != "glibc":
+            libc = ""
+            try:
+                with open("/proc/self/maps", errors="replace") as f:  # paths need not be UTF-8
+                    libc = _libc_of(f.read())
+            except OSError:
+                pass
+        return "linux-" + (libc or "unknown")
     return sys.platform
+
+
+def _libc_of(maps: str) -> str:
+    """`musl` when this process maps musl's libc, which is also its dynamic linker
+    (`/lib/ld-musl-<arch>.so.1`; `libc.musl-<arch>.so.1` is a link to it); else empty. A
+    statically linked musl interpreter maps none and stays unknown."""
+    for line in maps.splitlines():
+        name = line.rpartition("/")[2]
+        if "/" in line and name.startswith(("ld-musl-", "libc.musl-")):
+            return "musl"
+    return ""
 
 
 def wanted(target: Any) -> bool:
@@ -89,7 +110,8 @@ def wanted(target: Any) -> bool:
 
 
 class _Sigaction(ctypes.Structure):
-    """glibc's `struct sigaction` on x86-64 and aarch64 (the generic layout, sa_handler first)."""
+    """The libc `struct sigaction` on x86-64 and aarch64: glibc's and musl's layout (sa_handler,
+    a 128-byte mask, sa_flags, sa_restorer; 152 bytes; measured with musl 1.2.6's headers)."""
 
     _fields_ = [
         ("handler", ctypes.c_void_p),

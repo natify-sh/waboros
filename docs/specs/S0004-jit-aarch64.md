@@ -465,3 +465,8 @@ Resolved by the maintainer on 2026-11-01 (see Changes); none open.
 * 2026-11-02: the D31 message for an incomplete JIT says "its expected failures differ from pyc's"
   instead of "integer core only" (no longer true once floats and the rest landed).
 * 2026-11-02: status implemented (phase 4 done: steps 4a-4e, the review, the macOS follow-ups; ROADMAP). The frozen interface of D39 was amended twice, by S0005: the `simd` method and the v128 operand meaning (step 5c1, both backends), then `move_v128` (after the SIMD benchmark investigation; DECISIONS D39).
+* 2026-11-02: measured for S0006's musl step: the stock `python:3.13-alpine` arm64 image (Alpine
+  3.24.3, musl 1.2.6) has no libgcc, so `__clear_cache` is missing: the probe fails ("no
+  instruction-cache flush function") and `auto` gives `pyc` with the D31 warning. After `apk add
+  libgcc` the JIT runs (spec suite under QEMU 8.2.2: 54 385 pass, 91 expected failures). The
+  "own I-cache routine" alternative above is the open way to musl without libgcc.

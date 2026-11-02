@@ -7,6 +7,7 @@ memory 0, memory n and an imported memory; deep frames, inner entries, threads; 
 are not ours, which must behave exactly as without the handler (in subprocesses: the handler
 stays for the process's lifetime)."""
 
+import io
 import os
 import subprocess
 import sys
@@ -57,8 +58,8 @@ def _guard(monkeypatch: pytest.MonkeyPatch) -> None:
     tgt = base.TARGETS[JIT]()
     if not sys.platform.startswith("linux"):  # macOS, Windows: S0006 steps 3-4
         pytest.skip(f"no guard pages on {sys.platform} yet")
-    # under WABOROS_JIT_REQUIRE=1 (the CI `jit` and `arm64` jobs, Linux glibc) a skip is a
-    # failure: the row check or `auto` must not stop engaging unnoticed
+    # under WABOROS_JIT_REQUIRE=1 (the CI `jit` and `arm64` jobs on Linux glibc, the `jit` job's
+    # musl container) a skip is a failure: the row check or `auto` must not stop engaging unnoticed
     need(guard.host_row() in tgt.guard_rows, f"a guard-page handler for {guard.host_row()}")  # pyright: ignore[reportAttributeAccessIssue]
     monkeypatch.setenv("WABOROS_JIT_BOUNDS", "auto")
     need(guard.wanted(tgt), f"`auto` giving guard pages on {guard.host_row()}")
@@ -183,19 +184,21 @@ def test_the_modes_and_the_default(monkeypatch: pytest.MonkeyPatch) -> None:
         compiled(LOAD)
 
 
-@pytest.mark.parametrize("why", ["unverified row", "musl", "install fails", "foreign process"])
+@pytest.mark.parametrize(
+    "why", ["unverified row", "unknown libc", "install fails", "foreign process"]
+)
 def test_auto_is_explicit_silently_where_guard_cannot_be(
     why: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """S0006 "Selection": an unverified row, musl, a handler that does not install, a process of
-    another architecture (cross-compiling): `auto` compiles explicit code, with no warning, and
-    it runs; `guard` there compiles but refuses to instantiate."""
+    """S0006 "Selection": an unverified row, an unnamed libc, a handler that does not install, a
+    process of another architecture (cross-compiling): `auto` compiles explicit code, with no
+    warning, and it runs; `guard` there compiles but refuses to instantiate."""
     monkeypatch.setenv("WABOROS_JIT_BOUNDS", "auto")
     tgt = type(base.TARGETS[JIT]())
     if why == "unverified row":
         monkeypatch.setattr(tgt, "verified", frozenset())
-    elif why == "musl":
-        monkeypatch.setattr(guard, "host_row", lambda: "linux-musl")
+    elif why == "unknown libc":
+        monkeypatch.setattr(guard, "host_row", lambda: "linux-unknown")
     else:  # as if the handler were not installed yet in this process
         monkeypatch.setattr(guard, "_handler", {})
         if why == "install fails":
@@ -212,6 +215,53 @@ def test_auto_is_explicit_silently_where_guard_cannot_be(
         monkeypatch.setenv("WABOROS_JIT_BOUNDS", "guard")
         with pytest.raises((OSError, RuntimeError)):
             build(wat(LOAD))
+
+
+# /proc/self/maps lines of CPython on Alpine 3.24 (x86-64; aarch64 differs in the name only)
+# and on Ubuntu 24.04
+MUSL_MAPS = """\
+5581a3c4e000-5581a3c4f000 r--p 00000000 00:2e 1867 /usr/local/bin/python3.13
+7f0de1a2b000-7f0de1a3f000 r--p 00000000 00:2e 1871 /usr/local/lib/libpython3.13.so.1.0
+7f0de1d1e000-7f0de1d32000 r--p 00000000 00:2e 512 /lib/ld-musl-x86_64.so.1
+7ffd24d47000-7ffd24d67000 rw-p 00000000 00:00 0 [stack]
+"""
+GLIBC_MAPS = """\
+7f3a1c400000-7f3a1c428000 r--p 00000000 08:01 3277 /usr/lib/x86_64-linux-gnu/libc.so.6
+7f3a1c6f0000-7f3a1c6f2000 r--p 00000000 08:01 3274 /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+"""
+
+
+def test_musl_is_named_by_its_mapped_image(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The musl row (S0006): `platform.libc_ver()` names glibc only; musl is the process's
+    mapped `ld-musl-<arch>.so.1`. Fed with recorded maps, so it runs on any Linux host."""
+    libc_of = guard._libc_of  # pyright: ignore[reportPrivateUsage]
+    assert libc_of(MUSL_MAPS) == "musl"
+    assert libc_of(MUSL_MAPS.replace("x86_64", "aarch64")) == "musl"
+    assert libc_of(GLIBC_MAPS) == ""
+    assert libc_of("7f0-7f1 r--p 0 00:00 0 [anon:ld-musl-x86_64.so.1]\n") == ""
+    row = guard.host_row.__wrapped__  # uncached
+    # libc_ver's byte scan of the executable may say `libc` (no version) on any libc
+    for ver in (("", ""), ("libc", "")):
+        monkeypatch.setattr(guard.platform, "libc_ver", _returns(ver))
+        for maps, want in ((MUSL_MAPS, "linux-musl"), (GLIBC_MAPS, "linux-unknown")):
+            monkeypatch.setattr(guard, "open", _reads(maps), raising=False)
+            assert row() == want
+        monkeypatch.setattr(guard, "open", _no_file, raising=False)
+        assert row() == "linux-unknown"
+    monkeypatch.setattr(guard.platform, "libc_ver", lambda: ("glibc", "2.39"))
+    assert row() == "linux-glibc"
+
+
+def _returns(value: object) -> Any:
+    return lambda: value
+
+
+def _reads(text: str) -> Any:
+    return lambda *args, **kwargs: io.StringIO(text)  # pyright: ignore[reportUnknownLambdaType]
+
+
+def _no_file(*args: object, **kwargs: object) -> Any:
+    raise OSError("no /proc")
 
 
 def _no_exec(code: bytes) -> Any:
