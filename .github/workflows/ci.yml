@@ -45,8 +45,8 @@ jobs:
       - run: sudo apt-get install -y qemu-user libc6-arm64-cross libgcc-s1-arm64-cross
       - run: uv python install cpython-3.13-linux-aarch64-gnu
       - run: python3 tools/run_arm64.py -m pytest tests/jit/test_abi_aarch64.py tests/jit/test_compiler.py tests/jit/test_compiler_aarch64.py tests/jit/test_tail.py -q
-      # S0005: the v128 boundary tests and the NEON operators (5c, 5e1) against pyc, BTI enforced;
-      # about 1.3 min
+      # S0005: the v128 boundary tests and the NEON operators (5c, 5e1, 5e2) against pyc, BTI
+      # enforced; about 2.5 min
       - run: python3 tools/run_arm64.py -m pytest tests/jit/test_simd_abi.py tests/jit/test_simd_aarch64.py -q
         env:
           W2PY_JIT_REQUIRE: "1"
@@ -57,14 +57,8 @@ jobs:
           key: spec-${{ runner.os }}-${{ hashFiles('tests/spec/fetch.py', 'tests/spec/spectest.wat') }}
       - run: uv run python tests/spec/fetch.py
       # step 4e: the whole spec suite on jit-aarch64 with BTI enforced (call_indirect, tail calls
-      # and jump tables land on their pads), in-process under QEMU; about 30 s
+      # and jump tables land on their pads; simd/ since 5e2), in-process under QEMU; about 1 min
       - run: python3 tools/run_arm64.py -m tests.spec.run --engine jit-aarch64 --in-process
-      # S0005: the explicit `simd` run of jit-aarch64 under QEMU equals pyc's for every operator it
-      # compiles; the rest is `unsupported` until it claims simd (5e2, then strict). The run exits 1
-      # while commands fail; any other status (a crash) fails the step. About 25 s
-      - run: |
-          python3 tools/run_arm64.py -m tests.spec.run --engine jit-aarch64 --in-process --json simd-aarch64.json simd > /dev/null || [ $? -eq 1 ]
-          uv run python tools/spec_diff.py pyc simd-aarch64.json simd --allow-unsupported
       # S0005: SIMD on an SSE2-only CPU (QEMU's qemu64 without SSE3/SSSE3/SSE4/popcnt: an
       # instruction above x86-64-v1 is a SIGILL); jit-x86_64 claims simd (5d3), so the explicit
       # `simd` run must pass whole and equal pyc's

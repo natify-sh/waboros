@@ -230,7 +230,7 @@ FEATURES.md and features.json) in the step where:
   claim).
 
 Between the `pyc` claim (5b) and a JIT's (5d3, 5e2), `auto` keeps selecting the JIT and a SIMD module
-fails there with `Unsupported("simd")`, as today (Q2).
+failed there with `Unsupported("simd")` (Q2); since 5e2 both JITs claim `simd`.
 
 ## Test plan
 * Every step: `uv run pytest -q`; `uv run python -m tests.spec.run --engine {pyc,jit-x86_64}` core
@@ -425,3 +425,23 @@ Q5 (a), Q6 (a), Q7 (a), Q8 (a). Kept below with their options for the record.
 
   No change to `tools/isa_check.py`: its aarch64 side has no mnemonic allowlist (LLVM decodes
   ARMv8.0-A only); `tools/isa_all.py --target jit-aarch64` passes with these modules compiled.
+* 2026-11-02 (5e2): `jit-aarch64` compiles the other 54 operators in ARMv8.0-A NEON (all 236) and
+  claims `simd` (`CLAIMS["jit-aarch64"]`; no `simd/` line in its xfail file, as `pyc`): the explicit
+  `simd` run under QEMU goes from 6 185 to 25 481 passing commands, 0 failures;
+  `spec_diff pyc … simd` is empty without `--allow-unsupported`; the claimed run under QEMU is 54 385
+  pass, 91 expected failures, stale 0, as `pyc` and `jit-x86_64`. The CI QEMU `simd` step of
+  `jit-aarch64` is strict; the native `arm64` job's claimed run now includes `simd/`. 5a–5e2 are
+  done; next are the SIMD benchmark and 5f. Sequences that differ from or add to the text above:
+  * `trunc_sat_f64x2_u_zero` is `fcvtzu .2d` + `uqxtn .2s` (the text's `sqxtn` is the signed form's);
+    `convert_low_i32x4_s/u` are `sxtl`/`uxtl .2d` + `scvtf`/`ucvtf .2d`; `demote` is `fcvtn .2s` (the
+    upper half zeroed), `promote` `fcvtl .2d`;
+  * `ne` is `fcmeq` + `mvn`; `lt`/`le` are `fcmgt`/`fcmge` with the operands swapped; `abs`/`neg` are
+    `fabs`/`fneg`, which change only the sign bit (NaN bits kept, as `pyc`);
+  * `shuffle`: the 16 lane indices go into v2 through x9, x10 (`mov`, `fmov d2, x9`,
+    `mov v2.d[1], x10`), then `tbl v3.16b, {v0.16b, v1.16b}, v2.16b`; no one-instruction patterns
+    (no measurement asks for them). Scratch stays v0–v3 and x9–x12, x17;
+  * NaN bits, measured (a differential of the 54 operators under QEMU against `pyc` and Wasmtime,
+    92 489 calls): 0 differences by class; the bits differ only for `add`, `sub`, `mul`, `div`,
+    `sqrt`, `min` and `max` (aarch64 propagates the quieted input NaN, x86 Wasmtime gives its
+    "indefinite" NaN, `pyc` its own); rounding, `demote`, `promote`, `pmin`/`pmax`, `abs`/`neg`,
+    the conversions, `shuffle` and `swizzle` equal both bit for bit.

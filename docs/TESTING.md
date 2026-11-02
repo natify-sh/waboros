@@ -97,9 +97,8 @@ reference loader as well as from Python; refuse artifacts with an unknown format
 Jobs of `.github/workflows/ci.yml`: `lint` (ruff, pyright, `check_docs.py`, `features.py --check`); `test`
 (`pytest -q` on the seven Pythons; `tools/stack_info.py` on 3.13, also in a musl container); `jit`
 (`tests/jit` with `W2PY_JIT_REQUIRE=1`; the aarch64 ABI, compiler, tail-call and SIMD tests
-(`test_simd_abi.py`, `test_simd_aarch64.py`), the spec suite and the explicit `simd` run of
-`jit-aarch64` (compared with `pyc` by `tools/spec_diff.py --allow-unsupported` until it claims `simd`
-in 5e2) under QEMU with BTI enforced; the x86 SIMD tests and the explicit `simd` spec run of
+(`test_simd_abi.py`, `test_simd_aarch64.py`) and the spec suite of `jit-aarch64` (it covers `simd/`
+since the 5e2 claim) under QEMU with BTI enforced; the x86 SIMD tests and the explicit `simd` spec run of
 `jit-x86_64` under the SSE2-only `qemu64` CPU, compared with `pyc` by `tools/spec_diff.py` (strict since 5d3);
 then both ISA gates and the D35 lists); `spec` (the spec run on `wasmtime`, `pyc`, `jit-x86_64`, then
 `auto` under `no_exec.py`); `os`; `arm64`; `macos-pythonorg`; `android`.
@@ -109,8 +108,10 @@ default spec run and not in CI; the explicit run `python -m tests.spec.run --eng
 the claims and counts failures as failures. A target claims `simd` only when that run has at most 25
 listed failures and, for a JIT, equals `pyc` (S0005, "Claiming `simd`"); until then CI watches the
 progress only through the QEMU step above, which fails on a SIGILL, a crash or a difference from `pyc`.
-`jit-x86_64` claims `simd` since step 5d3 (0 failures), so the default spec run and the `spec` job
-include `simd/` for it; `jit-aarch64` is still measured by the explicit run only (the QEMU step above, 5e2 claims).
+`jit-x86_64` claims `simd` since step 5d3 and `jit-aarch64` since step 5e2 (0 failures each), so the
+default spec run includes `simd/` for both: the `spec` job for `jit-x86_64`, the QEMU spec run of the
+`jit` job and the native `arm64` job for `jit-aarch64`. The x86 `qemu64` step stays: it runs `simd/` on
+another CPU model (SSE2 only); the aarch64 explicit step was dropped at 5e2, the claimed QEMU run covers it.
 
 CoreMark on a JIT is checked with `tools/run_coremark_jit.py --check FILE` (the `arm64` job, the
 `android` job): a run is valid with "Correct operation validated", or when the only error is

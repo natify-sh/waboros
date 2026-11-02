@@ -100,8 +100,8 @@ State on branch `phase0-skeleton` (not merged to `main`, the maintainer's choice
   checked in CI (RISKS R2).
 * **Phase 5 under way, SIMD first** (`docs/specs/S0005-simd.md`, D41): the front end and `pyc` are done and
   `pyc` claims `simd/`; `jit-x86_64` compiles every operator with SSE2 only and claims `simd/` at
-  parity with `pyc` (5d3); `jit-aarch64` has the data-movement operators and claims `simd/` at the
-  end of 5e. **Next, per
+  parity with `pyc` (5d3); `jit-aarch64` compiles every operator in NEON and claims `simd/` too (5e2);
+  next the SIMD benchmark and the review (5f). **Next, per
   `docs/ROADMAP.md`:** finish SIMD, the rename to `waboros` as its own step (D40), guard pages (D29), the
   rest of the opcode set; the public API only in phase 6.
 

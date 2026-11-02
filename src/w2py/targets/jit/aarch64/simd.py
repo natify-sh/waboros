@@ -13,8 +13,12 @@ Integer operators (step 5e1): a short program over v0-v7 (`PROG`, 1-10 instructi
 order), the destination of the last step is the result; a `k` step puts a 64-bit constant into
 both halves of a register through x9. Shifts dup the masked count (negated for right shifts) and
 shift by `sshl`/`ushl`; `bitmask`, `all_true`, the extending loads and `i64x2.mul` (no 64-bit lane
-multiply: both lanes through x9-x12) add a GPR or a memory step around a program. Sequences:
-S0005 "JIT, aarch64"."""
+multiply: both lanes through x9-x12) add a GPR or a memory step around a program.
+
+Float operators, conversions, rounding and `swizzle` (step 5e2) are programs too (`fmin`/`fmax`
+have wasm's NaN and +-0 rules, `fcvtzs`/`fcvtzu` saturate, `frintp/m/z/n`, `tbl`); `shuffle`
+puts its 16 lane indices into v2 through x9, x10 and runs a two-register `tbl` over v0, v1.
+Sequences: S0005 "JIT, aarch64"."""
 
 from typing import TYPE_CHECKING
 
@@ -96,6 +100,27 @@ def _forms() -> None:
         FORMS[f"{mn}.{t}"] = (word, f"{mn} {r}{{d}}, v{{n}}.{t}")
     FORMS["ext8.16b"] = (0x6E004000, "ext v{d}.16b, v{n}.16b, v{m}.16b, #8")
     FORMS["zip1.16b"] = (0x4E003800, "zip1 v{d}.16b, v{n}.16b, v{m}.16b")
+    FORMS["bsl.16b"] = (0x6E601C00, "bsl v{d}.16b, v{n}.16b, v{m}.16b")
+    FORMS["tbl1.16b"] = (0x4E000000, "tbl v{d}.16b, {{v{n}.16b}}, v{m}.16b")
+    FORMS["tbl2.16b"] = (0x4E002000, "tbl v{d}.16b, {{v{n}.16b, v{n1}.16b}}, v{m}.16b")
+    # floats (step 5e2): bit 23 (`a`) and sz (bit 22: .2d) instead of the integer size field
+    for t, sz in (("4s", 0), ("2d", 1)):
+        for mn, u, a1, opc in (("fadd", 0, 0, 0x1A), ("fsub", 0, 1, 0x1A), ("fmul", 1, 0, 0x1B),
+                               ("fdiv", 1, 0, 0x1F), ("fmax", 0, 0, 0x1E), ("fmin", 0, 1, 0x1E),
+                               ("fcmeq", 0, 0, 0x1C), ("fcmge", 1, 0, 0x1C),
+                               ("fcmgt", 1, 1, 0x1C)):  # fmt: skip
+            word = 0x4E200400 | u << 29 | a1 << 23 | sz << 22 | opc << 11
+            FORMS[f"{mn}.{t}"] = (word, f"{mn} v{{d}}.{t}, v{{n}}.{t}, v{{m}}.{t}")
+        for mn, u, a1, opc in (("fabs", 0, 1, 0xF), ("fneg", 1, 1, 0xF), ("fsqrt", 1, 1, 0x1F),
+                               ("frintn", 0, 0, 0x18), ("frintm", 0, 0, 0x19),
+                               ("frintp", 0, 1, 0x18), ("frintz", 0, 1, 0x19),
+                               ("fcvtzs", 0, 1, 0x1B), ("fcvtzu", 1, 1, 0x1B),
+                               ("scvtf", 0, 0, 0x1D), ("ucvtf", 1, 0, 0x1D)):  # fmt: skip
+            misc(mn, u, opc, 1, a1 << 1 | sz, t, t)
+    misc("fcvtn", 0, 0x16, 0, 1, "2s", "2d")  # the upper half zeroed
+    misc("fcvtl", 0, 0x17, 0, 1, "2d", "2s")
+    misc("sqxtn", 0, 0x14, 0, 2, "2s", "2d")
+    misc("uqxtn", 1, 0x14, 0, 2, "2s", "2d")
 
 
 _forms()
@@ -134,6 +159,31 @@ PROG.update({
     "i16x8.narrow_i32x4_s": "sqxtn.4h 2 0; sqxtn2.8h 2 1",
     "i16x8.narrow_i32x4_u": "sqxtun.4h 2 0; sqxtun2.8h 2 1",
 })  # fmt: skip
+# floats (5e2): fmin/fmax have wasm's NaN and +-0 rules; pmin/pmax keep an operand's bits
+# (b < a ? b : a, a < b ? b : a: an fcmgt mask, then bsl); fcvtzs/fcvtzu saturate, NaN -> 0
+for _sh, _t in (("f32x4", "4s"), ("f64x2", "2d")):
+    for _o in ("add", "sub", "mul", "div", "min", "max", "abs", "neg", "sqrt"):
+        PROG[f"{_sh}.{_o}"] = f"f{_o}.{_t} 0 0" + " 1" * (_o not in ("abs", "neg", "sqrt"))
+    for _o, _r in (("ceil", "p"), ("floor", "m"), ("trunc", "z"), ("nearest", "n")):
+        PROG[f"{_sh}.{_o}"] = f"frint{_r}.{_t} 0 0"
+    PROG.update({f"{_sh}.eq": f"fcmeq.{_t} 0 0 1", f"{_sh}.ne": f"fcmeq.{_t} 0 0 1; mvn.16b 0 0",
+                 f"{_sh}.gt": f"fcmgt.{_t} 0 0 1", f"{_sh}.lt": f"fcmgt.{_t} 0 1 0",
+                 f"{_sh}.ge": f"fcmge.{_t} 0 0 1", f"{_sh}.le": f"fcmge.{_t} 0 1 0",
+                 f"{_sh}.pmin": f"fcmgt.{_t} 2 0 1; bsl.16b 2 1 0",
+                 f"{_sh}.pmax": f"fcmgt.{_t} 2 1 0; bsl.16b 2 1 0"})  # fmt: skip
+PROG.update({
+    "i32x4.trunc_sat_f32x4_s": "fcvtzs.4s 0 0", "i32x4.trunc_sat_f32x4_u": "fcvtzu.4s 0 0",
+    "f32x4.convert_i32x4_s": "scvtf.4s 0 0", "f32x4.convert_i32x4_u": "ucvtf.4s 0 0",
+    # to 64 bits saturated, then narrowed saturating into the low half (the upper one zeroed)
+    "i32x4.trunc_sat_f64x2_s_zero": "fcvtzs.2d 0 0; sqxtn.2s 0 0",
+    "i32x4.trunc_sat_f64x2_u_zero": "fcvtzu.2d 0 0; uqxtn.2s 0 0",
+    "f64x2.convert_low_i32x4_s": "sxtl.2d 0 0; scvtf.2d 0 0",
+    "f64x2.convert_low_i32x4_u": "uxtl.2d 0 0; ucvtf.2d 0 0",
+    "f32x4.demote_f64x2_zero": "fcvtn.2s 0 0", "f64x2.promote_low_f32x4": "fcvtl.2d 0 0",
+    "i8x16.swizzle": "tbl1.16b 0 0 1",  # an index >= 16 gives 0, as in wasm
+})  # fmt: skip
+SHUFFLE = (("tbl2.16b", 3, 0, 2),)  # v0, v1 = a, b (a consecutive table); v2 = the lanes
+INS_D1 = 0x4E181C00  # ins (mov) vd.d[1], xn
 W8 = 0x8040201008040201  # bit i of byte i
 BITMASK = {  # each lane's sign spread, and-ed with its bit weight, summed across (bytes)
     1: f"sshr.16b 0 0; k 1 {W8}; and.16b 0 0 1; ext8.16b 1 0 0; zip1.16b 0 0 1; addv.8h 0 0",
@@ -187,7 +237,7 @@ SHIFTC = {fs.BASE + sub: (_parse(f"{SHIFT[o.name][0]}.{ARR[o.name[:5]]} 0 0 1"),
 BITMASKC = {size: _parse(p) for size, p in BITMASK.items()}
 ALL_TRUEC = {size: _parse(p) for size, p in ALL_TRUE.items()}
 LOADC = {k: _parse(p) for k, p in LOADS.items()}
-OTHER = {"i64x2.mul", *(f"v128.{k}" for k in LOADS)}
+OTHER = {"i64x2.mul", "i8x16.shuffle", *(f"v128.{k}" for k in LOADS)}
 OTHER.update(f"{sh}.{o}" for sh in ARR for o in ("bitmask", "all_true"))
 SUPPORTED = (
     MOVES | set(CODE) | set(SHIFTC) | {fs.BASE + s for s, o in fs.OPS.items() if o.name in OTHER}
@@ -285,6 +335,15 @@ def emit(
         dup(a, 1, 10, size)
         ldst_q(a, True, 0, FRAME, _slot(args[0]))
         ldst_q(a, False, run(a, prog), FRAME, _slot(dst))
+        return
+    if kind == "shuffle":  # the 16 lane indices (< 32) into v2 through x9, x10
+        for i, x in enumerate(args):
+            ldst_q(a, True, i, FRAME, _slot(x))
+        a.mov_imm(9, imm[0] & (1 << 64) - 1)
+        a.mov_imm(10, imm[0] >> 64)
+        a.fmov_to(2, 9)
+        a.emit(INS_D1 | 10 << 5 | 2)
+        ldst_q(a, False, run(a, SHUFFLE), FRAME, _slot(dst))
         return
     if kind in LOADC:  # 8 bytes into d0 (the upper half zeroed), then the extend
         base, index, off = b._bounds(f, args[0], imm[0], 8, imm[1])

@@ -150,14 +150,13 @@ def test_drop_and_select_are_annotated_for_v128_only() -> None:
     ],
 )
 def test_jit_targets_accept_v128(name: str, data: bytes) -> None:
-    """Since S0005 step 5c1 the JITs compile v128; an operator they lack is named."""
+    """Since S0005 step 5c1 the JITs compile v128; since 5d3 and 5e2 every operator."""
     m = parse(data)
     validate(m)
     assert base.TARGETS[name]().supports(m) is None
     m = parse(mod(b"", b"", CONST + CONST + b"\xfd\x0e" + DROP))  # i8x16.swizzle: 5d3, 5e2
     validate(m)
-    want = None if name == "jit-x86_64" else "opcode 0xfd00e"
-    assert base.TARGETS[name]().supports(m) == want
+    assert base.TARGETS[name]().supports(m) is None
 
 
 def test_module_without_v128_is_not_refused() -> None:

@@ -186,7 +186,7 @@
         "saturatedFloatToInt": true,
         "sharedEverythingThreads": null,
         "signExtensions": true,
-        "simd": null,
+        "simd": true,
         "stackSwitching": null,
         "stringref": null,
         "tailCall": true,

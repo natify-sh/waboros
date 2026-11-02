@@ -19,7 +19,7 @@ run yet. "W3C phase" is the proposal's stage in the WebAssembly Community Group 
 standardized), from the upstream data, not a w2py roadmap phase. Wasmtime's column is the upstream data. `pyc` is computed from `tests/spec/xfail/pyc.txt`
 and the command counts in `tests/spec/counts.json`; each cell shows `ok/total` commands. Proposal
 directories (`test/core/<dir>/`) count only on a target that claims the feature
-(`tests/spec/claims.py`); an unclaimed feature is "-". `jit-x86_64` and `jit-aarch64` are computed the same way from their `tests/spec/xfail/<target>.txt`; they claim the same directories as `pyc` (D25 parity) except `simd`, which `pyc` claims (S0005, step 5b), `jit-x86_64` since step 5d3 and `jit-aarch64` at step 5e2. Every registered target has a column (`tests/test_features.py`). `mpy` is not listed yet.
+(`tests/spec/claims.py`); an unclaimed feature is "-". `jit-x86_64` and `jit-aarch64` are computed the same way from their `tests/spec/xfail/<target>.txt`; they claim the same directories as `pyc` (D25 parity) including `simd`, which `pyc` claims since S0005 step 5b, `jit-x86_64` since step 5d3 and `jit-aarch64` since step 5e2. Every registered target has a column (`tests/test_features.py`). `mpy` is not listed yet.
 
 ## Proposals
 
@@ -66,7 +66,7 @@ directories (`test/core/<dir>/`) count only on a target that claims the feature
 | Non-trapping float-to-int Conversions (`saturatedFloatToInt`) | 5 | yes | yes 619/619 | yes 619/619 | yes 619/619 |
 | Shared-Everything Threads (`sharedEverythingThreads`) | 1 | - | - | - | - |
 | Sign-extension Operators (`signExtensions`) | 5 | yes | yes 876/876 | yes 876/876 | yes 876/876 |
-| Fixed-width SIMD (`simd`) | 5 | since 0.33 | yes 25990/25990 | yes 25990/25990 | - |
+| Fixed-width SIMD (`simd`) | 5 | since 0.33 | yes 25990/25990 | yes 25990/25990 | yes 25990/25990 |
 | Stack Switching (`stackSwitching`) | 3 | - | - | - | - |
 | Reference-Typed Strings (`stringref`) | 1 | - | - | - | - |
 | Tail Call (`tailCall`) | 5 | since 22 | yes 187/187 | yes 187/187 | yes 187/187 |
@@ -83,8 +83,8 @@ directories (`test/core/<dir>/`) count only on a target that claims the feature
 
 * multi-memory (`wasm_multi_memory`): done on every target (D37); **needed for fused components** (D7).
 * memory64 (`wasm_memory64`): addresses are already Python ints in `pyc`.
-* SIMD (`wasm_simd`): `pyc` v128 as an int, correct first (done, claimed); JIT: two slots per v128, SSE2 / NEON at the baseline (D24, D41, S0005; `jit-x86_64` complete and claimed, step 5d3; `jit-aarch64`: data movement and the integer operators
-  (5c, 5e1), the rest and the claim at 5e2).
+* SIMD (`wasm_simd`): `pyc` v128 as an int, correct first (done, claimed); JIT: two slots per v128, SSE2 / NEON at the baseline (D24, D41, S0005; `jit-x86_64` complete and claimed, step 5d3; `jit-aarch64` complete in ARMv8.0-A NEON and
+  claimed, step 5e2; next: the SIMD benchmark and the review of the SIMD steps, 5f).
 * relaxed SIMD (`wasm_relaxed_simd`, `_deterministic`): follow Wasmtime's deterministic choice when asked.
 * tail calls (`wasm_tail_call`): done; `pyc` uses a trampoline for functions with `return_call*`; the JIT replaces the frame.
 * custom page sizes (`wasm_custom_page_sizes`): a property of the `Memory` facade.
@@ -121,4 +121,4 @@ directories (`test/core/<dir>/`) count only on a target that claims the feature
 * **JIT targets** may lag the `pyc` target feature by feature. `auto` picks one target per machine,
   never per module (D25): a JIT whose probe succeeds and that is `complete`, else `pyc` with one D31
   warning. A JIT claims a proposal directory only when it equals `pyc` there; until then a module
-  using it is `Unsupported` on that JIT (S0005 Q2), as SIMD on `jit-aarch64` is before step 5e2.
+  using it is `Unsupported` on that JIT (S0005 Q2), as SIMD on `jit-aarch64` was before step 5e2.
