@@ -543,6 +543,10 @@ import names, the CLI, the docs, CI, the artifact's identifying strings if any. 
 code and docs keep `w2py`. The step uses `waboros` everywhere at once, repository URLs included
 (`natify-sh/waboros`), without waiting for the GitHub repository: the maintainer renames it last
 (GitHub then redirects the old URLs; the new ones resolve only after that rename).
+Packaging lands with the rename (maintainer, 2026-11-02), following the other natify-sh repositories
+(py-wasmhost, py-wasmext): a LICENSE, `pyproject.toml` ready for publishing, the build backend
+setuptools + setuptools-scm (version from git tags), and `.github/workflows/coverage.yml`,
+`publish.yml` and `.github/dependabot.yml`. The runtime keeps no dependency.
 
 ### D41. SIMD: v128 in two slots, no vector register class, native SSE2/NEON only
 Status: accepted (maintainer, 2026-11-01) · Date: 2026-11-01 · Supersedes: — · Evidence: [S0005](specs/S0005-simd.md) (simd/ 25 990 commands; 236 operators: 158 at 1–3 SSE2 instructions, 68 at 4–12, 10 without an SSE2 form; pyc value model timed)
