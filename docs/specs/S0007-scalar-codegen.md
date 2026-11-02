@@ -2,7 +2,7 @@
 title: Scalar code generation in both JITs (addressing, returns, temporaries)
 kind: spec
 id: S0007
-status: draft
+status: approved
 superseded_by:
 related: [D14, D25, D26, D35, D39, D44, S0003, S0004, S0006, R2, R3]
 owner: maintainer
@@ -294,5 +294,5 @@ investigation's.
 * 2026-11-02: maintainer decisions: Q4, no version bump: the prologue-check change is an amendment
   of context ABI v1 (as S0003 and D38 did), while the artifact format is not fixed yet; Q5 (b): the
   save set of R comes from a second compilation pass, only for functions that used temporaries (the
-  allocation does not depend on the save set, so the second pass reproduces the body). Q1–Q3, Q6, Q7
-  still open.
+  allocation does not depend on the save set, so the second pass reproduces the body); Q1–Q3, Q6, Q7
+  as recommended. The spec is approved (with the D39 amendment it describes, byte identity waived).
