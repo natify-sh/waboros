@@ -82,7 +82,7 @@ only what its test programs needed.
 
 ## Where to start
 
-State on branch `phase0-skeleton` (not merged to `main`, the maintainer's choice):
+State of `main` (phases 0–4 and SIMD merged on 2026-11-02, published as 0.0.0); work continues on branches:
 
 * **Done, phases 0–2:** package layout, strict binary reader and validator (`src/waboros/frontend/`), the
   spec-suite runner (the metric), and the `pyc` target complete for the core group (spec core: `pyc`
