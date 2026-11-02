@@ -291,3 +291,8 @@ investigation's.
 
 ## Changes
 * 2026-11-02: created (draft), from the scalar-gap investigation (ranking items 1, 3 and 4).
+* 2026-11-02: maintainer decisions: Q4, no version bump: the prologue-check change is an amendment
+  of context ABI v1 (as S0003 and D38 did), while the artifact format is not fixed yet; Q5 (b): the
+  save set of R comes from a second compilation pass, only for functions that used temporaries (the
+  allocation does not depend on the save set, so the second pass reproduces the body). Q1–Q3, Q6, Q7
+  still open.
