@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""ISA gate (D24, S0002 step 5): compile every spec module (jit-x86_64) and CoreMark with
-W2PY_JIT_DUMP set, then run tools/isa_check.py on every non-empty blob (data area excluded).
+"""ISA gate (D24, S0002 step 5): compile every cached spec module and CoreMark (all directories,
+claimed or not, e.g. simd/) with W2PY_JIT_DUMP set, then run
+tools/isa_check.py on every non-empty blob (data area excluded).
 
     python3 tools/isa_all.py [--target jit-x86_64|jit-aarch64] [--level v1|v2] [--dump DIR]
         # DIR: check an existing dump only
 
-`--target jit-aarch64` (S0004) compiles with tools/jit_dump.py, which never runs the code, so it
-works on any host (cross-compiling on x86-64, D35) and gates the blobs against ARMv8.0-A with
-`llvm-mc` (tools/isa_check.py --arch aarch64). The x86-64 gate needs GNU objdump.
+Both targets compile with tools/jit_dump.py, which never runs the code, so it
+works on any host (cross-compiling on x86-64, D35); `--target jit-aarch64` gates the blobs against
+ARMv8.0-A with `llvm-mc` (tools/isa_check.py --arch aarch64). The x86-64 gate needs GNU objdump.
 Prints the number of blobs checked and skipped (empty: a module without
 functions); exit 1 if any blob has an instruction above the level, or none was checked."""
 
@@ -23,24 +24,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def dump(out: Path, target: str) -> None:
     env = {**os.environ, "W2PY_JIT_DUMP": str(out), "PYTHONPATH": str(ROOT)}
-    if target == "jit-aarch64":  # compile only, on any host
-        cmd = [
-            sys.executable,
-            str(ROOT / "tools/jit_dump.py"),
-            "--target",
-            target,
-            str(out / "list"),
-        ]
-        subprocess.run(cmd, cwd=ROOT, env=env, check=True)
-        return
-    spec = [sys.executable, "-m", "tests.spec.run", "--engine", "jit-x86_64"]
-    subprocess.run(spec, cwd=ROOT, env=env, stdout=subprocess.DEVNULL, check=True)
-    cm = (  # compile only: the ISA check needs the code, not a CoreMark run
-        "import sys; from w2py.frontend.binary import parse; from w2py.frontend.validate import "
-        "validate; from w2py.targets import base; m = parse(open(sys.argv[1], 'rb').read()); "
-        "validate(m); base.TARGETS['jit-x86_64']().compile(m)"
-    )
-    subprocess.run([sys.executable, "-c", cm, str(ROOT / "poc/in/core.wasm")], env=env, check=True)
+    cmd = [sys.executable, str(ROOT / "tools/jit_dump.py"), "--target", target, str(out / "list")]
+    subprocess.run(cmd, cwd=ROOT, env=env, check=True)
 
 
 def main() -> int:
