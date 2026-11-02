@@ -335,3 +335,11 @@ Q5 (a), Q6 (a), Q7 (a), Q8 (a). Kept below with their options for the record.
   differential oracle goes through the runner's raw v128 adapter; 5d split into 5d1–5d3 by operator
   class and 5e into 5e1–5e2; one command count everywhere (25 990, 25 481 runnable); `pyc` SIMD is
   expected slower than scalar; 5f updates MICRO-COMPILERS.md line counts.
+* 2026-11-02: 5c plan approved by the maintainer: (1) intermediate steps (5c1–5d2) accept
+  `tools/spec_diff.py pyc <jit> simd --allow-unsupported` (every implemented operator equals `pyc`,
+  the rest is refused); parity without `--allow-unsupported` is required at the claim steps (5d3,
+  5e2), D25; (2) `simd(f, op, dst, args, imm)` takes `dst=None` for operators without a result
+  (`store`, `store*_lane`, `global.set`); (3) 5c split into 5c1 (core, slot map, `Layout` widths,
+  boundary split/join, the `simd` method in both backends with `v128.const`, `load`, `store`,
+  `select`, `drop`, globals) and 5c2 (the other data-movement operators: lanes, splat,
+  `load*_splat`/`_zero`/`_lane`, `store*_lane`, bitwise, `any_true`); extending loads move to 5d1.
