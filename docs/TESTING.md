@@ -71,6 +71,9 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
 
 * CoreMark (`poc/in/core.wasm`, `zig cc -O3`): correctness by its own CRC self-check, speed in it/s.
   Record new numbers in BENCHMARKS.md with the conditions.
+* Corpus of freestanding libraries (`poc/bench/corpus/`, `tools/run_corpus.py`): Monocypher, SHA-256,
+  BLAKE3 and miniz checked against `hashlib`, `zlib`, reference vectors and pure-Python references on every
+  target and Wasmtime; exit status non-zero on a mismatch. Timings in BENCHMARKS.md.
 * WASI: the WASI testsuite (p1), the chosen host's conformance tests (fusedwasi has them for p2),
   small programs in C, Rust, Zig.
 * Long calls: a guest loop interrupted from another thread and by SIGINT (CLI) on every target; another

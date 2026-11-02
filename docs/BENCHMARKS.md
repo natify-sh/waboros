@@ -10,6 +10,40 @@ updated: 2026-11-02
 Everything measured during the PoC, with its conditions. Numbers from different sessions differ by up
 to ~20 % (shared cloud machine); compare within a session.
 
+## Corpus of freestanding libraries (`poc/bench/corpus/`)
+
+Real libraries compiled to wasm (REAL-PROGRAMS section 1): Monocypher 4.0.2 (BLAKE2b, X25519,
+XChaCha20-Poly1305), SHA-256 (B-Con crypto-algorithms), BLAKE3 1.5.4 (portable C), miniz 3.0.2
+(deflate, inflate). Built by `poc/bench/corpus/build.sh`: Ubuntu clang 18.1.3, wasm-ld 18,
+`--target=wasm32 -O3 -nostdlib -ffunction-sections -fno-builtin -Wl,--gc-sections -Wl,-z,stack-size=1048576`
+(BLAKE3 with its SIMD dispatch off, miniz without archive/stdio/time); sources are fetched from
+raw.githubusercontent.com and checked against the pinned sha256, the build is byte-reproducible. A driver
+per library exports one function per operation plus `put`/`get` (8 bytes per call) over a static I/O buffer
+and a 1 MiB bump `malloc`. Runner: `uv run python tools/run_corpus.py --rounds 3`. Every result is
+compared with `hashlib` (BLAKE2b, SHA-256), `zlib` (miniz deflate output decompressed by `zlib`, `zlib`
+output inflated by miniz), the BLAKE3 test vectors (`test_vectors.json`, 1.5.4) or a pure-Python reference
+(RFC 7748 ladder for X25519; XChaCha20-Poly1305 built from the RFC 8439 pieces), on `pyc`, `jit-x86_64`
+and Wasmtime: 63 of 63 agree; on `jit-aarch64` under QEMU (`python3 tools/run_arm64.py
+tools/run_corpus.py --targets jit-aarch64 --rounds 1`) 21 of 21 agree (no timings).
+
+Conditions: 2026-11-02, the machine below, CPython 3.13.17, wasmtime-py 50.0.1, one session, 3 rounds
+alternated, median; microseconds per call of the export (the input transfer is not timed; `pyc` 1
+repetition per call, the others 20).
+
+| case | pyc | jit-x86_64 | Wasmtime |
+|---|---|---|---|
+| BLAKE2b, 1 KiB | 1 117 | 3.3 | 4.5 |
+| X25519 (scalar mult) | 59 110 | 182 | 117 |
+| XChaCha20-Poly1305, 1000 B | 2 452 | 5.2 | 5.6 |
+| SHA-256, 4 KiB | 15 754 | 44.1 | 37.1 |
+| BLAKE3, 1 KiB | 1 200 | 4.4 | 3.9 |
+| BLAKE3, 8 KiB | 9 787 | 22.2 | 17.3 |
+| inflate, 8 KiB (to 8 KiB) | 7 598 | 45.5 | 38.2 |
+| deflate, 8 KiB | 62 337 | 487.6 | 364.6 |
+
+The i64-heavy X25519 is 1.55x behind Wasmtime on `jit-x86_64`, the 32-bit hashes and the byte loops of
+miniz 1.1-1.4x; BLAKE2b and the AEAD are on par.
+
 **Machine**: cloud container, x86-64 Linux, Intel Xeon @ 2.10 GHz, 2 vCPU.
 **Software**: CPython 3.13.17 (also 3.8.20, 3.9.25, 3.10.20 from uv), PyPy 7.3.19 (3.10), MicroPython
 1.29.0 unix port (standard build), wasmtime-py 50.0.1, pywasm3 0.5.0, pywasm 2.2.3, lupa 2.8 (Lua 5.4,

@@ -8,3 +8,6 @@ dist/
 .ruff_cache/
 .cache/
 *.egg-info/
+
+# agent worktrees (Claude Code isolation)
+.claude/worktrees/

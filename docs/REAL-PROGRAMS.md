@@ -48,6 +48,11 @@ the built `.wasm` committed, a runner that checks the results on every target an
 (alternated rounds, median, as `tools/run_simd_bench.py`). The same modules join the differential
 run below.
 
+Status (2026-11-02): built, in `poc/bench/corpus/` with `tools/run_corpus.py` (results in BENCHMARKS,
+"Corpus"): Monocypher (BLAKE2b, X25519, XChaCha20-Poly1305), SHA-256, BLAKE3, miniz (deflate, inflate).
+Not yet: xxHash, QOI / stb_image. Sources are fetched with pinned sha256 (not vendored); licences in
+`poc/bench/corpus/licenses/`.
+
 ## 2. Why scalar code is 1.5-3.9x behind Wasmtime (investigation, no code change)
 
 The same method as the SIMD slowdown investigation (BENCHMARKS, LESSONS 44): hot-loop disassembly of
