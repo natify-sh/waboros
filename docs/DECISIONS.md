@@ -605,3 +605,15 @@ named by `platform.libc_ver()`, so musl stays explicit); an empty `WABOROS_JIT_B
 unset. The switch also brought the Q1 check's rule A (`dladdr` tells the interpreter's handlers
 from a library's, so wasmtime above ours under faulthandler is no error) and the handler's refusal
 to install in a process of another architecture (S0006 Changes).
+
+### D45. In guard mode a store of 2 bytes or more keeps its explicit check
+Status: proposed · Date: 2026-11-02 · Evidence: [S0006](specs/S0006-guard-pages.md) Changes; LESSONS 50; BENCHMARKS.md, "Checked stores in guard mode"
+
+A straddling store may commit its in-bounds part before the fault (QEMU's TCG split a 16-byte
+store in CI; Arm and RISC-V allow it, as Wasmtime's issue 7237 records), and a trapping store must
+write nothing. So in guard mode a store of 2 bytes or more keeps its explicit check and is no
+fault point; loads and 1-byte stores, which cannot straddle, stay unchecked. Rejected: every
+store unchecked (tears where the hardware or an emulator splits it) and a probe (a 1-byte read of
+the store's last byte as the fault point; measured, no faster). Cost: CoreMark −2 to −3 % against
+unchecked stores; guard still leads explicit by +4.5 to +6.3 % (median of 9 rounds, two
+sessions), with 14.6 % less code instead of 20 %. D44 stands: the default stays `auto`.

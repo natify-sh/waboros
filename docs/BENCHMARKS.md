@@ -381,6 +381,58 @@ guard): scalar builds addsat 7.92 → 6.67 (+18.7 %), scan 3.30 → 2.72 (+21.3 
 real libraries was measured too, but its sub-µs rows spread 2× between rounds: not a basis. This
 measurement is the condition D44 named for making `auto` (guard on verified rows) the default.
 
+**Checked stores in guard mode (LESSONS 50).** In guard mode a store of 2 bytes or more now keeps
+its explicit check, because a straddling store may write part of itself before the fault (QEMU).
+2026-11-02 16:52–17:16 UTC, the same Intel Xeon @ 2.10 GHz, 4 vCPU VM, CPython 3.13.17, one
+benchmark process at a time, load average 0.4–1.0. Compared: *old guard* (every access unchecked,
+the code of the D44 switch, from a worktree), *new guard* (this change), *explicit*. CoreMark:
+`tools/run_coremark_jit.py poc/in/core.wasm`, alternated with the order rotated each round, every
+run "Correct operation validated". Code: explicit 45 055 bytes; old guard 36 058 (−20.0 %, 669
+fault points); new guard 38 457 (−14.6 %, 493 fault points).
+
+| session | mode | runs (it/s) | median | vs explicit (median / mean) |
+|---|---|---|---|---|
+| 1 (9 rounds) | old guard | 16 898 / 15 862 / 14 738 / 16 147 / 15 727 / 15 900 / 15 229 / 16 547 / 16 028 | 15 899.5 | +9.8 % / +11.0 % |
+| 1 | new guard | 15 528 / 15 733 / 15 421 / 14 911 / 14 492 / 15 396 / 14 947 / 16 163 / 14 854 | 15 396.5 | +6.3 % / +6.6 % |
+| 1 | explicit | 14 773 / 14 542 / 14 288 / 14 013 / 14 481 / 13 098 / 14 753 / 14 601 / 14 334 | 14 481.2 | — |
+| 2 (9 rounds) | old guard | 15 268 / 16 116 / 16 555 / 17 313 / 16 771 / 15 883 / 15 013 / 15 205 / 15 341 | 15 883.1 | +6.7 % / +7.0 % |
+| 2 | new guard | 15 245 / 14 302 / 16 801 / 16 480 / 15 563 / 15 562 / 14 942 / 14 451 / 16 207 | 15 561.8 | +4.5 % / +4.1 % |
+| 2 | probe (not adopted) | 15 023 / 15 210 / 15 101 / 16 569 / 15 310 / 15 860 / 15 579 / 13 642 / 15 005 | 15 210.3 | +2.1 % / +2.4 % |
+| 2 | explicit | 15 175 / 13 869 / 13 662 / 15 768 / 16 221 / 14 578 / 15 084 / 14 781 / 14 893 | 14 893.1 | — |
+
+Checked stores cost **2–3 %** of CoreMark against the old guard code (median −3.2 % and −2.0 %;
+new below old in 8 and 7 rounds of 9); guard stays ahead of explicit by **+4.5 to +6.3 %**
+(median), down from +6.7 to +9.8 % in the same sessions. *Probe* is a scratch prototype of the
+cheaper-looking alternative: no check, a 1-byte read of the store's last byte (`cmp byte
+[addr+n-1], 0`) as the fault point before the store, the store itself unmarked (Wasmtime's open
+PR 8221 does the same with a full-size load). It was no faster than the check (median −2.3 %
+against new guard, 4 rounds of 9 ahead), so it was not adopted.
+
+SIMD benchmark: `tools/run_simd_bench.py --targets jit-x86_64 --rounds 5` per run, 3 and then 9
+alternated runs per mode (rotated order). The runs spread up to 2× within one mode (bimodal: e.g.
+explicit scalar addsat 7.5–13.7 µs), so the medians are noise; the table gives the **minimum** over
+the 9 runs (µs per iteration; the 3-run session agrees within a few percent).
+
+| build | kernel | explicit | old guard | new guard | new vs old |
+|---|---|---|---|---|---|
+| scalar | addsat | 7.52 | 5.80 | 5.88 | −1.4 % |
+| scalar | dot | 2.87 | 2.89 | 2.84 | +1.8 % |
+| scalar | scan | 3.16 | 2.57 | 2.57 | 0 % |
+| scalar | matmul | 3.89 | 3.53 | 3.62 | −2.5 % |
+| scalar | swizzle | 4.78 | 3.99 | 4.51 | −11.5 % |
+| scalar | nearest | 1.81 | 1.51 | 1.64 | −7.9 % |
+| simd | addsat | 0.47 | 0.38 | 0.39 | −2.6 % |
+| simd | dot | 1.06 | 1.04 | 1.04 | 0 % |
+| simd | scan | 0.65 | 0.63 | 0.63 | 0 % |
+| simd | matmul | 2.21 | 2.18 | 2.20 | −0.9 % |
+| simd | swizzle | 6.80 | 6.64 | 6.68 | −0.6 % |
+| simd | nearest | 0.60 | 0.53 | 0.56 | −5.4 % |
+
+Load-bound kernels keep their gain (scalar addsat and scan +23–28 % over explicit). Store-heavy
+ones lose part of it: scalar swizzle drops from +20 % to +6 % over explicit, and nearest from +20 %
+to +10 %. Raw logs: the session's `bench.log`, `bench2.log`, `simd.log` and `simd9.log`
+(scratchpad, not kept in the repository).
+
 ## `wasm-opt -O3` (binaryen 125) on CoreMark
 
 `wasm-opt --enable-nontrapping-float-to-int --enable-sign-ext --enable-mutable-globals -O3`: 29 → 10

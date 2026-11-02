@@ -81,15 +81,18 @@ keeps today's `_bounds` check unchanged. Then the address is formed exactly as t
 copied by a 32-bit `mov`, so the safety of the access does not rest on the zero-extension invariant
 of LESSONS 5; aarch64: a `uxtw` register offset or a 32-bit `mov`), and the access is emitted.
 
-* **Unchecked**: scalar loads and stores of every width; SIMD `v128.load/store`, `load*x*`,
-  `load*_splat`, `load*_zero`, `load*_lane`, `store*_lane`, including 16-byte accesses at the end of
-  memory.
+* **Unchecked**: scalar loads of every width and 1-byte stores; SIMD `v128.load`, `load*x*`,
+  `load*_splat`, `load*_zero`, `load*_lane` and `store8_lane`, including 16-byte loads at the end
+  of memory.
 * **Stay explicit**: `memory.copy`, `memory.fill`, `memory.init` (both ranges checked before any byte
   moves; their loops push a scratch register); table accesses, `call_indirect`, `table.*`; stack
   limits; division, conversions; offsets above the threshold.
-* **One instruction per store.** A store in guard mode is a single instruction; a store the backend
-  emits as several instructions keeps the explicit check (a fault after the first would leave a
-  partial write; `memory_trap.wast` checks that none happens). Loads may be split.
+* **Stores of 2 bytes or more keep the explicit check** (scalar, `v128.store`, `store16/32/64_lane`):
+  a store that straddles the end of memory may commit its in-bounds part before the fault (QEMU's
+  TCG splits a 16-byte store in two; Arm and RISC-V allow a misaligned store across a page to tear;
+  LESSONS 50), and a trapping store must leave memory unchanged (`memory_trap.wast`). A 1-byte
+  store cannot straddle, so it stays a fault point. No fault point writes more than one byte
+  (checked by objdump over the spec modules). Loads may be split: a trap discards their value.
 * **The fault point invariant.** Each memory-touching instruction of an unchecked access is a *fault
   point*: a position where the explicit check's `jcc oob` would have been legal — the native stack at
   the function body's depth (no `push` outstanding), every callee-saved register as the epilogue
@@ -200,9 +203,10 @@ trap).
 * **Android**: in app processes ART's libsigchain interposes `sigaction`: by its design our handler
   becomes a user handler, called after ART's own (implicit null checks, its stack overflow). Using libc's
   `sigaction` symbol through ctypes is what keeps this working. Checked in the CI `android` job.
-* **aarch64 partial stores**: the architecture does not promise that a misaligned store crossing
-  into a faulting page writes nothing; QEMU writes nothing (measured) and so does the x86-64 machine.
-  `memory_trap.wast` fails if a CPU does; native arm64 runners run the spec suite in guard mode.
+* **Partial stores**: Arm does not promise that a misaligned store crossing into a faulting page
+  writes nothing (nor does RISC-V; Wasmtime issue 7237), and QEMU's TCG splits 16-byte x86 stores
+  (LESSONS 50). Stores of 2 bytes or more are therefore checked explicitly on every architecture
+  (Code generation); aarch64 (step 2) starts from that rule.
 
 ### Selection and fallback
 * The mode is a compile-time property of the code (D29). Before phase 6 it is chosen by a JIT option
@@ -253,7 +257,8 @@ reservation is a crash, not a trap: the explicit-mode tests and differential run
   committed pages work, beyond them traps); the instance is usable after each trap; a trap at
   recursion depth 10 000; a trap in an inner entry (wasm → host → wasm) leaves the outer call
   running; 8 threads with one store each trapping in a loop; a fault map equal to the instructions
-  that touch memory (disassembled with `objdump`).
+  that touch memory, stores of 2 bytes or more excepted (disassembled with `objdump`); no fault
+  point of any spec module or CoreMark writes more than one byte (`objdump`).
 * Foreign faults, in subprocesses: `ctypes.string_at(16)` with our handler installed exits with
   `-SIGSEGV`, with and without `faulthandler` enabled before us (traceback printed in the second
   case); `os.kill(os.getpid(), SIGSEGV)` is not ours; `faulthandler.enable()` or `.disable()` after
@@ -420,3 +425,25 @@ reservation is a crash, not a trap: the explicit-mode tests and differential run
     `test` (3.13) runs pytest and `spec` runs the jit-x86_64 spec suite with
     `WABOROS_JIT_BOUNDS=explicit`; the D35 lists of `jit-x86_64` are made with the mode named, in
     both modes, on both hosts.
+* 2026-11-02: **stores of 2 bytes or more keep the explicit check in guard mode** (Code generation;
+  LESSONS 50). After the D44 switch, CI's `jit` job failed `test_simd_abi.py::test_v128_matches_pyc`
+  in the step that runs the SIMD tests under `qemu-x86_64 -cpu qemu64,-pni,-ssse3,-sse4.1,-sse4.2,
+  -popcnt` (QEMU 8.2.2, TCG). A `v128.store` at 65 521 of a 64 KiB memory trapped, but its first 8
+  bytes had landed at 65 521..65 528: TCG splits the 16-byte `movdqu` into two 8-byte stores. The
+  same test passed natively on the runner in the same job, and passes on the Xeon here. The log does
+  not name the runner's CPU. Reproduced locally under the same QEMU: v128.store tears at k = 1..8
+  bytes past `size - 16`, while no scalar width tears on an x86 host and `-cpu max` does not split.
+  Native x86-64 faults are precise (Intel SDM vol. 3A, 6.5), but an x86-64 process can run under
+  emulation (amd64 containers under qemu-user on Arm hosts), and Arm and RISC-V allow a misaligned
+  store across a page to tear (Wasmtime issue 7237, open; WebAssembly/design issue 1490, open, the
+  spec not relaxed; WebAssembly/spec issue 1250). The fix: `_bounds(..., store=True)` keeps the
+  explicit check for a store of 2 bytes or more, and loads and 1-byte stores stay unchecked. The
+  fault map shrinks to loads and byte stores (CoreMark 669 → 493 entries; code 36 058 → 38 457
+  bytes; explicit 45 055), and explicit-mode code is unchanged byte for byte (`jit_dump`). Cost:
+  CoreMark −2 to −3 % against the unchecked stores. Guard stays +4.5 to +6.3 % ahead of explicit
+  (BENCHMARKS.md, "Checked stores in guard mode"). The cheaper-looking probe (a 1-byte read of the
+  store's last byte as the fault point) was measured and was no faster. New test
+  `test_no_fault_point_writes_more_than_one_byte`: objdump over every fault point of every spec
+  module and CoreMark. It fails on the previous code (1 147 QWORD, 236 DWORD, 102 WORD and the XMMWORD
+  store fault points). This is no format change: the artifact is not fixed yet (Version rules), and
+  only the number of entries changes.

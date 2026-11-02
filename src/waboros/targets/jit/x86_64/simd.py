@@ -506,7 +506,7 @@ def emit(
         return
     m = Mem(RCX)  # the memory access, if any: bounds checked, the address read first
     if kind in ("load", "store", "load_splat", "load_zero", "load_lane", "store_lane"):
-        m = b._bounds(f, args[0], imm[0], size, imm[1])
+        m = b._bounds(f, args[0], imm[0], size, imm[1], store=kind.startswith("store"))
     if kind == "load":
         b._fault_point()
         _copy(a, m, _slot(dst))

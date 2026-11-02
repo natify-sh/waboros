@@ -697,19 +697,25 @@ class Backend:
         self.a.mov(dst.id, self._mem(mem)[1], w=True)
         self.a.shift("shr", dst.id, 16, w=True)
 
-    def _bounds(self, f: Frame, addr: Operand, offset: int, size: int, mem: int) -> Mem:
+    def _bounds(
+        self, f: Frame, addr: Operand, offset: int, size: int, mem: int, store: bool = False
+    ) -> Mem:
         """The bounds check (R3: the one place memory safety rests on). The effective address
         addr + offset (< 2**33) and its end are computed in 64 bits, so nothing wraps; the end
         must be <= the memory's size (r14 for memory 0) or the access traps. A register address
         is first copied with a 32-bit move, so its upper half cannot matter. The access is
         [r13 + ...] for memory 0, [rcx + ...] with rcx = base (+ address) for another; rdx is
-        free afterwards. In guard mode an access the guard catches is `_guarded` instead."""
+        free afterwards. In guard mode an access the guard catches is `_guarded` instead, except
+        a store of 2 bytes or more: one that straddles the end of memory may commit its in-bounds
+        part before the fault (QEMU splits a 16-byte store in two; Arm allows it, LESSONS 50), so
+        it keeps this check and is no fault point. A 1-byte store cannot straddle."""
         assert self._oob is None, "an unchecked access without its fault point"
-        if self.guard and (
+        caught = (
             (addr.value & M32) + offset + size <= (1 << 32) + GUARD
             if isinstance(addr, Imm)
             else offset + size <= GUARD
-        ):
+        )
+        if self.guard and caught and (size == 1 or not store):
             return self._guarded(f, addr, offset, mem)
         a = self.a
         base, limit = self._mem(mem)
@@ -797,7 +803,7 @@ class Backend:
         self, f: Frame, size: int, addr: Operand, offset: int, src: Operand, mem: int
     ) -> None:  # fmt: skip
         a = self.a
-        m = self._bounds(f, addr, offset, size, mem)
+        m = self._bounds(f, addr, offset, size, mem, store=True)
         imm = _imm32(src, size == 8)
         if imm is not None and size >= 4:
             self._fault_point()
@@ -807,7 +813,7 @@ class Backend:
         if not isinstance(r, int):
             a.mov(RDX, r, w=True)
             r = RDX
-        self._fault_point()  # one instruction per store (S0006)
+        self._fault_point()  # a 1-byte store in guard mode (S0006)
         if size == 1:
             a.store8(m, r)
         elif size == 2:

@@ -200,12 +200,12 @@ memory without knowing the target.
   cannot run inside a signal) and installed with `sigaction` through ctypes. It resumes a fault at a
   reserved address raised by this module's code in the out-of-bounds trap stub (it rewrites RIP in the
   `ucontext`, as Wasmtime does), and passes everything else to the previous handler or restores the
-  default action. In the package (S0006): guard code on `jit-x86_64`, Linux glibc, since step 1 — accesses with `offset + size ≤ 32 MiB` unchecked, a fault map of the instructions
+  default action. In the package (S0006): guard code on `jit-x86_64`, Linux glibc, since step 1 — loads and 1-byte stores with `offset + size ≤ 32 MiB` unchecked (wider stores keep their check: a straddling store may tear, LESSONS 50), a fault map of the instructions
   that touch memory, a handler (`x86_64/abi.py`, registry in `common/guard.py`) that resumes at the
   function's own out-of-bounds stub and chains every other fault. The mode is `auto` by default (D44):
   guard on the verified row (Linux glibc x86-64), explicit elsewhere, silently; `WABOROS_JIT_BOUNDS=explicit`
-  opts out, `=guard` requires it. CoreMark: +9 % on the package on a quiet machine (BENCHMARKS.md, "Guard
-  pages"; +14 % on a loaded one, the PoC measured +20–25 % on another day), 20 % less machine code. Explicit checks stay the fallback (larger offsets,
+  opts out, `=guard` requires it. CoreMark: +4.5 to +6.3 % on the package with stores checked (+9 % before; BENCHMARKS.md, "Guard
+  pages"; the PoC measured +20–25 % on another day), 15 % less machine code. Explicit checks stay the fallback (larger offsets,
   platforms without the handler yet, `memory64`); risks in RISKS.md, R6.
 
 ## State shared across targets
