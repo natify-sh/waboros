@@ -1,3 +1,10 @@
+---
+title: Risks and possible solutions
+kind: log
+status: current
+updated: 2026-11-02
+---
+
 # Risks and possible solutions
 
 Not decisions: what can go wrong, what we know about it, and the options to choose from when the time
@@ -41,6 +48,11 @@ known-bad versions can force recompilation.
 
 ## R2. Platforms restricting run-time code generation
 
+**Status at HEAD: partly mitigated.** Mitigated on x86-64 Linux: the W^X executable-memory probe and the
+fallback to `pyc` with `JitUnavailableWarning` (D31; proved with executable memory forbidden by
+`tools/no_exec.py` in the CI `spec` job and `tests/test_fallback.py`); CET IBT (`endbr64` at every
+indirectly reachable entry, `backend.py`) and CET shadow stacks (traps return through frames, S0003). aarch64: `bti c` landing pads are emitted and the tests run under QEMU with BTI enforced; PAC is not used (S0004). macOS `MAP_JIT` under a hardened runtime: answered for python.org CPython (the JIT runs, row below). Android: answered for x86_64 in an `untrusted_app` process (the JIT runs, row below); arm64 has no CI job. Open: Windows ACG (the Windows and macOS x64 CI jobs run `tests/jit`).
+
 The direction is clear: more systems forbid writable-and-executable memory, and CPUs add control-flow
 integrity that hand-made code must respect.
 
@@ -48,6 +60,8 @@ integrity that hand-made code must respect.
 |---|---|---|---|
 | iOS / iPadOS (Pythonista) | no JIT for third-party apps | JIT impossible | `pyc`; maybe a system engine (R3, JavaScriptCore) |
 | macOS on Apple Silicon | executable memory needs `MAP_JIT` and per-thread write/execute switching (`pthread_jit_write_protect_np`); hardened-runtime apps need a JIT entitlement | works if the interpreter binary allows it; depends on how it is signed | ctypes calls for `MAP_JIT` + toggling; probe; fall back to `pyc` |
+| macOS arm64, python.org CPython | notarized, hardened-runtime build (`flags=0x10000(runtime)`) | **the JIT runs** (CI job `macos-pythonorg`, run 41349579025, python.org 3.13.17 pinned by sha256, PSF-signed): the binary has `com.apple.security.cs.disable-executable-page-protection` (also `disable-library-validation`, `allow-dyld-environment-variables`, `debugger`, `get-task-allow`, `automation.apple-events`; no `allow-jit`), the probe returns None, `auto` selects `jit-aarch64` with no warning and the aarch64 ABI tests pass (56 passed) | if a future python.org build drops that entitlement, the job fails and `auto` falls back to `pyc` with the D31 warning; non-hardened CPython (uv, Homebrew, pyenv) is unaffected |
+| Android app process | SELinux policy of `untrusted_app` (anonymous executable memory, `execmem`; apps cannot execute files from their data directory since Android 10, which does not touch our `mmap` path) and the kernel's own limits | **x86_64: allowed** (CI run 41351056918, job `android`): in the testbed app (python.org CPython 3.14.10, target API 35, `aosp_atd` x86_64 emulator, SELinux context `u:r:untrusted_app`) the `jit-x86_64` probe succeeds, `auto` selects it with no warning, CoreMark passes its self-check (15 424 it/s on the emulator: not a benchmark) and the JIT tests pass (75 passed, 5 skipped); logcat shows no `execmem` denial. The job keeps checking it on every push and passes either way (JIT, or `pyc` with one `JitUnavailableWarning`). Termux is a different, permissive environment and proves nothing for apps | probe; fall back; `arm64_v8a` is not checked in CI (no emulator on GitHub arm64 runners), so the aarch64 answer comes from a device |
 | Linux, hardened | SELinux `deny_execmem`, PaX/grsecurity `MPROTECT`, systemd `MemoryDenyWriteExecute=yes` | `mmap`/`mprotect` to executable fails | probe; fall back; document for service authors |
 | Windows | Arbitrary Code Guard (process mitigation, opt-in) blocks dynamic code | same | probe; fall back |
 | Pyodide / browsers | no native code at all | JIT impossible | `pyc`, or the browser's `WebAssembly` (ROADMAP open question 7) |
@@ -59,6 +73,14 @@ General answers: W^X always (map writable, write, flip to executable; never both
 in TARGETS.md, CFI-compatible code from the first version, and `pyc` as the guaranteed fallback.
 
 ## R3. A hand-written JIT: correctness and safety
+
+**Status at HEAD: partly mitigated.** The encoder is checked form by form against `llvm-mc` in CI
+(`tests/jit/test_encoder.py`), the ISA gate disassembles every generated blob (`tools/isa_all.py`), and
+the spec core passes on `jit-x86_64` and `jit-aarch64` like on `pyc`; the ISA gate covers every
+compiled module of both targets, SIMD ones included; SIMD code also runs on an SSE2-only CPU under
+QEMU (`qemu64`) in CI; the independent final review of phase 3 is done (S0002 step 6) and the SIMD
+steps are read by a `reviewer` one by one (S0005). Open: differential fuzzing against wasmtime
+(phase 5), and the review of the SIMD steps as a whole (S0005, 5f).
 
 **Risk.** Encoding mistakes, register-allocation mistakes and missed checks are not exceptions but
 wrong results or sandbox escapes. The PoC already met three silent bugs (LESSONS.md 1, 2, 5).
@@ -86,10 +108,14 @@ wrong results or sandbox escapes. The PoC already met three silent bugs (LESSONS
   new code generator per function to bisect failures (how the `printf` bug was found);
 * decide on copy-and-patch after `jit-aarch64` exists by hand, with numbers for both.
 
-## R4. Version skew: output of one w2py version used by another
+JIT code registers no Win64 unwind information (`RtlAddFunctionTable`). Harmless today: traps return
+through frames (D10) and host exceptions are statuses, so no SEH unwind ever crosses JIT frames; a
+debugger or profiler walking the stack may stop there. Needed once a fault handler (R6) unwinds.
+
+## R4. Version skew: output of one waboros version used by another
 
 > **Largely settled by DECISIONS.md D18** (the Wasmtime model): generated code is used only by the
-> w2py version that made it; on any mismatch the runtime regenerates from the wasm (the cache, a fat
+> waboros version that made it; on any mismatch the runtime regenerates from the wasm (the cache, a fat
 > file) or refuses (a thin file). The analysis below is kept for the reasons.
 
 Two versions meet: the one that **generated** the code and the one that **runs** it (another machine,
@@ -111,9 +137,9 @@ the runtime that forces regeneration.
 **Possible solutions for the generated-module coupling** (ARCHITECTURE.md, "Versioned contracts"):
 
 * (a) **self-contained modules**: helpers always emitted into the module — no coupling, larger output;
-* (b) **versioned helper namespaces** (`w2py.rt.v1`, `w2py.rt.v2`, …): the package keeps old helper
+* (b) **versioned helper namespaces** (`waboros.rt.v1`, `waboros.rt.v2`, …): the package keeps old helper
   versions side by side; a module imports exactly the one it was generated for;
-* (c) **a declared module ABI** (`__w2py_abi__ = N` in the module): the runtime refuses a mismatch and
+* (c) **a declared module ABI** (`__waboros_abi__ = N` in the module): the runtime refuses a mismatch and
   regenerates from the wasm.
 
 **Possible general policy: the wasm is the source of truth, everything generated is a derivative.** On
@@ -127,6 +153,9 @@ know, otherwise recompile" is the simplest robust rule. It needs the wasm at han
   shipped **without** their wasm.
 
 ## R6. A signal handler of our own (guard pages in the JIT)
+
+**Status at HEAD: open, not started in the package.** `jit-x86_64` uses explicit bounds checks only; guard
+pages and the handler are phase 5 (D29).
 
 Guard pages need a SIGSEGV handler in the process (ARCHITECTURE.md, "Memory"); the PoC emits it as
 machine code. Risks and possible answers:
@@ -159,3 +188,4 @@ machine code. Risks and possible answers:
 | the WASI host is undecided | ROADMAP.md, open question 2 |
 | `mpy-cross` 1.29.0 miscompiles very large native functions | LESSONS.md 17 |
 | maintaining several architectures | TARGETS.md, copy-and-patch |
+| a host function on a very small thread (a few hundred KiB) needing more than half its stack can overflow the C stack on CPython < 3.14 (no C-stack check), as it would without wasm | S0003 (native limit), step-3a review |

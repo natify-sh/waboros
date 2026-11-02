@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Context and rules for working on w2py with an agent.
+Context and rules for working on waboros with an agent.
 
 **Start with [`BRIEF.md`](BRIEF.md)**: what the project is, what it is not, and the order of work.
 
@@ -78,6 +78,9 @@ trusted (the JIT), and then always with a plan approved first and a review after
      second real use, no public-API work before its phase, no unrelated edits or reformatting?
    * docs: `docs/BENCHMARKS.md` for any speed claim, `docs/DECISIONS.md` for any decision,
      `docs/LESSONS.md` for a trap found on the way, the expected-failures file updated;
+   * contracts (context ABI, artifact format, Target interface, IR, traps, the engine interface) need an
+     approved spec in `docs/specs/` before implementation; docs follow `docs/STANDARDS.md`; the step's
+     commit message carries goal, acceptance commands and numbers; `python3 tools/check_docs.py` must pass;
    * for JIT, ABI, artifact-format or trap changes: a `reviewer` subagent reads the diff with no access
      to the implementer's reasoning.
 6. **Fix** (orchestrator). A small mistake (≲ 20 lines, obvious) is fixed in the main session. Anything
@@ -95,7 +98,11 @@ Scope:       <files/directories that may change>      Out of scope: <what must n
 Budget:      <~N lines of diff; stop and report if more is needed>
 Acceptance:  <exact commands + expected result, e.g. pytest -k "i64 and pyc" → 0 failures;
               CoreMark still passes its self-check; BENCHMARKS row added if speed changed>
-Report:      files changed, commands run with output, numbers before/after, open questions
+Docs:        <the documents this step makes untrue and must update (docs/STANDARDS.md, "Which
+              document to update"): spec Changes, TARGETS/TESTING/FEATURES, BENCHMARKS, LESSONS…;
+              "none" only with the reason>
+Report:      files changed, commands run with output, numbers before/after, docs updated,
+             open questions
 ```
 
 ### Against over-engineering (applies to every agent)
@@ -121,7 +128,26 @@ Report:      files changed, commands run with output, numbers before/after, open
 * `pyc` codegen: keep generated code valid for the minimum Python (see `docs/ROADMAP.md`, open
   question 1) and for the MicroPython flavour.
 
-## Commands (PoC)
+## Commands
+```
+uv sync                                    # dev environment
+uv build                                   # sdist + wheel `waboros-*` (version from git tags, setuptools-scm)
+uv run pytest -q                           # package tests
+uv run python tests/spec/fetch.py          # fetch and convert the pinned spec suite
+uv run python -m tests.spec.run --engine {wasmtime,pyc,jit-x86_64,auto}   # the spec metric
+uv run python tools/spec_diff.py pyc jit-x86_64 --allow-unsupported       # gap between two targets
+uv run python tools/run_coremark_pyc.py poc/in/core.wasm   # CoreMark on the package's pyc
+uv run python tools/run_coremark_jit.py poc/in/core.wasm   # CoreMark on the package's jit-x86_64
+python3 tools/check_docs.py                # documents follow docs/STANDARDS.md
+python3 tools/features.py --check          # feature table is consistent
+uv run python tools/stack_info.py          # thread stack bounds the JIT uses
+uv run python tools/isa_all.py [--target jit-aarch64]   # ISA gate over every compiled spec module, claimed directories or not
+uv run python tools/jit_dump.py --target jit-aarch64 OUT.txt   # sha256 list for the D35 cross-compile diff
+uv run python tools/isa_all.py             # ISA gate: every JIT blob has only x86-64-v1 instructions (needs GNU objdump)
+uv run python tools/no_exec.py -- <cmd>    # run <cmd> with executable memory forbidden (Linux >= 6.3, MDWE)
+```
+
+PoC (for comparisons):
 ```
 cd poc
 python3 run_jit2.py in/core.wasm           # JIT, CoreMark

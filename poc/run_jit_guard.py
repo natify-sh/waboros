@@ -1,6 +1,6 @@
 """Run CoreMark (core.wasm) on the stdlib JIT: python3 run_jit.py core.wasm"""
-import sys, time
-import os
+import sys, time, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if os.environ.get("W2PY_GUARD"):
     from poc.w2jit_guard import JitModuleGuard as JitModule
 else:

@@ -1,5 +1,6 @@
 """Run CoreMark (core.wasm) on the stdlib JIT: python3 run_jit.py core.wasm"""
-import sys, time
+import sys, time, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from poc.w2jit2 import JitModule2 as JitModule
 T0 = time.perf_counter()
 jm = None

@@ -1,3 +1,10 @@
+---
+title: JIT artifact, ISA levels and the context ABI
+kind: reference
+status: current
+updated: 2026-11-02
+---
+
 # JIT artifact, ISA levels and the context ABI
 
 A JIT target's output is plain machine code with a small, fixed boundary. Nothing in it is
@@ -7,8 +14,8 @@ a C function pointer and pass C callbacks can load and run it (C/C++, Dart FFI, 
 Java FFM, .NET, Deno/Bun, MicroPython's `ffi`). This document is the contract such hosts — and our own
 Python loader — rely on. It has three parts, each versioned.
 
-> **Scope (DECISIONS.md D18).** First of all this is the format of the w2py runtime's own cache entries
-> and serialized files (`Module.serialize`, `w2py compile`): w2py follows the Wasmtime model, the
+> **Scope (DECISIONS.md D18).** First of all this is the format of the waboros runtime's own cache entries
+> and serialized files (`Module.serialize`, `waboros compile`): waboros follows the Wasmtime model, the
 > runtime lives in the package and nothing is embedded in the artifact. Loading from other languages
 > stays possible because the boundary is neutral, but it is optional.
 
@@ -28,15 +35,24 @@ the CPU cannot run.
 
 Rules:
 
-* **Portable artifacts** (`w2py compile`, shipped files) use the baseline unless asked otherwise.
+* **Portable artifacts** (`waboros compile`, shipped files) use the baseline unless asked otherwise.
   An operation whose natural instruction is above the baseline gets a baseline sequence. Example found
   in the PoC: `f64.trunc` was emitted as `roundsd` (SSE4.1, x86-64-v2); at v1 it needs an SSE2
   sequence (convert-truncate for |x| < 2⁵², otherwise x itself, preserving sign and NaN). The same
   applies to `floor`, `ceil`, `nearest`, `popcnt`, `clz`, `ctz`.
-* **Local cache artifacts** may use `isa="native"`: the features of the running CPU, recorded in the
-  artifact and in the cache key, so a cache moved to another machine is recompiled, not executed.
-* `Config.isa` (w2py addition): `"baseline"` (default), `"native"`, a level name, or a level plus
-  feature names.
+* **Baseline first (D24).** Every operation is implemented at the baseline first; the baseline path is
+  mandatory and is what every artifact uses by default. A path above the baseline exists only as an
+  **optional, declared variant** next to its baseline twin, added when a measurement shows it pays;
+  an above-baseline instruction the PoC already uses is kept this way, not dropped (known so far:
+  `roundsd`, SSE4.1 / x86-64-v2, for `f64.trunc` in `poc/w2jit.py` and `poc/w2jit2.py`).
+* **Local cache artifacts** may use `isa="native"` once optional variants exist: the features of the
+  running CPU, recorded in the artifact and in the cache key, so a cache moved to another machine is
+  recompiled, not executed.
+* **Checked, not trusted**: CI disassembles generated code (`objdump`) and fails if any instruction is
+  above the level the artifact declares.
+* `Config.isa` (waboros addition): `"baseline"` (default), a level name, or a level plus feature names
+  (explicit opt-in, stage 1 of D33); `"native"` comes later (stage 2) and becomes the default only by a
+  separate decision. A requested level the CPU lacks is refused at load, naming the missing features.
 * **Detection at load time, stdlib only**: on x86-64 a small `cpuid` stub run through the same
   executable-memory + ctypes path (works on every OS); on aarch64 `getauxval(AT_HWCAP/AT_HWCAP2)` via
   ctypes on Linux/Android, `sysctlbyname("hw.optional.*")` on macOS, `IsProcessorFeaturePresent` on
@@ -45,19 +61,21 @@ Rules:
 ## 2. Artifact format (version 1)
 
 A little-endian binary container. Self-contained: a host needs **no wasm parser** to instantiate it.
+Open before the format is fixed (phase 5): our own container or ELF64 as a container only, as
+Wasmtime does; see [ARTIFACT-CONTAINER.md](ARTIFACT-CONTAINER.md) (maintainer's note, draft).
 
 **Header** (fixed size):
 
 | field | type | meaning |
 |---|---|---|
-| `magic` | 8 bytes | `W2PYJIT\0` |
+| `magic` | 8 bytes | `WABOROS\0` |
 | `format_version` | u16 | this document's part 2 version (1) |
 | `ctx_abi_version` | u16 | part 3 version (1) |
 | `arch` | u16 | 1 = x86-64, 2 = aarch64, 3 = riscv64, … (registry in this file) |
 | `isa_level` | u16 | per architecture: 1 = baseline, 2 = v2, 3 = v3, … |
 | `isa_features` | u64 | bitset of extra features (registry per architecture) |
 | `flags` | u32 | code-affecting options: fuel, epoch/interrupt polling, bounds-check mode, … |
-| `compiler` | str | `w2py <version> <target> <target version>` |
+| `compiler` | str | `waboros <version> <target> <target version>` |
 | `module_sha256` | 32 bytes | hash of the wasm bytes |
 | `config_sha256` | 32 bytes | hash of every code-affecting option |
 | `section_count` | u32 | |
@@ -87,7 +105,7 @@ Strings are UTF-8 with a u32 length prefix. A loader refuses an artifact whose `
 `Module.serialize()` writes this format; the cache stores it.
 
 **Thin and fat files (D18).** A thin file (no `WASM` section) is refused on any mismatch. A fat file is
-never refused: when the loader cannot use the code — another w2py or target version, another ISA
+never refused: when the loader cannot use the code — another waboros or target version, another ISA
 level, a compiler version on the known-bad list, a format it does not know — it checks that the
 embedded wasm matches `module_sha256` and regenerates from it. For this the loader must be able to
 read the header and find section 14 in every format version, so the header prefix (`magic`,
@@ -111,39 +129,70 @@ int32_t entry(uint64_t *ctx, uint64_t *frame, const void *code_of_function);
 
 * `frame` points into the host-allocated **value stack**; the arguments are written to `frame[0..n)`,
   the results come back in `frame[0..m)`, one 64-bit slot per value (i32 zero-extended in the low half;
-  i64 as is; f32/f64 as bit patterns; v128 takes two slots; references as pointer-sized values).
+  i64 as is; f32/f64 as bit patterns; v128 takes two slots, the low 64 bits (bytes 0–7) in the first
+  slot or word, as for a v128 global; references as pointer-sized values).
 * The return value is `0` or a trap code (below). On a trap the machine stack is unwound to the
   trampoline, which returns normally: the host never sees a signal or a non-local jump.
-* **Re-entrant**: the trampoline saves the previous `ctx[SAVED_SP]` on its own stack and restores it on
-  return or trap, so wasm → host → wasm nesting works (the PoC lacked this; LESSONS.md).
+* **Re-entrant**: the trampoline keeps nothing in the context but `TRAP_CODE`, so wasm → host → wasm
+  nesting works (the PoC lacked this; LESSONS.md 4).
 
-**Context words** (`uint64_t ctx[]`, 8-byte aligned, at a stable address for the instance's lifetime):
+**Context words** (`uint64_t ctx[]`, 8-byte aligned, at a stable address for the instance's lifetime;
+the phase-3 meaning of each word and the register roles are in [S0003](specs/S0003-jit-context-abi.md)):
 
 | index | name | direction | meaning |
 |---|---|---|---|
-| 0 | `SAVED_SP` | internal | native stack pointer of the innermost entry (unwind target) |
-| 1 | `TRAP_CODE` | code → host | set together with the return value |
-| 2 | `INTERRUPT` | host → code | non-zero: the code traps with `INTERRUPT` at its next poll (any thread may set it) |
+| 0 | `SAVED_SP` | internal | zero in phase 3 (traps return through frames); kept for the phase-5 fault handler |
+| 1 | `TRAP_CODE` | code → host | written by the trampoline when it returns a non-zero status |
+| 2 | `INTERRUPT` | host → code | non-zero: the code returns `INTERRUPT` at its next poll (any thread may set it) |
 | 3 | `FUEL` | both | remaining fuel (signed), when compiled with fuel |
 | 4 | `EPOCH_DEADLINE` | host → code | when compiled with epochs |
 | 5 | `VSTACK_LIMIT` | host → code | address the value stack must not cross → `STACK_OVERFLOW` |
 | 6 | `NSTACK_LIMIT` | host → code | lowest native stack address allowed → `STACK_OVERFLOW` |
-| 7 | `HOST_ERROR` | host → code | set by a host function that failed; checked after every import call, unwinds like a trap with code `HOST_ERROR`; the host keeps the actual exception |
-| 8–15 | reserved | | zero |
-| 16 … | per memory *i*: `base`, `size_bytes` (2 words) | host ↔ code | the host updates them on growth (the code reloads after `memory.grow` and after host calls) |
-| … | per table *i*: `base`, `size` (2 words) | | table elements: `{code pointer, type id, context pointer}` |
+| 7 | `HOST_ERROR` | host → code | the status of the current host call: the bridge presets 13, the host function writes its status last (D34) |
+| 8 | `HOST_BRIDGE` | host → code | address of the host-call bridge for the host's calling convention |
+| 9 | `TAIL_SWITCH` | host → code | address of the cross-context tail-call trampoline (below; D30) |
+| 10–15 | reserved | | zero |
+| 16 … | per memory *i*: `base`, `size_bytes` (2 words) | host ↔ code | imported memories first; the base never moves (4 GiB reserved, committed on grow); code that keeps a memory in registers (x86-64: memory 0 in r13/r14) reloads them after every host call, any other memory is read here at each access |
+| … | per table *i*: `base`, `size` (2 words) | host ↔ code | `base`: the element words (one per element), `size`: elements; `table.grow` may move the elements, so code reads both words at each use and never keeps them across a host call. A `funcref` element (and value) is 0 (null) or the address of a function record (below); an `externref` element is a host handle (0 = null) |
 | … | per global *i*: 1 word (2 for v128) | both | imported globals: a pointer to the owner's word instead |
-| … | per function import *i*: 1 word | host → code | a C function pointer (signature below) |
+| … | per function import *i*: 1 word | host → code | address of a host function (signature below) |
+| … | per libcall *j*: 1 word | host → code | a runtime service, same signature as an import, in a fixed order, all six words in every context: 0 `memory.grow`, 1 `table.grow`, 2 `table.init`, 3 `elem.drop`, 4 `memory.init`, 5 `data.drop`; never computation (D25). The operands are in the slots, the instruction's immediates (table, segment) after them; the memory index of `memory.grow` and `memory.init` only when the module has more than one memory |
+| … | per signature *k*: 1 word | host → code | the canonical type id of a type the module's `call_indirect`s name (equal for equivalent types of every module of the process, never 0) |
+| … | per function record *r*: 3 words | host → code | `{code address, canonical type id, context address}` of every function import and of every function the module can take a reference to (`ref.func`, segments): a defined one; an import from another instance of the same store (its code and context: a direct call); a host function (the module's thunk, which calls the import's word through the bridge). `call_indirect` checks bounds, null and the type id, then calls `code` with r15 = `context` (and that context's memory words); `call` and `return_call` of an import go through the import's record the same way (D32) |
 
 Offsets of the variable part follow from the counts in the artifact, in exactly this order.
 
-**Host functions** (imports) are C functions in the host's calling convention:
-`ret f(uint64_t *ctx, args…)` — the context first (so a host can reach memory, implement `Caller`, or
-set `HOST_ERROR`), then the wasm parameters mapped as i32 → `uint32_t`, i64 → `uint64_t`,
-f32 → `float`, f64 → `double`, references → pointer-sized; a single result returned the same way;
-more than one result written through an extra trailing `uint64_t *results` parameter.
-Pool registers the compiled code keeps across such calls are its own responsibility (it saves every
-register the host convention lets the callee clobber).
+**Host functions** (imports and libcalls) share one C signature in the host's calling convention:
+`int32_t f(uint64_t *ctx, uint64_t *slots)` — the arguments in `slots[0..n)`, one 64-bit slot per
+value as for entries; the function writes its results to `slots[0..m)`, then, as its last action, its
+status to `ctx[HOST_ERROR]`: `0`, a trap code, or `13` `HOST_ERROR` (the host keeps the actual
+exception). Its C return value is ignored (D34). Compiled code calls it through the bridge
+(`ctx[HOST_BRIDGE]`), which saves the pool registers the host convention lets a callee clobber,
+presets `ctx[HOST_ERROR]` to 13, returns the word as the call's status and puts back the word's
+previous value (an enclosing host call's preset): a host function that does not finish fails the call.
+
+**Tail calls** (D30). A `return_call*` puts its arguments at its own frame base, drops its native
+frame and jumps, so both stacks stay constant. When the callee's function record names another
+context, the code jumps to `ctx[TAIL_SWITCH]` instead, with the record's address and the caller's
+return address where the architecture's table below puts them.
+The trampoline (one per process and convention, in the host's code area like the bridge) does the
+following. If that return address is its own `restore` point, it loads the record's context and jumps
+to its code. Otherwise it saves the current context, loads the record's context and memory words, and
+calls the code; at `restore` it puts the saved context back, reloads the memory words and returns the
+callee's status. Every return matches its call.
+
+**Per architecture** (S0004, D38; an amendment of version 1, which phase 5 fixes): what a host that
+provides the bridge or the tail-call trampoline itself must follow. Everything else in this part is
+the same 64-bit little-endian words for every architecture.
+
+| | x86-64 | aarch64 |
+|---|---|---|
+| bridge call | `eax` = word, `rdx` = slots; `call` | `x0` = word, `x1` = slots; `blr x16` |
+| bridge preserves | pool (`rbx rbp rsi rdi r8–r11`), `r12`–`r15` | `x2`–`x8`, `x19`–`x28`, `x29`, `sp` |
+| `tail_switch` | record in `rdx`, return address at `[rsp]` | record in `x16`, return address in `x30` |
+| landing pad | `endbr64` | `bti c` (functions, trampolines), `bti j` (jump-table pads) |
+| `CODE` alignment | none | load address ≡ 0 mod 4096 (`adrp`) |
+| instruction cache | coherent | invalidate the loaded range before the first call |
 
 **Trap codes** (keep the PoC's first six numbers; names are Wasmtime's `TrapCode`):
 
@@ -154,7 +203,7 @@ register the host convention lets the callee clobber).
 | 2 | `MEMORY_OUT_OF_BOUNDS` | 10 | `NULL_REFERENCE` |
 | 3 | `INTEGER_DIVISION_BY_ZERO` | 11 | `OUT_OF_FUEL` |
 | 4 | `INTEGER_OVERFLOW` | 12 | `INTERRUPT` |
-| 5 | `STACK_OVERFLOW` | 13 | `HOST_ERROR` (w2py) |
+| 5 | `STACK_OVERFLOW` | 13 | `HOST_ERROR` (waboros) |
 | 6 | `BAD_CONVERSION_TO_INTEGER` | 14 | `UNCAUGHT_EXCEPTION` |
 | 7 | `INDIRECT_CALL_TO_NULL` | 15 | `HEAP_MISALIGNED` |
 
@@ -164,5 +213,5 @@ register the host convention lets the callee clobber).
   know; the compiler can emit older versions while hosts migrate.
 * Any change here goes with: the version bump, this document, `DECISIONS.md`, and a test that loads an
   artifact of the old version and checks it is refused (or still runs, if supported).
-* A small reference loader in C is part of the test suite, to keep the contract honest outside
+* A small reference loader in C is part of the test suite and runs in CI from phase 5 (D36), to keep the contract honest outside
   Python.

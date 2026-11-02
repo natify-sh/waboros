@@ -1,0 +1,498 @@
+---
+title: Fixed-width SIMD (v128) on pyc, jit-x86_64 and jit-aarch64
+kind: spec
+id: S0005
+status: implemented
+superseded_by:
+related: [D22, D23, D24, D25, D26, D28, D33, D35, D36, D37, D39, R2, R3, S0001, S0002, S0003, S0004]
+owner: maintainer
+updated: 2026-11-02
+---
+
+# S0005 Fixed-width SIMD (v128) on pyc, jit-x86_64 and jit-aarch64
+
+## Summary
+Wasm SIMD (the `simd` feature, part of Wasm 2.0: the `v128` type and 236 operators under the `0xFD`
+prefix) on the three targets, in the maintainer's order: `pyc` first (correct before fast), then the
+JITs. This spec fixes the v128 value model on each target, how v128 crosses the entry, host and
+global boundaries, the amendment of the frozen backend interface (D39) it needs, the SSE2 and NEON
+lowering at the ISA baselines (D24), NaN rules, how a target claims the `simd/` spec directory, and
+the steps. Requirements set by the maintainer (binding):
+
+1. **SIMD lives in its own modules**: `src/waboros/targets/pyc/simd.py`,
+   `src/waboros/targets/jit/x86_64/simd.py`, `src/waboros/targets/jit/aarch64/simd.py`. Existing files only
+   dispatch to them; every inline hook is listed in "Hooks" below, nothing else changes.
+2. **`simd/` stays unclaimed by a target until it nearly passes** (threshold in "Claiming `simd`");
+   no large expected-failure lists.
+3. **Order**: `pyc` first, then the JITs.
+
+Ideas read (not copied): Cranelift x64 lowering (`cranelift/codegen/src/isa/x64/lower.isle`, main,
+read 2026-11-01) and aarch64 lowering; V8's x64 assembler (`CpuFeatures::SupportsSimd128`); pywasm
+(v128 as a 16-byte `bytearray`, lanes by `struct`). wasm3 has no SIMD.
+
+## Goals / Non-goals
+* Goals: the `simd/` directory (25 990 commands, of which 25 481 run: the 509 text-format
+  `assert_malformed` are skipped for every engine, S0001) passes on `pyc`, `jit-x86_64` and `jit-aarch64` and is claimed
+  by each; JIT code for SIMD uses only x86-64-v1 (SSE2) and ARMv8.0-A NEON; code and generated
+  source of every module without v128 stay **byte-identical**; CoreMark does not move.
+* Non-goals: relaxed SIMD (`relaxed-simd/`, 79 commands: a follow-up spec), x86-64-v2/v3 variants
+  (D33 opt-in, after a measurement, Q4), a float or vector register class (Q3), `mpy` (tier 3,
+  D22), NaN canonicalization as an option (Q5), the public API.
+
+## Interface
+
+### Front end (shared by every target)
+`frontend/binary.py` decodes `0xFD` + LEB128 sub-opcode into the instruction tuple
+**`(0xFD000 + sub, immediates...)`** (Q6: `0xFD00 + sub` would collide with a later `0xFE` prefix,
+sub-opcodes reach `0x113` with relaxed SIMD). Immediates: memory ops `(offset, align, mem)` as
+scalar loads (D37: memory index last); lane ops `(lane,)`; lane memory ops
+`(offset, align, mem, lane)`; `v128.const` `(value,)` as an int in `[0, 2^128)`, little-endian (lane 0 in
+the low bits); `i8x16.shuffle` `(lanes,)` as a 16-byte `bytes`. `v128.const` is also a constant
+expression `("v128", value)`. The validator types every operator from one table in the new
+`frontend/simd.py` (sub-opcode → name, immediate kind, operand types, result type, lane count for
+the `lane < n` check) and **annotates the two polymorphic operators** when their operand is v128:
+`drop` becomes `(0x1A, 0x7B)` and untyped `select` becomes the typed form `(0x1B, [0x7B])`. Tuples of
+modules without v128 do not change.
+
+### v128 per target
+| | `pyc` | JIT (both architectures) |
+|---|---|---|
+| value | Python `int` in `[0, 2^128)`, the 16 bytes little-endian (the runner's and the Wasmtime adapter's form, S0001) | 16 bytes in **two consecutive slots** k, k+1: bytes 0–7 in k, 8–15 in k+1 (ARTIFACT.md already says "v128 takes two slots") |
+| locals, operand stack | an `int` like any other; locals start at `0` | a v128 local or stack entry is **two 64-bit halves** for every generic path of the core (flush, branch moves, calls, block params); only SIMD operations see a pair |
+| globals | an `int` | 2 context words (ARTIFACT.md: "1 word (2 for v128)"); an imported one: a pointer to the owner's 2 words |
+| host functions, entry | `int` in and out, no conversion (`_from_raw`/`_to_raw` pass it through) | `JitInstance.call`, the host callback and global init/get split a v128 into `(lo, hi)` slots and join them back |
+| lane access | `int.to_bytes(16, "little")` + a `struct.Struct` per shape, back with `int.from_bytes`; bitwise ops directly on the `int` | in the backend's `simd` method, vector registers as scratch (below) |
+
+Measured (Xeon 2.1 GHz, 4 cores, CPython 3.13.17, one session, `timeit` min of 5 × 200 000):
+`i32x4.add` on an `int` through `struct` 1 061 ns, on `bytes` through `struct` 798 ns, on an `int`
+by SWAR (`((a & L) + (b & L)) ^ ((a ^ b) & H)`) 159 ns, on a tuple of lanes 224 ns; `v128.xor` on an
+`int` 66 ns, on `bytes` 258 ns. The `int` wins on bitwise ops, constants, `select`, globals and the
+boundary (no conversion), and leaves SWAR as a measured optimisation for later; `struct` first.
+
+### Context ABI and artifact: no version bump
+v128 at the boundary is what ARTIFACT.md part 3 (version 1) already states: two slots for a
+parameter or result, two words for a global. The spec adds one clarifying sentence to ARTIFACT.md
+part 3: "the low 64 bits (bytes 0–7 of the v128) in the first slot or word". `Layout` takes the
+global widths (default 1 each; a defined v128 global 2, an imported one 1: the pointer), so only
+modules with a v128 global move later words — modules refused (`unsupported: simd`) until now.
+Frames, records, libcalls, trap codes, trampolines and the header are unchanged; the ISA level stays the baseline (`isa_level` 1, no feature bits). As
+with D37 and D38 this is a v1 amendment without a bump (no artifact is saved before phase 5, D36);
+after phase 5 the same change would bump `ctx_abi_version`.
+
+### D39 amendment: the backend interface
+**No register class.** v128 values live in slots between backend calls; a backend loads them into
+vector registers inside one call and stores the result. Changes to the frozen interface (they need
+the maintainer's approval, both backends in one step, x86-64 code byte-identical for modules without
+v128, a `reviewer` pass):
+
+1. **Operand meaning for v128.** In `simd`, a v128 operand is `Slot(k)` (slots k, k+1, 8-byte
+   aligned, so unaligned 16-byte accesses: `movdqu`, `ldr q`/`ldur q` or an `add` first) or `Imm(v)`
+   with the 128-bit value; a v128 result is `Slot(k)` (never `tos`). Scalar operands and results
+   (lane values, shift counts, addresses, `extract_lane`, `bitmask`, `any_true`, `all_true`) are as
+   today: `tos`, a pool register, a slot or an `Imm`, zero-extended.
+2. **One new method** (the only one of the first amendment; a method only new opcodes reach would
+   not by itself be an interface change under D39, the operand meaning above is; item 5 adds a
+   second):
+   ```python
+   def simd(self, f: F, op: int, dst: Dst, args: tuple[Operand, ...], imm: tuple[int, ...]) -> None
+   ```
+   `op` = `0xFD000 + sub` (or `0x23`/`0x24` for a v128 global, `imm = (word, indirect)`); `args` in wasm
+   operand order; `imm`: lane, the shuffle lanes as one 128-bit int, `(offset, memory word)` for memory
+   forms, `(offset, memory word, lane)` for the lane forms. Contract: reads every operand before writing `dst` (`dst` may be the first operand's
+   slots); memory forms check bounds as `load`/`store` do (`MEMORY_OUT_OF_BOUNDS`); preserves pool,
+   frame, context, memory-0 registers and `tos` unless `dst` is `tos`; leaves no flags and no vector
+   register live; may use the **scratch slots** `base + 6 … base + 9` (32 bytes; `base` = `L` + the
+   stack height after the operands are popped, so up to three v128 operands fit below), which the
+   core counts in `frame_slots`.
+3. **`supported`** gains the `0xFD000 + sub` codes a backend compiles; `unsupported()` returns
+   `"simd"` for a v128 type only when the backend's set has no SIMD opcode, else the first missing
+   opcode, as today.
+4. **The core's frame layout**: slot of local j = sum of the widths of locals before j (v128 = 2,
+   else 1), arities of blocks, calls and returns in slots. Identical numbers when no v128 exists.
+5. **`move_v128(dst: Slot, src: Slot | Imm) -> None`** (approved 2026-11-02, after the slowdown
+   investigation): the pair `src` (or the 128-bit constant) into the pair `dst` by one 16-byte
+   store, so a v128 is written with the width the next operator reads it with (store-to-load
+   forwarding, LESSONS 44). No flags, pool registers or `tos` changed; the same vector scratch as
+   `simd`. The core calls it for v128 `local.get`/`set`/`tee`, a constant operand of `simd`, and
+   both writes of a v128 `select`; `flush`, branch moves, calls and block parameters still move
+   halves (the core does not know there which entries are v128).
+
+**Vector registers** (scratch inside one `simd` call; none is live across a call or between calls):
+
+| | scratch | never used | why |
+|---|---|---|---|
+| x86-64 | `xmm0`–`xmm5` (floats keep `xmm0`–`xmm2`, also scratch) | `xmm6`–`xmm15` | Win64: xmm6–15 are callee-saved; using them would make the `win64` entry save 160 bytes; SysV: all caller-saved. One artifact for both (D23) |
+| aarch64 | `v0`–`v7`, `v16`–`v31` | `v8`–`v15` | AAPCS64: the low halves `d8`–`d15` are callee-saved (Linux, Apple, Windows) |
+
+So no trampoline changes and no save around host calls (the bridge saves GPRs only, as today):
+nothing vector-sized is live when the bridge runs. Spills do not exist: the slot is the home.
+
+**Byte-identical**: the core reaches `simd`, the slot map and the annotations only through v128
+types or `0xFD` opcodes; the D35 lists (`tools/jit_dump.py`) of every spec module without v128 and
+CoreMark are identical before and after for both targets (step acceptance).
+
+### Hooks (the complete list of inline changes outside the new modules)
+| file | change |
+|---|---|
+| `frontend/binary.py` | `0x7B` out of `UNSUPPORTED_TYPES`, `0xFD` out of `UNSUPPORTED_OPS`; `decode`: `0xFD` → `simd.decode(r)`; constant expression `v128.const` |
+| `frontend/validate.py` | value type `0x7B`; `op >= 0xFD000` → `simd.validate(...)`; the `drop`/`select` annotation; `v128.const` as a constant |
+| `targets/pyc/codegen.py` | `simple()`: `op >= 0xFD000` → `simd.gen(s, ins)`; `drop`/`select` need nothing (an `int`); `val()` for `("v128", v)` |
+| `targets/pyc/__init__.py` | none (v128 passes as an `int`); the generated module imports `simd`'s helpers like the runtime's |
+| `jit/common/compiler.py` | `type_ok`/`unsupported` (item 3); slot map and arities in slots (item 4: `loc`, `run`'s local init, `enter`, `call*`, `tail_call`, the function's `_Ctl`); `drop`/`select` of v128; `global.get/set` of v128; `op >= 0xFD000` → `jit/common/simd.py` |
+| `jit/common/context.py` | `Layout` global widths |
+| `jit/common/instance.py` | split/join of v128 in `call`, `_host`, global init and `global_get` (helpers in `jit/common/simd.py`) |
+| `jit/common/backend.py` | the `simd` and `move_v128` methods in the protocol |
+| `jit/x86_64/backend.py`, `jit/aarch64/backend.py` | `simd` and `move_v128` delegate to the module (`emit`, `move`); `supported` adds the module's set |
+| `tools/isa_check.py` | the SSE2 packed mnemonics join the x86-64-v1 allowlist (`pshufb`, `roundps`, `pminsd`, `pmulld`, … stay refused) |
+| `tests/spec/claims.py` | `simd` per target when claimed |
+
+The new shared modules — `frontend/simd.py` (the one operator table) and `jit/common/simd.py` (stack
+effects, operand pairs, select, globals, the boundary split) — are beyond the maintainer's list of
+three (Q8). Every `simd.py` is compiler-side code (MICRO-COMPILERS.md, "Rules for now"):
+`tests/test_source_rules.py` checks the three JIT ones like `compiler.py` and the backends (no
+`ctypes`, `mmap`, threads, no import of `execmem`, `instance`, `target`). The boundary split/join in
+`jit/common/simd.py` is pure arithmetic on ints; `instance.py` calls it, never the reverse. Instruction encodings for SIMD live in the architecture's `simd.py` on top of the
+encoder's raw emit; `encoder.py` files do not change.
+
+## Semantics
+
+### pyc
+Bitwise ops (`not and andnot or xor bitselect any_true`) on the `int`; every lane op through
+`struct` shapes `<16b <16B <8h <8H <4i <4I <2q <2Q`. Float lanes: data movement and sign ops
+(`splat`, lanes, `abs`, `neg`, loads, stores, shuffles) work on the **bits**, never through a Python
+float (CPython's float↔`f` conversion may quiet a signalling NaN). Arithmetic reuses the scalar
+`pyc` helpers lane by lane (D28: f32 lanes in doubles, exact for `+ - * / sqrt`; `min`/`max`,
+rounding and `trunc_sat` with the scalar rules), and an f32 lane enters or leaves as a scalar
+exactly as `pyc`'s `f32` values do (D28 payload rule).
+
+### JIT, x86-64-v1 (SSE2 only)
+**What others do without SSE4.1** (checked 2026-11-01): Wasmtime's `Config::wasm_simd` says "the
+base CPU feature requirement for SIMD is SSE2 for the Cranelift compiler and AVX for Winch"; on an
+SSE2-only CPU Cranelift lowers `pshufb` (general shuffle, swizzle) and vector `ceil/floor/trunc/
+nearest` to **libcalls** (`X86Pshufb`, `CeilF32`, … one per lane), and everything else to SSE2
+sequences. V8 enables wasm SIMD on x64 only with SSE4.1. For us: Wasmtime runs SIMD on every
+x86-64, so we must too (D25 parity: the oracle accepts these modules), but its libcall route is
+closed to us (D25: no computation helpers). Every operator gets a native SSE2 sequence.
+
+Operators by SSE2 cost (all 236 classified; table in `frontend/simd.py`'s comments later):
+
+| class | ops | examples |
+|---|---|---|
+| D: 1–3 instructions | 158 | `paddb..q`, `psub*`, saturating `padds/paddus`, `pavgb/w`, `pminub/pmaxub`, `pminsw/pmaxsw`, `pcmpeqb/w/d`, `pcmpgtb/w/d`, `pmullw`, `pmaddwd` (dot), 16/32/64-bit shifts (count masked in a GPR, `movd`), `packsswb/packuswb/packssdw`, `pmovmskb`/`movmskps/pd`, `punpck*` (zero-extend), `pextrw/pinsrw`, `cvtdq2ps/cvtdq2pd/cvtps2pd/cvtpd2ps`, packed float arithmetic, `cmpps/cmppd`, `pmin`/`pmax` (= `minps`/`maxps` with swapped operands) |
+| S: 4–22 instructions (most 4–12; `narrow_i32x4_u` 16, `trunc_sat_f64x2_u_zero` 17, `popcnt` 22) | 68 | 8-bit shifts (16-bit shift + mask), `i64x2.shr_s`, unsigned compares (sign bias), `i64x2` compares, `i8x16`/`i32x4` signed and `i16x8`/`i32x4` unsigned `min`/`max` (compare + blend), `i32x4.mul` and `i64x2.mul` (`pmuludq`), `abs`, sign-extending loads and extends of i32, `extmul`, `extadd_pairwise`, `i16x8.narrow_i32x4_u`, `q15mulr_sat_s` (no `pmulhrsw`), `i8x16.popcnt` (SWAR), float `min`/`max` with wasm's NaN and ±0 rules, unsigned converts, `trunc_sat`, lanes without `pinsrd/pinsrb` |
+| L: no SSE2 form | 10 | `i8x16.shuffle`, `i8x16.swizzle`, `f32x4`/`f64x2` `ceil floor trunc nearest` |
+
+L lowering: `shuffle` first matches immediates that one SSE2 instruction does (`pshufd`,
+`pshuflw/hw`, `punpckl/h*`, `shufps`, `psrldq/pslldq` + `por`); otherwise a straight-line gather of 16
+bytes from the operand slots into the scratch slots (`movzx` + `mov`, ~33 instructions, no table).
+`swizzle`: per lane, index byte, out-of-range mask (`cmp`; `sbb`), masked byte load from the
+operand's slots, ~6 instructions × 16, flags only inside the method (LESSONS 1). Rounding: f32 lanes
+with |x| < 2^23 by `cvttps2dq`/`cvtdq2ps` plus a ±1 fix for floor/ceil and `(|x| + 2^23) − 2^23` for
+nearest (ties-to-even from MXCSR's default); f64 lanes by the ±2^52 magic add for every lane
+(`cvttpd2dq` reaches only |x| < 2^31); lanes outside the range or NaN keep x; the sign is OR-ed back
+(−0, `ceil(−0.5) = −0`); NaN lanes are quieted by `x * 1.0`, as `pyc`'s scalar helpers.
+
+**Measured over `simd/`** (each module disassembled by `wasm-tools print`, the file counted under its
+hardest operator): every one of the 236 operators occurs; 18 739 commands are in files whose
+operators are all class D, 6 150 in files with S at most (30 files), 1 101 in files with an L
+operator (`simd_f32x4_rounding`, `simd_f64x2_rounding`, `simd_lane`, `simd_load`, `simd_splat`).
+
+### JIT, aarch64 (ARMv8.0-A NEON)
+Nearly every operator is 1–3 NEON instructions: `tbl` (two-register for `shuffle`; one-register
+`swizzle`, whose out-of-range rule is wasm's), `frintp/m/z/n`, `fmin/fmax` (wasm's NaN and ±0 rules
+as for scalars, S0004), `fcvtzs/fcvtzu` (saturating, NaN → 0 = `trunc_sat`), `fcvtzs .2d` + `sqxtn`
+for `trunc_sat_f64x2_*_zero`, `fcvtn/fcvtl`, `sqrdmulh` (= `q15mulr_sat_s`), `cnt`, `saddlp/uaddlp`,
+`smull/smull2/umull/umull2`, `sqxtn/sqxtun(2)`, `uminv/umaxv` (`all_true`/`any_true`), `cmgt/cmge .2d`,
+`abs .2d`. Sequences: `i64x2.mul` (no 64-bit lane multiply: `xtn`/`umull`/`shll` form or both lanes
+through GPRs), the four `bitmask` ops (`sshr` + `and` with lane weights + `addv`, two halves for
+`i8x16`), variable shifts (`dup` of the masked count, `neg` for right shifts, `sshl/ushl`), `pmin/pmax`
+(`fcmgt` + `bsl`). FPCR stays the process default (FZ = 0, DN = 0, S0004); AArch64 Advanced SIMD
+honours it (no AArch32-style flush-to-zero). Scratch never includes `v8`–`v15`.
+
+### NaN and determinism (D25 parity)
+Integer operators, data movement, sign operators and non-NaN float results are deterministic and
+must equal Wasmtime bit for bit. A NaN result is only required to be in the spec's set (canonical or
+arithmetic, `nans_N`), and Wasmtime does not canonicalise by default
+(`cranelift_nan_canonicalization` is off): its NaN bits are the hardware's (x86 produces the
+negative "indefinite" `0xFFC00000` for invalid operations; aarch64 with DN = 0 propagates a quieted
+input). So, as for scalars: the spec runner checks `nan:canonical`/`nan:arithmetic` per lane (it
+does today), differential runs against Wasmtime and between targets compare NaN lanes by class, not
+bits (TESTING.md), and neither JIT adds canonicalisation work. One exception follows from the
+lowering, not from a rule: x86-64 float `min`/`max` (5d2) give the canonical NaN with the sign set
+(`0xFFC00000`, `0xFFF8000000000000`) in every lane where an operand is NaN, as Cranelift's SSE
+lowering does; the spec allows it (a canonical NaN is in `nans_N`). `pyc` uses its scalar helpers'
+rules (quiet the input NaN, `nan` for `min`/`max`).
+
+### Claiming `simd`
+`tests/spec/claims.py` maps the directory `simd` to the feature key `simd`. Until a target claims
+it, its runs list `simd: unclaimed (25 990 commands, 25 481 runnable)` and CI runs nothing there. Progress is
+measured with an explicit directory argument, which bypasses claims:
+`uv run python -m tests.spec.run --engine pyc simd` (failures count as failures; not a CI gate). A
+target claims `simd` (adds it to `CLAIMS[target]`, then `python3 tools/features.py` updates
+FEATURES.md and features.json) in the step where:
+
+* the explicit run has **at most 25 failing commands** (≈ 0.1 % of 25 481; Q1), each with a reason
+  that names a recorded deviation or a fix to come, listed one per line in `xfail/<target>.txt`;
+* no whole-file entry (`simd_x.wast:*`), no `unsupported:` and no `wrong kind` line for `simd/`;
+* for a JIT: its `simd/` entries equal `pyc`'s (the D25 parity test covers directories both
+  claim).
+
+Between the `pyc` claim (5b) and a JIT's (5d3, 5e2), `auto` keeps selecting the JIT and a SIMD module
+failed there with `Unsupported("simd")` (Q2); since 5e2 both JITs claim `simd`.
+
+## Test plan
+* Every step: `uv run pytest -q`; `uv run python -m tests.spec.run --engine {pyc,jit-x86_64}` core
+  numbers unchanged; `python3 tools/check_docs.py`; `python3 tools/features.py --check`.
+* **Identity**: before/after lists of `tools/jit_dump.py --target {jit-x86_64,jit-aarch64}` equal for
+  every module without v128 and CoreMark; for `pyc`, the sha256 of the generated source of every
+  core spec module and CoreMark before/after equal.
+* **Encodings**: every SSE2 and NEON form of the `simd.py` modules equals `llvm-mc -show-encoding`
+  (x86-64 and aarch64 triples, as `test_encoder*.py`).
+* **ISA**: `uv run python tools/isa_all.py` and `--target jit-aarch64` pass with the SIMD modules
+  compiled; planted `pshufb`, `roundps`, `pminsd`, `pmulld`, `pinsrd` blobs fail. **At run time on an
+  SSE2-only CPU** (checked here): `qemu-x86_64 -cpu qemu64,-pni,-ssse3,-sse4.1,-sse4.2,-popcnt` runs
+  uv's CPython 3.13.17; inside it `paddq` runs and `pshufb`/`roundps` raise SIGILL. The x86 `jit`
+  CI job runs `--engine jit-x86_64 simd` under that CPU.
+* **Boundary tests** (`tests/jit/test_simd_abi.py`, `tests/test_pyc_simd.py`): v128 parameters and
+  results through the entry, host functions with v128 parameters and results, imported and
+  exported v128 globals, `call_indirect`/`return_call` with v128, v128 `select`/`drop`, v128 block
+  parameters, a SIMD op under deep recursion (`STACK_OVERFLOW`, scratch slots inside the frame).
+* **Differential**: `wasm-tools smith --simd-enabled` modules on each target vs Wasmtime (NaN lanes
+  by class), in the differential job when it exists (R3). Wasmtime is driven through the spec
+  runner's adapter (`tests/spec/wasmtime_engine.py`, its raw v128 path, S0001), never through
+  wasmtime-py's `Val` API, which cannot convert v128 (`wasm_valtype_kind`) and would fail the oracle.
+
+### Measurement plan
+* CoreMark (`tools/run_coremark_pyc.py`, `tools/run_coremark_jit.py`, both JIT targets) before and
+  after 5b and 5c, alternated in one session; identity above makes a change a bug, the row records it.
+* **SIMD benchmark**, new: `poc/bench/simd/kernels.c`, freestanding
+  `clang --target=wasm32 -O3 -nostdlib [-msimd128]` (clang 18 here builds it: a u8 saturating-add
+  loop gave 11 SIMD instructions) — u8 saturating add (image blend), f32 dot product, i8 scan
+  (`eq` + `bitmask`), 4×4 f32 matrix multiply, a byte table lookup (`swizzle`), `f32x4.nearest`, each
+  with a checksum. Built scalar and SIMD; rows: each target, SIMD vs scalar build, vs Wasmtime.
+  Expected on `pyc`: the SIMD build slower than the scalar one (a lane op through `struct` is
+  ~1 µs); that is not a bug. SWAR is the measured optimisation for later.
+* Real program for compile time and coverage: `webp_codec.wasm` (playwright-core, 565 369 bytes,
+  17 071 SIMD instructions, 102 distinct operators, five Emscripten imports): compile time, D35 lists,
+  ISA gate; running it needs its JavaScript glue's imports (not attempted).
+
+## Plan of steps
+| step | content | agent | acceptance | size (lines) |
+|---|---|---|---|---|
+| 5a | front end: `frontend/simd.py` table, decoding, validation, `drop`/`select` annotation; targets refuse v128 as `unsupported: simd` | implementer | `uv run python -m tests.spec.run --engine pyc simd`: all 671 `assert_invalid` and every binary module of `simd/` decode and validate (`assert_invalid` pass; others fail only as `unsupported: simd`); core numbers and the identity lists unchanged | table ~300, hooks ~40, tests ~150 |
+| 5b | `pyc`: `targets/pyc/simd.py`, all 236 operators | implementer | explicit `simd` run ≤ 25 failures → `pyc` claims `simd`; `pyc` source identity; CoreMark `pyc` row; BENCHMARKS row for the representation micro-benchmark | ~700, tests ~200 |
+| 5c | JIT core and amendment (both backends): slot map, `jit/common/simd.py`, `Layout` widths, boundary split, the `simd` method with data movement only (`v128.const`, `load`/`store` incl. lanes, splat, `extract`/`replace_lane`, bitwise, `select`, globals) on x86-64 and aarch64 | jit-engineer, plan approved first | identity lists for both targets; `tests/jit/test_simd_abi.py` on x86-64 and under QEMU aarch64; `simd_load`, `simd_store`, `simd_lane`, `simd_splat`, `simd_select`, `simd_linking` equal `pyc` | core ~150, common ~200, each backend ~250 |
+| 5d1 | `jit/x86_64/simd.py`: class D operators (1–3 SSE2 instructions), encodings vs `llvm-mc`, ISA allowlist, the SSE2-only QEMU job | jit-engineer | files of `simd/` whose hardest operator is class D (18 739 commands) equal `pyc`; run under `qemu64` without SSSE3/SSE4.1 | ~450, tests ~120 |
+| 5d2 | class S operators (4–22 instructions) | jit-engineer | files with S at most (6 150 more commands) equal `pyc` | ~450, tests ~120 |
+| 5d3 | class L operators (`shuffle`, `swizzle`, rounding); claim | jit-engineer | `--engine jit-x86_64 simd` = `pyc`'s failures → claim; `spec_diff pyc jit-x86_64` empty for `simd/`; SIMD benchmark rows | ~250, tests ~80 |
+| 5e1, 5e2 | `jit/aarch64/simd.py`: every operator in NEON, in two parts (5e1 the integer operators; 5e2 the float operators, conversions, rounding, `shuffle`/`swizzle` and the claim) | jit-engineer | same on the arm64 runners and under QEMU (BTI); D35 lists equal both ways | ~350 each, tests ~120 each |
+| 5f | review of 5c–5e by a `reviewer` with no access to the implementers' reasoning; D39 amendment recorded; MICRO-COMPILERS.md line counts updated (backends grow to ~2–2.6k lines); this spec `implemented` | reviewer | findings closed; CoreMark rows unchanged | docs |
+
+A step that needs more than its size stops and reports (CLAUDE.md). 5c changes the frozen
+interface: both backends in that step (D39); 5d1–5e2 add operators only. 5d is split by the
+operator classes above (the largest step otherwise: ~1 100 lines), each with its own `simd/` files.
+
+## Alternatives considered
+* **A vector register class now** (a vector `tos` like the integer one, or pinned v128 locals):
+  fewer loads/stores per operator, but every method must then preserve it, floats would want the
+  same class (not byte-identical any more), and a pinned class across calls needs the Win64 entry to
+  save `xmm6`–`xmm15` (160 bytes) and the AAPCS64 entry `d8`–`d15` (64 bytes). Without a measurement
+  it is an optimisation before need. A vector `tos` (one caller-saved register: `xmm5`/`v7`, flushed
+  before calls and edges like the integer `tos`) is the candidate if the SIMD benchmark shows the
+  slot round trips cost (Q3).
+* **Require SSE4.1/SSSE3 for SIMD** (V8's choice): a SIMD module would declare x86-64-v2 and be
+  refused on v1 CPUs, against D24's baseline rule; Wasmtime runs it there. An optional v2 variant
+  (`pshufb`, `roundps`, `pminsd`, `pmulld`, `pinsr*`) later under D33 (Q4).
+* **Cranelift's SSE2 libcalls** for `pshufb` and rounding: a computation helper, excluded by D25.
+* **v128 as one 16-byte slot, or slots of 16 bytes everywhere**: every frame and the documented
+  two-slot ABI change; non-SIMD code would not stay identical.
+* **A separate v128 area in the frame**: the callee's parameters would not be at `frame[0..n)` as
+  ARTIFACT.md states; calls would need copies.
+* **`pyc` v128 as `bytes`, a `bytearray` (pywasm) or a tuple of lanes**: measured above; `bytes` is
+  faster only for lane arithmetic through `struct` (798 vs 1 061 ns) and 4× slower for bitwise ops;
+  tuples need a shape per value while v128 is untyped.
+* **Inline SIMD in the existing files**: excluded by the maintainer (requirement 1).
+* **Copy-and-patch stencils for SIMD** (R3: "SIMD cheaper"): belongs to that separate decision.
+
+## Open questions
+All eight resolved by the maintainer on 2026-11-01 as recommended: Q1 (b), Q2 (a), Q3 (a), Q4 (b),
+Q5 (a), Q6 (a), Q7 (a), Q8 (a). Kept below with their options for the record.
+
+* **Q1 Claim threshold.** (a) 0 failures; (b) ≤ 25 listed failures, no whole-file, `unsupported:` or
+  `wrong kind` entries; (c) ≥ 99 % (≤ 254). Recommended: (b).
+* **Q2 `auto` between the `pyc` claim and the JIT claims.** (a) `pyc` claims at 5b; `auto` keeps the
+  JIT, SIMD modules fail there with `Unsupported("simd")` until 5d/5e (as today; D25's "a feature is
+  complete when it passes on both" then holds at 5e); (b) `pyc`'s claim waits for 5d so the claims
+  never differ; (c) mark the JITs `complete = False` meanwhile, which sends every user to `pyc`.
+  Recommended: (a), with 5c–5e directly after 5b.
+* **Q3 Register class.** (a) none: slots plus scratch, as specified; (b) a vector `tos` now; (c)
+  pinned vector locals. Recommended: (a); (b) only with a SIMD benchmark measurement.
+* **Q4 x86-64-v2 SIMD variant** (SSSE3/SSE4.1 forms, D33 opt-in; how variants grow: D42,
+  [ISA-LEVELS.md](../ISA-LEVELS.md)). (a) never; (b) after 5d, only for
+  operators where the benchmark shows a gain; (c) inside 5d. Recommended: (b).
+* **Q5 NaN canonicalisation option** (Wasmtime's `cranelift_nan_canonicalization`). (a) not now;
+  (b) in 5d/5e. Recommended: (a); revisit with the `Config` work of phase 6.
+* **Q6 Opcode numbers in the shared tuples.** (a) `0xFD000 + sub`; (b) `0xFD00 + sub` (collides once
+  sub ≥ 0x100: relaxed SIMD); (c) a `("simd", sub)` tuple head. Recommended: (a).
+* **Q7 Relaxed SIMD.** (a) a follow-up spec with Wasmtime's deterministic lowering; (b) inside 5d/5e.
+  Recommended: (a).
+* **Q8 Shared modules** `frontend/simd.py` and `jit/common/simd.py`, beyond the three named. (a)
+  accept (one operator table for reader, validator and targets; the core's SIMD stack effects out
+  of `compiler.py`); (b) inline into `binary.py`/`validate.py`/`compiler.py`. Recommended: (a).
+
+## Changes
+* 2026-11-01: created (draft).
+* 2026-11-01: approved by the maintainer with every recommendation (Q1–Q8); D41.
+* 2026-11-01: after the maintainer's review: the `simd.py` modules join the portability test; the
+  differential oracle goes through the runner's raw v128 adapter; 5d split into 5d1–5d3 by operator
+  class and 5e into 5e1–5e2; one command count everywhere (25 990, 25 481 runnable); `pyc` SIMD is
+  expected slower than scalar; 5f updates MICRO-COMPILERS.md line counts.
+* 2026-11-02: 5c plan approved by the maintainer: (1) intermediate steps (5c1–5d2) accept
+  `tools/spec_diff.py pyc <jit> simd --allow-unsupported` (every implemented operator equals `pyc`,
+  the rest is refused); parity without `--allow-unsupported` is required at the claim steps (5d3,
+  5e2), D25; (2) `simd(f, op, dst, args, imm)` takes `dst=None` for operators without a result
+  (`store`, `store*_lane`, `global.set`); (3) 5c split into 5c1 (core, slot map, `Layout` widths,
+  boundary split/join, the `simd` method in both backends with `v128.const`, `load`, `store`,
+  `select`, `drop`, globals) and 5c2 (the other data-movement operators: lanes, splat,
+  `load*_splat`/`_zero`/`_lane`, `store*_lane`, bitwise, `any_true`); extending loads move to 5d1.
+* 2026-11-02 (5c1 review): v128 operands reach `simd` as `Slot(k)` only (the core writes a constant
+  pair to its slots first); `Imm(v)` stays allowed by this spec and is added to the backends only if
+  a later step measures a gain. `tools/jit_dump.py` hashes `Layout.wide` explicitly (it is not in
+  `Layout`'s repr, which keeps the D35 lines of modules without v128 unchanged).
+* 2026-11-02 (5d1): the D/S/L classes are estimates from the ISA, not a contract. 5d1 found short
+  SSE2 sequences for some class-S operators and did them there: `i8x16`/`i16x8`/`i32x4.abs`,
+  `extmul_*_i32x4_u`, `i32x4.extadd_pairwise_i16x8_s`, `v128.load8x8_s`, `load16x4_s`, `load32x2_s`.
+  5d2 takes the rest of class S; the step boundary is "what passes", the class counts are not updated.
+* 2026-11-02 (progress): 5a, 5b, 5c1, 5c2, 5d1 and 5d2 are done; 5d3 is next. `pyc` claims `simd` (25 990 commands, 0 failures); the JITs do not yet. `tools/isa_all.py` now compiles every directory, claimed or not, on both targets (the x86 gate included `simd/` from 5c2). The `jit` CI job runs the SIMD tests and the explicit `simd` run of `jit-x86_64` under the SSE2-only `qemu64` CPU and compares them with `pyc` (`spec_diff --allow-unsupported`).
+* 2026-11-02 (5d2): `jit-x86_64` compiles every class-S operator with SSE2 only; the explicit `simd`
+  run goes from 19 649 to 24 809 passing commands, and only class L is left (`i8x16.shuffle`,
+  `i8x16.swizzle`, the f32x4/f64x2 rounding operators: 672 commands in `simd_lane`, `simd_load`,
+  `simd_splat`, `simd_f32x4_rounding`, `simd_f64x2_rounding`). The x86-64-v1 allowlist of
+  `tools/isa_check.py` gained `punpcklqdq pshuflw pmulhw pmulhuw cvttps2dq cvttpd2dq cmpunordps
+  cmpunordpd`. Sequences beyond the text above: class S reaches 22 instructions (above); 64-bit
+  constants go through rcx (`mov`, `movq`, `punpcklqdq`), never a constant pool; float `min`/`max`
+  run `minps`/`maxps` both ways, merge with `orps`/`andps` (±0) and make NaN lanes canonical
+  (`cmpunordps`, a shifted mask, `andnps`; "NaN and determinism"); `i8x16.shr_s` unpacks bytes into
+  words and shifts by n + 8; `i64x2.shr_s` is `(x >>u n ^ m) - m` with `m = 2^63 >>u n`;
+  `trunc_sat_f64x2_u_zero` rounds by the 2^52 magic add and subtracts 1 where that rounded up;
+  `f32x4.convert_i32x4_u` converts `(x - lo) / 2` and `lo` exactly and rounds once.
+* 2026-11-02 (5d3): `jit-x86_64` compiles the 10 class-L operators with SSE2 only and claims `simd`
+  (`CLAIMS["jit-x86_64"]`; no `simd/` line in `xfail/jit-x86_64.txt`, as `pyc`): the explicit run
+  goes from 24 809 to 25 481 passing commands, 0 failures, natively and under the SSE2-only `qemu64`;
+  `spec_diff pyc jit-x86_64 simd` is empty without `--allow-unsupported`; the claimed run is 54 385
+  pass, 91 expected failures, as `pyc`. Sequences that differ from the text above:
+  * rounding: the same program for both shapes, no `cvttps2dq` for f32 lanes. `(v + s) − s` with
+    `s = 2^23` or `2^52` gives nearest-even (v = |x| for `trunc`/`nearest`; v = x and s with x's sign
+    for `floor`/`ceil`); `floor`, `ceil` and `trunc` then subtract or add 1.0 where that went the
+    wrong way. The 1.0 is the compare mask shifted left, then right by 2. Lanes with |x| ≥ 2^N, inf
+    or NaN keep `x + 0.0`, which quiets a NaN to the bits of `pyc`'s `x * 1.0`; 25 instructions at
+    most. Wasmtime's NaN bits depend on the CPU: natively (SSE4.1, `roundps`) they equal ours; on an
+    SSE2-only CPU its libcalls return the canonical NaN (sNaN `0x7f800001` → `0x7fc00000`, ours
+    `0x7fc00001`). Both are arithmetic NaNs, which the spec allows; comparisons are by class;
+  * `shuffle`: the one-instruction table is built on the first shuffle from each instruction's own
+    lane definition: `pshufd`, `pshuflw`, `pshufhw` (one operand), `shufps`, `punpckl/h` of `bw`,
+    `wd` and `dq` (both orders), `psrldq` + `pslldq` + `por`, and a plain copy. 2 080 lane patterns
+    in all; `punpck*qdq` patterns are `shufps` ones. Any other pattern is gathered into the scratch
+    slots (`movzx` + byte store, 32 instructions), then copied to `dst`;
+  * `swizzle`: `movzx; cmp 16; sbb; and 15; and edx, [a + rcx]; mov byte` per lane into the scratch
+    slots. The 32-bit `and` reads up to 3 bytes past `a`, which are the index operand's slot, and
+    keeps only the low byte;
+  * the x86-64-v1 allowlist of `tools/isa_check.py` gained `pshufhw shufps psrldq pslldq` (SSE/SSE2).
+
+  `jit-aarch64` keeps its claims (no `simd`), so the two JITs claim different directories until
+  5e2. The D25 parity test compares each JIT with `pyc` over the directories both claim, so it
+  covers `simd/` for `jit-x86_64` only. `auto` takes a target's own claims and xfail file:
+  `jit-x86_64` on x86-64 (it runs `simd/`), `jit-aarch64` on arm64 (it does not).
+* 2026-11-02 (5e1): `jit-aarch64` compiles the 138 integer operators in ARMv8.0-A NEON (182 of 236
+  with data movement): arithmetic, saturating, compares, shifts, `bitmask`, `all_true`, `abs`/`neg`,
+  `min`/`max`, `avgr_u`, `mul`, `dot`, `extmul`, `extadd_pairwise`, extends and extending loads,
+  narrows, `popcnt`, `q15mulr_sat_s`. The explicit `simd` run under QEMU goes from 1 988 to 6 185
+  passing commands; every other command is `unsupported` (`spec_diff pyc … --allow-unsupported`
+  exits 0), and the 43 files without a 5e2 operator pass whole. A program table like x86's: each
+  NEON form is a fixed word plus its llvm-mc spelling (`FORMS`), checked form by form; scratch is
+  v0–v3, x9–x13, x16 (large memory offsets, via `_bounds`/`_add_k`) and x17 (far frame/context offsets, in `ldst_q`/`_lane`). The split of 5e
+  moved: the plan said "data movement and class D first, then the rest"; it is now by side (5e1
+  integer, 5e2 float, conversions, rounding, `shuffle`/`swizzle` and the claim; the step table
+  above says so). The x86 `jit` CI job runs `test_simd_abi.py` and `test_simd_aarch64.py` and the
+  explicit `simd` run of `jit-aarch64` (`spec_diff --allow-unsupported`) under QEMU with BTI
+  enforced; the v128 tests had not run under QEMU in CI since 5c. Sequences beyond the text above:
+  * `bitmask`: `sshr` spreads each sign, then the lanes are narrowed to bytes or halves (`xtn`, so
+    one 64-bit weight constant fits: `0x8040201008040201` or `0x0008000400020001`, put in both
+    halves by `mov` + `dup .2d`), `and`, one `addv`. `i8x16` adds its two halves in one `addv .8h`
+    after `ext #8` + `zip1` (byte i of the high half becomes the high byte of halfword i);
+    `i64x2.bitmask` is two `lsr #63` and an `orr` in GPRs;
+  * `all_true`: `uminv` over b/h/s lanes; `uminv` has no `.2d`, so `i64x2.all_true` is `cmeq #0` +
+    `umaxv .4s` (zero when no lane is zero); then `fmov`, `cmp`, `cset`. `any_true` stays the GPR
+    form of 5c2;
+  * `i64x2.mul` multiplies both lanes in GPRs (`mul` ×2), the second option above;
+  * `ne` is `cmeq` + `mvn`; `lt`/`le` are `cmgt`/`cmge`/`cmhi`/`cmhs` with the operands swapped;
+    `avgr_u` is `urhadd`; `dot` is `smull` + `smull2` + `addp .4s`; extending loads are `ldr d0`
+    (the upper half zeroed) + `sxtl`/`uxtl`;
+  * shifts as above: the count masked to the lane width in w10, negated for right shifts, `dup` to
+    every lane, `sshl`/`ushl` (only the low byte of each lane counts, as a signed amount).
+
+  No change to `tools/isa_check.py`: its aarch64 side has no mnemonic allowlist (LLVM decodes
+  ARMv8.0-A only); `tools/isa_all.py --target jit-aarch64` passes with these modules compiled.
+* 2026-11-02 (5e2): `jit-aarch64` compiles the other 54 operators in ARMv8.0-A NEON (all 236) and
+  claims `simd` (`CLAIMS["jit-aarch64"]`; no `simd/` line in its xfail file, as `pyc`): the explicit
+  `simd` run under QEMU goes from 6 185 to 25 481 passing commands, 0 failures;
+  `spec_diff pyc … simd` is empty without `--allow-unsupported`; the claimed run under QEMU is 54 385
+  pass, 91 expected failures, stale 0, as `pyc` and `jit-x86_64`. The CI QEMU `simd` step of
+  `jit-aarch64` is strict; the native `arm64` job's claimed run now includes `simd/`. 5a–5e2 are
+  done; next are the SIMD benchmark and 5f. Sequences that differ from or add to the text above:
+  * `trunc_sat_f64x2_u_zero` is `fcvtzu .2d` + `uqxtn .2s` (the text's `sqxtn` is the signed form's);
+    `convert_low_i32x4_s/u` are `sxtl`/`uxtl .2d` + `scvtf`/`ucvtf .2d`; `demote` is `fcvtn .2s` (the
+    upper half zeroed), `promote` `fcvtl .2d`;
+  * `ne` is `fcmeq` + `mvn`; `lt`/`le` are `fcmgt`/`fcmge` with the operands swapped; `abs`/`neg` are
+    `fabs`/`fneg`, which change only the sign bit (NaN bits kept, as `pyc`);
+  * `shuffle`: the 16 lane indices go into v2 through x9, x10 (`mov`, `fmov d2, x9`,
+    `mov v2.d[1], x10`), then `tbl v3.16b, {v0.16b, v1.16b}, v2.16b`; no one-instruction patterns
+    (no measurement asks for them). Scratch stays v0–v3, x9–x13, x16 and x17;
+  * NaN bits, measured (a differential of the 54 operators under QEMU against `pyc` and Wasmtime,
+    92 489 calls): 0 differences by class; the bits differ only for `add`, `sub`, `mul`, `div`,
+    `sqrt`, `min` and `max` (aarch64 propagates the quieted input NaN, x86 Wasmtime gives its
+    "indefinite" NaN, `pyc` its own); rounding, `demote`, `promote`, `pmin`/`pmax`, `abs`/`neg`,
+    the conversions, `shuffle` and `swizzle` equal both bit for bit.
+* 2026-11-02 (SIMD benchmark): `poc/bench/simd/` (`kernels.c`, `build.sh`, the two built `.wasm`) and
+  `tools/run_simd_bench.py` exist; rows in BENCHMARKS.md, "SIMD benchmark". Checksums equal on `pyc`,
+  `jit-x86_64`, Wasmtime and (QEMU) `jit-aarch64`, both builds. Data for the open questions, not
+  decisions: Q4/D42: the class-L and class-S sequences are where `jit-x86_64` loses most to Wasmtime
+  (`swizzle` 6.7 µs vs 0.16 µs per pass, 26 ns per vector, SIMD build slower than its own scalar
+  build; scan with `bitmask` 15 ns per vector, also slower than scalar), and `nearest` is 3.7× Wasmtime;
+  a v2 variant (`pshufb`, `roundps`) would target `swizzle` and rounding; `bitmask` is not a v2 matter
+  (`pmovmskb` is SSE2), so its cost is the sequence around it. Q3: kernels made
+  of cheap operators (`add_sat`: 1.8 ns per vector, SIMD 16× over scalar) are within 2.5× of Wasmtime
+  with slot round trips, and matmul (52 cheap operators per matrix) runs ≈ 3 ns per operator, 30× behind;
+  this benchmark does not separate the slot round trip from the code length, so it does not by itself
+  show that a vector `tos` pays.
+* 2026-11-02 (SIMD slowdown investigation; data in BENCHMARKS.md, "Why `jit-x86_64` SIMD is slower than
+  scalar"): the main cause of SIMD builds slower than scalar on `jit-x86_64` is store-to-load forwarding: a v128
+  written as two 8-byte stores (or byte stores) and read by one 16-byte `movups`. With 16-byte moves (a D39
+  amendment, one Backend method; no ABI, artifact or ISA change) matmul is 5.4x faster (12.03 -> 2.25 us),
+  scan 5.6x, dot 1.4x. Q3: on top of that, a proxy for a vector `tos` (skipping a reload right after a
+  store) gains 0-16 %. Q4: a v2 variant (`pshufb`, `roundps`, `popcnt`) gains `swizzle` 13x and `nearest`
+  1.7x (scan 1.6x). The experiments were uncommitted patches with checksums equal to the baseline. Both
+  decisions (the 16-byte move amendment, and whether to close Q3 or take up the v2 variant) are open with
+  the maintainer; this entry is data, not a decision.
+* 2026-11-02: approved by the maintainer after the slowdown investigation: (1) a D39 amendment, one
+  backend method that moves a v128 (and writes a v128 constant) as one 16-byte access, so the core
+  moves v128 locals, constants and splat results with the width they are read with (the
+  store-forwarding fix, LESSONS 44); both backends in one step, code of modules without v128
+  byte-identical, no ABI or artifact change; (2) Q3 (a vector `tos`) deferred, not closed: re-measure
+  with a prototype that removes the store too, after the fix.
+* 2026-11-02 (the 16-byte move fix, as built): `move_v128` (D39 amendment, item 5) on both backends;
+  x86-64: a slot pair by `movups` load and store; a constant built in xmm0 (`xorps` for zero; `mov
+  rcx` + `movq`, then `punpcklqdq` with itself when both halves are equal or with xmm1 holding the
+  high half; nothing more when the high half is zero) and one `movups` store; aarch64: `ldr`/`str
+  q`, a constant built in v0 (`eor` for zero, `dup v0.2d, x9` for equal halves, else `fmov d0, x9`
+  and `ins v0.d[1], x10` when the high half is not zero) and one `str q0`. Core call sites
+  (`common/simd.py`): `get_local`, `set_local` (and tee), `_pair` (constant operands), `select`.
+  Inside the backends: x86-64 splat, `load*_splat` and `load*_zero` build the value in xmm0 (`movq`,
+  `punpcklqdq`) and `v128.not` runs in xmm0 (`pcmpeqb`/`pxor`), one `movups` store each; aarch64
+  `load*_zero` by `fmov d0` and one `str q0` (its splat already was `dup` + `str q`). Not changed:
+  the `swizzle`/`shuffle` byte-gather scratch (no cheap v1 fix: two GPRs of scratch cannot hold the
+  lanes; its fix is the v2 `pshufb`, D42) and the lane writes of `replace_lane`/`load_lane`. D35
+  lists: only `json/simd/` lines change (x86-64 112, aarch64 95), CoreMark identical. Measured
+  (BENCHMARKS.md, "SIMD benchmark"): `jit-x86_64` matmul 12.10 → 2.17 µs, scan 3.81 → 0.64, dot
+  1.49 → 1.03; matmul and scan now beat their scalar builds.
+* 2026-11-02 (5f): status implemented. The review of the whole SIMD implementation in both JITs found no correctness defect. Fixes: `_nan_class` in the tests compared NaN lanes by the marker `1`, a real lane value, and now maps them to `"nan"` in a tuple of lanes; the x86-64 shuffle cache `_SHUF` is built in a local dict and published by one assignment, so a free-threaded reader sees it empty or full (deterministic bytes); generated code unchanged (D35 list identical). Both D39 amendments (`simd`, `move_v128`) are recorded in DECISIONS.

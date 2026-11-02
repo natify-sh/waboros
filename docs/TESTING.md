@@ -1,3 +1,10 @@
+---
+title: Testing
+kind: reference
+status: current
+updated: 2026-11-02
+---
+
 # Testing
 
 Every target passes the same tests; a target becomes selectable only when it passes them for the
@@ -13,7 +20,7 @@ exit criterion of each phase (ROADMAP.md) is a value of them.
 |---|---|---|---|
 | wasm semantics | **WebAssembly Core Specification 3.0** (W3C, 2025: GC, memory64, exceptions, tail calls, multi-memory, relaxed SIMD, typed function references, extended const are part of it); the proposal repositories for what is not in 3.0 (wide-arithmetic, custom-page-sizes, threads) | `WebAssembly/spec` `test/core` at a pinned commit, the proposal repos' tests, Wasmtime's own `tests/misc_testsuite` (Wasmtime-specific behaviour) | spec commands passed, per target and per proposal |
 | which features, in which order | Wasmtime's "Wasm Proposals" page (stability tiers): Tier 1 (on by default) is the required set — 17 proposals, 16 without the component model; Tier 2: custom-page-sizes, threads; Tier 3 (branch-hinting, stack-switching, compact-imports) later | the per-target expected-failures files | proposals complete, per target |
-| Python API | **wasmtime-py** at the pinned version: its public classes and **its own test suite** (`tests/`) | wasmtime-py's tests run against w2py through a shim (`import w2py as wasmtime`), plus an API-surface test that diffs `dir()` of every public class against wasmtime-py's | wasmtime-py tests passed; missing names |
+| Python API | **wasmtime-py** at the pinned version: its public classes and **its own test suite** (`tests/`) | wasmtime-py's tests run against waboros through a shim (`import waboros as wasmtime`), plus an API-surface test that diffs `dir()` of every public class against wasmtime-py's | wasmtime-py tests passed; missing names |
 | CLI | the `wasmtime` binary at the pinned version: `run`, `compile`, `wast`, `settings`, the option groups `-W` (wasm features), `-S` (WASI), `-O`, `-D` | the option list scraped from `wasmtime --help` / `run --help` of the pinned version, not copied by hand | options accepted (or deliberately refused, DECISIONS.md) |
 | WASI | p1: `wasi_snapshot_preview1.witx` (`WebAssembly/WASI`, legacy/preview1); p2: the WIT packages `wasi:cli`, `wasi:io`, `wasi:filesystem`, `wasi:clocks`, `wasi:random`, `wasi:sockets`, `wasi:http` | `WebAssembly/wasi-testsuite` (p1 at least; check its p2 coverage), the chosen host's own conformance tests | WASI tests passed |
 | everything the suites miss | Wasmtime's behaviour wherever the spec leaves room (NaN, trap codes, stack limits) | differential fuzzing: `wasm-tools smith` modules run on every target and on wasmtime | fuzz hours without a divergence |
@@ -21,30 +28,34 @@ exit criterion of each phase (ROADMAP.md) is a value of them.
 When the pinned wasmtime / wasmtime-py version moves, the API-surface diff and the scraped CLI options
 show what is new; the spec commit moves the same way, in small steps.
 
-`FEATURES.md` becomes generated from the expected-failures files (feature × target), not hand-written.
+`FEATURES.md` is generated from the expected-failures files (feature × target) by `tools/features.py`.
 
 ## Development dependencies (never runtime)
 
 | tool | why |
 |---|---|
-| **wasmtime** (pip, pinned) | **the test oracle**: differential runs compare every w2py target with Wasmtime on the same module and inputs (results, traps, memory contents); also the reference for API behaviour and feature defaults |
-| wabt (`wast2json`, `wasm2wat`) | turns the spec test suite `.wast` files into `.json` + `.wasm` (natify-sh/wabt-package, or built from source as in the PoC) |
+| **wasmtime** (pip, pinned) | **the test oracle**: differential runs compare every waboros target with Wasmtime on the same module and inputs (results, traps, memory contents); also the reference for API behaviour and feature defaults |
+| wasm-tools `json-from-wast` (`wasm-tools-package`) | turns the spec test suite `.wast` files into `.json` + `.wasm` ([S0001](specs/S0001-engine-interface.md)) |
 | wasm-tools (`wasm-smith`, `validate`) | random valid modules for differential fuzzing; a second validator |
 | pywasm (pip) | a second oracle and a source of ideas: its spec runner (`test/spec.py`) was adapted in the PoC session; it passes the core spec suite (54 006 commands, 0 failures at its pinned spec commit `fffc6e12f`) but treats `assert_invalid` / `assert_malformed` as no-ops |
 | meld | fusing component test programs into core modules for WASI 0.2 |
 | MicroPython unix port, `mpy-cross` | the `mpy` target |
-| QEMU user-mode | JIT targets for other architectures in CI |
+| QEMU user-mode | JIT targets for other architectures in CI; `jit-aarch64` BTI (the arm64 Linux runner has none): `tools/run_arm64.py` in the x86 `jit` job; an SSE2-only x86-64 CPU (`qemu64` without SSE3, SSSE3, SSE4 and popcnt) for the SIMD tests and the `simd` spec run of `jit-x86_64` (S0005) |
 
 The runtime package itself declares **no** dependencies; these live in a development group.
+The Python ones are the uv `dev` group in `pyproject.toml` (`uv sync`); wasmtime 50.0.1 needs
+Python ≥ 3.9; with the floor at 3.11 (D19) no markers are needed (all dev
+tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in CI).
 
 ## The spec test suite
 
 * Source: `WebAssembly/spec` `test/core` (+ `simd/`, and the proposal repositories for features not
-  merged yet), converted with `wast2json`. Pin the commit; move it in small steps.
+  merged yet), converted with `wasm-tools json-from-wast` (`wasm-tools-package`). Pin the commit;
+  move it in small steps. The contract is [S0001](specs/S0001-engine-interface.md).
 * One harness, many targets: the JSON commands (`module`, `register`, `assert_return`,
   `assert_trap`, `assert_exhaustion`, `assert_invalid`, `assert_malformed`, `assert_unlinkable`,
-  `assert_uninstantiable`, `action`) are executed through the **public w2py API**, parametrised over
-  targets (`pytest -k target`). Unlike pywasm, `assert_invalid` / `assert_malformed` are real tests
+  `assert_uninstantiable`, `action`) are executed through the internal engine interface of S0001, one
+  CLI run per engine (`python -m tests.spec.run --engine NAME`), never through the public API. Unlike pywasm, `assert_invalid` / `assert_malformed` are real tests
   of our validator.
 * Expected failures are listed per target in a file in the repo (feature not implemented yet), so
   progress is visible and regressions fail.
@@ -71,14 +82,63 @@ The runtime package itself declares **no** dependencies; these live in a develop
 
 | axis | values |
 |---|---|
-| Python | CPython 3.8 (or the chosen floor), 3.10, 3.12, 3.13, latest; PyPy 3.10+; free-threaded build later |
-| OS | Linux x86-64, Linux aarch64, macOS arm64 (MAP_JIT), Windows x86-64 |
+| Python | CPython 3.11, 3.12, 3.13, 3.14, 3.15, 3.15t (free-threaded); PyPy 3.11 (D19) |
+| OS | Linux x86-64 (all jobs), Windows x64 (`windows-latest`) and macOS x64 (`macos-26-intel`) (`os` job: `pytest` including `tests/jit`, the stack bounds, and the spec run for wasmtime and `pyc`, not for `jit-x86_64`) (the `arm64` job below covers aarch64) |
 | target | `pyc` everywhere; `jit-*` where the machine matches; `mpy` with the MicroPython unix port |
-| emulated | QEMU user-mode for riscv64, armv7, mips32el as JIT targets appear |
+| native arm64 | `jit-aarch64` on GitHub's arm64 runners: `ubuntu-24.04-arm`, `macos-latest` (macOS arm64, `MAP_JIT`), `windows-11-arm` (labels per actions/runner-images) |
+| python.org macOS | `macos-pythonorg` job: the pinned python.org 3.13.17 CPython (hardened runtime) on Apple Silicon; prints its entitlements, then either the JIT tests pass or `auto` gives `pyc` with one D31 warning that names the refusal; the spec suite with `auto` (RISKS R2) |
+| Android | `android` job: the python.org CPython for Android in CPython's testbed app on a managed x86_64 emulator (KVM, `ubuntu-latest`); `tools/android_check.py` then `tests/jit/test_probe.py`, `test_execmem.py`, `test_abi.py`, `tests/test_fallback.py`, `tests/test_target_pyc.py` (no wasmtime there, so tests that compile WAT skip); either outcome of the probe passes if the behaviour is right (JIT runs, or `auto` gives `pyc` with one D31 warning); the log is the artifact `android-log`; no arm64 job (RISKS R2) |
+| emulated | QEMU user-mode only for architectures without native runners (riscv64, armv7, mips32el) as JIT targets appear |
 
 JIT artifacts: run baseline artifacts on an emulated baseline CPU (e.g. QEMU `-cpu` without SSE4.1 /
 with plain ARMv8.0) and check that a higher-level artifact is refused there; load artifacts with the C
 reference loader as well as from Python; refuse artifacts with an unknown format or context ABI version.
 
-Run with executable memory forbidden too (e.g. a seccomp/SELinux profile or a forced probe failure) to
-prove the fallback to `pyc`.
+A newer push to the same ref cancels a `ci.yml` or `coverage.yml` run in progress (`concurrency`);
+`publish.yml` runs one release per ref and is never cancelled. Jobs of `.github/workflows/ci.yml`: `lint` (ruff, pyright, `check_docs.py`, `features.py --check`); `test`
+(`pytest -q` on the seven Pythons; `tools/stack_info.py` on 3.13, also in a musl container); `jit`
+(`tests/jit` with `WABOROS_JIT_REQUIRE=1`; the aarch64 ABI, compiler, tail-call and SIMD tests
+(`test_simd_abi.py`, `test_simd_aarch64.py`) and the spec suite of `jit-aarch64` (it covers `simd/`
+since the 5e2 claim) under QEMU with BTI enforced; the x86 SIMD tests and the explicit `simd` spec run of
+`jit-x86_64` under the SSE2-only `qemu64` CPU, compared with `pyc` by `tools/spec_diff.py` (strict since 5d3);
+then both ISA gates and the D35 lists); `spec` (the spec run on `wasmtime`, `pyc`, `jit-x86_64`, then
+`auto` under `no_exec.py`); `os`; `arm64`; `macos-pythonorg`; `android`.
+
+Packaging workflows (D40): `.github/workflows/coverage.yml` runs `pytest --cov` on Python 3.13 and keeps
+`coverage.xml` as an artifact and to Codecov (OIDC); `publish.yml` runs on a `v*` tag, builds the sdist and the wheel,
+smoke-tests the wheel in a clean environment, and publishes to PyPI (trusted publishing) and as a GitHub
+release. `.github/dependabot.yml` updates the `uv` lock file and the pinned actions weekly.
+
+**SIMD is measured before it is claimed.** A directory the target does not claim is not run by the
+default spec run and not in CI; the explicit run `python -m tests.spec.run --engine T simd` ignores
+the claims and counts failures as failures. A target claims `simd` only when that run has at most 25
+listed failures and, for a JIT, equals `pyc` (S0005, "Claiming `simd`"); until then CI watches the
+progress only through the QEMU step above, which fails on a SIGILL, a crash or a difference from `pyc`.
+`jit-x86_64` claims `simd` since step 5d3 and `jit-aarch64` since step 5e2 (0 failures each), so the
+default spec run includes `simd/` for both: the `spec` job for `jit-x86_64`, the QEMU spec run of the
+`jit` job and the native `arm64` job for `jit-aarch64`. The x86 `qemu64` step stays: it runs `simd/` on
+another CPU model (SSE2 only); the aarch64 explicit step was dropped at 5e2, the claimed QEMU run covers it.
+
+CoreMark on a JIT is checked with `tools/run_coremark_jit.py --check FILE` (the `arm64` job, the
+`android` job): a run is valid with "Correct operation validated", or when the only error is
+CoreMark's "at least 10 secs" rule and the CRCs are the 2K-performance values (a correct run on a
+slow runner took 9.6 s). The interrupt-latency test (`tests/jit/test_abi.py`) allows 1 s, not 0.05 s,
+for loaded runners.
+
+The `jit` job runs `tools/isa_all.py` (747 blobs at SIMD step 5d3; the count grows with the code): it compiles every
+spec module of **every directory, claimed or not** (so `simd/` too), and CoreMark, through `tools/jit_dump.py` with
+`WABOROS_JIT_DUMP` and disassembles each blob with `tools/isa_check.py` (code ranges only), failing on any
+instruction above x86-64-v1 (D24). `isa_all.py --target jit-aarch64` does the same for aarch64 code,
+compiled (never run) on any host: `isa_check.py --arch aarch64` disassembles with `llvm-mc` and allows
+ARMv8.0-A and the `bti` HINTs only (tests: `tests/jit/test_isa_aarch64.py`, planted LSE/CRC/SVE/fp16/
+HINT words must fail).
+
+Cross-compilation (D35): `tools/jit_dump.py --target T OUT` writes a sha256 list of the code of every
+spec module and CoreMark. The `jit` job uploads its lists for both targets (artifact `jit-dump-x86`);
+the `arm64` job (Linux) compiles the same modules and `diff`s its lists with them, so code compiled on
+x86-64 and on arm64 is the same bytes both ways.
+
+The `spec` job also runs `--engine auto` with executable memory forbidden: `tools/no_exec.py` sets
+`PR_SET_MDWE` (`PR_MDWE_REFUSE_EXEC_GAIN`, Linux >= 6.3; the kernel then refuses `mprotect(PROT_EXEC)` on
+written memory, the JIT's W^X path) and `exec`s the runner. `auto` must warn once
+(`JitUnavailableWarning`) and give `pyc`'s numbers. `tests/test_fallback.py` does the same in a subprocess.

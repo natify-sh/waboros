@@ -1,3 +1,10 @@
+---
+title: References
+kind: reference
+status: current
+updated: 2026-11-02
+---
+
 # References
 
 Projects worth reading to see **how something is done correctly**. We read, understand and write our
@@ -18,8 +25,28 @@ against wasmtime, and encodings checked against `objdump` / `llvm-mc` in CI.
 | **TinyCC** | small per-architecture back ends (`x86_64-gen.c`, `arm64-gen.c`, `riscv64-gen.c`, `arm-gen.c`, `i386-gen.c`): calling conventions, instruction encodings; the `vtop` value stack with `VT_CMP` — the same idea as our lazy entries and fused compare + branch | ABIs and encodings for new architectures |
 | **asmjit** | complete encoding tables for x86 and AArch64, including SIMD | encoders, SIMD |
 | **DynASM** (LuaJIT) | encoders for x86/x64, ARM, ARM64, PPC and **MIPS** | MIPS (Ingenic X2000), PPC |
-| **Cranelift's assemblers** | encodings for x64, aarch64, riscv64, s390x | encoders |
+| **Cranelift's assemblers and lowering** | encodings for x64, aarch64, riscv64, s390x; x64 and aarch64 SIMD lowering (`cranelift/codegen/src/isa/x64/lower.isle`): which operators are one SSE2 sequence and which need SSE4.1 or fall back to libcalls (read for S0005; V8 enables wasm SIMD on x64 only with SSE4.1, `CpuFeatures::SupportsSimd128`) | encoders, SIMD |
 | **MicroPython's native emitters** (`py/emitnative.c`, `py/asmthumb.c`, `py/asmxtensa.c`, `py/asmrv32.c`, …) | code generation for MCU architectures (Thumb, Xtensa, RISC-V 32); how viper types and calls work | the `mpy` target, viper code, future Thumb/Xtensa back ends |
 | **CPython's JIT** (`Tools/jit`) | how copy-and-patch is built: stencils, holes, relocations | if copy-and-patch is chosen (TARGETS.md) |
 | **wasm-to-asm** (calebsander, TypeScript) | a small readable wasm → x86-64 compiler: the bottom of the operand stack kept in registers, a calling convention without caller-saved registers (it has no traps: not a sandbox) | register allocation ideas |
 | **pywasm** | a complete pure-Python interpreter (Wasm 2.0, SIMD, WASI p1) and its spec runner | the test harness, a second oracle, WASI p1 |
+
+## Primary sources (normative)
+
+What an instruction means and how a machine instruction is encoded comes from these, not from the
+projects above. Record the edition or revision used in the commit or the spec that relies on it.
+
+| source | what it defines | used for |
+|---|---|---|
+| **WebAssembly Core Specification 3.0** (W3C; `WebAssembly/spec`, rendered at webassembly.github.io/spec/core) | the opcode table, binary format, validation, execution semantics of every instruction | the front end, the validator, every target |
+| **`WebAssembly/spec` `test/core`** at the pinned commit (S0001) | the executable form of the specification | the metric |
+| **Wasmtime documentation** (`TrapCode`, feature tiers, `Config` defaults) | behaviour where the specification leaves room (D6) | traps, features |
+| **Intel 64 and IA-32 Architectures Software Developer's Manual**; **AMD64 Architecture Programmer's Manual** | x86-64 instruction encodings and semantics (flags, `div` faults, `cvt*` rounding, `lzcnt`/`tzcnt` availability) | `jit-x86_64` encoders and ISA levels (ARTIFACT.md) |
+| **Arm Architecture Reference Manual for A-profile** (Arm DDI 0487) | AArch64 encodings and semantics | `jit-aarch64` |
+| **The RISC-V Instruction Set Manual**, Volume I (Unprivileged), ratified extensions | RV64 encodings and semantics | `jit-riscv64` |
+| **System V AMD64 psABI** (`x86-64-abi`) and the **Microsoft x64 calling convention** | argument registers, callee-saved registers, stack alignment, red zone / shadow space | the SysV and Win64 entry trampolines and host calls of `jit-x86_64` (D23) |
+| **AAPCS64** (`ARM-software/abi-aa`) and Apple's arm64 ABI differences | the same for AArch64 (incl. `x18`, Darwin variadics) | `jit-aarch64` |
+| **RISC-V psABI** (`riscv-non-isa/riscv-elf-psabi-doc`) | the same for RISC-V | `jit-riscv64` |
+
+Encodings written from these are checked against `objdump` / `llvm-mc` in CI; semantics against the
+spec suite and differential runs (TESTING.md).
