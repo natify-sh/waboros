@@ -319,7 +319,8 @@ Q5 (a), Q6 (a), Q7 (a), Q8 (a). Kept below with their options for the record.
   Recommended: (a), with 5c–5e directly after 5b.
 * **Q3 Register class.** (a) none: slots plus scratch, as specified; (b) a vector `tos` now; (c)
   pinned vector locals. Recommended: (a); (b) only with a SIMD benchmark measurement.
-* **Q4 x86-64-v2 SIMD variant** (SSSE3/SSE4.1 forms, D33 opt-in). (a) never; (b) after 5d, only for
+* **Q4 x86-64-v2 SIMD variant** (SSSE3/SSE4.1 forms, D33 opt-in; how variants grow: D42,
+  [ISA-LEVELS.md](../ISA-LEVELS.md)). (a) never; (b) after 5d, only for
   operators where the benchmark shows a gain; (c) inside 5d. Recommended: (b).
 * **Q5 NaN canonicalisation option** (Wasmtime's `cranelift_nan_canonicalization`). (a) not now;
   (b) in 5d/5e. Recommended: (a); revisit with the `Config` work of phase 6.

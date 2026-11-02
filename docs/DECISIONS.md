@@ -563,3 +563,15 @@ and no whole-file, `unsupported:` or `wrong kind` entries; `pyc` claims first, a
 claim, `auto` keeps the JIT and SIMD modules fail there as today. SIMD code lives in its own modules
 (the maintainer's three plus `frontend/simd.py` and `jit/common/simd.py`). Opcodes in the shared
 tuples are `0xFD000 + sub`. Relaxed SIMD and a NaN canonicalisation option are later work.
+
+### D42. ISA variants above the baseline will be added, recorded per operator
+Status: accepted (maintainer, 2026-11-02) · Date: 2026-11-02 · Supersedes: — · Evidence: [ISA-LEVELS.md](ISA-LEVELS.md) (draft); the WebAssembly SIMD CG's per-ISA mappings (WebAssembly/simd#418)
+
+The JITs will grow variants above the baseline (x86-64-v2/v3, named aarch64 features). How they are
+added is fixed now; each variant still needs its own spec. For every ISA-sensitive operator (SIMD
+and scalar) we keep the sequence emitted at each level in one per-operator map, generated from the
+code's tables (each program carries its ISA level; today all are the baseline), with a status
+(implemented, planned, not worth it). A variant enters only with a measurement (D24), opt-in and
+declared in the artifact (D33), with the baseline artifact byte-identical, its own ISA gate and QEMU
+CPU model, and the same spec parity as `pyc` (D25). Not planned: XOP, ARMv7 NEON, wider vectors;
+AVX-512 only on a measurement.
