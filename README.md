@@ -79,6 +79,11 @@ group. Conditions and history: [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 | **package `jit-x86_64`** (median of 5 runs, 2026-10-31) | **17 526** |
 | wasm3 (pywasm3) | 2 433 |
 | **package `pyc`**, CPython 3.13 | 110.4 / 107.6 |
+| pywasm 2.2.3 (pure-Python interpreter), CPython 3.13 | 0.58 |
+
+All rows but wasmtime and wasm3 need nothing but the standard library. Among the pure-Python options,
+the package's `pyc` target is about 185 times faster than the pywasm interpreter (107.6 / 0.58), and
+the JIT about 30 000 times.
 
 The real-library corpus, microseconds per call, package `jit-x86_64` against Wasmtime: BLAKE2b 1 KiB
 3.3 vs 4.5, SHA-256 4 KiB 44.1 vs 37.1, X25519 182 vs 117; `pyc` is 170-360 times slower
