@@ -94,7 +94,8 @@ JIT artifacts: run baseline artifacts on an emulated baseline CPU (e.g. QEMU `-c
 with plain ARMv8.0) and check that a higher-level artifact is refused there; load artifacts with the C
 reference loader as well as from Python; refuse artifacts with an unknown format or context ABI version.
 
-Jobs of `.github/workflows/ci.yml`: `lint` (ruff, pyright, `check_docs.py`, `features.py --check`); `test`
+A newer push to the same ref cancels a `ci.yml` or `coverage.yml` run in progress (`concurrency`);
+`publish.yml` runs one release per ref and is never cancelled. Jobs of `.github/workflows/ci.yml`: `lint` (ruff, pyright, `check_docs.py`, `features.py --check`); `test`
 (`pytest -q` on the seven Pythons; `tools/stack_info.py` on 3.13, also in a musl container); `jit`
 (`tests/jit` with `WABOROS_JIT_REQUIRE=1`; the aarch64 ABI, compiler, tail-call and SIMD tests
 (`test_simd_abi.py`, `test_simd_aarch64.py`) and the spec suite of `jit-aarch64` (it covers `simd/`

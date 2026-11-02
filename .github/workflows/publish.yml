@@ -18,6 +18,11 @@ run-name: >
 permissions:
   contents: read
 
+# one release per ref at a time; a running publish is never cancelled half-way
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     name: Build sdist + wheel
