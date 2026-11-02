@@ -2,7 +2,7 @@
 title: Risks and possible solutions
 kind: log
 status: current
-updated: 2026-11-01
+updated: 2026-11-02
 ---
 
 # Risks and possible solutions
@@ -51,7 +51,7 @@ known-bad versions can force recompilation.
 **Status at HEAD: partly mitigated.** Mitigated on x86-64 Linux: the W^X executable-memory probe and the
 fallback to `pyc` with `JitUnavailableWarning` (D31; proved with executable memory forbidden by
 `tools/no_exec.py` in the CI `spec` job and `tests/test_fallback.py`); CET IBT (`endbr64` at every
-indirectly reachable entry, `backend.py`) and CET shadow stacks (traps return through frames, S0003). aarch64: `bti c` landing pads are emitted and the tests run under QEMU with BTI enforced; PAC is not used (S0004). macOS `MAP_JIT` under a hardened runtime: answered for python.org CPython (the JIT runs, row below). Open: Windows ACG (the Windows and macOS x64 CI jobs run `tests/jit`).
+indirectly reachable entry, `backend.py`) and CET shadow stacks (traps return through frames, S0003). aarch64: `bti c` landing pads are emitted and the tests run under QEMU with BTI enforced; PAC is not used (S0004). macOS `MAP_JIT` under a hardened runtime: answered for python.org CPython (the JIT runs, row below). Android: answered for x86_64 in an `untrusted_app` process (the JIT runs, row below); arm64 has no CI job. Open: Windows ACG (the Windows and macOS x64 CI jobs run `tests/jit`).
 
 The direction is clear: more systems forbid writable-and-executable memory, and CPUs add control-flow
 integrity that hand-made code must respect.
@@ -76,8 +76,11 @@ in TARGETS.md, CFI-compatible code from the first version, and `pyc` as the guar
 
 **Status at HEAD: partly mitigated.** The encoder is checked form by form against `llvm-mc` in CI
 (`tests/jit/test_encoder.py`), the ISA gate disassembles every generated blob (`tools/isa_all.py`), and
-the spec core passes on `jit-x86_64` like on `pyc`. Open: differential fuzzing against wasmtime
-(phase 5), a second architecture, and an independent final review (S0002 step 6, in progress).
+the spec core passes on `jit-x86_64` and `jit-aarch64` like on `pyc`; the ISA gate covers every
+compiled module of both targets, SIMD ones included; SIMD code also runs on an SSE2-only CPU under
+QEMU (`qemu64`) in CI; the independent final review of phase 3 is done (S0002 step 6) and the SIMD
+steps are read by a `reviewer` one by one (S0005). Open: differential fuzzing against wasmtime
+(phase 5), and the review of the SIMD steps as a whole (S0005, 5f).
 
 **Risk.** Encoding mistakes, register-allocation mistakes and missed checks are not exceptions but
 wrong results or sandbox escapes. The PoC already met three silent bugs (LESSONS.md 1, 2, 5).

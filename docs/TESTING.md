@@ -2,7 +2,7 @@
 title: Testing
 kind: reference
 status: current
-updated: 2026-11-01
+updated: 2026-11-02
 ---
 
 # Testing
@@ -40,7 +40,7 @@ show what is new; the spec commit moves the same way, in small steps.
 | pywasm (pip) | a second oracle and a source of ideas: its spec runner (`test/spec.py`) was adapted in the PoC session; it passes the core spec suite (54 006 commands, 0 failures at its pinned spec commit `fffc6e12f`) but treats `assert_invalid` / `assert_malformed` as no-ops |
 | meld | fusing component test programs into core modules for WASI 0.2 |
 | MicroPython unix port, `mpy-cross` | the `mpy` target |
-| QEMU user-mode | JIT targets for other architectures in CI; `jit-aarch64` BTI (the arm64 Linux runner has none): `tools/run_arm64.py` in the x86 `jit` job |
+| QEMU user-mode | JIT targets for other architectures in CI; `jit-aarch64` BTI (the arm64 Linux runner has none): `tools/run_arm64.py` in the x86 `jit` job; an SSE2-only x86-64 CPU (`qemu64` without SSE3, SSSE3, SSE4 and popcnt) for the SIMD tests and the `simd` spec run of `jit-x86_64` (S0005) |
 
 The runtime package itself declares **no** dependencies; these live in a development group.
 The Python ones are the uv `dev` group in `pyproject.toml` (`uv sync`); wasmtime 50.0.1 needs
@@ -83,9 +83,10 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
 | axis | values |
 |---|---|
 | Python | CPython 3.11, 3.12, 3.13, 3.14, 3.15, 3.15t (free-threaded); PyPy 3.11 (D19) |
-| OS | Linux x86-64 (all jobs), Windows x64 (`windows-latest`) and macOS x64 (`macos-26-intel`) (`os` job: `pytest` including `tests/jit`, the stack bounds, and the spec run for wasmtime and `pyc`, not for `jit-x86_64`); later Linux aarch64, macOS arm64 (MAP_JIT) |
+| OS | Linux x86-64 (all jobs), Windows x64 (`windows-latest`) and macOS x64 (`macos-26-intel`) (`os` job: `pytest` including `tests/jit`, the stack bounds, and the spec run for wasmtime and `pyc`, not for `jit-x86_64`) (the `arm64` job below covers aarch64) |
 | target | `pyc` everywhere; `jit-*` where the machine matches; `mpy` with the MicroPython unix port |
 | native arm64 | `jit-aarch64` on GitHub's arm64 runners: `ubuntu-24.04-arm`, `macos-latest` (macOS arm64, `MAP_JIT`), `windows-11-arm` (labels per actions/runner-images) |
+| python.org macOS | `macos-pythonorg` job: the pinned python.org 3.13.17 CPython (hardened runtime) on Apple Silicon; prints its entitlements, then either the JIT tests pass or `auto` gives `pyc` with one D31 warning that names the refusal; the spec suite with `auto` (RISKS R2) |
 | Android | `android` job: the python.org CPython for Android in CPython's testbed app on a managed x86_64 emulator (KVM, `ubuntu-latest`); `tools/android_check.py` then `tests/jit/test_probe.py`, `test_execmem.py`, `test_abi.py`, `tests/test_fallback.py`, `tests/test_target_pyc.py` (no wasmtime there, so tests that compile WAT skip); either outcome of the probe passes if the behaviour is right (JIT runs, or `auto` gives `pyc` with one D31 warning); the log is the artifact `android-log`; no arm64 job (RISKS R2) |
 | emulated | QEMU user-mode only for architectures without native runners (riscv64, armv7, mips32el) as JIT targets appear |
 
@@ -95,10 +96,26 @@ reference loader as well as from Python; refuse artifacts with an unknown format
 
 Jobs of `.github/workflows/ci.yml`: `lint` (ruff, pyright, `check_docs.py`, `features.py --check`); `test`
 (`pytest -q` on the seven Pythons; `tools/stack_info.py` on 3.13, also in a musl container); `jit`
-(`tests/jit` with `W2PY_JIT_REQUIRE=1`, then `isa_all.py`); `spec` (the spec run on `wasmtime`, `pyc`,
-`jit-x86_64`, then `auto` under `no_exec.py`); `os`; `arm64`; `macos-pythonorg`; `android`.
+(`tests/jit` with `W2PY_JIT_REQUIRE=1`; the aarch64 ABI, compiler and tail-call tests and the spec
+suite on `jit-aarch64` under QEMU with BTI enforced; the SIMD tests and the explicit `simd` spec run of
+`jit-x86_64` under the SSE2-only `qemu64` CPU, compared with `pyc` by `tools/spec_diff.py --allow-unsupported`;
+then both ISA gates and the D35 lists); `spec` (the spec run on `wasmtime`, `pyc`, `jit-x86_64`, then
+`auto` under `no_exec.py`); `os`; `arm64`; `macos-pythonorg`; `android`.
 
-The `jit` job runs `tools/isa_all.py` (locally: 379 blobs, about 32 s): it compiles every spec module and CoreMark with
+**SIMD is measured before it is claimed.** A directory the target does not claim is not run by the
+default spec run and not in CI; the explicit run `python -m tests.spec.run --engine T simd` ignores
+the claims and counts failures as failures. A target claims `simd` only when that run has at most 25
+listed failures and, for a JIT, equals `pyc` (S0005, "Claiming `simd`"); until then CI watches the
+progress only through the QEMU step above, which fails on a SIGILL, a crash or a difference from `pyc`.
+
+CoreMark on a JIT is checked with `tools/run_coremark_jit.py --check FILE` (the `arm64` job, the
+`android` job): a run is valid with "Correct operation validated", or when the only error is
+CoreMark's "at least 10 secs" rule and the CRCs are the 2K-performance values (a correct run on a
+slow runner took 9.6 s). The interrupt-latency test (`tests/jit/test_abi.py`) allows 1 s, not 0.05 s,
+for loaded runners.
+
+The `jit` job runs `tools/isa_all.py` (698 blobs at SIMD step 5d1; the count grows with the code): it compiles every
+spec module of **every directory, claimed or not** (so `simd/` too), and CoreMark, through `tools/jit_dump.py` with
 `W2PY_JIT_DUMP` and disassembles each blob with `tools/isa_check.py` (code ranges only), failing on any
 instruction above x86-64-v1 (D24). `isa_all.py --target jit-aarch64` does the same for aarch64 code,
 compiled (never run) on any host: `isa_check.py --arch aarch64` disassembles with `llvm-mc` and allows

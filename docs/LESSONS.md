@@ -2,7 +2,7 @@
 title: Lessons
 kind: log
 status: current
-updated: 2026-11-01
+updated: 2026-11-02
 ---
 
 # Lessons
@@ -198,3 +198,25 @@ What went wrong or surprised us while building the PoC, so it is not found again
     new crashes under old `unsupported` lines. Rule: an entry whose reason starts with
     `unsupported:` matches only the same full text; any other failure is a fail with
     `unexpected reason: …`. Hand-written reasons still match by id. Found: step 4d review, 2026-11-01.
+40. **A correct CoreMark run can fail CoreMark's own rule.** CoreMark prints `ERROR! Must execute for
+    at least 10 secs` when its calibrated iteration count ran for 9.6 s, even though every CRC is
+    right; the `arm64` job (macos-latest) failed a correct run, and interrupt-latency checks with a
+    0.05 s bound failed on loaded runners (0.075 s and 0.113 s measured, the trap itself correct).
+    Rule: a CI check on a time keeps the correctness part apart from the timing part:
+    `tools/run_coremark_jit.py --check` accepts the 10-second-only error when the CRCs are the
+    2K-performance values and rejects a CRC mismatch or no CRC lines
+    (`tests/test_coremark_check.py`); a latency bound is a safety net (1 s), not a benchmark.
+    Found: CI runs 41350876402 and 41357325449, 2026-11-01.
+41. **A second reader of the same classification drifts.** `frontend/simd.uses()` answered "does this
+    module use SIMD" by scanning operators and missed a v128 block type and a typed `select`.
+    A reviewer found it while reading step 5a. Rule: derive such an answer from the one operator table that
+    decoder and validator use, or do not write it until a caller exists (it was removed in 5b, no
+    caller left).
+    Found: SIMD step 5a review, 2026-11-01.
+42. **The spec files do not reach every path of a table-driven lowering.** The 64-bit SIMD shifts
+    had a wrong lane suffix in `jit/x86_64/simd.py`, yet `simd/` passed: the only file with those
+    shifts also uses class-S operators, so the module was refused (`unsupported`) on the JIT and
+    never ran there. The step's own differential test (every operator against `pyc` on edge lanes)
+    caught it. Rule: an operator-by-operator differential test against `pyc` (and a random-lane
+    fuzz against Wasmtime) is part of each SIMD step, not only the spec run.
+    Found: SIMD step 5d1, 2026-11-02.

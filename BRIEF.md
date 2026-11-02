@@ -2,7 +2,7 @@
 title: Briefing: read this first
 kind: guide
 status: current
-updated: 2026-11-01
+updated: 2026-11-02
 ---
 
 # Read this first
@@ -95,8 +95,14 @@ State on branch `phase0-skeleton` (not merged to `main`, the maintainer's choice
   ISA gate in CI. `jit-x86_64` fails exactly what `pyc` fails in the core group (20509 pass on both)
   and `auto` selects it; CoreMark 17 526 vs PoC `w2jit2` 17 662 it/s (99.2 %). Phase 3 went beyond the
   "integer core" (floats, tables) because the goal is completeness (D25).
-* **Next, per `docs/ROADMAP.md`, in order:** multi-memory on both targets (done); phase 4, `jit-aarch64` on native arm64 runners (done: parity with `pyc`, interface frozen, D39); the macOS arm64 follow-ups; phase 5, guard pages (D29) and the rest of the
-  opcode set; the public API only in phase 6.
+* **Phase 4 done:** multi-memory on both targets; `jit-aarch64` on native arm64 runners at parity with `pyc`
+  (interface frozen, D39); the macOS arm64 follow-ups (the python.org CPython runs the JIT); Android x86_64
+  checked in CI (RISKS R2).
+* **Phase 5 under way, SIMD first** (`docs/specs/S0005-simd.md`, D41): the front end and `pyc` are done and
+  `pyc` claims `simd/`; the JITs have the data-movement operators on both architectures and the
+  class-D operators on x86-64 (SSE2 only), and claim `simd/` at the end of 5d and 5e. **Next, per
+  `docs/ROADMAP.md`:** finish SIMD, the rename to `waboros` as its own step (D40), guard pages (D29), the
+  rest of the opcode set; the public API only in phase 6.
 
 1. **Read** this page, then `docs/BENCHMARKS.md`, then `docs/ARCHITECTURE.md` and the spec of the step
    in `docs/specs/`. Skip `docs/API.md` and `docs/FEATURES.md` until phase 6.
@@ -135,7 +141,7 @@ a test. "Measure, do not estimate."
 | how it is built | `docs/ARCHITECTURE.md`, `docs/TARGETS.md` |
 | the order of work | `docs/ROADMAP.md` |
 | how it is tested | `docs/TESTING.md` |
-| why a choice was made | `docs/DECISIONS.md` (D1–D39) |
+| why a choice was made | `docs/DECISIONS.md` (D1–D41) |
 | what went wrong before | `docs/LESSONS.md` |
 | risks and possible answers | `docs/RISKS.md` |
 | the JIT artifact contract | `docs/ARTIFACT.md` |
@@ -145,4 +151,4 @@ a test. "Measure, do not estimate."
 | component specs (contracts, written before implementation) | `docs/specs/` |
 
 The maintainer writes in Ukrainian; code, comments, commits and documents are in English. The name
-`w2py` is a working name.
+`w2py` stays until the rename to `waboros` (D40), one step after SIMD.

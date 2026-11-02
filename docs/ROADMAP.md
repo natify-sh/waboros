@@ -2,7 +2,7 @@
 title: Roadmap
 kind: reference
 status: current
-updated: 2026-11-01
+updated: 2026-11-02
 ---
 
 # Roadmap
@@ -78,9 +78,9 @@ lacks a feature reports it through `Target.supports` and the module runs on anot
 |---|---|
 | 1 | `assert_invalid` / `assert_malformed` of the pinned spec suite pass (the validator) |
 | 2 | the `core` group (`test/core/*.wast`, the 2.0 features plus typed function references and tail calls) passes on `pyc` (CPython and PyPy), plus the `bulk-memory` directory; the rest are listed expected failures (`pyc`: 20509 pass in `core`, 89 expected failures) |
-| 3 | the `core` group passes on `jit-x86_64` exactly as on `pyc` (met: the same 20509 pass and the same 89 expected failures; the scope went past the integer core, D25); the backend interface is written down and the PoC's x86-64 code is split into the shared core and the backend (S0002; step 6 review pending); CoreMark not worse than the PoC (met: 17 526 vs `w2jit2` 17 662 it/s, 99.2 %, BENCHMARKS.md) |
+| 3 | the `core` group passes on `jit-x86_64` exactly as on `pyc` (met: the same 20509 pass and the same 89 expected failures; the scope went past the integer core, D25); the backend interface is written down and the PoC's x86-64 code is split into the shared core and the backend (S0002, S0003; step 6 review done); CoreMark not worse than the PoC (met: 17 526 vs `w2jit2` 17 662 it/s, 99.2 %, BENCHMARKS.md) |
 | 4 | the same integer-core spec commands pass on the second architecture (aarch64 on native arm64 CI runners); the size of its backend is recorded; the interface is changed where it leaked x86-64 and then frozen |
-| 5 | the same spec commands pass on every JIT target as on `pyc` for the stages it claims; differential fuzzing finds no divergence over an agreed number of hours |
+| 5 | the same spec commands pass on every JIT target as on `pyc` for the stages it claims (`simd/` is claimed by `pyc` since 5b; the JITs claim it at 5d3 and 5e2, S0005); differential fuzzing finds no divergence over an agreed number of hours |
 | 6 | the public API is covered by tests of its own plus differential runs against wasmtime (its API used as the oracle, not as a goal); the WASI testsuite (p1) passes; the CLI runs the commands of API.md |
 | later | each new proposal enters with its spec tests green on every target that claims it |
 
@@ -103,9 +103,9 @@ lacks a feature reports it through `Target.supports` and the module runs on anot
   weights, effect order, trap points, call graph); documented in code.
 
 ## Phase 2 — `pyc` target complete
-*Status: done for the core group (spec core: `pyc` 20509 pass, 89 expected failures, same as `jit-x86_64`; the `bulk-memory` directory 7482 of 7485 also passes on `pyc`); frozen for new features, correctness fixes only.*
+*Status: done for the core group (spec core: `pyc` 20509 pass, 89 expected failures, same as `jit-x86_64`; the `bulk-memory` directory 7482 of 7485 also passes on `pyc`); frozen for new features except the proposals that land on `pyc` and the JITs together (multi-memory, D37; SIMD, S0005), correctness fixes only.*
 
-* All core features of FEATURES.md, SIMD correct before fast; NaN rules settled against the oracle.
+* All core features of FEATURES.md, SIMD correct before fast (done in phase 5, step 5b, S0005); NaN rules settled against the oracle.
 * Trap conversion at the boundary; stack-depth counter and `STACK_OVERFLOW`; re-entrancy.
 * Long calls: yield points + interrupt word (measure the cost); one-thread-per-store guard.
 * Fuel and epochs (compiled in on demand).
@@ -127,7 +127,7 @@ lacks a feature reports it through `Target.supports` and the module runs on anot
   indexed memories; the `memory.grow`/`memory.init` libcalls gained a memory-index immediate for
   modules with several memories (an amendment of context ABI v1, D37). New
   proposals (SIMD, GC, exceptions, memory64, threads) land on `pyc`
-  and the JIT together, or on the JIT first, so the gap between their expected-failure files stays
+  and the JIT together, on the JIT first, or (SIMD, the maintainer's order in S0005) on `pyc` first, so the gap between their expected-failure files stays
   small and is reported per directory on every run (D25).
 * **Decided (D26): one pass over the validated body driving a backend interface.** The options were: LIR with
   virtual registers and an allocator (Cranelift style), or one pass over HIR driving a small
@@ -179,13 +179,13 @@ lacks a feature reports it through `Target.supports` and the module runs on anot
   (CI job `macos-pythonorg`, RISKS R2).
 
 ## Phase 5 — JIT completion
-*Status: not started.*
+*Status: in progress (2026-11-02): SIMD, step by step ([S0005](specs/S0005-simd.md), approved, D41). Done: 5a front end (decode and validate v128); 5b `pyc` runs every operator and claims `simd/` (25 990 commands, 0 failures); 5c1 v128 in the JIT core (two slots per v128, `Layout.wide`, the `simd` method: the D39 amendment) and 5c2 every data-movement operator, on both JITs; 5d1 the class-D operators on `jit-x86_64` with SSE2 only. 5d2 (class S, x86-64) is under way. Next: 5d3 (class L and the x86-64 claim), 5e1-5e2 (aarch64 NEON and its claim), 5f review. The JITs do not claim `simd` yet, so `auto` keeps the JIT and a SIMD module fails there with `Unsupported("simd")` until the claims (S0005, Q2).*
 
-Order (maintainer, 2026-11-01): SIMD ([S0005](specs/S0005-simd.md), approved) -> the rename to `waboros`
+Order (maintainer, 2026-11-01): SIMD (S0005) -> the rename to `waboros`
 as its own step (D40) -> guard pages (D29) -> the rest below.
 
 * What remains of the opcode set, in stages (TARGETS.md), on **every** JIT target in step:
-  memory64, SIMD and relaxed SIMD, exceptions, GC, then the later proposals. What a backend lacks is
+  SIMD (under way, above), memory64, relaxed SIMD, exceptions, GC, then the later proposals. What a backend lacks is
   `unsupported` until it is written (D25). Floats, tables, `memory.grow`, bulk memory, reference types,
   multi-value and tail calls were done in phase 3.
 * **Guard pages with a JIT-emitted signal handler** (`poc/w2jit_guard.py`: +20–25 % on CoreMark, the gap
@@ -199,8 +199,8 @@ as its own step (D40) -> guard pages (D29) -> the rest below.
   detection) is **fixed here**, after two architectures have shaped it, together with artifact
   serialization; the C reference loader runs in CI and the runtime services are specified (D36).
 * Win64 hardening (the second entry trampoline and `VirtualAlloc` exist; CI runs `tests/jit` on
-  `windows-latest` and `macos-26-intel` but the results are not yet recorded as verified); macOS arm64
-  and Windows on ARM.
+  `windows-latest` and `macos-26-intel` and both are green, TARGETS.md; Windows ACG is open, RISKS R2);
+  macOS arm64 and Windows on ARM are done in phase 4.
 * Differential fuzzing against wasmtime (`wasm-smith`) from the first widened stage on.
 
 ## Phase 6 — runtime API, WASI, CLI

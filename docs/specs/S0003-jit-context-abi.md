@@ -6,7 +6,7 @@ status: implemented
 superseded_by:
 related: [D10, D14, D15, D18, D23, D24, R2, R3, R6, S0002]
 owner: maintainer
-updated: 2026-11-01
+updated: 2026-11-02
 ---
 
 # S0003 JIT context ABI and entry (phase 3, x86-64)
@@ -365,3 +365,4 @@ uv run pytest tests/jit -k "entry or trap or reentry or host or interrupt or sta
   `tail_switch`'s record and return-address registers, landing pads, `CODE` alignment, I-cache
   maintenance) is a table in ARTIFACT.md part 3. The aarch64 register roles and trampolines are
   in S0004; the x86-64 ones above are unchanged (code byte-identical).
+* 2026-11-02 (S0005, 5c1): v128 slots are done: a v128 takes two slots (bytes 0-7 in the first) as a parameter, result or local and two context words as a defined global (an imported one keeps one word, the pointer); `Layout` takes the widths (`wide`). An amendment of version 1 without a bump, as D37 and D38 (no artifact is saved before phase 5).

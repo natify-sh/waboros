@@ -2,10 +2,10 @@
 title: Engine interface of the spec-suite runner
 kind: spec
 id: S0001
-status: approved
+status: implemented
 related: [D1, D5, D6, D10, D11, D19, R3]
 owner: maintainer
-updated: 2026-10-30
+updated: 2026-11-02
 ---
 
 # S0001 Engine interface of the spec-suite runner
@@ -201,8 +201,9 @@ lanes masked to their width). References: as in the Values table; `ExternRef` by
 them apart (measured: of 1 304 binary `assert_invalid` modules Wasmtime reports 151 as parse errors;
 of 708 binary `assert_malformed`, 20 as compile errors; wabt conversion). Our engines set
 `LoadError.kind`; if not `None` it must match the command, else it fails with `wrong kind`. Link
-texts are not matched. Trap texts map to codes exactly (an unknown text fails, so a moved pin shows
-new texts); verified on Wasmtime for all 541 + 15 + 34 trap commands:
+texts are not matched. Trap texts map to codes by prefix: the longest table key the expected text starts with, as the
+reference interpreter matches (the spec adds details such as "uninitialized element 2"); a text with no key fails, so a moved pin shows
+new texts; verified on Wasmtime for all 541 + 15 + 34 trap commands:
 
 | spec text | TrapCode | | spec text | TrapCode |
 |---|---|---|---|---|
@@ -301,3 +302,5 @@ result and on an xpass).
 * 2026-10-30: Wasmtime claims `simd` and `relaxedSimd`: raw v128 path in the adapter, v128 detected
   without `wasm_valtype_kind` (simd: pass 25481, skip 509; relaxed-simd: pass 79; fail 0).
 * 2026-10-30: links to the upstream v128 issues (wasmtime-py#348, wasmtime#15088).
+* 2026-11-01: an expected trap text is matched to a code by prefix (longest table key), not exactly: `bulk.wast:221` expects "uninitialized element 2"; the `pyc` expected-failure reasons are the actual failure reasons (no hand-written ones that no longer matched).
+* 2026-11-02: status `implemented` (the runner has used this interface since phase 1).

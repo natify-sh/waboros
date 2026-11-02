@@ -2,7 +2,7 @@
 title: Micro-compilers - what they are and why
 kind: reference
 status: draft
-updated: 2026-11-01
+updated: 2026-11-02
 ---
 
 # Micro-compilers: what they are and why
@@ -65,7 +65,7 @@ source, which is why a shipped micro-compiler needs a reproducible build.
 
 ## What gets ported and what stays in the host
 
-Counts are non-blank lines on `phase0-skeleton` at the end of phase 4.
+Counts are non-blank lines on `phase0-skeleton` at the end of phase 4. The SIMD modules (`frontend/simd.py`, `jit/common/simd.py`, `jit/<arch>/simd.py`, S0005) are compiler-side too and are not counted yet; the SIMD review step (5f) updates this table.
 
 | ported into the micro-compiler | lines |
 |---|---|
@@ -136,7 +136,7 @@ Language choice is about safety and ergonomics, not architecture: Zig (already i
 ## Rules for now (so the door stays open)
 
 * Keep the compiler side free of Python- and OS-specific code: no `ctypes`, `mmap`, threads or
-  Python objects in `frontend/` and `jit/common/{compiler,backend,context}.py` or the backends.
+  Python objects in `frontend/` and `jit/common/{compiler,backend,context,simd}.py` or the backends, encoders, `abi.py` and `simd.py` files (`tests/test_source_rules.py` checks it, and that none imports the host side: `execmem`, `instance`, `target`).
 * Keep compilation deterministic and host-independent (already checked by D35 in CI).
 * Specify runtime services in ARTIFACT.md precisely enough to implement without reading our code
   (D36): the micro-compiler path and every foreign host depend on it.

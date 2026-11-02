@@ -2,7 +2,7 @@
 title: Targets
 kind: reference
 status: current
-updated: 2026-11-01
+updated: 2026-11-02
 ---
 
 # Targets
@@ -102,8 +102,10 @@ An architecture is added in stages; until it is complete `auto` does not select 
 3. **SIMD** (and relaxed SIMD), then threads/atomics, exceptions, tail calls, GC/function references.
 
 A feature of a later stage is `unsupported` on that architecture until written; the engine then runs
-on `pyc` (D25). `jit-x86_64` has stages 1 and 2 as far as the core group needs them and tail calls and
-typed function references of stage 3; multi-memory, memory64, SIMD, exceptions and GC are not done.
+on `pyc` (D25). `jit-x86_64` and `jit-aarch64` have stages 1 and 2 as far as the core group needs them
+(multi-memory included, D37), tail calls and typed function references of stage 3; SIMD is under way
+(S0005: the data-movement operators on both, the class-D operators on x86-64; not claimed, so a module
+with v128 is still `Unsupported("simd")` there); memory64, relaxed SIMD, exceptions and GC are not done.
 
 **An alternative to evaluate for later architectures: copy-and-patch.** Each wasm operation becomes a
 small C "stencil" compiled by clang for every target triple on *our* CI and shipped as bytes in the
@@ -119,10 +121,10 @@ with real numbers for both.
 
 | target | runs on | state in the package / in the PoC | notes |
 |---|---|---|---|
-| `pyc` | CPython ≥ 3.11 (D19; PoC measured down to 3.8), PyPy | package: core group complete, frozen for new features (spec core 20508 pass). PoC: CoreMark | floor for everything; artifact = code object; the fastest pure-Python option on PyPy (2 300–2 900 it/s) |
+| `pyc` | CPython ≥ 3.11 (D19; PoC measured down to 3.8), PyPy | package: core group complete, frozen for new features except SIMD (S0005, step 5b: it runs and claims all of `simd/`, 25 990 commands) (spec core 20509 pass). PoC: CoreMark | floor for everything; artifact = code object; the fastest pure-Python option on PyPy (2 300–2 900 it/s) |
 | `mpy` | MicroPython (unix port tested, 1.29.0) | CoreMark | `.mpy` ahead of time or source on device; `@native` (94 it/s); next: viper code, i.e. MicroPython's own emitters as native back ends for every MCU architecture (below) |
-| `jit-x86_64` | Linux, macOS (Intel), BSDs, Windows, Android (app process, CI emulator) | package: the core group at parity with `pyc` (spec core 20509 pass, same 89 expected failures: integers, SSE2 floats, `memory.grow`, tables, `call_indirect`, references, bulk memory, tail calls, function imports through records; CoreMark 17 526 it/s); selected by `auto`, which falls back to `pyc` with a warning (D31). PoC: CoreMark (`w2jit2`, SysV only, 17 662 it/s in the same session) | explicit bounds checks only; one artifact for every OS (D23): the Win64 entry trampoline and bridge and a `VirtualAlloc` loader are written and CI runs `tests/jit` on `windows-latest` and `macos-26-intel` and those jobs are green (e.g. run 41304018802); the code still marks `VirtualAlloc` UNTESTED, which the phase-3 final review checks |
-| `jit-aarch64` | Linux, macOS (Apple Silicon: `MAP_JIT`), Windows on ARM, Android `arm64_v8a` (not checked in CI) | package: parity with `pyc` and `jit-x86_64` (spec 28903 pass), selected by `auto` on arm64; CI on Linux, macOS and Windows arm64 runners | the second architecture: proved the backend split, interface frozen after it (D39) |
+| `jit-x86_64` | Linux, macOS (Intel), BSDs, Windows, Android (app process, CI emulator) | package: the core group at parity with `pyc` (spec core 20509 pass, same 89 expected failures: integers, SSE2 floats, `memory.grow`, tables, `call_indirect`, references, bulk memory, tail calls, function imports through records; CoreMark 17 526 it/s; `simd` not claimed yet: what it compiles equals `pyc` on `simd/`, the rest is `unsupported`, S0005 steps 5c-5d); selected by `auto`, which falls back to `pyc` with a warning (D31). PoC: CoreMark (`w2jit2`, SysV only, 17 662 it/s in the same session) | explicit bounds checks only; one artifact for every OS (D23): the Win64 entry trampoline and bridge and a `VirtualAlloc` loader are written and CI runs `tests/jit` on `windows-latest` and `macos-26-intel` and those jobs are green (e.g. run 41304018802) |
+| `jit-aarch64` | Linux, macOS (Apple Silicon: `MAP_JIT`), Windows on ARM, Android `arm64_v8a` (not checked in CI) | package: parity with `pyc` and `jit-x86_64` (spec 28903 pass), selected by `auto` on arm64; SIMD: data movement only (S0005 5c), NEON arithmetic comes in 5e1-5e2, not claimed; CI on Linux, macOS and Windows arm64 runners | the second architecture: proved the backend split, interface frozen after it (D39) |
 | `jit-riscv64`, `jit-armv7`, `jit-mips32` (Ingenic X2000, little-endian), `jit-ppc64le`, `jit-loongarch64` | as available | — | QEMU user-mode in CI; candidates for copy-and-patch |
 | `lua` / `luajit` | Lua 5.4, LuaJIT | CoreMark | **not a w2py target** (D20, rejected; code stays in `poc/`): an experiment showing the IR serves other languages (271 / 1 873 it/s); the shared layers stay language-neutral so such backends remain possible (DECISIONS.md D17) |
 | `mypyc` | CPython + mypyc runtime | CoreMark | **dropped**: needs `librt` at run time (a dependency) and is 9× slower than wasm2c for a native build |

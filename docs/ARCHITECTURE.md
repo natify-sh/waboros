@@ -2,7 +2,7 @@
 title: Architecture
 kind: reference
 status: current
-updated: 2026-11-01
+updated: 2026-11-02
 ---
 
 # Architecture
@@ -76,13 +76,18 @@ w2py/
   __main__.py
 ```
 
-At HEAD `src/w2py/` holds: `frontend/` (`binary.py` reader, `validate.py`), `runtime/` (`link.py`,
-`store.py`), `targets/base.py` (the `Target` protocol, registry, `auto` selection, `JitUnavailableWarning`),
-`targets/pyc/` (`codegen.py`, `runtime.py`), and `targets/jit/` with `common/` (`compiler.py` the one-pass
-core, `backend.py` the backend interface, `context.py`, `execmem.py`, `instance.py`) and `x86_64/`
-(`encoder.py`, `abi.py`, `backend.py`). There is no separate `ir/` yet: the JIT core reads the validated
-body directly (D26) and `pyc` has its own tree builder; HIR and its analyses wait for a measurement that
-needs them. `mpy`, `aarch64`, `cache/`, `wasi/`, `cli/` and the public runtime objects do not exist yet.
+At HEAD `src/w2py/` holds: `frontend/` (`binary.py` reader, `validate.py`, `simd.py` the one SIMD
+operator table with its decoder and validator), `runtime/` (`link.py`, `store.py`), `targets/base.py`
+(the `Target` protocol, registry, `auto` selection, `JitUnavailableWarning`), `targets/pyc/`
+(`codegen.py`, `runtime.py`, `simd.py`), and `targets/jit/` with `common/` (`compiler.py` the one-pass
+core, `backend.py` the backend interface, `context.py`, `simd.py` the core's v128 handling, and the
+host side: `execmem.py`, `instance.py`, `target.py` the glue shared by the architectures) and
+`x86_64/`, `aarch64/` (each `encoder.py`, `abi.py`, `backend.py`, `simd.py`). The compiler side
+(frontend, `compiler.py`, `backend.py`, `context.py`, the `simd.py` files, the backends, encoders and
+`abi.py`) imports no `ctypes`, `mmap`, threads or host-side module (`tests/test_source_rules.py`,
+MICRO-COMPILERS.md). There is no separate `ir/` yet: the JIT core reads the validated body directly
+(D26) and `pyc` has its own tree builder; HIR and its analyses wait for a measurement that needs
+them. `mpy`, `cache/`, `wasi/`, `cli/` and the public runtime objects do not exist yet.
 
 The PoC files map onto this as follows: `w2py.py` holds the reader, the decoder, the stack-to-tree
 builder, the value-bounds analysis and the `pyc` code generator in one file; `w2jit.py`/`w2jit2.py`
@@ -247,6 +252,13 @@ limits (`sys.getrecursionlimit()`, 1000 by default, and the C stack). Plan:
 * Re-entrancy: **the PoC entry trampoline stored one saved `rsp`**, so a nested entry (wasm → host →
   wasm) overwrote it (LESSONS.md). The package's entry keeps no saved `rsp`: a trap returns through the
   frames (S0003), so nested entries are safe; stack bounds per thread come from the OS (D10).
+* v128: **two consecutive slots** (bytes 0-7, then 8-15) in locals, operands, parameters and results.
+  Only SIMD operations see the pair; they use vector registers as scratch inside one backend call
+  (`simd`, D41, S0005), never across calls, so there is no vector register class and no save around host
+  calls. In `pyc` a v128 is a Python `int`.
+* Trampolines: `abi.assemble()` of an architecture only returns bytes (compiler side); the host side
+  (`instance.load_trampolines`) puts them into a code area and seals it, so the compiler side stays free
+  of `ctypes`/`mmap`.
 
 ## Long calls and the GIL
 

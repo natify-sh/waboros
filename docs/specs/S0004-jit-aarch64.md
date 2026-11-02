@@ -2,11 +2,11 @@
 title: jit-aarch64, the second architecture (phase 4, integer core)
 kind: spec
 id: S0004
-status: approved
+status: implemented
 superseded_by:
 related: [D10, D14, D23, D24, D25, D26, D29, D30, D31, D32, D34, D35, D36, D37, R2, R3, R6, S0002, S0003]
 owner: maintainer
-updated: 2026-11-01
+updated: 2026-11-02
 ---
 
 # S0004 jit-aarch64, the second architecture (phase 4, integer core)
@@ -464,3 +464,4 @@ Resolved by the maintainer on 2026-11-01 (see Changes); none open.
 * 2026-11-01: answered — the python.org 3.13.17 macOS CPython (hardened runtime) runs `jit-aarch64`: it carries `disable-executable-page-protection`; probe None, `auto` → `jit-aarch64`, ABI tests pass (RISKS R2). Phase 4 complete.
 * 2026-11-02: the D31 message for an incomplete JIT says "its expected failures differ from pyc's"
   instead of "integer core only" (no longer true once floats and the rest landed).
+* 2026-11-02: status implemented (phase 4 done: steps 4a-4e, the review, the macOS follow-ups; ROADMAP). The frozen interface of D39 was amended once, by S0005 (step 5c1): the `simd` method and the v128 operand meaning, in both backends.

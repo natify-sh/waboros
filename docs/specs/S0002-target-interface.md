@@ -6,7 +6,7 @@ status: implemented
 superseded_by:
 related: [D5, D6, D10, D16, D17, D18, D23, D24, S0001, S0003]
 owner: maintainer
-updated: 2026-11-01
+updated: 2026-11-02
 ---
 
 # S0002 Target interface
@@ -253,3 +253,4 @@ weights itself until then.
 * 2026-10-30: step 4 done; the fallback warns once (D31).
 * 2026-11-01: step 6 done (final review of steps 2–5, its fixes and D34 reviewed); status implemented.
 * 2026-11-01 (phase 4, S0004): a second JIT target, `jit-aarch64`; the JIT glue moved to `common/target.py` (`JitTarget`: `arch`, `machines`, `probe_code`, `backend`, `trampolines`). Readiness guard restored: a target with `complete = False` is never chosen by `auto`, which keeps `pyc` with the third D31 message; an explicit engine still runs it. `complete` is read with a default of True (`getattr`: `PycTarget` does not define it, so it stays out of the `Target` Protocol).
+* 2026-11-02 (S0005, 5c1): the backend interface gained `simd(f, op, dst, args, imm)` (D39 amendment, D41); `supported` also lists the `0xFD000 + sub` codes a backend compiles. `abi.assemble()` of each architecture returns bytes and `instance.load_trampolines` seals them, so the compiler side imports nothing of the host side.

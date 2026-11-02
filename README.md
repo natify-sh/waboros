@@ -2,7 +2,7 @@
 title: README
 kind: guide
 status: current
-updated: 2026-10-30
+updated: 2026-11-02
 ---
 
 # w2py
@@ -15,12 +15,14 @@ the public API will take the familiar shape of wasmtime-py (Engine, Store, Modul
 WASI), which is also the test oracle. Where Wasmtime has Cranelift (or Winch, Pulley), w2py has
 **targets**: a translator
 to Python code (`pyc`), a translator for MicroPython (`mpy`) and machine-code JITs written in Python
-that run through `mmap` + `ctypes` (`jit-x86_64`, later `jit-aarch64`, `jit-riscv64`, …). A target is
-picked automatically for the machine and the module, and its output can be cached.
+that run through `mmap` + `ctypes` (`jit-x86_64`, `jit-aarch64`, later `jit-riscv64`, …). A target is
+picked automatically for the machine (never by a module's content, D25), and its output can be cached.
 
-**Status: proof of concept, handed over for development.** Everything under `poc/` works on CoreMark
-(the code passes CoreMark's own self-check on every target) but covers only what CoreMark needs. The
-documents under `docs/` are the plan for the real thing.
+**Status: the package is under development** (branch `phase0-skeleton`; `BRIEF.md` has the state): `pyc`
+and the JITs `jit-x86_64` and `jit-aarch64` pass the same spec-suite core; SIMD is being added (S0005);
+the public API is phase 6. Everything under `poc/` is the proof of concept: it works on CoreMark (the
+code passes CoreMark's own self-check on every target) but covers only what CoreMark needs. The
+documents under `docs/` are the plan.
 
 ## Why
 

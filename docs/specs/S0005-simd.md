@@ -6,7 +6,7 @@ status: approved
 superseded_by:
 related: [D22, D23, D24, D25, D26, D28, D33, D35, D36, D37, D39, R2, R3, S0001, S0002, S0003, S0004]
 owner: maintainer
-updated: 2026-11-01
+updated: 2026-11-02
 ---
 
 # S0005 Fixed-width SIMD (v128) on pyc, jit-x86_64 and jit-aarch64
@@ -351,3 +351,4 @@ Q5 (a), Q6 (a), Q7 (a), Q8 (a). Kept below with their options for the record.
   SSE2 sequences for some class-S operators and did them there: `i8x16`/`i16x8`/`i32x4.abs`,
   `extmul_*_i32x4_u`, `i32x4.extadd_pairwise_i16x8_s`, `v128.load8x8_s`, `load16x4_s`, `load32x2_s`.
   5d2 takes the rest of class S; the step boundary is "what passes", the class counts are not updated.
+* 2026-11-02 (progress): 5a, 5b, 5c1, 5c2 and 5d1 are done; 5d2 is under way. `pyc` claims `simd` (25 990 commands, 0 failures); the JITs do not yet. `tools/isa_all.py` now compiles every directory, claimed or not, on both targets (the x86 gate included `simd/` from 5c2). The `jit` CI job runs the SIMD tests and the explicit `simd` run of `jit-x86_64` under the SSE2-only `qemu64` CPU and compares them with `pyc` (`spec_diff --allow-unsupported`).

@@ -2,7 +2,7 @@
 title: References
 kind: reference
 status: current
-updated: 2026-10-30
+updated: 2026-11-02
 ---
 
 # References
@@ -25,7 +25,7 @@ against wasmtime, and encodings checked against `objdump` / `llvm-mc` in CI.
 | **TinyCC** | small per-architecture back ends (`x86_64-gen.c`, `arm64-gen.c`, `riscv64-gen.c`, `arm-gen.c`, `i386-gen.c`): calling conventions, instruction encodings; the `vtop` value stack with `VT_CMP` — the same idea as our lazy entries and fused compare + branch | ABIs and encodings for new architectures |
 | **asmjit** | complete encoding tables for x86 and AArch64, including SIMD | encoders, SIMD |
 | **DynASM** (LuaJIT) | encoders for x86/x64, ARM, ARM64, PPC and **MIPS** | MIPS (Ingenic X2000), PPC |
-| **Cranelift's assemblers** | encodings for x64, aarch64, riscv64, s390x | encoders |
+| **Cranelift's assemblers and lowering** | encodings for x64, aarch64, riscv64, s390x; x64 and aarch64 SIMD lowering (`cranelift/codegen/src/isa/x64/lower.isle`): which operators are one SSE2 sequence and which need SSE4.1 or fall back to libcalls (read for S0005; V8 enables wasm SIMD on x64 only with SSE4.1, `CpuFeatures::SupportsSimd128`) | encoders, SIMD |
 | **MicroPython's native emitters** (`py/emitnative.c`, `py/asmthumb.c`, `py/asmxtensa.c`, `py/asmrv32.c`, …) | code generation for MCU architectures (Thumb, Xtensa, RISC-V 32); how viper types and calls work | the `mpy` target, viper code, future Thumb/Xtensa back ends |
 | **CPython's JIT** (`Tools/jit`) | how copy-and-patch is built: stencils, holes, relocations | if copy-and-patch is chosen (TARGETS.md) |
 | **wasm-to-asm** (calebsander, TypeScript) | a small readable wasm → x86-64 compiler: the bottom of the operand stack kept in registers, a calling convention without caller-saved registers (it has no traps: not a sandbox) | register allocation ideas |
