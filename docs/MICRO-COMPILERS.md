@@ -120,15 +120,18 @@ Language choice is about safety and ergonomics, not architecture: Zig (already i
 
 * Prerequisites: the backend interface frozen (**done**, D39), the artifact format and context ABI
   fixed with a version (**phase 5**, D36), the C reference loader in CI (phase 5).
-* **First candidate: the third architecture.** `riscv64` written as a micro-compiler instead of a
-  third Python backend; checked by the spec suite under QEMU against `pyc` and Wasmtime, and its
-  core checked by also building an x86-64 backend module and comparing it byte for byte with the
-  Python JIT.
+* **First: `arm64.wasm`, a port of the aarch64 backend** (maintainer, 2026-11-02). The Python
+  `jit-aarch64` is a ready oracle: every spec module and CoreMark compared byte for byte, so the
+  ported core, the backend and the toolchain are validated before anything new is written. aarch64
+  is the smaller backend (~1.2k lines).
+* **Then the third architecture: `riscv64`**, written as a micro-compiler on the proven core instead
+  of a third Python backend; checked by the spec suite under QEMU against `pyc` and Wasmtime (no
+  byte oracle exists for it).
 * Later candidates (pyc-only today, all in cibuildwheel's `archs`): `armv7l`, `ppc64le`, `s390x`,
   `i686`/`x86`. `i686` is costly (8 registers, i64 as register pairs, x87 vs SSE2, cdecl
   trampolines, 4 GB address space) and declining: lowest priority.
-* Replacing the Python compilers on x86-64/aarch64 as the production path: only after the riscv64
-  micro-compiler has shown what two implementations cost to keep in step.
+* Replacing the Python compilers on x86-64/aarch64 as the production path: only after the arm64 and
+  riscv64 micro-compilers have shown what two implementations cost to keep in step.
 
 ## Rules for now (so the door stays open)
 

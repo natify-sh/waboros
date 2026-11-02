@@ -290,11 +290,12 @@ as its own step (D40) -> guard pages (D29) -> the rest below.
    reference: the wasm compiler's output must be byte-identical to the Python compiler's on every spec
    module and CoreMark, a strong and cheap correctness check. Timing: after phase 4 freezes the
    backend interface (a stable design to port, not a moving one), with a fixed artifact format
-   (phase 5); WASI (phase 6) only if the compiler needs it. **First candidate (maintainer): the third
-   architecture.** With x86-64 and aarch64 in Python, the next one (riscv64, phase 8) is written as a
-   micro-compiler in wasm instead of a third Python backend — the core ported once plus the riscv64
-   backend; checked by the spec suite under QEMU against `pyc` and Wasmtime, and its core by
-   building an x86-64 backend module too and comparing it byte for byte with the Python JIT.
+   (phase 5); WASI (phase 6) only if the compiler needs it. **First micro-compiler (maintainer,
+   2026-11-02): `arm64.wasm`**, a port of the existing aarch64 backend (the smaller one): the Python
+   `jit-aarch64` is a ready oracle, so every spec module and CoreMark is checked byte for byte, which
+   validates the ported core and the toolchain before anything new is written. **Then the third
+   architecture**: riscv64 (phase 8) as a micro-compiler on the proven core instead of a third Python
+   backend, checked by the spec suite under QEMU against `pyc` and Wasmtime (no byte oracle there).
    **How a micro-compiler starts on a machine** (`pyc` runs it; it never compiles): (1) bootstrap, once
    per machine: `pyc` runs `riscv64.wasm` as an ordinary wasm program and feeds it its own wasm; it
    emits a native artifact of itself — slow (`pyc` is ~150× slower than native code) but done once;
