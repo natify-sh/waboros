@@ -104,7 +104,7 @@ An architecture is added in stages; until it is complete `auto` does not select 
 A feature of a later stage is `unsupported` on that architecture until written; the engine then runs
 on `pyc` (D25). `jit-x86_64` and `jit-aarch64` have stages 1 and 2 as far as the core group needs them
 (multi-memory included, D37), tail calls and typed function references of stage 3; SIMD is under way
-(S0005: the data-movement operators on both, the class-D operators on x86-64; not claimed, so a module
+(S0005: the data-movement operators on both, the class-D and class-S operators on x86-64; not claimed, so a module
 with v128 is still `Unsupported("simd")` there); memory64, relaxed SIMD, exceptions and GC are not done.
 
 **An alternative to evaluate for later architectures: copy-and-patch.** Each wasm operation becomes a

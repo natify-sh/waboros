@@ -171,7 +171,7 @@ Operators by SSE2 cost (all 236 classified; table in `frontend/simd.py`'s commen
 | class | ops | examples |
 |---|---|---|
 | D: 1–3 instructions | 158 | `paddb..q`, `psub*`, saturating `padds/paddus`, `pavgb/w`, `pminub/pmaxub`, `pminsw/pmaxsw`, `pcmpeqb/w/d`, `pcmpgtb/w/d`, `pmullw`, `pmaddwd` (dot), 16/32/64-bit shifts (count masked in a GPR, `movd`), `packsswb/packuswb/packssdw`, `pmovmskb`/`movmskps/pd`, `punpck*` (zero-extend), `pextrw/pinsrw`, `cvtdq2ps/cvtdq2pd/cvtps2pd/cvtpd2ps`, packed float arithmetic, `cmpps/cmppd`, `pmin`/`pmax` (= `minps`/`maxps` with swapped operands) |
-| S: 4–12 instructions | 68 | 8-bit shifts (16-bit shift + mask), `i64x2.shr_s`, unsigned compares (sign bias), `i64x2` compares, `i8x16`/`i32x4` signed and `i16x8`/`i32x4` unsigned `min`/`max` (compare + blend), `i32x4.mul` and `i64x2.mul` (`pmuludq`), `abs`, sign-extending loads and extends of i32, `extmul`, `extadd_pairwise`, `i16x8.narrow_i32x4_u`, `q15mulr_sat_s` (no `pmulhrsw`), `i8x16.popcnt` (SWAR), float `min`/`max` with wasm's NaN and ±0 rules, unsigned converts, `trunc_sat`, lanes without `pinsrd/pinsrb` |
+| S: 4–22 instructions (most 4–12; `narrow_i32x4_u` 16, `trunc_sat_f64x2_u_zero` 17, `popcnt` 22) | 68 | 8-bit shifts (16-bit shift + mask), `i64x2.shr_s`, unsigned compares (sign bias), `i64x2` compares, `i8x16`/`i32x4` signed and `i16x8`/`i32x4` unsigned `min`/`max` (compare + blend), `i32x4.mul` and `i64x2.mul` (`pmuludq`), `abs`, sign-extending loads and extends of i32, `extmul`, `extadd_pairwise`, `i16x8.narrow_i32x4_u`, `q15mulr_sat_s` (no `pmulhrsw`), `i8x16.popcnt` (SWAR), float `min`/`max` with wasm's NaN and ±0 rules, unsigned converts, `trunc_sat`, lanes without `pinsrd/pinsrb` |
 | L: no SSE2 form | 10 | `i8x16.shuffle`, `i8x16.swizzle`, `f32x4`/`f64x2` `ceil floor trunc nearest` |
 
 L lowering: `shuffle` first matches immediates that one SSE2 instruction does (`pshufd`,
@@ -209,8 +209,11 @@ arithmetic, `nans_N`), and Wasmtime does not canonicalise by default
 negative "indefinite" `0xFFC00000` for invalid operations; aarch64 with DN = 0 propagates a quieted
 input). So, as for scalars: the spec runner checks `nan:canonical`/`nan:arithmetic` per lane (it
 does today), differential runs against Wasmtime and between targets compare NaN lanes by class, not
-bits (TESTING.md), and neither JIT adds canonicalisation work. `pyc` uses its scalar helpers' rules
-(quiet the input NaN, `nan` for `min`/`max`).
+bits (TESTING.md), and neither JIT adds canonicalisation work. One exception follows from the
+lowering, not from a rule: x86-64 float `min`/`max` (5d2) give the canonical NaN with the sign set
+(`0xFFC00000`, `0xFFF8000000000000`) in every lane where an operand is NaN, as Cranelift's SSE
+lowering does; the spec allows it (a canonical NaN is in `nans_N`). `pyc` uses its scalar helpers'
+rules (quiet the input NaN, `nan` for `min`/`max`).
 
 ### Claiming `simd`
 `tests/spec/claims.py` maps the directory `simd` to the feature key `simd`. Until a target claims
@@ -272,7 +275,7 @@ fails there with `Unsupported("simd")`, as today (Q2).
 | 5b | `pyc`: `targets/pyc/simd.py`, all 236 operators | implementer | explicit `simd` run ≤ 25 failures → `pyc` claims `simd`; `pyc` source identity; CoreMark `pyc` row; BENCHMARKS row for the representation micro-benchmark | ~700, tests ~200 |
 | 5c | JIT core and amendment (both backends): slot map, `jit/common/simd.py`, `Layout` widths, boundary split, the `simd` method with data movement only (`v128.const`, `load`/`store` incl. lanes, splat, `extract`/`replace_lane`, bitwise, `select`, globals) on x86-64 and aarch64 | jit-engineer, plan approved first | identity lists for both targets; `tests/jit/test_simd_abi.py` on x86-64 and under QEMU aarch64; `simd_load`, `simd_store`, `simd_lane`, `simd_splat`, `simd_select`, `simd_linking` equal `pyc` | core ~150, common ~200, each backend ~250 |
 | 5d1 | `jit/x86_64/simd.py`: class D operators (1–3 SSE2 instructions), encodings vs `llvm-mc`, ISA allowlist, the SSE2-only QEMU job | jit-engineer | files of `simd/` whose hardest operator is class D (18 739 commands) equal `pyc`; run under `qemu64` without SSSE3/SSE4.1 | ~450, tests ~120 |
-| 5d2 | class S operators (4–12 instructions) | jit-engineer | files with S at most (6 150 more commands) equal `pyc` | ~450, tests ~120 |
+| 5d2 | class S operators (4–22 instructions) | jit-engineer | files with S at most (6 150 more commands) equal `pyc` | ~450, tests ~120 |
 | 5d3 | class L operators (`shuffle`, `swizzle`, rounding); claim | jit-engineer | `--engine jit-x86_64 simd` = `pyc`'s failures → claim; `spec_diff pyc jit-x86_64` empty for `simd/`; SIMD benchmark rows | ~250, tests ~80 |
 | 5e1, 5e2 | `jit/aarch64/simd.py`: every operator in NEON, in two parts (data movement and class D first, then the rest; claim in 5e2) | jit-engineer | same on the arm64 runners and under QEMU (BTI); D35 lists equal both ways | ~350 each, tests ~120 each |
 | 5f | review of 5c–5e by a `reviewer` with no access to the implementers' reasoning; D39 amendment recorded; MICRO-COMPILERS.md line counts updated (backends grow to ~2–2.6k lines); this spec `implemented` | reviewer | findings closed; CoreMark rows unchanged | docs |
@@ -351,4 +354,16 @@ Q5 (a), Q6 (a), Q7 (a), Q8 (a). Kept below with their options for the record.
   SSE2 sequences for some class-S operators and did them there: `i8x16`/`i16x8`/`i32x4.abs`,
   `extmul_*_i32x4_u`, `i32x4.extadd_pairwise_i16x8_s`, `v128.load8x8_s`, `load16x4_s`, `load32x2_s`.
   5d2 takes the rest of class S; the step boundary is "what passes", the class counts are not updated.
-* 2026-11-02 (progress): 5a, 5b, 5c1, 5c2 and 5d1 are done; 5d2 is under way. `pyc` claims `simd` (25 990 commands, 0 failures); the JITs do not yet. `tools/isa_all.py` now compiles every directory, claimed or not, on both targets (the x86 gate included `simd/` from 5c2). The `jit` CI job runs the SIMD tests and the explicit `simd` run of `jit-x86_64` under the SSE2-only `qemu64` CPU and compares them with `pyc` (`spec_diff --allow-unsupported`).
+* 2026-11-02 (progress): 5a, 5b, 5c1, 5c2, 5d1 and 5d2 are done; 5d3 is next. `pyc` claims `simd` (25 990 commands, 0 failures); the JITs do not yet. `tools/isa_all.py` now compiles every directory, claimed or not, on both targets (the x86 gate included `simd/` from 5c2). The `jit` CI job runs the SIMD tests and the explicit `simd` run of `jit-x86_64` under the SSE2-only `qemu64` CPU and compares them with `pyc` (`spec_diff --allow-unsupported`).
+* 2026-11-02 (5d2): `jit-x86_64` compiles every class-S operator with SSE2 only; the explicit `simd`
+  run goes from 19 649 to 24 809 passing commands, and only class L is left (`i8x16.shuffle`,
+  `i8x16.swizzle`, the f32x4/f64x2 rounding operators: 672 commands in `simd_lane`, `simd_load`,
+  `simd_splat`, `simd_f32x4_rounding`, `simd_f64x2_rounding`). The x86-64-v1 allowlist of
+  `tools/isa_check.py` gained `punpcklqdq pshuflw pmulhw pmulhuw cvttps2dq cvttpd2dq cmpunordps
+  cmpunordpd`. Sequences beyond the text above: class S reaches 22 instructions (above); 64-bit
+  constants go through rcx (`mov`, `movq`, `punpcklqdq`), never a constant pool; float `min`/`max`
+  run `minps`/`maxps` both ways, merge with `orps`/`andps` (±0) and make NaN lanes canonical
+  (`cmpunordps`, a shifted mask, `andnps`; "NaN and determinism"); `i8x16.shr_s` unpacks bytes into
+  words and shifts by n + 8; `i64x2.shr_s` is `(x >>u n ^ m) - m` with `m = 2^63 >>u n`;
+  `trunc_sat_f64x2_u_zero` rounds by the 2^52 magic add and subtracts 1 where that rounded up;
+  `f32x4.convert_i32x4_u` converts `(x - lo) / 2` and `lo` exactly and rounds once.

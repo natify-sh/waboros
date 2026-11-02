@@ -44,6 +44,8 @@ _SSE = (
     " movmskps movmskpd addps addpd subps subpd mulps mulpd divps divpd minps minpd maxps maxpd"
     " sqrtps sqrtpd cmpeqps cmpltps cmpleps cmpneqps cmpeqpd cmpltpd cmplepd cmpneqpd cvtdq2ps"
     " cvtdq2pd cvtps2pd cvtpd2ps"
+    # and of the class-S sequences (step 5d2)
+    " punpcklqdq pshuflw pmulhw pmulhuw cvttps2dq cvttpd2dq cmpunordps cmpunordpd"
 ).split()
 V1 = frozenset(
     _INT + _SSE + [p + c for p in ("j", "set", "cmov") for c in _CC + _CC_ALIASES]

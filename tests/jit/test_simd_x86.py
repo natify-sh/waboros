@@ -1,8 +1,9 @@
 # pyright: reportPrivateUsage=false
-"""Class-D SIMD operators on jit-x86_64 (S0005 step 5d1): every operator against `pyc` with local,
-constant and computed operands over edge lanes (INT_MIN, all-ones, 0x80..., NaN, +-0, +-inf,
-denormals); NaN results of float arithmetic compare by class (arithmetic NaN on both). The SSE2
-forms are checked against llvm-mc."""
+"""Class-D and class-S SIMD operators on jit-x86_64 (S0005 steps 5d1, 5d2): every operator
+against `pyc` with local, constant and computed operands over edge lanes (INT_MIN, all-ones,
+0x80..., NaN, +-0, +-inf, denormals, the trunc_sat and convert boundaries); NaN results of float
+arithmetic, min and max compare by class (a quiet NaN on both). The SSE2 forms are checked
+against llvm-mc."""
 
 import itertools
 import struct
@@ -24,15 +25,20 @@ def _v(fmt: str, lanes: list[int]) -> int:
 
 
 F32 = [0, 0x80000000, 0x7F800000, 0xFF800000, 0x7FC00000, 0x7FA00001, 0xFFC00000, 0x3F800000,
-       0xBFC00000, 1, 0x7F7FFFFF, 0x4B000001]  # fmt: skip
+       0xBFC00000, 1, 0x7F7FFFFF, 0x4B000001,  # then the trunc_sat edges: 2^31, 2^32, -2^31 ...
+       0x4F000000, 0x4EFFFFFF, 0x4F800000, 0x4F7FFFFF, 0xCF000000, 0xCF000001, 0xBF7FFFFF,
+       0x3F000000]  # fmt: skip
 F64 = [0, 1 << 63, 0x7FF0 << 48, 0xFFF0 << 48, 0x7FF8 << 48, 0x7FF4000000000001, 0x3FF0 << 48,
-       0xC1E0 << 48, 1, 0x41E0000000000000]  # fmt: skip
+       0xC1E0 << 48, 1, 0x41E0000000000000,  # 2^31 - 1, 2^32 - 1, 2^32 - 0.5, 2^32, ...
+       0x41DFFFFFFFC00000, 0x41EFFFFFFFE00000, 0x41EFFFFFFFF00000, 0x41F0 << 48,
+       0xC1E0000000200000, 0x3FE8 << 48, 0xBFEFFFFFFFFFFFFF, 0x41DFFFFFFFE00000]  # fmt: skip
 V = [*VALS, _v("<16B", [0x80] * 16), _v("<8H", [0x8000, 0x7FFF] * 4), _v("<4I", [0x80000000] * 4),
      _v("<16B", list(range(0x7C, 0x8C))), _v("<8H", [1, 0xFFFF, 0x80, 0xFF7F, 3, 0, 0x8001, 7]),
-     *(_v("<4I", (F32 * 2)[i : i + 4]) for i in range(0, 12, 3)),
-     *(_v("<2Q", (F64 * 2)[i : i + 2]) for i in range(0, 10, 2))]  # fmt: skip
+     *(_v("<4I", (F32 * 2)[i : i + 4]) for i in range(0, len(F32), 3)),
+     *(_v("<2Q", (F64 * 2)[i : i + 2]) for i in range(0, len(F64), 2))]  # fmt: skip
 COUNTS = [0, 1, 7, 8, 15, 16, 31, 32, 33, 63, 64, 65, 0xFFFFFFFF]
-NAN_ARITH = {f"{sh}.{o}" for sh in ("f32x4", "f64x2") for o in ("add", "sub", "mul", "div", "sqrt")}
+NAN_ARITH = {f"{sh}.{o}" for sh in ("f32x4", "f64x2")
+             for o in ("add", "sub", "mul", "div", "sqrt", "min", "max")}  # fmt: skip
 NAN_ARITH.update(("f32x4.demote_f64x2_zero", "f64x2.promote_low_f32x4"))
 
 
@@ -90,7 +96,7 @@ def _module() -> tuple[str, dict[str, list[tuple[int, ...]]]]:
 
 
 @pytest.mark.parametrize("pins", ["pinned", "nopin"])
-def test_class_d_operators_match_pyc(pins: str, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_class_d_and_s_operators_match_pyc(pins: str, monkeypatch: pytest.MonkeyPatch) -> None:
     native("jit-x86_64")
     text, cases = _module()
     jit, pyc = _pair(pins, monkeypatch, text)
@@ -104,7 +110,7 @@ def test_class_d_operators_match_pyc(pins: str, monkeypatch: pytest.MonkeyPatch)
                 got, want = [_nan_class(name, g) for g in got], [_nan_class(name, w) for w in want]
             assert got == want, (key, [hex(a) for a in args], got, want)
     assert run(jit, "v128.load8x8_s", 65529) is TrapCode.MEMORY_OUT_OF_BOUNDS
-    assert len(x.SUPPORTED - x.MOVES) == 122  # the 121 class-D operators and v128.load32x2_s
+    assert len(x.SUPPORTED) == 226  # every operator but the 10 of class L (S0005)
 
 
 def _forms() -> tuple[list[bytes], list[str]]:
@@ -120,7 +126,8 @@ def _forms() -> tuple[list[bytes], list[str]]:
 
     for name in x.FORMS:
         for d, s in ((0, 1), (5, 2), (3, 3)):
-            imm = 0xFA if name == "pshufd" else {0: 0, 5: 4, 3: 2}[d] if name[:3] == "cmp" else None
+            imm = {0: 0, 5: 4, 3: 2}[d] if name[:3] == "cmp" else None
+            imm = 0xFA if name.startswith("pshuf") else imm
             want = f"{name} xmm{d}, xmm{s}" + ("" if imm is None else f", {imm}")
             emit(x.run, ((name, d, s, imm),), want=want)
     for name in x.SHIFTS:
@@ -132,13 +139,21 @@ def _forms() -> tuple[list[bytes], list[str]]:
     for xr, m, t in ((0, Mem(RCX), "rcx"), (5, Mem(R12, 8), "r12 + 8"),
                      (1, Mem(R9, 16, RCX), "r9 + rcx*1 + 16")):  # fmt: skip
         emit(x.movq_load, xr, m, want=f"movq xmm{xr}, qword ptr [{t}]")
+    for xr, v in ((3, 0x5555555555555555), (5, 0x4330000000000000)):  # a constant via rcx
+        emit(x.run, (("k", xr, v, None),),
+             want=f"movabs rcx, {v}\nmovq xmm{xr}, rcx\npunpcklqdq xmm{xr}, xmm{xr}")  # fmt: skip
     return ours, text
 
 
 def test_sse2_forms_match_llvm_mc() -> None:
     need(LLVM_MC, "llvm-mc")
     ours, text = _forms()
-    assert ours == _mc("x86_64", [".intel_syntax noprefix", *text]), text
+    theirs = _mc("x86_64", [".intel_syntax noprefix", *text])
+    want, pos = b"".join(theirs), 0
+    for t, o in zip(text, ours, strict=True):  # one form may be several instructions (`k`)
+        assert want[pos : pos + len(o)] == o, (t, o.hex(), want[pos : pos + len(o)].hex())
+        pos += len(o)
+    assert pos == len(want)
 
 
 def test_isa_check_sse2_forms_pass_v1_and_sse4_does_not(tmp_path: Path) -> None:

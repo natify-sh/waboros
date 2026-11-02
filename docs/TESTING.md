@@ -114,7 +114,7 @@ CoreMark's "at least 10 secs" rule and the CRCs are the 2K-performance values (a
 slow runner took 9.6 s). The interrupt-latency test (`tests/jit/test_abi.py`) allows 1 s, not 0.05 s,
 for loaded runners.
 
-The `jit` job runs `tools/isa_all.py` (698 blobs at SIMD step 5d1; the count grows with the code): it compiles every
+The `jit` job runs `tools/isa_all.py` (739 blobs at SIMD step 5d2; the count grows with the code): it compiles every
 spec module of **every directory, claimed or not** (so `simd/` too), and CoreMark, through `tools/jit_dump.py` with
 `W2PY_JIT_DUMP` and disassembles each blob with `tools/isa_check.py` (code ranges only), failing on any
 instruction above x86-64-v1 (D24). `isa_all.py --target jit-aarch64` does the same for aarch64 code,
