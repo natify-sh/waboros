@@ -141,7 +141,7 @@ def test_sse2_forms_match_llvm_mc() -> None:
     assert ours == _mc("x86_64", [".intel_syntax noprefix", *text]), text
 
 
-def test_sse2_forms_pass_the_v1_gate_and_sse4_does_not(tmp_path: Path) -> None:
+def test_isa_check_sse2_forms_pass_v1_and_sse4_does_not(tmp_path: Path) -> None:
     need(OBJDUMP, "GNU objdump")
     p = run_isa_check(tmp_path, b"".join(_forms()[0]))
     assert p.returncode == 0, p.stdout[:2000] + p.stderr
