@@ -36,6 +36,14 @@ _SSE = (
     " divsd sqrtss sqrtsd minss minsd maxss maxsd andps andpd andnps andnpd orps orpd xorps xorpd"
     " ucomiss ucomisd comiss comisd cvtsi2ss cvtsi2sd cvttss2si cvttsd2si cvtss2sd cvtsd2ss"
     " cmpss cmpsd pand pandn por pxor psrlq psllq"
+    # SSE/SSE2 packed forms of the SIMD operators (S0005 step 5d1)
+    " paddb paddw paddd paddq psubb psubw psubd psubq paddsb paddsw paddusb paddusw psubsb psubsw"
+    " psubusb psubusw pminub pmaxub pminsw pmaxsw pavgb pavgw pmullw pmaddwd pmuludq pcmpeqb"
+    " pcmpeqw pcmpeqd pcmpgtb pcmpgtw pcmpgtd packsswb packuswb packssdw punpcklbw punpcklwd"
+    " punpckldq punpckhbw punpckhwd punpckhdq psllw pslld psrlw psrld psraw psrad pshufd pmovmskb"
+    " movmskps movmskpd addps addpd subps subpd mulps mulpd divps divpd minps minpd maxps maxpd"
+    " sqrtps sqrtpd cmpeqps cmpltps cmpleps cmpneqps cmpeqpd cmpltpd cmplepd cmpneqpd cvtdq2ps"
+    " cvtdq2pd cvtps2pd cvtpd2ps"
 ).split()
 V1 = frozenset(
     _INT + _SSE + [p + c for p in ("j", "set", "cmov") for c in _CC + _CC_ALIASES]

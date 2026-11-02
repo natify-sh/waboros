@@ -54,6 +54,15 @@ jobs:
       # step 4e: the whole spec suite on jit-aarch64 with BTI enforced (call_indirect, tail calls
       # and jump tables land on their pads), in-process under QEMU; about 30 s
       - run: python3 tools/run_arm64.py -m tests.spec.run --engine jit-aarch64 --in-process
+      # S0005: SIMD on an SSE2-only CPU (QEMU's qemu64 without SSE3/SSSE3/SSE4/popcnt: an
+      # instruction above x86-64-v1 is a SIGILL); the explicit `simd` run must equal pyc's except
+      # for operators not compiled yet (exit 1 = failing commands; a crash leaves no report)
+      - run: qemu-x86_64 -cpu qemu64,-pni,-ssse3,-sse4.1,-sse4.2,-popcnt .venv/bin/python -m pytest tests/jit/test_simd_abi.py tests/jit/test_simd_x86.py -q
+        env:
+          W2PY_JIT_REQUIRE: "1"
+      - run: |
+          qemu-x86_64 -cpu qemu64,-pni,-ssse3,-sse4.1,-sse4.2,-popcnt .venv/bin/python -m tests.spec.run --engine jit-x86_64 --in-process --json simd-qemu64.json simd > /dev/null || [ $? -eq 1 ]
+          uv run python tools/spec_diff.py pyc simd-qemu64.json simd --allow-unsupported
       - run: uv run python tools/isa_all.py
       # S0004: the same gate for the aarch64 code, cross-compiled here (never run; D35): ARMv8.0-A
       - run: uv run python tools/isa_all.py --target jit-aarch64

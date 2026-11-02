@@ -347,3 +347,7 @@ Q5 (a), Q6 (a), Q7 (a), Q8 (a). Kept below with their options for the record.
   pair to its slots first); `Imm(v)` stays allowed by this spec and is added to the backends only if
   a later step measures a gain. `tools/jit_dump.py` hashes `Layout.wide` explicitly (it is not in
   `Layout`'s repr, which keeps the D35 lines of modules without v128 unchanged).
+* 2026-11-02 (5d1): the D/S/L classes are estimates from the ISA, not a contract. 5d1 found short
+  SSE2 sequences for some class-S operators and did them there: `i8x16`/`i16x8`/`i32x4.abs`,
+  `extmul_*_i32x4_u`, `i32x4.extadd_pairwise_i16x8_s`, `v128.load8x8_s`, `load16x4_s`, `load32x2_s`.
+  5d2 takes the rest of class S; the step boundary is "what passes", the class counts are not updated.
