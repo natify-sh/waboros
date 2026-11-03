@@ -17,7 +17,8 @@ Check, in this order:
 2. Tests: is every claim backed by a test or a command? Run the tests and the acceptance commands
    yourself.
 3. Scope: changes outside the goal, new abstractions without a second use, new dependencies, public
-   API work before its phase.
+   API work before its phase; per-OS code (D47) on a row beyond Linux glibc x86-64 without a named
+   exception (a-d) and its evidence.
 4. Contracts: format/ABI changes with a version bump and updated documents.
 5. Docs: every document the diff makes untrue is updated (specs' Changes, TARGETS, TESTING,
    FEATURES, BENCHMARKS, LESSONS, ROADMAP); a stale statement is a finding.

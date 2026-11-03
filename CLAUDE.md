@@ -96,6 +96,8 @@ Context:     <what exists, which files; what was tried and ruled out>
 Read first:  <the 1–3 documents or files that matter; not the whole docs/>
 Scope:       <files/directories that may change>      Out of scope: <what must not change>
 Budget:      <~N lines of diff; stop and report if more is needed>
+Rows:        <per-OS code only (D47): the OS rows touched; for each beyond Linux glibc x86-64,
+              the exception (a-d) and its evidence>
 Acceptance:  <exact commands + expected result, e.g. pytest -k "i64 and pyc" → 0 failures;
               CoreMark still passes its self-check; BENCHMARKS row added if speed changed>
 Docs:        <the documents this step makes untrue and must update (docs/STANDARDS.md, "Which

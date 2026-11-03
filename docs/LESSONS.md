@@ -444,3 +444,11 @@ What went wrong or surprised us while building the PoC, so it is not found again
     environment (or a faithful imitation) and count what actually runs. Cover the platform-specific
     path with a test that needs nothing the platform lacks: `test_android.py` writes its module in
     binary. Found: S0006 step 5, 2026-11-03.
+67. **An optimisation whose cost grows with the number of operating systems is the most expensive
+    kind.** Guard pages (S0006) gave +5-10 % on CoreMark and about 20 % less code, but needed a handler
+    per OS family (Linux glibc and musl, Darwin, Windows, then bionic), Windows CET handling,
+    `faulthandler` interplay, chaining rules, a decision on torn stores under emulators, a verified CI
+    row per OS and several rounds of CI fixes. The JIT itself, on two architectures, cost less to bring
+    to spec parity. Rule: D47: one row first (Linux glibc x86-64), other rows only by its exceptions
+    (required for correctness, at least +10 % measured there with a need, a small reuse, or the
+    maintainer's explicit request). Found: S0006 steps 1-5, 2026-11-02/03.

@@ -676,3 +676,43 @@ payloads while those values are floats (LESSONS 63). Decided:
 Rejected: a `float` subclass that carries the bits of a NaN constant (prototype; one more convention for
 every consumer of the front end), f32 as bits everywhere (slows the CoreMark path of every host).
 
+
+### D47. An optimisation that needs code per operating system starts on one row and grows only by exception
+Status: accepted (maintainer, 2026-11-03) · Date: 2026-11-03 · Supersedes: — · Evidence: S0006 steps 1-5 (LESSONS 67)
+
+"Per-OS code" differs by operating system, libc or OS-level runtime: signal or exception handling, OS
+structures and offsets, OS APIs, process policies such as CET. It does not cover ISA variants (D24, D42)
+or code every OS shares.
+
+1. Such an optimisation is first built and verified on **one row**: Linux glibc x86-64 (the fastest
+   CI, the reference machine). Every other row keeps the portable path, silently and without a
+   warning, as `auto` does for guard pages (D44).
+2. It is extended to another row **only when one of the exceptions below holds**; the step's brief
+   names which one, with its evidence.
+3. A row becomes the default only after it is **verified in CI on that OS** (a real runner, or an
+   emulator that shows the behaviour), with a silent fallback to the portable path when the feature
+   cannot be installed at run time.
+4. Every per-OS row is listed in one table (as S0006's rows), with its CI job.
+
+Exceptions (any one is enough):
+* **(a) Required, not faster.** Without the per-OS code the JIT or a hard rule fails on that OS: it
+  cannot run at all (macOS `MAP_JIT` and per-thread write protection, Windows `VirtualAlloc`), or it
+  breaks "never crash the interpreter", W^X, CET or BTI compliance, or a trap the oracle gives.
+  Correctness and safety are not optimisations.
+* **(b) Large measured gain on that row.** At least **+10 %** median on CoreMark or on the corpus
+  (`tools/run_corpus.py`), measured on that OS's CI runner (alternated rounds, as BENCHMARKS.md
+  requires), **and** a stated need on that platform (a user, a maintainer's target, a program that is
+  too slow there).
+* **(c) Small marginal cost.** The new row reuses existing code with at most about **100 lines**
+  specific to it, needs **no new CI infrastructure** (an existing job or container gains a step), and
+  adds **no new interaction class** (no new handler mechanism, no new process policy). Example: guard
+  pages on Linux musl reused the glibc handler unchanged (one detection function).
+* **(d) The maintainer asks for it explicitly**, knowing the cost; the decision record says so.
+
+Not exceptions: "Wasmtime does it" by itself (Wasmtime has a team per platform), completeness of a
+table, symmetry between OSes, or a gain measured on another OS.
+
+Existing per-OS work (S0006 on Linux glibc and musl, macOS, Windows and Android x86-64; executable
+memory per OS) stays as it is. Briefs and reviews: a brief for anything per-OS names the rows it
+touches and, for each row beyond the first, the exception and its evidence; a reviewer treats a per-OS
+change without a named exception as out of scope.
