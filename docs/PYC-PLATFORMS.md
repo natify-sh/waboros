@@ -7,7 +7,7 @@ updated: 2026-11-03
 
 # pyc across Python versions and architectures (measured 2026-11-03)
 
-Method: copy of /home/user/w2py (working tree, uncommitted edits included; `poc/` left out) in `repo/`; the pinned spec cache reused.
+Method: a copy of the working tree (uncommitted edits included; `poc/` left out) in `repo/`; the pinned spec cache reused.
 Metric: `python -m tests.spec.run --engine pyc` (54 385 pass / 91 xfail / 1 171 skip is the clean baseline) and `pytest tests -k pyc`.
 Raw data stayed in the session scratchpad (not in the repository); the commands below reproduce it.
 Native x86_64: CPython 3.11.18, 3.12.16, 3.13.18, 3.14.10, 3.14.10t, 3.15.2, 3.15.2t, PyPy 7/3.11.17.
