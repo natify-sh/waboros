@@ -359,3 +359,12 @@ What went wrong or surprised us while building the PoC, so it is not found again
     (Linux force-unignores). Check what a kernel puts in each
     `siginfo` field from its source before relying on POSIX's description. Found: S0006 step 3, by
     reading xnu (no macOS machine here), 2026-11-03.
+58. **A test that relies on `auto` tests guard mode only where the row is verified.**
+    `test_faulthandler_enabled_after_ours_then_a_library_handler_is_an_error` ran its child with
+    `WABOROS_JIT_BOUNDS=auto`. On macOS, whose row has a handler but is not verified yet, `auto`
+    compiled explicit code: no handler, no Q1 check, and the out-of-bounds access trapped through
+    the explicit check instead of raising the expected error. The failure looked like a gap in
+    rule A, but the scenario never existed. CI run 41604810683, both macOS runners; a recorded-maps
+    musl test failed there too because `host_row` read the real `sys.platform`. Rule: a test of
+    guard behaviour names `guard`, or `auto` only on a verified row; a test of one OS's path fixes
+    `sys.platform`. Found: S0006 step 3, 2026-11-03.

@@ -603,3 +603,11 @@ reservation is a crash, not a trap: the explicit-mode tests and differential run
   * **CI**: `os` (`macos-26-intel`) and `arm64` (`macos-latest`) run the spec suite and
     `test_guard.py` with `WABOROS_JIT_BOUNDS=guard` and `WABOROS_JIT_REQUIRE=1`. Once they pass,
     a separate commit adds `darwin` to `verified` (D44's rule).
+* 2026-11-03: **first macOS CI run** (run 41604810683, `macos-26-intel` and `macos-latest`). Guard faults
+  work on both: the trap fires as `MEMORY_OUT_OF_BOUNDS`. Three tests failed in the `tests/jit` step,
+  all test faults (LESSONS 58), with no change to the handler or to rule A:
+  * The musl test read the real `sys.platform` and now fixes it to `linux`.
+  * The two "faulthandler enabled after ours" cases ran their child under `auto`, which is explicit
+    on the unverified macOS row. They now use `auto` only on a verified row and `guard` otherwise;
+    the Linux expectation is unchanged.
+  * Simulated on Linux with an empty `verified`, the guard child gets the Q1 error in both cases.

@@ -237,7 +237,9 @@ GLIBC_MAPS = """\
 
 def test_musl_is_named_by_its_mapped_image(monkeypatch: pytest.MonkeyPatch) -> None:
     """The musl row (S0006): `platform.libc_ver()` names glibc only; musl is the process's
-    mapped `ld-musl-<arch>.so.1`. Fed with recorded maps, so it runs on any Linux host."""
+    mapped `ld-musl-<arch>.so.1`. Fed with recorded maps and a Linux `sys.platform`, so it runs
+    on any host (macOS included)."""
+    monkeypatch.setattr(guard.sys, "platform", "linux")
     libc_of = guard._libc_of  # pyright: ignore[reportPrivateUsage]
     assert libc_of(MUSL_MAPS) == "musl"
     assert libc_of(MUSL_MAPS.replace("x86_64", "aarch64")) == "musl"
@@ -697,12 +699,16 @@ def test_a_library_handler_after_ours_under_faulthandler_is_no_error(above: str)
 def test_faulthandler_enabled_after_ours_then_a_library_handler_is_an_error(above: str) -> None:
     """The reviewer's crash: ours, then faulthandler enabled, then a library's handler on top.
     The library chains to faulthandler, which re-raises a guard fault (139): rule A alone saw a
-    library handler and let the call run. faulthandler enabled after our install is a break."""
+    library handler and let the call run. faulthandler enabled after our install is a break.
+    `auto` where the row is verified (its check sees the break too), else `guard`: on an
+    unverified row (macOS until CI verifies it) `auto` compiles explicit code, installs no
+    handler and checks nothing, so the scenario would not exist (CI run 41604810683)."""
     if above == "wasmtime":
         pytest.importorskip("wasmtime")
+    verified = guard.host_row() in base.TARGETS[JIT]().verified  # pyright: ignore[reportAttributeAccessIssue]
     p = _child("faulthandler.enable()\n" + (_WASMTIME if above == "wasmtime" else _CHAINER)
                + "try:\n    inst('f', 65536)\nexcept RuntimeError as e:\n    print('error', e)\n",
-               bounds="auto")  # fmt: skip
+               bounds="auto" if verified else "guard")  # fmt: skip
     assert p.returncode == 0, p
     assert "trap MEMORY_OUT_OF_BOUNDS" in p.stdout
     assert "error the guard-page fault handler" in p.stdout, p
