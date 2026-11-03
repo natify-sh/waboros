@@ -720,11 +720,16 @@ change without a named exception as out of scope.
 ### D48. Native JIT targets are x86-64, aarch64 and riscv64
 Status: accepted (maintainer, 2026-11-03) · Date: 2026-11-03 · Supersedes: — · Evidence: [ARTIFACT-CONTAINER.md](ARTIFACT-CONTAINER.md) (Wasmtime 50.0.1 CLI, checked 2026-11-02: `--target i686-...` and `--target armv7-...` give "Support for this target has not been implemented yet"; 32-bit hosts get Pulley, its bytecode interpreter)
 
+**Scope: the JIT under CPython** (desktop, server, mobile). MicroPython (the `mpy` target, phase 7) is a
+separate question with its own architectures (Thumb, Xtensa, RISC-V 32 and others, through
+MicroPython's own native emitters and viper); this decision does not limit it, and the maintainer may
+decide differently there.
+
 1. **Architectures.** A JIT target exists only for x86-64, aarch64 and riscv64: three of
    Cranelift's four 64-bit architectures (x86-64, aarch64, riscv64, s390x). x86-64 and aarch64 are
    done; riscv64 is planned, the first micro-compiler after `arm64.wasm`
    ([MICRO-COMPILERS.md](MICRO-COMPILERS.md)); ROADMAP phase 8.
-   **s390x is excluded by the maintainer** and runs `pyc`. Reasons, recorded, not a plan: the host
+   **s390x is excluded by the maintainer** and runs `pyc` (IBM mainframes only). Reasons, recorded, not a plan: the host
    is big-endian and wasm memory is little-endian, so every load and store would byte-swap (s390x
    has byte-reversed `lrv`, `lrvg`, `strv`, `strvg`, `lrvh`, so the cost is small, but it is a new
    axis for the backend interface (D39) and for SIMD lanes); there is no native CI runner, only
@@ -745,3 +750,8 @@ Status: accepted (maintainer, 2026-11-03) · Date: 2026-11-03 · Supersedes: —
 LLVM as an optional ahead-of-time tier for speed is a separate question and is not closed by this
 decision. Rejected: a 32-bit pathfinder (i686), a generic backend library (sljit), an LLVM tier for
 the long tail of architectures.
+
+Consequences: there is no big-endian JIT host, so the backend interface (D39) never needs
+byte-reversed loads and stores and SIMD lanes stay in host order on every JIT target; the JIT CI stays
+on native runners (x86-64, arm64) plus QEMU for riscv64 when it comes. The micro-compilers are
+`x64.wasm`, `arm64.wasm` and `riscv64.wasm`.
