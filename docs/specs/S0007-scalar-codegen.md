@@ -12,8 +12,8 @@ updated: 2026-11-03
 # S0007 Scalar code generation in both JITs (addressing, returns, temporaries)
 
 ## Summary
-**Status (2026-11-03): approved, in progress.** Steps 1, 2 and 3 are done, steps 1b and 5 were measured and dropped, the spec is
-paused while S0006 is closed (now implemented); steps 4 and 6-8 are open.
+**Status (2026-11-03): approved, in progress.** Steps 1, 2 and 3 are done, steps 1b, 5 and 7 were measured and dropped, the
+spec is paused while S0006 is closed (now implemented); steps 4, 6 and 8 are open.
 
 `jit-x86_64` scalar code is 1.5–3.9× slower than Wasmtime on the scalar kernels and 38 % slower on
 CoreMark. A measured investigation (2026-11-02; Xeon 2.10 GHz, 4 vCPU, CPython 3.13.17, wasmtime-py
@@ -345,3 +345,12 @@ investigation's.
   2.06 → 2.13 (faster in 23 of 64 pairs). With the rest of the module byte-identical at the baseline's
   offsets it was 2.04 → 2.13 (8 of 32). CoreMark was +0.7 %, within the spread (BENCHMARKS.md). The code
   is reverted; the patch can be re-measured after step 6 (call-free leaves without checks).
+* 2026-11-03: step 7 (R: a spilled `tos` goes to a free pool register, the entry kind `REG`; the save set from a
+  second pass; x86-64 `rewind` truncates), **measured and dropped**. Spec parity on both JITs (54 385 pass, 0 fail,
+  91 xfail; `jit-x86_64` explicit and guard, `jit-aarch64` under QEMU in both modes); D35: the same 40 modules
+  change on each target, exactly those whose baseline compilation spills `tos`; ISA gates clean; a new unit test
+  (a callee's temporaries in registers its caller pins) failed without the second pass. CoreMark +7.5 % as built,
+  but −2.5 % (faster in 4 of 16 pairs) with every function at the baseline's offset; `scan` and `swizzle` not
+  faster under that control (`swizzle`'s −27 % as built is placement); compile time +8 % (BENCHMARKS.md). Only 6 of
+  CoreMark's 29 functions used temporaries on x86-64: the pins take most of the pool. The investigation's +9.4 %
+  for K, L, Z and R together is not reproduced by R on top of K and L. The code is reverted.

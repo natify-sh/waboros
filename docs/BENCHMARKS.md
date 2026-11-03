@@ -813,3 +813,42 @@ equal, removing the two pushes, the two pops and one load did not make the call 
 slower, if anything. Every CoreMark run "Correct operation validated". Spec parity held with the change
 (54 385 pass, 0 fail, 91 xfail on `jit-x86_64` in explicit and guard mode and on `jit-aarch64` under QEMU in
 both modes; the ISA gates clean).
+
+### Step 7: temporaries in free pool registers (R) (2026-11-03; dropped)
+
+Not merged: with the code placement controlled, neither CoreMark nor `scan` nor `swizzle` gets faster, so by
+S0007's rule the step is dropped. The patch is kept outside the repository for a revisit.
+
+The change (core and both JITs, D39 amendments B, C, D): when `tos` spilled, the value went to the first pool
+register that no local is pinned to and no stack entry, popped operand or pending compare holds (a new entry
+kind `REG`), else to its slot; `flush` still wrote every entry to its slot, so at edges and calls only pins
+were live. A function that used temporaries was rewound and compiled once more with the save set pins ∪
+temporaries (x86-64 `rewind` became a real truncation). The spec suite has few such spills: 40 modules
+changed on each target (the same 40, exactly the modules whose baseline compilation spills `tos`). CoreMark:
+6 of its 29 functions used temporaries on x86-64 (the pins take most of the 8-register pool), 8 on aarch64;
+code 33 993 → 34 006 bytes in guard mode. The scalar kernels `addsat`, `dot`, `scan` and `swizzle` changed;
+`matmul` and `nearest` were byte-identical. Conditions: 2026-11-03 21:45–22:05 UTC, Intel Xeon @ 2.10 GHz,
+4 vCPU VM, CPython 3.13.17, `jit-x86_64` in its default bounds mode (guard, D44), one benchmark process at a
+time, load average about 1.0. Baseline: HEAD 3f1168c (`git archive`, `PYTHONPATH`, `waboros.__file__`
+checked), alternated run by run with the order swapped each pair. Kernels: `tools/run_simd_bench.py
+--targets jit-x86_64 --rounds 5`, the median of the run medians (range).
+
+| benchmark | runs | before | after | change |
+|---|---|---|---|---|
+| CoreMark (it/s), as built | 8 pairs | 15 710 (15 138–16 872) | 16 893 (15 305–18 609) | +7.5 %, faster in 6 of 8 (placement, below) |
+| CoreMark, every function at the baseline's offset, pads 0–56 | 16 pairs | 16 930 (15 276–17 680) | 16 512 (14 995–17 498) | −2.5 %, faster in 4 of 16 |
+| scalar `swizzle` (µs per iteration), as built | 16 pairs | 3.95 (3.85–5.31) | 2.87 (2.63–3.91) | −27 %, 16 of 16 (placement) |
+| scalar `swizzle`, controlled | 32 pairs | 3.31 (2.77–6.14) | 3.41 (2.83–4.72) | +3 %, faster in 19 of 32 (noise) |
+| scalar `scan`, as built / controlled | 16 / 32 pairs | 2.08 / 2.08 | 2.08 / 2.09 | noise (8 of 16, 15 of 32) |
+| scalar `addsat`, as built / controlled | 16 / 32 pairs | 4.12 / 4.03 | 4.41 / 3.96 | +7 % as built (3 of 16), −2 % controlled (14 of 32) |
+| scalar `dot`, `matmul`, `nearest`, controlled | 32 pairs | 2.86, 3.42, 1.28 | 2.88, 3.42, 1.27 | noise |
+| compile time, CoreMark + the three corpus modules (ms, median of 10) | 8 pairs | 205.7 (189.7–238.0) | 222.2 (206.2–239.5) | +8.0 %, within the +10 % bound |
+
+Placement control (LESSONS 51): a scratch patch in both trees put every function at the same offset (each
+function's start = the sum of the larger of its two sizes before it, plus a pad of 0, 8, …, 56 bytes of `int3`
+for the whole module). The sha256 of each function's range was then equal in both trees for every function but
+the changed ones. Under it the as-built CoreMark gain and `swizzle`'s −27 % disappear. In a function with few
+pins a temporary costs a push and a pop per call in exchange for a store and a load per spill, and in the
+changed functions that did not pay. Every CoreMark run "Correct operation validated". Spec parity held with
+the change (54 385 pass, 0 fail, 91 xfail on `jit-x86_64` in explicit and guard mode and on `jit-aarch64`
+under QEMU in both modes); `tests/jit` passed in both bounds modes, also under QEMU; the ISA gates were clean.
