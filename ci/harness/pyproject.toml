@@ -36,14 +36,11 @@ before-build = "pip wheel --no-deps --wheel-dir {project}/ci/deps {project}"
 # auditwheel refuses a wheel without an ELF file, and there is nothing to repair
 repair-wheel-command = ""
 test-requires = ["pytest", "wasmtime==50.0.1", "wasm-tools-package==1.262.0.0", "pywasm"]
-# The JIT platforms run the tests twice, once per bounds mode. The mode is a pytest option
-# (tests/conftest.py), not an environment variable: the same in sh, cmd and the Android app,
-# where cibuildwheel has no test-environment (a list is joined with " && ", so a failing first run
-# stops the second). Windows runs test-command through cmd.exe (cibuildwheel util/cmd.py shell()).
-test-command = [
-    "pytest {project}/tests --jit-bounds=guard -q -rs -p no:cacheprovider",
-    "pytest {project}/tests --jit-bounds=explicit -q -rs -p no:cacheprovider",
-]
+# The JIT platforms run the tests that compile JIT code once per bounds mode (guard, explicit), in
+# one pytest run: the mode is a pytest option (tests/conftest.py), not an environment variable, so it
+# is the same in sh, cmd and the Android app, where cibuildwheel has no test-environment. Windows runs
+# test-command through cmd.exe (cibuildwheel util/cmd.py shell()).
+test-command = "pytest {project}/tests --jit-bounds=guard,explicit -q -rs -p no:cacheprovider"
 
 [tool.cibuildwheel.linux]
 # x86_64 glibc: oldest, 3.14, newest free-threaded; musl x86_64: one (the musl guard row); i686: one
@@ -76,10 +73,7 @@ test-command = "pytest {project}/tests -q -rs -p no:cacheprovider --ignore={proj
 # mode there) and explicit.
 [[tool.cibuildwheel.overrides]]
 select = "*-manylinux_aarch64"
-test-command = [
-    "pytest {project}/tests --jit-bounds=auto -q -rs -p no:cacheprovider",
-    "pytest {project}/tests --jit-bounds=explicit -q -rs -p no:cacheprovider",
-]
+test-command = "pytest {project}/tests --jit-bounds=auto,explicit -q -rs -p no:cacheprovider"
 
 # Linux i686 and the optional exotic job (armv7l, ppc64le, s390x, riscv64; under QEMU): no JIT here, no
 # wheels of wasmtime / wasm-tools, no uv wheels: pyc-only subset, no oracle.
