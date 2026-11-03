@@ -1,0 +1,72 @@
+name: platforms
+# DRAFT for review (ROADMAP, "Platform tests through cibuildwheel"). workflow_dispatch only works for a
+# workflow on the default branch, so TEMPORARILY it also runs on a push to phase5 that touches the
+# harness or this file (remove the push trigger when it lands on main). cibuildwheel builds the test-only harness (ci/harness) per platform and runs tests/ with the
+# waboros wheel built from the repository root; the config is ci/harness/pyproject.toml.
+# "proven" = the same recipe runs in a sibling natify-sh repository (py-wasmext, wabt-package);
+# "new" = nobody has run it yet.
+on:
+  workflow_dispatch:
+  push:
+    branches: [phase5]
+    paths: [ci/harness/**, .github/workflows/platforms.yml]
+# its own group: never cancels the `ci` workflow
+concurrency:
+  group: platforms-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  PYTHONUTF8: "1"
+jobs:
+  wheels:
+    name: ${{ matrix.name }}${{ matrix.mode && format(' ({0})', matrix.mode) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        # mode: WABOROS_JIT_BOUNDS. aarch64 Linux uses auto and explicit: the musl row has no guard mode.
+        include:
+          # --- Linux, native runners (proven: py-wasmext, wabt-package) ---
+          - { name: Linux x86_64, os: ubuntu-latest, platform: linux, archs: x86_64, mode: guard }
+          - { name: Linux x86_64, os: ubuntu-latest, platform: linux, archs: x86_64, mode: explicit }
+          - { name: Linux i686, os: ubuntu-latest, platform: linux, archs: i686 }
+          - { name: Linux aarch64, os: ubuntu-24.04-arm, platform: linux, archs: aarch64, mode: auto }
+          - { name: Linux aarch64, os: ubuntu-24.04-arm, platform: linux, archs: aarch64, mode: explicit }
+          - { name: Linux armv7l, os: ubuntu-24.04-arm, platform: linux, archs: armv7l }
+          # --- Linux under QEMU (proven: py-wasmext builds ppc64le, riscv64; s390x is new) ---
+          - { name: Linux ppc64le, os: ubuntu-latest, platform: linux, archs: ppc64le, qemu: true }
+          - { name: Linux s390x, os: ubuntu-latest, platform: linux, archs: s390x, qemu: true }
+          - { name: Linux riscv64, os: ubuntu-latest, platform: linux, archs: riscv64, qemu: true }
+          # --- macOS and Windows (proven: wabt-package builds and tests them; guard/explicit new) ---
+          - { name: macOS arm64, os: macos-26, platform: macos, archs: arm64, mode: guard }
+          - { name: macOS arm64, os: macos-26, platform: macos, archs: arm64, mode: explicit }
+          - { name: macOS x86_64, os: macos-26-intel, platform: macos, archs: x86_64, mode: guard }
+          - { name: macOS x86_64, os: macos-26-intel, platform: macos, archs: x86_64, mode: explicit }
+          - { name: Windows AMD64, os: windows-latest, platform: windows, archs: AMD64, mode: guard }
+          - { name: Windows AMD64, os: windows-latest, platform: windows, archs: AMD64, mode: explicit }
+          - { name: Windows ARM64, os: windows-11-arm, platform: windows, archs: ARM64, mode: guard }
+          - { name: Windows ARM64, os: windows-11-arm, platform: windows, archs: ARM64, mode: explicit }
+          # --- Android: x86_64 runs on the emulator (proven: py-wasmext); arm64_v8a build only (proven) ---
+          - { name: Android x86_64, os: ubuntu-latest, platform: android, archs: x86_64, mode: auto }
+          - { name: Android arm64_v8a, os: ubuntu-latest, platform: android, archs: arm64_v8a, skip_tests: true }
+          # --- new, unproven: iOS simulator (pyc only), Pyodide (proven for the build in py-wasmext) ---
+          - { name: iOS simulator, os: macos-26, platform: ios, archs: arm64_iphonesimulator }
+          - { name: Pyodide, os: ubuntu-latest, platform: pyodide, archs: wasm32 }
+    env:
+      WABOROS_JIT_BOUNDS: ${{ matrix.mode }}
+      # Linux containers get theirs from the config (/project/ci/deps); the host runs need this one
+      PIP_FIND_LINKS: ${{ matrix.platform != 'linux' && format('{0}/ci/deps', github.workspace) || '' }}
+      UV_FIND_LINKS: ${{ matrix.platform != 'linux' && format('{0}/ci/deps', github.workspace) || '' }}
+      CIBW_TEST_SKIP: ${{ matrix.skip_tests && '*' || '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0  # setuptools-scm: the version of the wheel under test must not be 0.0.0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+      - if: ${{ matrix.qemu }}
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1  # v4.4.0
+        with:
+          platforms: all
+      # cibuildwheel comes from uv.lock (dev group); the host needs nothing else
+      - run: uv run --only-group dev cibuildwheel ci/harness --platform ${{ matrix.platform }} --archs ${{ matrix.archs }} --output-dir wheelhouse
+        shell: bash

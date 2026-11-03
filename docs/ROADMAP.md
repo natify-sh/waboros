@@ -217,6 +217,8 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29) -> the rest below.
   cp315, the free-threaded builds, PyPy if cibuildwheel still builds it), every OS and architecture
   of the map, and every JIT variant (`jit-x86_64`, `jit-aarch64`, each in guard and explicit mode;
   `pyc` where there is no JIT); a platform is supported when its cell is green.
+  Draft (2026-11-03, not yet in CI): the harness in `ci/harness/`, the manual workflow `.github/workflows/platforms.yml`;
+  proven locally on Linux x86_64 manylinux and musllinux only.
   cibuildwheel itself is a dev dependency (`uv add --dev cibuildwheel`: its version is pinned in
   `uv.lock`, CI runs `uv run cibuildwheel`, dependabot updates it).
   It replaces the hand-made Android job and adds iOS and the pyc-only platforms; the jobs that need our own tools or emulator flags stay (QEMU `qemu64`

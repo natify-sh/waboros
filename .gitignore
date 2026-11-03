@@ -11,3 +11,5 @@ dist/
 
 # agent worktrees (Claude Code isolation)
 .claude/worktrees/
+ci/deps/
+ci/wheelhouse/

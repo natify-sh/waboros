@@ -1,0 +1,60 @@
+# Test-only package: it exists so that cibuildwheel builds a platform wheel and runs our tests on
+# every platform of docs/TARGETS.md. Never published. Run from the repository root:
+#   uv run cibuildwheel ci/harness \
+#       --output-dir ci/wheelhouse --only cp313-manylinux_x86_64
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "waboros-ci-harness"
+version = "0"
+requires-python = ">=3.11"
+# Found through PIP_FIND_LINKS / UV_FIND_LINKS (the wheel built from the repository root). The
+# ">=0.0.1.dev0" matters: setuptools-scm versions are dev versions, which pip and uv skip unless a
+# specifier names one; without it the placeholder 0.0.0 on PyPI is installed instead of our wheel,
+# and a build without git (version 0.0.0) fails here instead of testing the wrong code.
+dependencies = ["waboros>=0.0.1.dev0"]
+
+# setup.py tags the wheel py3-none-<platform> (no C); packages = [] : the wheel holds no module
+[tool.setuptools]
+packages = []
+
+[tool.cibuildwheel]
+build = "cp313-*"  # one interpreter for now; widen to cp311-* ... cp315-* cp314t-* cp315t-*
+build-frontend = "build[uv]"
+# The wheel under test, built from the repository root into ci/deps (found by pip via PIP_FIND_LINKS;
+# the Linux override below gives the path inside the container, the workflow sets it elsewhere).
+before-build = "pip wheel --no-deps --wheel-dir {project}/ci/deps {project}"
+# auditwheel refuses a wheel without an ELF file, and there is nothing to repair
+repair-wheel-command = ""
+test-requires = ["pytest", "wasmtime==50.0.1", "wasm-tools-package==1.262.0.0", "pywasm"]
+test-command = "pytest {project}/tests -q -rs -p no:cacheprovider"
+
+[[tool.cibuildwheel.overrides]]
+select = ["*-manylinux_*", "*-musllinux_*"]
+# The container sees /project; the tests run in the same environment (and need the mode):
+environment = { PIP_FIND_LINKS = "/project/ci/deps", UV_FIND_LINKS = "/project/ci/deps" }  # pip and uv
+environment-pass = ["WABOROS_JIT_BOUNDS", "WABOROS_JIT_REQUIRE"]  # from the job: guard | explicit
+
+# No wheels of wasmtime / wasm-tools for these, no uv wheels either: pyc-only subset, no oracle.
+# NEW, UNPROVEN: the --ignore list is what fails on x86-64 Linux without wasmtime / wat2wasm
+# (their tests compile WAT through it); tests/spec needs the spec cache and the oracle.
+[[tool.cibuildwheel.overrides]]
+select = ["*_i686", "*_armv7l", "*_ppc64le", "*_s390x", "*_riscv64"]
+build-frontend = "build"
+test-requires = ["pytest"]
+test-command = "pytest {project}/tests -q -rs -p no:cacheprovider --ignore={project}/tests/spec --ignore={project}/tests/jit/test_guard.py --ignore={project}/tests/jit/test_tables.py --ignore={project}/tests/test_pyc.py"
+
+# Android and iOS run the tests inside an app: no shell, no {project}; the tests are copied in.
+# No wasmtime wheel there (ROADMAP): the tests that need no WAT / oracle only. UNPROVEN.
+[[tool.cibuildwheel.overrides]]
+select = ["*-android_*", "*-ios_*"]
+test-requires = ["pytest"]
+test-sources = ["tests", "tools", "poc/in/core.wasm"]
+test-command = "python -m pytest tests -q -rs -p no:cacheprovider --ignore=tests/spec --ignore=tests/jit/test_guard.py --ignore=tests/jit/test_tables.py --ignore=tests/test_pyc.py"
+
+[[tool.cibuildwheel.overrides]]
+select = "*-pyodide_*"
+test-requires = ["pytest"]
+test-command = "pytest {project}/tests -q -rs -p no:cacheprovider --ignore={project}/tests/spec --ignore={project}/tests/jit/test_guard.py --ignore={project}/tests/jit/test_tables.py --ignore={project}/tests/test_pyc.py"

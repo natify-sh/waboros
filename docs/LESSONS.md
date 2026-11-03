@@ -398,3 +398,12 @@ What went wrong or surprised us while building the PoC, so it is not found again
     process. Rule: test a security mitigation by forcing it on hardware that has it, not by reasoning
     about why it should not apply; read the whole policy back, since the system may add bits. Found:
     S0006 step 4, CI run 41633456821, 2026-11-03.
+62. **A dependency on a locally built wheel can silently install the PyPI placeholder.** The cibuildwheel
+    harness (`ci/harness`) depends on `waboros`; the repository-root wheel has a setuptools-scm dev
+    version (`0.0.1.dev45+g…`), and pip and uv skip dev (pre-release) versions unless a specifier names
+    one. With `--find-links` pointing at the wheel they still installed `waboros==0.0.0` from PyPI, so
+    the tests ran against the wrong code and failed with `cannot import name 'guard'`. Found by reading
+    the `uv pip install` log of the first container run. Fix: `dependencies = ["waboros>=0.0.1.dev0"]`
+    (also makes a no-git build, version 0.0.0, fail instead of testing the wrong code); and `uv` ignores
+    `PIP_FIND_LINKS`, so `UV_FIND_LINKS` is set too. Rule: after installing "the wheel under test", check
+    the installed version in the log. Found: cibuildwheel draft, 2026-11-03.
