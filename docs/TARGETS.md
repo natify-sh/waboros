@@ -151,7 +151,7 @@ of ours; a thin target calling it through `js` is an option to consider.
 a JIT or a micro-compiler of their own, `pyc` is (1) the internal reference every feature passes on
 first and the JITs are held to (D25; Wasmtime stays the external oracle), and (2) the fallback where
 no machine code is possible (iOS, strict W^X) or no compiler exists yet (32-bit and the other
-architectures, for good, D48; Pyodide, which has its own track: the guest as an Emscripten side module compiled by the
+architectures, D48, unless the later sljit track gives them a JIT; Pyodide, which has its own track: the guest as an Emscripten side module compiled by the
 host's WebAssembly engine, [PYODIDE.md](PYODIDE.md)). So it needs no CI cell per OS and architecture of its own: a few
 interpreters, plus the platforms where it is the only target.
 
@@ -172,4 +172,4 @@ for one) is not a target. waboros itself has no wheels (pure Python); this says 
 | iOS (`arm64_iphoneos`, simulators) | `pyc` only: third-party apps get no JIT (`MAP_JIT` needs an entitlement); `auto` falls back with the D31 warning |
 | Pyodide `wasm32` | `pyc` today (a cell of `platforms.yml`); later a separate target: the guest as an Emscripten side module loaded with `ctypes.CDLL`, compiled by the browser's engine (experiment: 92–95 % of direct `WebAssembly` on CoreMark, [PYODIDE.md](PYODIDE.md)) |
 | Linux `riscv64` | the third architecture — a wasm micro-compiler (ROADMAP q14) |
-| every other architecture: Linux `s390x`, `i686`, `armv7l`, `ppc64le`; Windows `x86`; loongarch64, mips32el | `pyc`, permanently (D48): Wasmtime has no native code generator on the 32-bit ones (they get Pulley); s390x is excluded by the maintainer (big-endian host, QEMU-only CI). CI: `i686` and `armv7l` cells in `platforms.yml` (armv7l native on the arm runner); `ppc64le`, `s390x` and `riscv64` only as optional QEMU jobs started by hand (`exotic`) |
+| every other architecture: Linux `s390x`, `i686`, `armv7l`, `ppc64le`; Windows `x86`; loongarch64, mips32el | `pyc` (D48; optionally, later, the sljit track: SLJIT-BACKEND.md): Wasmtime has no native code generator on the 32-bit ones (they get Pulley); s390x is excluded by the maintainer (big-endian host, QEMU-only CI). CI: `i686` and `armv7l` cells in `platforms.yml` (armv7l native on the arm runner); `ppc64le`, `s390x` and `riscv64` only as optional QEMU jobs started by hand (`exotic`) |

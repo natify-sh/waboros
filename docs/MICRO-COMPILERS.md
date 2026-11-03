@@ -135,7 +135,7 @@ anyone can run: [MICRO-COMPILERS-SHIPPING.md](MICRO-COMPILERS-SHIPPING.md) (main
 * **Then the third architecture: `riscv64`**, written as a micro-compiler on the proven core instead
   of a third Python backend; checked by the spec suite under QEMU against `pyc` and Wasmtime (no
   byte oracle exists for it).
-* The micro-compilers are `x64.wasm`, `arm64.wasm` and `riscv64.wasm`; later candidates: none (D48). `s390x`, `armv7l`, `ppc64le`, `i686`/`x86` and the
+* The micro-compilers are `x64.wasm`, `arm64.wasm` and `riscv64.wasm`; later candidates: none hand-written (D48); optionally, later, `sljit-<arch>.wasm` for the other architectures (D48 amendment, [SLJIT-BACKEND.md](SLJIT-BACKEND.md)). `s390x`, `armv7l`, `ppc64le`, `i686`/`x86` and the
   rest stay on `pyc`. *History, before D48:* they were listed as later
   candidates, and `i686` was judged costly (8 registers, i64 as register pairs, x87 vs SSE2, cdecl
   trampolines, 4 GB address space) and lowest priority.

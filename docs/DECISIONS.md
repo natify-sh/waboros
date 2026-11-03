@@ -718,7 +718,7 @@ touches and, for each row beyond the first, the exception and its evidence; a re
 change without a named exception as out of scope.
 
 ### D48. Native JIT targets are x86-64, aarch64 and riscv64
-Status: accepted (maintainer, 2026-11-03) · Date: 2026-11-03 · Supersedes: — · Evidence: [ARTIFACT-CONTAINER.md](ARTIFACT-CONTAINER.md) (Wasmtime 50.0.1 CLI, checked 2026-11-02: `--target i686-...` and `--target armv7-...` give "Support for this target has not been implemented yet"; 32-bit hosts get Pulley, its bytecode interpreter)
+Status: accepted (maintainer, 2026-11-03; amended 2026-11-04: the sljit track) · Date: 2026-11-03 · Supersedes: — · Evidence: [ARTIFACT-CONTAINER.md](ARTIFACT-CONTAINER.md) (Wasmtime 50.0.1 CLI, checked 2026-11-02: `--target i686-...` and `--target armv7-...` give "Support for this target has not been implemented yet"; 32-bit hosts get Pulley, its bytecode interpreter)
 
 **Scope: the JIT under CPython** (desktop, server, mobile). MicroPython (the `mpy` target, phase 7) is a
 separate question with its own architectures (Thumb, Xtensa, RISC-V 32 and others, through
@@ -739,19 +739,31 @@ decide differently there.
 2. **Operating systems** stay open within those architectures: Linux (glibc, musl), macOS, Windows
    and Android are tested today, and the JIT artifact is OS-independent (D23). D47 governs per-OS
    *optimisations*; D48 is about which architectures get a JIT at all. They do not conflict.
-3. **Every other architecture runs `pyc`**, permanently: s390x, i686 and 32-bit Windows, armv7,
-   ppc64le, loongarch64, mips32el (Ingenic X2000) and the rest. `auto` already falls back with the D31
-   warning. No 32-bit JIT design and no sljit or LLVM long-tail backend is planned. `pyc`'s 32-bit
+3. **Every other architecture runs `pyc`**: s390x, i686 and 32-bit Windows, armv7, ppc64le,
+   loongarch64, mips32el (Ingenic X2000) and the rest. `auto` already falls back with the D31
+   warning. No hand-written 32-bit JIT and no LLVM long-tail backend is planned; the one possible
+   exception is the sljit track below. `pyc`'s 32-bit
    issues are therefore real work, not stop-gaps (both are fixed: D46 and the OverflowError mapping).
 4. **Pyodide** is a separate track with its own way of running code (the guest as an Emscripten
    side module loaded with `ctypes.CDLL`, compiled by the browser's engine, [PYODIDE.md](PYODIDE.md)).
    It is not a JIT target of ours and not part of the architecture list.
 
 LLVM as an optional ahead-of-time tier for speed is a separate question and is not closed by this
-decision. Rejected: a 32-bit pathfinder (i686), a generic backend library (sljit), an LLVM tier for
-the long tail of architectures.
+decision. Rejected: a 32-bit pathfinder (i686), an LLVM tier for the long tail of architectures.
 
-Consequences: there is no big-endian JIT host, so the backend interface (D39) never needs
+**Amendment (maintainer, 2026-11-04): the sljit track.** Native hand-written JITs exist only for
+x86-64, aarch64 and riscv64. Other architectures run `pyc`; optionally, later, a sljit backend under
+our core may give them a JIT: one more implementation of the D39 interface written against sljit's
+API, shipped as a micro-compiler (`sljit-<arch>.wasm`) built from the same C/Zig port of the core,
+verified behaviourally against `pyc` (spec suite under QEMU), not byte-checked by Python twins. Not
+a first priority: it comes after the hand-written micro-compilers; until then it shapes one thing,
+the review of the LIR vocabulary (every D39 operation should map onto one to three sljit calls).
+The big-endian and 32-bit consequences below hold for the hand-written JITs, not for this track
+(sljit has byte-reversed loads and stores; i64 on 32-bit targets needs register pairs, a D39
+amendment of that track). Proposal, proof of concept and measurements:
+[SLJIT-BACKEND.md](SLJIT-BACKEND.md), `poc/sljit/`.
+
+Consequences (for the hand-written JITs): there is no big-endian JIT host, so the backend interface (D39) never needs
 byte-reversed loads and stores and SIMD lanes stay in host order on every JIT target; the JIT CI stays
 on native runners (x86-64, arm64) plus QEMU for riscv64 when it comes. The micro-compilers are
 `x64.wasm`, `arm64.wasm` and `riscv64.wasm`.

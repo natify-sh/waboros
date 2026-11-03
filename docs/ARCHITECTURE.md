@@ -375,7 +375,7 @@ Like Wasmtime's cache (and `Module.serialize`), compiled artifacts are kept on d
 Native JIT targets exist for x86-64 and aarch64 and are planned for riscv64 (the first
 micro-compiler after `arm64.wasm`, MICRO-COMPILERS.md); the JIT artifact is independent of the
 operating system (D23). Every other architecture (s390x, i686 and 32-bit Windows, armv7, ppc64le,
-loongarch64, …) runs `pyc`, permanently, with the D31 warning from `auto`. Pyodide is a track of its
+loongarch64, …) runs `pyc` (optionally, later, a sljit backend under our core: D48 amendment), with the D31 warning from `auto`. Pyodide is a track of its
 own (PYODIDE.md), not a JIT target. `mpy` is separate from this list (D48).
 
 ## Cross-compilation

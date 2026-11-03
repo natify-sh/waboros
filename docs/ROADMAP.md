@@ -314,8 +314,12 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29; done 2026-11-03) -> 
 * **riscv64 only** (D48): as a micro-compiler on the proven core after `arm64.wasm`
   (MICRO-COMPILERS.md); CI under QEMU user-mode. It is added by a micro-compiler, the encoder test
   and the integer-core spec commands; the shared core does not change. s390x, armv7, mips32el,
-  ppc64le, loongarch64, i686 and the rest stay on `pyc` for good (s390x was excluded by the
-  maintainer; the reasons are in D48).
+  ppc64le, loongarch64, i686 and the rest stay on `pyc` (s390x was excluded by the maintainer; the
+  reasons are in D48).
+* **Later, not a first priority (D48 amendment): the sljit track.** One D39 backend on sljit's API
+  under the ported core, shipped as `sljit-<arch>.wasm`, may give those architectures a JIT,
+  verified against `pyc` under QEMU ([SLJIT-BACKEND.md](SLJIT-BACKEND.md), `poc/sljit/`). First
+  step when its time comes: the sljit backend for x86-64, measured against ours (stop below ~70 %).
 
 ## Open questions
 1. **Minimum Python.** Resolved by D19: 3.11 (the PoC's 3.8 and 3.4 `--legacy` measurements stay as

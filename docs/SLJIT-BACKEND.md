@@ -180,7 +180,7 @@ CoreMark against our hand-written x86-64 backend on the same machine. Stop rule:
 about 70 % of our backend, find out why before adding architectures. Then ppc64le or loongarch64
 (64-bit, no register pairs), then a 32-bit target (armv7 or i686) with the i64 amendment.
 
-## Decision asked of the maintainer
+## Decision (maintainer, 2026-11-04: accepted as the D48 amendment, not a first priority)
 
 Amend D48: "Native hand-written JITs exist only for x86-64, aarch64 and riscv64. Other architectures
 run `pyc`; **optionally, later, a sljit backend under our core** (a micro-compiler) may give them a
