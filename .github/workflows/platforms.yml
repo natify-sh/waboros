@@ -67,6 +67,9 @@ jobs:
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1  # v4.4.0
         with:
           platforms: all
+      # UV_FIND_LINKS makes the `uv run` below read this directory, so it must exist; before-build fills it
+      - run: mkdir -p ci/deps
+        shell: bash
       # cibuildwheel comes from uv.lock (dev group); the host needs nothing else
       - run: uv run --only-group dev cibuildwheel ci/harness --platform ${{ matrix.platform }} --archs ${{ matrix.archs }} --output-dir wheelhouse
         shell: bash

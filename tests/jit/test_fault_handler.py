@@ -66,6 +66,12 @@ def _off(s: Any, path: str) -> int:
     return at
 
 
+# The mirrors above describe 64-bit OS ABIs (pointers are 8 bytes); ctypes lays them out with the
+# interpreter's own pointer size, so on a 32-bit Python (i686, armv7l) they are not the structures.
+only_64bit = pytest.mark.skipif(C.sizeof(C.c_void_p) != 8, reason="the mirrors are 64-bit layouts")
+
+
+@only_64bit
 def test_darwin_offsets_match_the_xnu_headers() -> None:
     assert _off(SIGINFO, "code") == x64.SI_CODE == a64.SI_CODE == 8
     assert _off(SIGINFO, "addr") == x64.DARWIN_SI_ADDR == a64.DARWIN_SI_ADDR == 24
@@ -77,6 +83,7 @@ def test_darwin_offsets_match_the_xnu_headers() -> None:
     assert x64.DARWIN_SIGBUS == a64.DARWIN_SIGBUS == 10
 
 
+@only_64bit
 def test_windows_offsets_match_the_sdk_headers() -> None:
     ep = (_off(EXC_POINTERS, "record"), _off(EXC_POINTERS, "context"))
     er = (_off(EXC_RECORD, "code"), _off(EXC_RECORD, "nparams"), _off(EXC_RECORD, "info"))
