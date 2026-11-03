@@ -630,3 +630,15 @@ def test_core_names_no_architecture() -> None:
 
     src = Path(compiler.__file__).read_text(encoding="utf-8")
     assert "x86" not in src and "targets.pyc" not in src
+
+
+def test_instantiating_another_architectures_code_raises() -> None:
+    """Compiling for a foreign architecture is allowed (D35); instantiating it must raise, never
+    run the code (on a 32-bit or wasm host it crashed the process: platforms run, WAT cache)."""
+    other = "jit-aarch64" if JIT == "jit-x86_64" else "jit-x86_64"
+    t = base.TARGETS[other]()
+    mod = parse(wat('(module (func (export "f") (result i32) i32.const 7))'))
+    validate(mod)
+    compiled = t.compile(mod)
+    with pytest.raises(RuntimeError, match="cannot run here"):
+        t.instantiate(compiled, link.resolve(mod, {}), StoreState())

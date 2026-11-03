@@ -219,7 +219,11 @@ def test_auto_is_explicit_silently_where_guard_cannot_be(
         warnings.simplefilter("error")
         c = compiled(LOAD)
         assert (c.flags, c.faults) == (0, [])
-        assert trap_of(build(wat(LOAD)), "f", 0xFFFFFFFF) is OOB
+        if why == "foreign process":  # compiles (D35), but its code never runs here (LESSONS 68)
+            with pytest.raises(RuntimeError, match="cannot run here"):
+                build(wat(LOAD))
+        else:
+            assert trap_of(build(wat(LOAD)), "f", 0xFFFFFFFF) is OOB
     if why in ("install fails", "foreign process"):
         assert not guard._handler  # nothing half-installed  # pyright: ignore[reportPrivateUsage]
         monkeypatch.setenv("WABOROS_JIT_BOUNDS", "guard")

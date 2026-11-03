@@ -63,8 +63,9 @@ class JitTarget:
         `reraise` are unused (step 4). `bionic`: `prev` is bionic's struct sigaction (step 5)."""
         raise NotImplementedError
 
-    def probe(self) -> str | None:
-        """None if this architecture's code can be mapped W^X and called here; else the reason."""
+    def foreign(self) -> str | None:
+        """The reason this process cannot run this architecture's code, or None. Compiling for
+        another architecture is allowed (D35); running it never is (it would crash the process)."""
         if (
             platform.machine().lower() not in self.machines
             or sys.maxsize < 1 << 32
@@ -72,6 +73,13 @@ class JitTarget:
         ):
             bits = sys.maxsize.bit_length() + 1
             return f"not an {self.arch} process ({platform.machine()}, {bits} bit)"
+        return None
+
+    def probe(self) -> str | None:
+        """None if this architecture's code can be mapped W^X and called here; else the reason."""
+        why = self.foreign()
+        if why:
+            return why
         try:
             from waboros.targets.jit.common.execmem import load
 
@@ -112,6 +120,9 @@ class JitTarget:
         from waboros.targets.jit.common.compiler import Compiled
         from waboros.targets.jit.common.instance import JitInstance
 
+        why = self.foreign()
+        if why:
+            raise RuntimeError(f"{self.name} cannot run here: {why}")
         if cast(Compiled, compiled).flags & guard.BOUNDS_GUARD:
             guard.install(self)  # before anything of the instance exists; raises where none
         return JitInstance(store, self.trampolines(), cast(Compiled, compiled), imports, self.name)

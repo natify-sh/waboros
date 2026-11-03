@@ -10,6 +10,7 @@ import random
 
 import pytest
 
+from tests.jit import native
 from tests.jit.test_compiler import JIT, build, outcome, wat
 from waboros.targets import base
 from waboros.targets.jit.common import guard
@@ -147,6 +148,7 @@ def module(seed: int) -> str:
 @pytest.mark.parametrize("bounds", ["explicit", "guard"])
 @pytest.mark.parametrize("seed", range(12))
 def test_scalar_fuzz_matches_pyc(seed: int, bounds: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    native(JIT)  # no machine code of another architecture runs here (a 32-bit or wasm host)
     if bounds == "guard" and guard.host_row() not in base.TARGETS[JIT]().guard_rows:  # pyright: ignore[reportAttributeAccessIssue]
         pytest.skip(f"no guard mode for {JIT} on {guard.host_row()}")
     monkeypatch.setenv("WABOROS_JIT_BOUNDS", bounds)

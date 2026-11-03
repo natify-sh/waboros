@@ -452,3 +452,9 @@ What went wrong or surprised us while building the PoC, so it is not found again
     to spec parity. Rule: D47: one row first (Linux glibc x86-64), other rows only by its exceptions
     (required for correctness, at least +10 % measured there with a need, a small reuse, or the
     maintainer's explicit request). Found: S0006 steps 1-5, 2026-11-02/03.
+68. **Compiling for another architecture is allowed; instantiating it must refuse.** `JitTarget.instantiate`
+    did not check the host, so `tests/jit/test_scalar_fuzz.py` (no `native()` guard, skipped until the
+    WAT cache gave it its modules) ran x86-64 machine code in the 32-bit i686 and armv7l processes
+    (segfault, exit 139) and in Pyodide (a ctypes fatal error). Rule: every path that executes JIT code
+    checks `JitTarget.foreign()` first and raises; a test that runs JIT code calls `native()`. Found: the
+    first platforms run with the WAT cache, 2026-11-03.
