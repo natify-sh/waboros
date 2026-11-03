@@ -60,7 +60,7 @@ def _guard(monkeypatch: pytest.MonkeyPatch) -> None:
         pytest.skip(f"no guard pages on {sys.platform} yet")
     # under WABOROS_JIT_REQUIRE=1 (the CI `jit` and `arm64` jobs on Linux glibc, the `jit` job's
     # musl container, the macOS steps) a skip is a failure: the row check or `auto` must not stop
-    # engaging unnoticed; `auto` only where the row is verified (not yet macOS, S0006 step 3)
+    # engaging unnoticed; `auto` only where the row is verified
     need(guard.host_row() in tgt.guard_rows, f"a guard-page handler for {guard.host_row()}")  # pyright: ignore[reportAttributeAccessIssue]
     if guard.host_row() in tgt.verified:  # pyright: ignore[reportAttributeAccessIssue]
         monkeypatch.setenv("WABOROS_JIT_BOUNDS", "auto")
@@ -701,7 +701,7 @@ def test_faulthandler_enabled_after_ours_then_a_library_handler_is_an_error(abov
     The library chains to faulthandler, which re-raises a guard fault (139): rule A alone saw a
     library handler and let the call run. faulthandler enabled after our install is a break.
     `auto` where the row is verified (its check sees the break too), else `guard`: on an
-    unverified row (macOS until CI verifies it) `auto` compiles explicit code, installs no
+    unverified row `auto` compiles explicit code, installs no
     handler and checks nothing, so the scenario would not exist (CI run 41604810683)."""
     if above == "wasmtime":
         pytest.importorskip("wasmtime")

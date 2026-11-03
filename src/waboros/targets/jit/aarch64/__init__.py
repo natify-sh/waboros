@@ -35,7 +35,9 @@ class JitAarch64Target(JitTarget):
         return trampolines()
 
     guard_rows = frozenset({"linux-glibc", "darwin"})  # S0006 steps 2, 3
-    verified = frozenset({"linux-glibc"})  # `auto` gives guard here (D44; CI `arm64`, `jit`)
+    # `auto` gives guard here (D44; CI `arm64`, `jit`;
+    # darwin: CI run 41610392553, `arm64 (macos-latest)`)
+    verified = frozenset({"linux-glibc", "darwin"})
 
     def guard_backend(self) -> Any:
         from waboros.targets.jit.aarch64.backend import Backend

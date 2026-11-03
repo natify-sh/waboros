@@ -211,9 +211,9 @@ memory without knowing the target.
   default action. In the package (S0006): guard code on Linux glibc, `jit-x86_64` since step 1 and `jit-aarch64` since step 2, and on Linux musl for `jit-x86_64` — accesses with `offset + size ≤ 32 MiB` unchecked (stores too, as in Wasmtime: precise on native x86-64; an emulator that splits a store, or Arm hardware, may tear it; D45), a fault map of the instructions
   that touch memory, a handler (`x86_64/abi.py`, `aarch64/abi.py`, registry in `common/guard.py`) that resumes at the
   function's own out-of-bounds stub and chains every other fault. The mode is `auto` by default (D44):
-  guard on the verified rows (Linux glibc x86-64 and aarch64, Linux musl x86-64), explicit elsewhere, silently; `WABOROS_JIT_BOUNDS=explicit`
-  opts out, `=guard` requires it. macOS (both architectures, S0006 step 3) has a handler too, on SIGSEGV
-  and SIGBUS, so `=guard` works there; its row is not verified until CI runs it, so `auto` stays explicit. CoreMark: +9 % on the package on a quiet machine (BENCHMARKS.md, "Guard
+  guard on the verified rows (Linux glibc x86-64 and aarch64, Linux musl x86-64, macOS x86-64 and arm64), explicit elsewhere, silently; `WABOROS_JIT_BOUNDS=explicit`
+  opts out, `=guard` requires it. macOS (both architectures, S0006 step 3) has a handler on SIGSEGV
+  and SIGBUS, verified in CI. CoreMark: +9 % on the package on a quiet machine (BENCHMARKS.md, "Guard
   pages"; +14 % on a loaded one, the PoC measured +20–25 % on another day), 20 % less machine code. Explicit checks stay the fallback (larger offsets,
   platforms without the handler yet, `memory64`); risks in RISKS.md, R6.
 

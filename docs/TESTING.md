@@ -124,8 +124,8 @@ then both ISA gates and the D35 lists of both targets in both bounds modes, name
 S0006 step 3; the disassembly checks are left out there, the runner has no llvm-mc or GNU objdump); `arm64`
 (on the Linux runner also the `jit-aarch64` spec suite in both bounds modes, `test_guard.py` in guard mode and
 `tests/jit` in explicit mode, S0006 step 2; on `macos-latest` the `jit-aarch64` spec suite and
-`test_guard.py` in guard mode with `WABOROS_JIT_REQUIRE=1`, S0006 step 3: the macOS row is not verified
-until these pass, so `auto` stays explicit there); `macos-pythonorg`; `android`.
+`test_guard.py` in guard mode with `WABOROS_JIT_REQUIRE=1`, S0006 step 3; they passed in CI run 41610392553, so
+the macOS row is verified and `auto` gives guard there, the step keeps `guard` named); `macos-pythonorg`; `android`.
 `tests/jit/test_fault_handler.py` checks the emitted fault handlers off their OS: the Darwin offsets
 against ctypes mirrors of xnu's headers, both Darwin handlers through llvm-mc (x86-64 also through GNU
 objdump), and the handler of the machine called as a C function with fabricated Linux and Darwin contexts,

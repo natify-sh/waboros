@@ -361,7 +361,7 @@ What went wrong or surprised us while building the PoC, so it is not found again
     reading xnu (no macOS machine here), 2026-11-03.
 58. **A test that relies on `auto` tests guard mode only where the row is verified.**
     `test_faulthandler_enabled_after_ours_then_a_library_handler_is_an_error` ran its child with
-    `WABOROS_JIT_BOUNDS=auto`. On macOS, whose row has a handler but is not verified yet, `auto`
+    `WABOROS_JIT_BOUNDS=auto`. On macOS, whose row had a handler but was not verified yet, `auto`
     compiled explicit code: no handler, no Q1 check, and the out-of-bounds access trapped through
     the explicit check instead of raising the expected error. The failure looked like a gap in
     rule A, but the scenario never existed. CI run 41604810683, both macOS runners; a recorded-maps

@@ -154,16 +154,16 @@ know, otherwise recompile" is the simplest robust rule. It needs the wasm at han
 
 ## R6. A signal handler of our own (guard pages in the JIT)
 
-**Status at HEAD: partly mitigated: the default on Linux glibc x86-64 and aarch64 and Linux musl x86-64; macOS built, verification pending CI.** S0006 step 1:
+**Status at HEAD: partly mitigated: the default on Linux glibc x86-64 and aarch64 Linux musl x86-64, and macOS x86-64 and arm64.** S0006 step 1:
 guard code on `jit-x86_64`; step 2 the same on `jit-aarch64` (`aarch64/abi.py`, verified under QEMU, the native
 runner to confirm). The handler is emitted machine code (`x86_64/abi.py`, `aarch64/abi.py`) reading this copy's registry
 (`common/guard.py`), chaining every fault it does not claim (tests: `tests/jit/test_guard.py`, foreign faults
 with and without `faulthandler`, a broken chain, a foreign chaining handler, wasmtime above ours, two copies of
 the package in either order). Since D44 `auto` is the default: guard on the verified rows (Linux glibc x86-64
-and aarch64, Linux musl x86-64),
+and aarch64, Linux musl x86-64, macOS x86-64 and arm64),
 explicit elsewhere; `WABOROS_JIT_BOUNDS=explicit` installs nothing. macOS x86-64 and arm64 (step 3): a handler
-on SIGSEGV and SIGBUS, built from xnu's sources without a macOS machine; CI's macOS steps run the spec suite and
-`test_guard.py` in guard mode, and the row is not verified (so `auto` stays explicit there) until they pass. **Not detected** (rule A, S0006 Changes):
+on SIGSEGV and SIGBUS, built from xnu's sources without a macOS machine; CI's macOS steps ran the spec suite and
+`test_guard.py` in guard mode and passed (run 41610392553), so the row is verified. **Not detected** (rule A, S0006 Changes):
 faulthandler that was already enabled when ours was installed (as under pytest), then disabled and re-enabled
 while a library's handler is above ours; a guard fault then reaches faulthandler through that library and ends
 the process (139). faulthandler enabled only after ours, under any foreign handler, is detected (the Q1 error). A

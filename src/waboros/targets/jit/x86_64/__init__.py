@@ -36,8 +36,9 @@ class JitX86_64Target(JitTarget):
         return trampolines()
 
     guard_rows = frozenset({"linux-glibc", "linux-musl", "darwin"})  # S0006 steps 1, 3; musl
-    # `auto` gives guard here (D44; CI `jit`, glibc and musl); darwin once CI proves it (step 3)
-    verified = frozenset({"linux-glibc", "linux-musl"})
+    # `auto` gives guard here (D44; CI `jit`, glibc and musl;
+    # darwin: CI run 41610392553, `os (macos-26-intel)`)
+    verified = frozenset({"linux-glibc", "linux-musl", "darwin"})
 
     def guard_backend(self) -> Any:
         from waboros.targets.jit.x86_64.backend import Backend

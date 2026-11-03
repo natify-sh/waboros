@@ -2,7 +2,7 @@
 title: Decisions
 kind: log
 status: current
-updated: 2026-11-02
+updated: 2026-11-03
 ---
 
 # Decisions
@@ -618,6 +618,12 @@ names only glibc. musl's `struct sigaction` and its `sigaction`/`raise` were che
 source and agree with glibc's. CI `jit` runs the spec suite and `test_guard.py` in guard mode in a
 `python:3.13-alpine` container. Linux musl aarch64 stays explicit: `jit-aarch64` needs libgcc's
 `__clear_cache`, which the stock Alpine image lacks (S0004, S0006 Changes).
+
+**macOS x86-64 and arm64** (2026-11-03, S0006 step 3): `darwin` joins `verified` in both targets,
+so `auto` gives guard pages on macOS, Intel and Apple Silicon. Evidence: CI run 41610392553, fully
+green: the spec suite on `jit-x86_64` (`os (macos-26-intel)`) and `jit-aarch64` (`arm64 (macos-latest)`)
+and `test_guard.py` + `test_fault_handler.py` in guard mode on both. The handlers use signals (SIGSEGV and
+SIGBUS), not Mach ports (S0006 Q5).
 
 ### D45. In guard mode stores rely on guard pages, as in Wasmtime; a split store may tear
 Status: accepted (maintainer, 2026-11-02) · Date: 2026-11-02 · Supersedes: — · Evidence: [S0006](specs/S0006-guard-pages.md) Changes; LESSONS 50; BENCHMARKS.md, "Checked stores in guard mode (rejected alternative)"

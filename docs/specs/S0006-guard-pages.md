@@ -230,7 +230,7 @@ trap).
 |---|---|---|---|
 | Linux glibc | **verified** (D44) | **verified** (step 2; the native runner confirms) | `jit` (aarch64 under QEMU), `arm64` native runner |
 | Linux musl | **verified** (musl step) | explicit: `jit-aarch64` needs libgcc's `__clear_cache`, absent from the stock image (Changes) | `jit` (`python:3.13-alpine` container) |
-| macOS | implemented (step 3), verification pending CI | implemented (step 3), verification pending CI | `os` (`macos-26-intel`), `arm64` (`macos-latest`) |
+| macOS | **verified** (step 3; CI run 41610392553) | **verified** (step 3; CI run 41610392553) | `os` (`macos-26-intel`), `arm64` (`macos-latest`) |
 | Windows | step 4 | with step 4 | `windows`, `arm64` (`windows-11-arm`) |
 | Android (bionic, libsigchain) | step 5 | explicit (documented limitation) | `android` (x86_64 emulator) |
 
@@ -534,7 +534,7 @@ reservation is a crash, not a trap: the explicit-mode tests and differential run
     documented limitation: CI has no arm64 emulator, bionic's `struct sigaction` differs, and
     libsigchain sits in between. The BSDs are not a target (TARGETS.md, cibuildwheel's map), so
     they have no row.
-* 2026-11-03: **step 3 built (macOS x86-64 and arm64), verification pending CI.** No macOS machine
+* 2026-11-03: **step 3 built (macOS x86-64 and arm64); verification came with the CI run below.** No macOS machine
   was available: every constant comes from Apple's sources (`apple-oss-distributions` on GitHub, `main`,
   read 2026-11-03), is mirrored field by field as ctypes structures in
   `tests/jit/test_fault_handler.py`, and the macOS behaviour itself is unverified until the CI steps
@@ -591,8 +591,8 @@ reservation is a crash, not a trap: the explicit-mode tests and differential run
   * **`common/guard.py`**: `SIGNALS` (SIGSEGV; and SIGBUS on macOS), the OS's flags, and its
     `struct sigaction`. `install` saves one action per signal and puts back the ones already
     installed if a later `sigaction` fails. `broken()` checks every signal; on macOS this means two
-    `sigaction` queries per check. Rows: `darwin` is in `guard_rows` of both targets and not in
-    `verified`.
+    `sigaction` queries per check. Rows: `darwin` is in `guard_rows` of both targets; it joined
+    `verified` after CI run 41610392553 (below).
   * **Tests.** `test_guard.py` runs on macOS: the fixture requires the row and requires `auto` to
     give guard only where the row is verified. The foreign chaining handler covers every signal we
     take. `test_fault_handler.py` runs anywhere. It checks the offsets against the header mirrors
@@ -602,7 +602,7 @@ reservation is a crash, not a trap: the explicit-mode tests and differential run
     handlers, so the Darwin paths run on Linux, natively and under QEMU.
   * **CI**: `os` (`macos-26-intel`) and `arm64` (`macos-latest`) run the spec suite and
     `test_guard.py` with `WABOROS_JIT_BOUNDS=guard` and `WABOROS_JIT_REQUIRE=1`. Once they pass,
-    a separate commit adds `darwin` to `verified` (D44's rule).
+    a separate commit adds `darwin` to `verified` (D44's rule; done, below).
 * 2026-11-03: **first macOS CI run** (run 41604810683, `macos-26-intel` and `macos-latest`). Guard faults
   work on both: the trap fires as `MEMORY_OUT_OF_BOUNDS`. Three tests failed in the `tests/jit` step,
   all test faults (LESSONS 58), with no change to the handler or to rule A:
@@ -611,3 +611,8 @@ reservation is a crash, not a trap: the explicit-mode tests and differential run
     on the unverified macOS row. They now use `auto` only on a verified row and `guard` otherwise;
     the Linux expectation is unchanged.
   * Simulated on Linux with an empty `verified`, the guard child gets the Q1 error in both cases.
+* 2026-11-03: **darwin verified** (CI run 41610392553, fully green: `os (macos-26-intel)` ran the
+  `jit-x86_64` spec suite and `test_guard.py` + `test_fault_handler.py` with `WABOROS_JIT_BOUNDS=guard`;
+  `arm64 (macos-latest)` the `jit-aarch64` spec suite and the same tests). `darwin` is now in `verified`
+  of both targets, so `auto` gives guard pages on macOS, Intel and Apple Silicon. The macOS CI steps
+  keep `WABOROS_JIT_BOUNDS=guard` explicit, as the Linux steps do. Step 3 is done; next step 4.
