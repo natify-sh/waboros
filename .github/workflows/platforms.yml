@@ -59,6 +59,12 @@ jobs:
       # UV_FIND_LINKS makes the `uv run` below read this directory, so it must exist; before-build fills it
       - run: mkdir -p ci/deps
         shell: bash
+      # The cells without a wasmtime wheel (Android, Pyodide, Linux i686 and armv7l) read the WAT of the
+      # tests from tests/wat_cache (docs/TESTING.md); the host has wasmtime and records it here
+      - if: ${{ contains(fromJSON('["linux", "android", "pyodide"]'), matrix.platform) }}
+        run: uv run pytest tests -q -p no:cacheprovider --ignore=tests/spec
+        env: { WABOROS_WAT_CACHE: "1" }
+        shell: bash
       # cibuildwheel comes from uv.lock (dev group); the host needs nothing else
       - run: uv run --only-group dev cibuildwheel ci/harness --platform ${{ matrix.platform }} --output-dir wheelhouse
         shell: bash
@@ -91,4 +97,6 @@ jobs:
         with:
           platforms: all
       - run: mkdir -p ci/deps
+      - run: uv run pytest tests -q -p no:cacheprovider --ignore=tests/spec  # fills tests/wat_cache
+        env: { WABOROS_WAT_CACHE: "1" }
       - run: uv run --only-group dev cibuildwheel ci/harness --platform linux --output-dir wheelhouse

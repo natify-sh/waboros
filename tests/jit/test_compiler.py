@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 from tests.jit import native, native_jit, need
+from tests.watcache import wat2wasm as wat
 from waboros.frontend.binary import parse
 from waboros.frontend.validate import validate
 from waboros.runtime import link
@@ -25,15 +26,6 @@ from waboros.targets.jit.common.compiler import Compiled
 ROOT = Path(__file__).resolve().parents[2]
 M32, M64 = 0xFFFFFFFF, (1 << 64) - 1
 JIT = native_jit()
-
-
-def wat(text: str) -> bytes:
-    try:
-        import wasmtime
-    except ImportError:
-        wasmtime = None
-    need(wasmtime, "wasmtime (wat2wasm)")
-    return bytes(wasmtime.wat2wasm(text))  # pyright: ignore[reportOptionalMemberAccess]
 
 
 @pytest.fixture(autouse=True)

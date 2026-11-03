@@ -393,7 +393,7 @@ def test_discarded_values_that_may_trap_still_run(name: str, arg: int, ok: bool)
 
 
 def _effect_before_trap(wat: str, imports: dict[str, dict[str, object]] | None = None) -> object:
-    from wasmtime import wat2wasm
+    from tests.watcache import wat2wasm
 
     return load(wat2wasm(wat), imports or {})  # pyright: ignore[reportArgumentType]
 
@@ -452,7 +452,7 @@ def test_trap_trunc_precedes_store() -> None:
 def _raw_instance(wat: str, imports: dict[str, dict[str, object]]) -> dict[str, object]:
     """Instantiate without the `load` entry wrappers, so exports keep their `.t` bodies (as when
     two modules are linked in one store)."""
-    from wasmtime import wat2wasm
+    from tests.watcache import wat2wasm
 
     ns: dict[str, object] = {"__name__": "waboros_pyc_module"}
     exec(compile(translate(bytes(wat2wasm(wat))), "<waboros-pyc>", "exec"), ns)

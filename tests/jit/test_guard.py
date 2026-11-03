@@ -969,14 +969,14 @@ def test_a_python_handler_set_before_ours_is_no_error() -> None:
 _COPIES = """
 import importlib, sys
 sys.path.insert(0, sys.argv[1])
-import wasmtime
+from tests.watcache import wat2wasm
 TEXT = '(module (import "h" "cb" (func $cb (param i32))) (memory 1) ' \\
     '(func (export "f") (param i32) (result i32) (i32.load (local.get 0))) ' \\
     '(func (export "g") (param i32 i32) (result i32) (call $cb (local.get 1)) ' \\
     '(i32.load (local.get 0))))'
 def make(pkg, cb):
     m = lambda name: importlib.import_module(pkg + name)
-    mod = m(".frontend.binary").parse(bytes(wasmtime.wat2wasm(TEXT)))
+    mod = m(".frontend.binary").parse(wat2wasm(TEXT))
     m(".frontend.validate").validate(mod)
     t = m(".targets.base").TARGETS[sys.argv[3]]()
     ext = m(".runtime.link").resolve(mod, {"h": {"cb": cb}})

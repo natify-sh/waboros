@@ -60,21 +60,22 @@ environment-pass = ["WABOROS_JIT_REQUIRE"]  # from the job, if set
 before-build = "uv build --wheel --out-dir {project}/ci/deps {project}"
 
 # Android runs the tests inside an app: no shell, no {project}; the tests are copied in. Both bounds
-# modes, as on the other JIT platforms. No wasmtime wheel there (ROADMAP): the tests that need no WAT
-# / oracle only; tests/jit/test_android.py checks the app itself (the JIT and `auto` in an app
+# modes, as on the other JIT platforms. No wasmtime wheel there (ROADMAP): the tests that need the
+# oracle skip, WAT is read from tests/wat_cache (filled on the host, docs/TESTING.md);
+# tests/jit/test_android.py checks the app itself (the JIT and `auto` in an app
 # process, guard faults through ART's libsigchain, CoreMark's self-check; S0006 step 5).
 [tool.cibuildwheel.android]
 build = "cp313-*"
 test-skip = "*-android_arm64_v8a"  # the emulator has the runner's architecture: x86_64 only
 test-requires = ["pytest"]
 test-sources = ["tests", "tools", "docs", "poc/in/core.wasm"]  # docs: tests/test_features.py copies it
-test-command = "python -m pytest tests --jit-bounds=guard,explicit -q -rs -p no:cacheprovider --ignore=tests/spec --ignore=tests/jit/test_tables.py --ignore=tests/test_pyc.py"
+test-command = "python -m pytest tests --jit-bounds=guard,explicit -q -rs -p no:cacheprovider --ignore=tests/spec"
 
 # Pyodide: pyc only, no wasmtime wheel.
 [tool.cibuildwheel.pyodide]
 build = "cp313-*"
 test-requires = ["pytest"]
-test-command = "pytest {project}/tests -q -rs -p no:cacheprovider --ignore={project}/tests/spec --ignore={project}/tests/jit/test_guard.py --ignore={project}/tests/jit/test_tables.py --ignore={project}/tests/test_pyc.py"
+test-command = "pytest {project}/tests -q -rs -p no:cacheprovider --ignore={project}/tests/spec"
 
 # Finer than a platform. Linux aarch64: `auto` (guard on glibc, explicit on musl, which has no guard
 # mode there) and explicit.
@@ -94,11 +95,10 @@ select = "cp311-manylinux_aarch64"
 test-command = "pytest {project}/tests --jit-bounds=auto,explicit -q -rs -p no:cacheprovider && python {project}/ci/harness/spec.py"
 
 # Linux i686 and armv7l (32-bit) and the optional exotic jobs (ppc64le, s390x, riscv64; under QEMU): no JIT here, no
-# wheels of wasmtime / wasm-tools, no uv wheels: pyc-only subset, no oracle.
-# The --ignore list is what fails on x86-64 Linux without wasmtime / wat2wasm (their tests compile
-# WAT through it); tests/spec needs the spec cache and the oracle.
+# wheels of wasmtime / wasm-tools, no uv wheels: no oracle (those tests skip); WAT comes from
+# tests/wat_cache. tests/spec needs the spec cache and the oracle.
 [[tool.cibuildwheel.overrides]]
 select = ["*_i686", "*_armv7l", "*_ppc64le", "*_s390x", "*_riscv64"]
 build-frontend = "build"
 test-requires = ["pytest"]
-test-command = "pytest {project}/tests -q -rs -p no:cacheprovider --ignore={project}/tests/spec --ignore={project}/tests/jit/test_guard.py --ignore={project}/tests/jit/test_tables.py --ignore={project}/tests/test_pyc.py"
+test-command = "pytest {project}/tests -q -rs -p no:cacheprovider --ignore={project}/tests/spec"

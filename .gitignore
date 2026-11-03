@@ -13,3 +13,4 @@ dist/
 .claude/worktrees/
 ci/deps/
 ci/wheelhouse/
+tests/wat_cache/

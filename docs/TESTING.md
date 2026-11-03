@@ -92,7 +92,7 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
 | target | `pyc` everywhere; `jit-*` where the machine matches; `mpy` with the MicroPython unix port |
 | native arm64 | `jit-aarch64` on GitHub's arm64 runners: `ubuntu-24.04-arm` (job `arm64` of `ci`), `macos-26` (macOS arm64, `MAP_JIT`) and `windows-11-arm` (`platforms.yml`; labels per actions/runner-images) |
 | python.org macOS | the macOS cells of `platforms.yml` run the python.org framework CPython (hardened runtime) that cibuildwheel installs, on Apple Silicon (`macos-26`) and Intel; the JIT tests and the spec suite pass there, and a refusal by the hardened runtime would show as a failed cell (RISKS R2). The separate `macos-pythonorg` job, with its entitlements printout, is gone |
-| Android | the Android cell of `platforms.yml`: CPython's testbed app on a managed x86_64 emulator (cibuildwheel; `arm64_v8a` is built only), `python -m pytest tests --jit-bounds=guard,explicit` inside the app with the tests that need no WAT or wasmtime (no wasmtime there), among them `tests/jit/test_android.py` (Android only: the SELinux context, the probe and `auto`, guard faults through ART's libsigchain with a module written in binary, CoreMark's self-check; S0006 step 5); no arm64 test (RISKS R2). The `android` job and `tools/android_check.py` are gone |
+| Android | the Android cell of `platforms.yml`: CPython's testbed app on a managed x86_64 emulator (cibuildwheel; `arm64_v8a` is built only), `python -m pytest tests --jit-bounds=guard,explicit` inside the app with every test that needs no wasmtime as an oracle (no wasmtime there; WAT comes from the WAT cache, below), among them `tests/jit/test_android.py` (Android only: the SELinux context, the probe and `auto`, guard faults through ART's libsigchain with a module written in binary, CoreMark's self-check; S0006 step 5); no arm64 test (RISKS R2). The `android` job and `tools/android_check.py` are gone |
 | emulated | QEMU user-mode only for architectures without native runners (riscv64; D48) as JIT targets appear |
 
 JIT artifacts: run baseline artifacts on an emulated baseline CPU (e.g. QEMU `-cpu` without SSE4.1 /
@@ -124,6 +124,17 @@ then both ISA gates and the D35 lists of both targets in both bounds modes, name
 `WABOROS_JIT_BOUNDS=explicit`, then `auto` under `no_exec.py`); `arm64`
 (Linux arm64 only: the `jit-aarch64` spec suite in both bounds modes, `test_guard.py` in guard mode and
 `tests/jit` in explicit mode, S0006 step 2).
+
+**The WAT cache.** Tests build modules from WAT text through `tests/watcache.py` (`wat2wasm`), which
+compiles with wasmtime's `wat2wasm`. Where wasmtime has no wheel (Android, Pyodide, Linux i686 and
+armv7l, the optional ppc64le, s390x, riscv64) the same call reads `tests/wat_cache/<sha256 of the text>.wasm`,
+and a text that is not there skips the test (fails under `WABOROS_JIT_REQUIRE=1`). Tests that run a
+module in wasmtime as the oracle still skip there. The cache is not committed: `platforms.yml` fills it
+on the host (which has wasmtime) before cibuildwheel by running the suite once with
+`WABOROS_WAT_CACHE=1` (about a minute); Linux containers see it as `/project/tests/wat_cache`, Android
+gets it inside `test-sources = ["tests", ...]`. Refill locally with
+`WABOROS_WAT_CACHE=1 uv run pytest tests -q --ignore=tests/spec`; a changed WAT text is a new entry
+(stale ones are harmless; delete the directory to drop them).
 
 `.github/workflows/platforms.yml` (cibuildwheel; config `ci/harness/pyproject.toml`; the same triggers
 as `ci`, its own concurrency group) is the only place where macOS, Windows, Android and Pyodide are
