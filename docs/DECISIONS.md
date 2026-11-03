@@ -625,6 +625,13 @@ green: the spec suite on `jit-x86_64` (`os (macos-26-intel)`) and `jit-aarch64` 
 and `test_guard.py` + `test_fault_handler.py` in guard mode on both. The handlers use signals (SIGSEGV and
 SIGBUS), not Mach ports (S0006 Q5).
 
+**Windows x64 and arm64** (2026-11-03, S0006 step 4): `win32` joins `verified` in both targets, so
+`auto` gives guard pages on Windows. Evidence: CI run 41633456821 (`arm64 (windows-11-arm)` fully green:
+the `jit-aarch64` spec suite, `test_guard.py` + `test_fault_handler.py` in guard mode) and CI run
+41640149866 (`os (windows-latest)` fully green: the `jit-x86_64` spec suite and the same tests,
+including the forced-CET shadow-stack tests and the faulthandler-order test). The handler is a
+vectored exception handler, not structured exception handling.
+
 ### D45. In guard mode stores rely on guard pages, as in Wasmtime; a split store may tear
 Status: accepted (maintainer, 2026-11-02) · Date: 2026-11-02 · Supersedes: — · Evidence: [S0006](specs/S0006-guard-pages.md) Changes; LESSONS 50; BENCHMARKS.md, "Checked stores in guard mode (rejected alternative)"
 

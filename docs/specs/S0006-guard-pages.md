@@ -236,7 +236,7 @@ trap).
 | Linux glibc | **verified** (D44) | **verified** (step 2; the native runner confirms) | `jit` (aarch64 under QEMU), `arm64` native runner |
 | Linux musl | **verified** (musl step) | explicit: `jit-aarch64` needs libgcc's `__clear_cache`, absent from the stock image (Changes) | `jit` (`python:3.13-alpine` container) |
 | macOS | **verified** (step 3; CI run 41610392553) | **verified** (step 3; CI run 41610392553) | `os` (`macos-26-intel`), `arm64` (`macos-latest`) |
-| Windows | implemented (step 4), verification pending CI | implemented (step 4), verification pending CI | `os` (`windows-latest`), `arm64` (`windows-11-arm`) |
+| Windows | **verified** (step 4; CI run 41640149866) | **verified** (step 4; CI run 41633456821) | `os` (`windows-latest`), `arm64` (`windows-11-arm`) |
 | Android (bionic, libsigchain) | step 5 | explicit (documented limitation) | `android` (x86_64 emulator) |
 
 The BSDs are not a target (TARGETS.md), so they have no row.
@@ -292,7 +292,7 @@ reservation is a crash, not a trap: the explicit-mode tests and differential run
    (S0004). Acceptance: the container runs the spec suite and `test_guard.py` in guard mode.
 3. **macOS x86-64 and arm64**: SIGBUS, Darwin offsets, `MAP_JIT`. Acceptance: the CI jobs run
    `test_guard.py` and the spec suite in guard mode.
-4. **Windows x86-64 and arm64** (arm64 joined, maintainer 2026-11-02): the vectored handler; the EH-continuation question answered by a test that forces user
+4. **Windows x86-64 and arm64** (arm64 joined, maintainer 2026-11-02; done and verified 2026-11-03): the vectored handler; the EH-continuation question answered by a test that forces user
    shadow stacks and context-IP validation on a child python.exe (which is not CETCOMPAT itself).
    Acceptance: the `os (windows-latest)` and `arm64 (windows-11-arm)` jobs as in 3.
 5. **Android x86_64**: the `android` job runs `test_guard.py`; logcat shows no ART complaint.
@@ -622,11 +622,16 @@ reservation is a crash, not a trap: the explicit-mode tests and differential run
   `arm64 (macos-latest)` the `jit-aarch64` spec suite and the same tests). `darwin` is now in `verified`
   of both targets, so `auto` gives guard pages on macOS, Intel and Apple Silicon. The macOS CI steps
   keep `WABOROS_JIT_BOUNDS=guard` explicit, as the Linux steps do. Step 3 is done; next step 4.
-* 2026-11-03: **step 4 built (Windows x64 and Windows on Arm64); unverified until the Windows CI steps
-  run.** No Windows machine was available: the constants come from the Windows SDK headers as
-  mingw-w64 ships them, the handlers run off Windows on fabricated contexts, and the `win32` row is in
-  `guard_rows` of both targets but not in `verified`, so `auto` stays explicit on Windows until CI
-  passes (then a separate commit, as for macOS). As built:
+* 2026-11-03: **win32 verified** (CI runs 41633456821 and 41640149866). `arm64 (windows-11-arm)` was
+  fully green (the `jit-aarch64` spec suite, `test_guard.py` + `test_fault_handler.py` with
+  `WABOROS_JIT_BOUNDS=guard`); `os (windows-latest)` was fully green after the CET fix (the `jit-x86_64`
+  spec suite and the same tests, including `test_guard_traps_under_forced_cet_shadow_stacks[in-process]`
+  and `[system]` and `test_faulthandler_enabled_after_ours_stays_behind_ours_on_windows`). `win32` is
+  now in `verified` of both targets, so `auto` gives guard pages on Windows. Step 4 is done; next step 5.
+* 2026-11-03: **step 4 built (Windows x64 and Windows on Arm64).** No Windows machine was available: the
+  constants come from the Windows SDK headers as mingw-w64 ships them, the handlers ran off Windows on
+  fabricated contexts, and the `win32` row was in `guard_rows` of both targets but not in `verified`
+  until CI passed (the entry above). As built:
   * **Constants** (mingw-w64-headers `winnt.h`, `excpt.h`, `winbase.h`, master e3d18511, read
     2026-11-03; every offset also checked with clang's `offsetof` against those headers for
     `x86_64-w64-windows-gnu` and `aarch64-w64-windows-gnu`, with a wrong value as a negative control):

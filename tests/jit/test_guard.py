@@ -175,7 +175,7 @@ LOAD = '(module (memory 1) (func (export "f") (param i32) (result i32) (i32.load
 
 def test_the_modes_and_the_default(monkeypatch: pytest.MonkeyPatch) -> None:
     """D44: `auto` is the default (unset or empty) and gives guard on a verified row (explicit
-    on a row with a handler that CI has not verified yet); `explicit` opts out; anything else is
+    on a row whose handler CI has not verified); `explicit` opts out; anything else is
     an error."""
     verified = guard.host_row() in base.TARGETS[JIT]().verified  # pyright: ignore[reportAttributeAccessIssue]
     for m in (None, "", "auto", "guard"):

@@ -128,7 +128,8 @@ the forced-CET child test runs, below); `arm64`
 `tests/jit` in explicit mode, S0006 step 2; on `macos-latest` the `jit-aarch64` spec suite and
 `test_guard.py` in guard mode with `WABOROS_JIT_REQUIRE=1`, S0006 step 3; they passed in CI run 41610392553, so
 the macOS row is verified and `auto` gives guard there, the step keeps `guard` named; the same steps on
-`windows-11-arm`, S0006 step 4, whose `win32` row is not verified until they pass); `macos-pythonorg`; `android`.
+`windows-11-arm`, S0006 step 4; they passed in CI runs 41633456821 (arm64) and 41640149866 (`windows-latest`), so
+the `win32` row is verified and `auto` gives guard on Windows); `macos-pythonorg`; `android`.
 `tests/jit/test_fault_handler.py` checks the emitted fault handlers off their OS: the Darwin and
 Windows offsets against ctypes mirrors of xnu's and the Windows SDK's headers, the Darwin and Windows
 handlers through llvm-mc (x86-64 also through GNU objdump; the Windows ones also for the registers they

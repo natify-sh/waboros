@@ -154,13 +154,13 @@ know, otherwise recompile" is the simplest robust rule. It needs the wasm at han
 
 ## R6. A signal handler of our own (guard pages in the JIT)
 
-**Status at HEAD: partly mitigated: the default on Linux glibc x86-64 and aarch64 Linux musl x86-64, and macOS x86-64 and arm64.** S0006 step 1:
+**Status at HEAD: partly mitigated: the default on Linux glibc x86-64 and aarch64, Linux musl x86-64, macOS and Windows x64 and arm64.** S0006 step 1:
 guard code on `jit-x86_64`; step 2 the same on `jit-aarch64` (`aarch64/abi.py`, verified under QEMU, the native
 runner to confirm). The handler is emitted machine code (`x86_64/abi.py`, `aarch64/abi.py`) reading this copy's registry
 (`common/guard.py`), chaining every fault it does not claim (tests: `tests/jit/test_guard.py`, foreign faults
 with and without `faulthandler`, a broken chain, a foreign chaining handler, wasmtime above ours, two copies of
 the package in either order). Since D44 `auto` is the default: guard on the verified rows (Linux glibc x86-64
-and aarch64, Linux musl x86-64, macOS x86-64 and arm64),
+and aarch64, Linux musl x86-64, macOS and Windows x64 and arm64),
 explicit elsewhere; `WABOROS_JIT_BOUNDS=explicit` installs nothing. macOS x86-64 and arm64 (step 3): a handler
 on SIGSEGV and SIGBUS, built from xnu's sources without a macOS machine; CI's macOS steps ran the spec suite and
 `test_guard.py` in guard mode and passed (run 41610392553), so the row is verified. **Not detected** (rule A, S0006 Changes):
@@ -174,9 +174,9 @@ store wrote its first 8 bytes, and native Arm hardware is allowed to do the same
 x86_64 and glibc, the verified row, so `auto` turns guard pages on exactly where a store may tear;
 Wasmtime does not detect this either. Open: detect an emulator (`/proc/cpuinfo`, FEX's and box64's
 environment variables) and fall back to explicit, or keep it a documented limitation (D45). Windows x64
-and arm64 (S0006 step 4): a vectored exception handler is built (offsets from the Windows SDK headers, run
-off Windows on fabricated contexts) but **unverified until the Windows CI steps run**; `auto` stays explicit
-there. Open: Android x86_64 (step 5); Linux musl aarch64 (no
+and arm64 (S0006 step 4): a vectored exception handler (offsets from the Windows SDK headers), verified by CI
+runs 41633456821 (`arm64 (windows-11-arm)`) and 41640149866 (`os (windows-latest)`); `win32` is a verified
+row, so `auto` gives guard there. Open: Android x86_64 (step 5); Linux musl aarch64 (no
 `__clear_cache` without libgcc, S0004). Android arm64 stays explicit, a documented limitation (S0006).
 
 Guard pages need a SIGSEGV handler in the process (ARCHITECTURE.md, "Memory"); the PoC emits it as

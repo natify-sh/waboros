@@ -35,11 +35,12 @@ class JitX86_64Target(JitTarget):
     def trampolines(self) -> "Trampolines":
         return trampolines()
 
-    # S0006 steps 1, 3, 4 and musl; win32: implemented, not verified until CI runs it
+    # S0006 steps 1, 3, 4 and musl
     guard_rows = frozenset({"linux-glibc", "linux-musl", "darwin", "win32"})
     # `auto` gives guard here (D44; CI `jit`, glibc and musl;
-    # darwin: CI run 41610392553, `os (macos-26-intel)`)
-    verified = frozenset({"linux-glibc", "linux-musl", "darwin"})
+    # darwin: CI run 41610392553, `os (macos-26-intel)`;
+    # win32: CI run 41640149866, `os (windows-latest)`)
+    verified = frozenset({"linux-glibc", "linux-musl", "darwin", "win32"})
 
     def guard_backend(self) -> Any:
         from waboros.targets.jit.x86_64.backend import Backend
