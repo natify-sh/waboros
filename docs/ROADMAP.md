@@ -224,6 +224,12 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29) -> the rest below.
   It replaces the hand-made Android job and adds iOS and the pyc-only platforms; the jobs that need our own tools or emulator flags stay (QEMU `qemu64`
   without SSE3+, QEMU with BTI enforced, D35 dumps, MDWE, the objdump/llvm-mc ISA gates, native
   CoreMark). Where wasmtime has no wheel (iOS, Android, Pyodide) only tests that need no WAT run.
+* **`pyc`: f32 bit patterns on 32-bit x86** (maintainer, 2026-11-03: fix it, right after the
+  cibuildwheel step): on i686, `struct.unpack('<f')` goes through the x87 registers, which quiet a
+  signalling NaN (0x7FA00000 reads back as 0x7FE00000), so `pyc` breaks wasm's rule that loads,
+  stores and reinterprets keep f32 bits exactly. Found by the cibuildwheel matrix; the two tests
+  that show it (`test_f32_signalling_nan_survives`, `test_nan_lanes`) are xfail on 32-bit x86 until
+  `pyc` moves f32 values without a float round trip there.
 * **Guard pages with a JIT-emitted signal handler** (`poc/w2jit_guard.py`: +20–25 % on CoreMark, the gap
   to Cranelift was mostly the bounds checks), per OS and architecture (Linux `sigaction` +
   `ucontext` offsets, macOS also SIGBUS, Windows a vectored exception handler), `sigaltstack` per thread
