@@ -2,7 +2,7 @@
 title: Micro-compilers - what they are and why
 kind: reference
 status: draft
-updated: 2026-11-02
+updated: 2026-11-03
 ---
 
 # Micro-compilers: what they are and why
@@ -135,9 +135,10 @@ anyone can run: [MICRO-COMPILERS-SHIPPING.md](MICRO-COMPILERS-SHIPPING.md) (main
 * **Then the third architecture: `riscv64`**, written as a micro-compiler on the proven core instead
   of a third Python backend; checked by the spec suite under QEMU against `pyc` and Wasmtime (no
   byte oracle exists for it).
-* Later candidates (pyc-only today, all in cibuildwheel's `archs`): `armv7l`, `ppc64le`, `s390x`,
-  `i686`/`x86`. `i686` is costly (8 registers, i64 as register pairs, x87 vs SSE2, cdecl
-  trampolines, 4 GB address space) and declining: lowest priority.
+* Later candidates: none beyond riscv64 (D48). `s390x`, `armv7l`, `ppc64le`, `i686`/`x86` and the
+  rest stay on `pyc`. *History, before D48:* they were listed as later
+  candidates, and `i686` was judged costly (8 registers, i64 as register pairs, x87 vs SSE2, cdecl
+  trampolines, 4 GB address space) and lowest priority.
 * Replacing the Python compilers on x86-64/aarch64 as the production path: only after the arm64 and
   riscv64 micro-compilers have shown what two implementations cost to keep in step.
 

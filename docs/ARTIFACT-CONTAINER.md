@@ -111,15 +111,16 @@ normal behaviour.
   rule and a test.
 * **The ELF class.** ELF64 for x86-64, aarch64 and riscv64: the tools read `EM_X86_64` in
   ELFCLASS32 as the x32 ABI and aarch64 ELF32 as ILP32, so a 32-bit class there would mislead them.
-  For the deferred 32-bit architectures (i686, armv7, mips32el) there are two options:
+  *History (D48: no 32-bit JIT is planned, so this is moot).* For the 32-bit architectures (i686,
+  armv7, mips32el) there were two options:
   (1) ELF32 with `EM_386` / `EM_ARM` / `EM_MIPS`, so that `objdump` disassembles them as native code
   (the loader then reads both classes, a few dozen lines); (2) ELF64 everywhere, as Wasmtime does
   even for `pulley32` (above) - one reader, but GNU tools may refuse a 32-bit `e_machine` in an
   ELF64 file, which defeats the point of using ELF. Our 32-bit code is native, so (1) fits better;
-  decide with the 32-bit design.
+  decide with the 32-bit design (none is planned).
 * **Byte order**: fix `EI_DATA` to little-endian for every target (as ARTIFACT.md's container is
-  today), or follow the target as Wasmtime does. It matters only for a big-endian target (s390x,
-  deferred).
+  today), or follow the target as Wasmtime does. It matters only for a big-endian target (s390x; it runs `pyc`, D48, so
+  this is moot unless that is reopened).
 * `pyc` and `mpy` artifacts (ARTIFACT.md, "Other targets") would also live in the container, with an
   `e_machine` of `EM_NONE` and their own `.waboros.*` code section. That is a little odd but harmless;
   alternatively, keep the current container for them.

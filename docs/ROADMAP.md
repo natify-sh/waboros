@@ -223,7 +223,7 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29) -> the rest below.
   macOS and Windows legs of `arm64` left `ci.yml`.
   Principle (maintainer, 2026-11-03): the matrix is as narrow as it can be without losing a
   behaviour difference that matters now; armv7l, ppc64le, riscv64, s390x and iOS are off (the same
-  `pyc`, no micro-compiler for them yet). A platform is added deliberately, and its own issues are
+  `pyc`; riscv64 gets a micro-compiler later, the others never, D48). A platform is added deliberately, and its own issues are
   dealt with then, not by fixing micro-bugs on every target now. The jobs are grouped by runner
   (cibuildwheel runs several architectures and Python versions per job); the exotic architectures
   stay reachable as optional jobs (armv7l native on the arm runner; ppc64le, s390x, riscv64 one
@@ -303,9 +303,11 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29) -> the rest below.
 ## Phase 8 — more architectures
 *Status: not started.*
 
-* armv7, mips32el (Ingenic X2000), ppc64le, loongarch64 and whichever of aarch64 / riscv64 phase 4 did
-  not take — by hand or by copy-and-patch, CI under QEMU user-mode. Each is added by a backend, the
-  encoder test and the integer-core spec commands; the shared core does not change.
+* **riscv64 only** (D48): as a micro-compiler on the proven core after `arm64.wasm`
+  (MICRO-COMPILERS.md); CI under QEMU user-mode. It is added by a micro-compiler, the encoder test
+  and the integer-core spec commands; the shared core does not change. s390x, armv7, mips32el,
+  ppc64le, loongarch64, i686 and the rest stay on `pyc` for good (s390x was excluded by the
+  maintainer; the reasons are in D48).
 
 ## Open questions
 1. **Minimum Python.** Resolved by D19: 3.11 (the PoC's 3.8 and 3.4 `--legacy` measurements stay as
@@ -321,7 +323,7 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29) -> the rest below.
    through `struct`); follow the spec's canonical/arithmetic NaN rules only, or carry bit patterns?
 6. **WASI on MicroPython**: a slim twin, or fusedwasi compiled to wasm and translated by waboros itself
    (then each language/target needs only a thin layer of OS primitives)?
-7. **Pyodide**: `pyc` runs there today; a separate target later (maintainer). The experiment in
+7. **Pyodide**: `pyc` runs there today; a separate track later (maintainer), not a JIT target (D48). The experiment in
    [PYODIDE.md](PYODIDE.md): the guest rewritten into an Emscripten side module and loaded with
    `ctypes.CDLL` runs CoreMark at 92–95 % of direct `WebAssembly` in Node, sharing Pyodide's heap;
    open: isolation (bounds checks), traps, grow, tables, D25 parity, browsers.

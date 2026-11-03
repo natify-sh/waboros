@@ -716,3 +716,32 @@ Existing per-OS work (S0006 on Linux glibc and musl, macOS, Windows and Android 
 memory per OS) stays as it is. Briefs and reviews: a brief for anything per-OS names the rows it
 touches and, for each row beyond the first, the exception and its evidence; a reviewer treats a per-OS
 change without a named exception as out of scope.
+
+### D48. Native JIT targets are x86-64, aarch64 and riscv64
+Status: accepted (maintainer, 2026-11-03) · Date: 2026-11-03 · Supersedes: — · Evidence: [ARTIFACT-CONTAINER.md](ARTIFACT-CONTAINER.md) (Wasmtime 50.0.1 CLI, checked 2026-11-02: `--target i686-...` and `--target armv7-...` give "Support for this target has not been implemented yet"; 32-bit hosts get Pulley, its bytecode interpreter)
+
+1. **Architectures.** A JIT target exists only for x86-64, aarch64 and riscv64: three of
+   Cranelift's four 64-bit architectures (x86-64, aarch64, riscv64, s390x). x86-64 and aarch64 are
+   done; riscv64 is planned, the first micro-compiler after `arm64.wasm`
+   ([MICRO-COMPILERS.md](MICRO-COMPILERS.md)); ROADMAP phase 8.
+   **s390x is excluded by the maintainer** and runs `pyc`. Reasons, recorded, not a plan: the host
+   is big-endian and wasm memory is little-endian, so every load and store would byte-swap (s390x
+   has byte-reversed `lrv`, `lrvg`, `strv`, `strvg`, `lrvh`, so the cost is small, but it is a new
+   axis for the backend interface (D39) and for SIMD lanes); there is no native CI runner, only
+   QEMU user-mode, which is slow; Wasmtime's own s390x backend would be the closest reference if
+   this is ever reopened. `pyc` passes the spec suite on s390x under QEMU
+   ([PYC-PLATFORMS.md](PYC-PLATFORMS.md)); the optional exotic QEMU job keeps covering it.
+2. **Operating systems** stay open within those architectures: Linux (glibc, musl), macOS, Windows
+   and Android are tested today, and the JIT artifact is OS-independent (D23). D47 governs per-OS
+   *optimisations*; D48 is about which architectures get a JIT at all. They do not conflict.
+3. **Every other architecture runs `pyc`**, permanently: s390x, i686 and 32-bit Windows, armv7,
+   ppc64le, loongarch64, mips32el (Ingenic X2000) and the rest. `auto` already falls back with the D31
+   warning. No 32-bit JIT design and no sljit or LLVM long-tail backend is planned. `pyc`'s 32-bit
+   issues are therefore real work, not stop-gaps (both are fixed: D46 and the OverflowError mapping).
+4. **Pyodide** is a separate track with its own way of running code (the guest as an Emscripten
+   side module loaded with `ctypes.CDLL`, compiled by the browser's engine, [PYODIDE.md](PYODIDE.md)).
+   It is not a JIT target of ours and not part of the architecture list.
+
+LLVM as an optional ahead-of-time tier for speed is a separate question and is not closed by this
+decision. Rejected: a 32-bit pathfinder (i686), a generic backend library (sljit), an LLVM tier for
+the long tail of architectures.

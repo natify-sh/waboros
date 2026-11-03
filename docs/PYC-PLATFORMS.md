@@ -58,7 +58,7 @@ Probe on x86_64 (`nan_probe.py`): `struct.pack('<f', double-sNaN)` gives 7fe0000
 * Python 3.14 (and PyPy): differs, by one root cause (`_f32` demote of sNaN). Python 3.15 hides it on x86_64 and shows it on s390x.
   The version axis and the architecture axis are not separable for this bug, but it is one bug: an explicit NaN branch in `_f32`
   removes the dependency on the C library in every cell.
-* 32-bit (Py_ssize_t 32): two separate bugs, identical on i686 and armv7: OverflowError on addresses >= 2^31 (156 spec commands), and
+* 32-bit (Py_ssize_t 32; `pyc` is the permanent home of 32-bit and other non-JIT architectures, D48, so these are real work, not stop-gaps; both are fixed: D46 and the OverflowError mapping, section 6): two separate bugs, identical on i686 and armv7: OverflowError on addresses >= 2^31 (156 spec commands), and
   (x86 only) x87 quieting (88). armv7 (VFP, no x87) adds nothing over i686. 3.15 widens the OverflowError set by 66.
 * Endianness: no difference (s390x == x86_64 apart from the version-specific NaN above).
 * aarch64 vs x86_64: no difference measured (3.13, 3.15).
@@ -77,7 +77,7 @@ s390x 3.14/3.15 failures are the same demote bug), aarch64 and macOS arm64 (0 di
 PyPy (same as 3.14; pytest cannot even collect), 3.12 / 3.13 / 3.14t / 3.15 non-t on x86_64 (identical to a listed cell).
 The JIT cells are independent: they exercise mmap/ABI/signal handlers per OS and architecture, which the pyc results say nothing about.
 They already run the pyc suite as a side effect (31 s native for the spec, ~12 s pytest), so a pyc check on an arch that has a JIT cell costs nothing extra;
-the pyc-only cells are just the ones without a JIT (i686 now; armv7, Pyodide, etc. later).
+the pyc-only cells are just the ones without a JIT (i686 now; armv7 and the other architectures D48 leaves on `pyc`, Pyodide, etc. later).
 Fixes implied (not done, read-only): (a) map OverflowError like IndexError in `_run` or mask addresses; (b) keep f32 NaN bits out of struct
 float round trips (demote and loads) - after (a) and (b) the measured difference set is empty and the 3.14 and i686 cells become regression checks.
 
