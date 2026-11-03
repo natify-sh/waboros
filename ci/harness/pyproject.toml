@@ -54,6 +54,11 @@ build = """
 environment = { PIP_FIND_LINKS = "/project/ci/deps", UV_FIND_LINKS = "/project/ci/deps" }  # pip and uv
 environment-pass = ["WABOROS_JIT_REQUIRE"]  # from the job, if set
 
+[tool.cibuildwheel.macos]
+# The build venv (build[uv]) has no pip, and the free-threaded python.org framework puts no `pip` on
+# PATH (run 5: cp311 passed, cp315t "pip: command not found"); uv is on the runner (setup-uv).
+before-build = "uv build --wheel --out-dir {project}/ci/deps {project}"
+
 # Android runs the tests inside an app: no shell, no {project}; the tests are copied in. The mode is
 # `auto`. No wasmtime wheel there (ROADMAP): the tests that need no WAT / oracle only. UNPROVEN.
 [tool.cibuildwheel.android]
