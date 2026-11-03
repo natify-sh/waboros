@@ -295,7 +295,10 @@ reservation is a crash, not a trap: the explicit-mode tests and differential run
 4. **Windows x86-64 and arm64** (arm64 joined, maintainer 2026-11-02; done and verified 2026-11-03): the vectored handler; the EH-continuation question answered by a test that forces user
    shadow stacks and context-IP validation on a child python.exe (which is not CETCOMPAT itself).
    Acceptance: the `os (windows-latest)` and `arm64 (windows-11-arm)` jobs as in 3.
-5. **Android x86_64**: the `android` job runs `test_guard.py`; logcat shows no ART complaint.
+5. **Android x86_64**: the Android cell of `platforms.yml` runs `test_guard.py`; logcat shows no ART complaint.
+   The cell also takes over what `tools/android_check.py` checked in the former `android` job (the JIT
+   works in the app process and `auto` selects it; CoreMark passes its self-check there), and the
+   script is then deleted (maintainer, 2026-11-03).
 6. **Artifact** (moved to the artifact-format spec of phase 5, see Changes): the flag bits and `TRAPMAP` in the serialized format when phase 5 fixes it;
    ARTIFACT.md parts 2–3, DECISIONS (D29 amended), a test that a guard artifact is refused where
    guard mode is unavailable and regenerated when fat; the C loader's handler (D36).
