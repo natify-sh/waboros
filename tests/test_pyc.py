@@ -3,6 +3,7 @@ import os
 
 import pytest
 
+from tests.hosts import x87_quiets_snan
 from waboros.targets.base import TrapCode
 from waboros.targets.pyc import Trap, load, translate
 
@@ -205,6 +206,7 @@ NEG32 = bytes.fromhex(
 )
 
 
+@x87_quiets_snan
 def test_f32_nan_payload_kept() -> None:
     from waboros.targets.pyc import runtime as rt
 

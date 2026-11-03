@@ -3,13 +3,13 @@
 exported and imported globals, block types, select, drop, call_indirect) and a few NaN lanes.
 Where Wasmtime is installed the same module runs on it through the spec runner's adapter."""
 
-import platform
 import struct
 from collections.abc import Sequence
 from typing import Any
 
 import pytest
 
+from tests.hosts import x87_quiets_snan
 from tests.spec.target_engine import TargetEngine
 from waboros.frontend.binary import parse
 from waboros.frontend.validate import validate
@@ -256,14 +256,6 @@ def _lanes32(v: Any) -> tuple[int, ...]:
 
 def _is_quiet_nan32(x: int) -> bool:
     return x & 0x7FC00000 == 0x7FC00000
-
-
-# 32-bit x86 CPython computes in x87 registers, which quiet a signalling NaN on the way through
-# struct.unpack("<f") (found by the cibuildwheel i686 cell): pyc does not keep the bits there.
-x87_quiets_snan = pytest.mark.xfail(
-    platform.machine().lower() in ("i386", "i686", "x86"),
-    reason="x87 loads quiet a signalling NaN (pyc f32 values pass through a Python float)",
-)
 
 
 @x87_quiets_snan

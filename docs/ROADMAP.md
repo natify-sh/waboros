@@ -240,7 +240,10 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29) -> the rest below.
   `sqrt` of a signalling NaN give a quiet NaN on every host (3.14, PyPy: 0 failures), and `OverflowError`
   is mapped to the out-of-bounds trap (i686: 244 -> 88 failures). Open: x87 on i686 quiets signalling
   NaNs in every double that passes through st0 (88 commands, 3 tests); it cannot be fixed while f32/f64
-  values are Python floats, options in PYC-PLATFORMS.md section 5 await a decision.
+  values are Python floats. Decided (maintainer, 2026-11-03): a separate `pyc` generation mode for
+  32-bit x86 that carries f32/f64 as int bit patterns (option 1 of PYC-PLATFORMS.md section 5),
+  deferred or given to a separate agent; until then the 3 tests are xfail on 32-bit x86
+  (`tests/hosts.py`) and the 88 spec commands are the known gap there.
 * **Guard pages with a JIT-emitted signal handler** (`poc/w2jit_guard.py`: +20–25 % on CoreMark, the gap
   to Cranelift was mostly the bounds checks), per OS and architecture (Linux `sigaction` +
   `ucontext` offsets, macOS also SIGBUS, Windows a vectored exception handler), `sigaltstack` per thread

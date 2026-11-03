@@ -1,13 +1,13 @@
 # pyright: reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false
 """S0002 step 1: `pyc` behind the Target interface (select, link, instantiate, call)."""
 
-import platform
 import sys
 import threading
 from collections.abc import Mapping, Sequence
 
 import pytest
 
+from tests.hosts import x87_quiets_snan
 from tests.test_pyc import DIV, SHARE_A, SHARE_B
 from waboros.frontend.binary import parse
 from waboros.frontend.validate import validate
@@ -111,14 +111,6 @@ def test_wasm_trap_codes() -> None:
         inst.call(0, [1, 0])
     assert e.value.code is TrapCode.INTEGER_DIVISION_BY_ZERO
     assert TrapCode.INTERRUPT == 12
-
-
-# 32-bit x86 CPython computes in x87 registers, which quiet a signalling NaN on the way through
-# struct.unpack("<f") (found by the cibuildwheel i686 cell): pyc does not keep the bits there.
-x87_quiets_snan = pytest.mark.xfail(
-    platform.machine().lower() in ("i386", "i686", "x86"),
-    reason="x87 loads quiet a signalling NaN (pyc f32 values pass through a Python float)",
-)
 
 
 @x87_quiets_snan
