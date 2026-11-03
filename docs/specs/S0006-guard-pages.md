@@ -240,7 +240,7 @@ trap).
 | Linux musl | **verified** (musl step) | explicit: `jit-aarch64` needs libgcc's `__clear_cache`, absent from the stock image (Changes) | `jit` (`python:3.13-alpine` container) |
 | macOS | **verified** (step 3; CI run 41610392553) | **verified** (step 3; CI run 41610392553) | `platforms.yml` (`macOS x86_64`, `macOS arm64`) |
 | Windows | **verified** (step 4; CI run 41640149866) | **verified** (step 4; CI run 41633456821) | `platforms.yml` (`Windows x64`, `Windows ARM64`) |
-| Android (bionic, libsigchain) | **verified, pending CI** (step 5: in `verified` so that `tests/jit/test_android.py` can assert `auto` gives guard; the run ID goes here once the Android cell is green) | explicit (documented limitation) | `platforms.yml` (`Android`, x86_64 emulator) |
+| Android (bionic, libsigchain) | **verified** (step 5; CI run 41708608127, `tests/jit/test_android.py` in the Android cell; CPython 3.13+ only, older Pythons on Android are not a target) | explicit (documented limitation) | `platforms.yml` (`Android`, x86_64 emulator) |
 
 The BSDs are not a target (TARGETS.md), so they have no row.
 
@@ -841,3 +841,8 @@ reservation is a crash, not a trap: the explicit-mode tests and differential run
     action is set to SIG_DFL, when it falls back to SIG_DFL, and when `EnsureFrontOfChain` finds another
     handler as the kernel's ("Unexpected sigaction action found"). A passing run takes none of these
     paths, and the test checks the last one directly.
+* 2026-11-03: **Step 5 verified.** CI run 41708608127: the Android cell (CPython 3.13 testbed app, x86_64
+  emulator) ran `tests/jit/test_android.py` (the JIT in the app process with `auto` selecting it, 200
+  guard traps through libsigchain with the kernel's action still libsigchain's, CoreMark's self-check)
+  and the JIT tests in guard and explicit mode: 260 passed, 0 failed. Android before CPython 3.13
+  (`sys.platform == "linux"` there, e.g. Chaquopy) is not a target (maintainer): it stays explicit.

@@ -40,7 +40,7 @@ class JitX86_64Target(JitTarget):
     # `auto` gives guard here (D44; CI `jit`, glibc and musl;
     # darwin: CI run 41610392553, `os (macos-26-intel)`;
     # win32: CI run 41640149866, `os (windows-latest)`;
-    # android: the `Android` cell of platforms.yml, x86_64 emulator, step 5)
+    # android: CI run 41708608127, the `Android` cell of platforms.yml, x86_64 emulator, step 5)
     verified = frozenset({"linux-glibc", "linux-musl", "darwin", "win32", "android"})
 
     def guard_backend(self) -> Any:

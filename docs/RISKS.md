@@ -154,7 +154,7 @@ know, otherwise recompile" is the simplest robust rule. It needs the wasm at han
 
 ## R6. A signal handler of our own (guard pages in the JIT)
 
-**Status at HEAD: partly mitigated: the default on Linux glibc x86-64 and aarch64, Linux musl x86-64, macOS, Windows x64 and arm64, and Android x86_64 (step 5; the first CI run of the Android cell decides).** S0006 step 1:
+**Status at HEAD: partly mitigated: the default on Linux glibc x86-64 and aarch64, Linux musl x86-64, macOS, Windows x64 and arm64, and Android x86_64 (step 5; CI run 41708608127).** S0006 step 1:
 guard code on `jit-x86_64`; step 2 the same on `jit-aarch64` (`aarch64/abi.py`, verified under QEMU, the native
 runner to confirm). The handler is emitted machine code (`x86_64/abi.py`, `aarch64/abi.py`) reading this copy's registry
 (`common/guard.py`), chaining every fault it does not claim (tests: `tests/jit/test_guard.py`, foreign faults
@@ -178,7 +178,7 @@ and arm64 (S0006 step 4): a vectored exception handler (offsets from the Windows
 runs 41633456821 (`arm64 (windows-11-arm)`) and 41640149866 (`os (windows-latest)`), jobs now in `platforms.yml`; `win32` is a verified
 row, so `auto` gives guard there. Android x86_64 (S0006 step 5): bionic's
 32-byte `struct sigaction`, installed through ART's libsigchain (below); `tests/jit/test_android.py` in the
-Android cell of `platforms.yml`. Open: Linux musl aarch64 (no
+Android cell of `platforms.yml`, verified by CI run 41708608127. Open: Linux musl aarch64 (no
 `__clear_cache` without libgcc, S0004). Android arm64 stays explicit, a documented limitation (S0006).
 
 Guard pages need a SIGSEGV handler in the process (ARCHITECTURE.md, "Memory"); the PoC emits it as
