@@ -44,11 +44,11 @@ test-command = "pytest {project}/tests --jit-bounds=guard,explicit -q -rs -p no:
 
 [tool.cibuildwheel.linux]
 # x86_64 glibc: oldest, 3.14, newest free-threaded; musl x86_64: one (the musl guard row); i686: one
-# (the 32-bit pyc cell); aarch64 glibc: oldest and newest free-threaded; no musl aarch64, no musl i686.
+# (the 32-bit pyc cell); aarch64 glibc: oldest and newest free-threaded; armv7l (native on the arm runner, pyc only): cp313; no musl aarch64, no musl i686.
 build = """
     cp311-manylinux_x86_64 cp314-manylinux_x86_64 cp315t-manylinux_x86_64
     cp313-musllinux_x86_64 cp313-manylinux_i686
-    cp311-manylinux_aarch64 cp315t-manylinux_aarch64
+    cp311-manylinux_aarch64 cp315t-manylinux_aarch64 cp313-manylinux_armv7l
 """
 # The container sees /project; the tests run in the same environment:
 environment = { PIP_FIND_LINKS = "/project/ci/deps", UV_FIND_LINKS = "/project/ci/deps" }  # pip and uv
@@ -75,7 +75,7 @@ test-command = "pytest {project}/tests -q -rs -p no:cacheprovider --ignore={proj
 select = "*-manylinux_aarch64"
 test-command = "pytest {project}/tests --jit-bounds=auto,explicit -q -rs -p no:cacheprovider"
 
-# Linux i686 and the optional exotic job (armv7l, ppc64le, s390x, riscv64; under QEMU): no JIT here, no
+# Linux i686 and armv7l (32-bit) and the optional exotic jobs (ppc64le, s390x, riscv64; under QEMU): no JIT here, no
 # wheels of wasmtime / wasm-tools, no uv wheels: pyc-only subset, no oracle.
 # The --ignore list is what fails on x86-64 Linux without wasmtime / wat2wasm (their tests compile
 # WAT through it); tests/spec needs the spec cache and the oracle.

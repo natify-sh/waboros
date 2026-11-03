@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       exotic:
-        description: also run the optional QEMU job (armv7l, ppc64le, s390x, riscv64)
+        description: also run the optional QEMU jobs (ppc64le, s390x, riscv64)
         type: boolean
         default: false
   push:
@@ -33,7 +33,7 @@ jobs:
         include:
           # one job per runner; the architectures of a platform go through CIBW_ARCHS below (the same as CIBW_ARCHS_<PLATFORM>, since a job has one platform)
           - { name: "Linux x86 (x86_64, i686)", os: ubuntu-latest, platform: linux, archs: "x86_64 i686" }  # proven: wabt-package
-          - { name: Linux arm (aarch64), os: ubuntu-24.04-arm, platform: linux, archs: aarch64 }  # proven
+          - { name: "Linux arm (aarch64, armv7l)", os: ubuntu-24.04-arm, platform: linux, archs: "aarch64 armv7l" }  # proven; armv7l native here
           - { name: macOS arm64, os: macos-26, platform: macos, archs: arm64 }  # proven: wabt-package
           # a real Intel runner: under Rosetta jit-x86_64 and its fault handler would run translated
           - { name: macOS x86_64, os: macos-26-intel, platform: macos, archs: x86_64 }
@@ -42,7 +42,7 @@ jobs:
           # tests on x86_64 (the emulator has the runner's architecture), arm64_v8a is built only
           # (test-skip in the config); proven: py-wasmext
           - { name: "Android (x86_64, arm64_v8a)", os: ubuntu-latest, platform: android, archs: "x86_64 arm64_v8a" }
-          # pyc only; the build is proven by py-wasmext. armv7l, ppc64le, riscv64, s390x and iOS are off
+          # pyc only; the build is proven by py-wasmext. ppc64le, riscv64, s390x and iOS are off
           # (maintainer, 2026-11-03): the same pyc as elsewhere, and no micro-compiler for them yet
           - { name: Pyodide, os: ubuntu-latest, platform: pyodide, archs: wasm32 }
     env:
@@ -63,7 +63,7 @@ jobs:
         shell: bash
   # Optional, never on push, never counts against the run: the architectures that have only pyc (no
   # micro-compiler yet). Start it from the Actions tab with `exotic` ticked. QEMU is very slow, so
-  # each emulated architecture has a runner of its own; armv7l runs natively on the arm runner.
+  # each emulated architecture has a runner of its own (armv7l is in the main arm job, natively).
   exotic:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.exotic }}
     name: exotic ${{ matrix.archs }}
@@ -74,7 +74,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { archs: armv7l, os: ubuntu-24.04-arm }
           - { archs: ppc64le, os: ubuntu-latest, qemu: true }
           - { archs: s390x, os: ubuntu-latest, qemu: true }
           - { archs: riscv64, os: ubuntu-latest, qemu: true }
