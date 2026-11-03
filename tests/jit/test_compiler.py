@@ -634,5 +634,7 @@ def test_isa_check_on_compiled_code(tmp_path: Path) -> None:
 
 def test_core_names_no_architecture() -> None:
     """D26: the shared core imports nothing architecture- or target-specific."""
-    src = (ROOT / "src/waboros/targets/jit/common/compiler.py").read_text(encoding="utf-8")
+    from waboros.targets.jit.common import compiler  # the installed file: no checkout on Android
+
+    src = Path(compiler.__file__).read_text(encoding="utf-8")
     assert "x86" not in src and "targets.pyc" not in src

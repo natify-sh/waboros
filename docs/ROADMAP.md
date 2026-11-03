@@ -219,17 +219,31 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29) -> the rest below.
   `pyc` where there is no JIT); a platform is supported when its cell is green.
   Draft (2026-11-03, not yet in CI): the harness in `ci/harness/`, the manual workflow `.github/workflows/platforms.yml`;
   proven locally on Linux x86_64 manylinux and musllinux only.
+  Principle (maintainer, 2026-11-03): the matrix is as narrow as it can be without losing a
+  behaviour difference that matters now; armv7l, ppc64le, riscv64, s390x and iOS are off (the same
+  `pyc`, no micro-compiler for them yet). A platform is added deliberately, and its own issues are
+  dealt with then, not by fixing micro-bugs on every target now. The jobs are grouped by runner
+  (cibuildwheel runs several architectures and Python versions per job); the exotic architectures
+  stay reachable as optional jobs (armv7l native on the arm runner; ppc64le, s390x, riscv64 one
+  QEMU runner each), run on request and non-blocking. Later (maintainer, 2026-11-03): once Wasm 3.0
+  is covered on `pyc` and both JITs and the context ABI and the artifact format are frozen, the work
+  splits into parallel tracks (one agent on WASI, another on a compiler for a further platform),
+  and a platform taken on that way makes its job (QEMU or other) mandatory. Which Python versions and
+  platforms `pyc` needs is decided by a measurement of where its behaviour actually differs.
   cibuildwheel itself is a dev dependency (`uv add --dev cibuildwheel`: its version is pinned in
   `uv.lock`, CI runs `uv run cibuildwheel`, dependabot updates it).
   It replaces the hand-made Android job and adds iOS and the pyc-only platforms; the jobs that need our own tools or emulator flags stay (QEMU `qemu64`
   without SSE3+, QEMU with BTI enforced, D35 dumps, MDWE, the objdump/llvm-mc ISA gates, native
   CoreMark). Where wasmtime has no wheel (iOS, Android, Pyodide) only tests that need no WAT run.
-* **`pyc`: f32 bit patterns on 32-bit x86** (maintainer, 2026-11-03: fix it, right after the
-  cibuildwheel step): on i686, `struct.unpack('<f')` goes through the x87 registers, which quiet a
-  signalling NaN (0x7FA00000 reads back as 0x7FE00000), so `pyc` breaks wasm's rule that loads,
-  stores and reinterprets keep f32 bits exactly. Found by the cibuildwheel matrix; the two tests
-  that show it (`test_f32_signalling_nan_survives`, `test_nan_lanes`) are xfail on 32-bit x86 until
-  `pyc` moves f32 values without a float round trip there.
+* **`pyc`: host-dependent results** (maintainer, 2026-11-03: fix them in one step, right after the
+  cibuildwheel step). A measurement over CPython 3.11–3.15(t), PyPy, i686, armv7, aarch64 and s390x
+  (spec suite on `pyc`, [PYC-PLATFORMS.md](PYC-PLATFORMS.md)) found three causes and nothing else:
+  (1) f32 NaN bits through `struct`/`float`: `f32.demote_f64` of a signalling NaN differs on
+  CPython 3.14+ and PyPy (4 commands), and x87 quiets signalling NaNs on i686 (88 commands);
+  (2) on 32-bit hosts an address of 2^31 or more raises `OverflowError`, which `pyc` does not turn
+  into a trap (156 commands on i686 and armv7; the "never crash" rule). Fix: keep f32 bit patterns
+  out of the float round trips, and map `OverflowError` like `IndexError`. Until then the tests that
+  show it are xfail on 32-bit x86.
 * **Guard pages with a JIT-emitted signal handler** (`poc/w2jit_guard.py`: +20–25 % on CoreMark, the gap
   to Cranelift was mostly the bounds checks), per OS and architecture (Linux `sigaction` +
   `ucontext` offsets, macOS also SIGBUS, Windows a vectored exception handler), `sigaltstack` per thread

@@ -147,6 +147,14 @@ Where no JIT is allowed at all — iOS (Pythonista), Pyodide, hardened Linux wit
 anonymous memory — `pyc` is the target. In Pyodide the browser's own `WebAssembly` is faster than any
 of ours; a thin target calling it through `js` is an option to consider.
 
+**The role of `pyc` as native compilers spread** (maintainer, 2026-11-03): once most targets have
+a JIT or a micro-compiler of their own, `pyc` is (1) the internal reference every feature passes on
+first and the JITs are held to (D25; Wasmtime stays the external oracle), and (2) the fallback where
+no machine code is possible (iOS, strict W^X) or no compiler exists yet (32-bit and the exotic
+architectures; Pyodide until its own target, the guest as an Emscripten side module compiled by the
+host's WebAssembly engine, [PYODIDE.md](PYODIDE.md)). So it needs no CI cell per OS and architecture of its own: a few
+interpreters, plus the platforms where it is the only target.
+
 The BSDs are not a target (not in cibuildwheel's map below): no CI, no claim; `auto` on them is
 whatever the probe finds, and guard pages stay off there.
 

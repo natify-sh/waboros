@@ -2,6 +2,7 @@
 """S0002 step 1: `pyc` behind the Target interface (select, link, instantiate, call)."""
 
 import platform
+import sys
 import threading
 from collections.abc import Mapping, Sequence
 
@@ -140,6 +141,7 @@ def test_link_errors() -> None:
         link.resolve(parse(immutable), prov)
 
 
+@pytest.mark.skipif(sys.platform == "emscripten", reason="Pyodide cannot start threads")
 def test_one_thread_per_store() -> None:
     store = StoreState()
     store.enter()
