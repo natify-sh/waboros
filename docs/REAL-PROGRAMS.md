@@ -2,7 +2,7 @@
 title: Real programs beyond CoreMark - a corpus, the scalar gap, and work that can run beside phase 5
 kind: reference
 status: draft
-updated: 2026-11-02
+updated: 2026-11-03
 ---
 
 # Real programs beyond CoreMark: a corpus, the scalar gap, and parallel work
@@ -18,7 +18,7 @@ backends, the artifact format).
 |---|---|
 | differential fuzzing with `wasm-smith` against Wasmtime | yes, as a plan: ROADMAP phase 5 ("from the first widened stage on") and its exit criteria, TESTING, RISKS. No infrastructure yet |
 | a corpus of real programs with a check that needs no Wasmtime | no. TESTING says "real programs" in general only |
-| why scalar code on `jit-x86_64` is 1.5-3.9x behind Wasmtime | only as a measured fact (BENCHMARKS, SIMD benchmark: "The scalar builds on `jit-x86_64` are 1.5-3.9x behind Wasmtime's scalar builds"); no task |
+| why scalar code on `jit-x86_64` is 1.5-3.9x behind Wasmtime | a measured fact (BENCHMARKS, SIMD benchmark: "The scalar builds on `jit-x86_64` are 1.5-3.9x behind Wasmtime's scalar builds"); its work is [S0007](specs/S0007-scalar-codegen.md) (scalar code generation): steps 1-3 done, 1b measured and dropped, steps 4-8 open (resumed after S0006) |
 
 What runs today besides the spec suite: CoreMark, meld-core without WASI (`poc/bench/meld`), the
 SIMD kernels (`poc/bench/simd`), `vm.wasm` (`poc/bench/switch`). Nothing with WASI.
@@ -66,8 +66,8 @@ section 1.
 Questions to answer with data:
 
 * How much is **bounds checks**? The SIMD investigation's `B` experiment (no bounds checks at all)
-  changed little on these kernels, so guard pages may not close this gap; measure on the scalar
-  builds directly.
+  changed little on these kernels, so guard pages (S0006, done: +9 % CoreMark on x86-64) may not
+  close this gap; measure on the scalar builds directly.
 * How much is **register allocation**: pinned locals versus spills to slots; values live across
   loop back-edges; the lazy value stack flushing at branches.
 * How much is **instruction selection**: address modes (`[base + index*scale + disp]` versus separate
@@ -78,7 +78,7 @@ Questions to answer with data:
   without a zeroing idiom.
 
 Output: a ranking by gain per complexity, as the SIMD investigation gave, and decisions for the
-maintainer. The ranking decides what goes into phase 5 next to guard pages, or later.
+maintainer. The ranking decides what goes into phase 5 after guard pages, or later; S0007 took the first items.
 
 ## 3. Differential fuzzing and the corpus together
 
@@ -139,10 +139,10 @@ a dependency; the cost of p1 over p2 on a hot `fd_write` loop (measure).
 
 | item | parallel? | why |
 |---|---|---|
-| QEMU smoke of `pyc` on s390x, riscv64, ppc64le | yes | CI only; s390x is big-endian and finds byte-order bugs that x86 and ARM never show |
+| QEMU smoke of `pyc` on s390x, riscv64, ppc64le | yes (exists: the optional exotic jobs of `platforms.yml`, on `workflow_dispatch`) | CI only; s390x is big-endian and finds byte-order bugs that x86 and ARM never show |
 | corpus (section 1) and its runner | yes | `poc/bench/` and `tools/` only |
 | scalar-gap investigation (section 2) | yes | no committed code change |
 | fuzzing infrastructure (section 3) | yes | `tools/`, CI |
 | WASI binding through fusedwasi (section 4) | yes, after the maintainer's decision on the dependency | a new `wasi` area over the internal engine interface |
 | micro-compilers, the C reference loader | no | wait for the fixed artifact format (D36) |
-| a third architecture | no | the backend interface still changes (exceptions, GC, memory64) |
+| a third architecture (riscv64, D48) | no | the backend interface still changes (exceptions, GC, memory64); it comes as a micro-compiler, after `arm64.wasm` |

@@ -65,21 +65,21 @@ Probe on x86_64 (`nan_probe.py`): `struct.pack('<f', double-sNaN)` gives 7fe0000
 * OS: not measured; no OS-specific code path in pyc (static audit), so any OS difference would have to come from the C library
   (float pack/unpack, libm) - the same class as the NaN case. Windows/macOS arm64/x86_64 are 64-bit IEEE-SSE/NEON like the measured cells.
 
-## 4. Recommendation (minimal, per the maintainer's narrow-matrix rule)
-Cells for pyc now:
+## 4. Recommendation (minimal, per the maintainer's narrow-matrix rule; the matrix in `ci/harness/pyproject.toml` follows it and has since grown, see below)
+Cells for pyc as recommended on 2026-11-03:
 1. x86_64 Linux, CPython 3.11 (the floor; 3.12 and 3.13 gave identical results).
 2. x86_64 Linux, CPython 3.14 (the only measured version that fails on x86_64: demote sNaN; catches regressions the 3.11/3.15 pair would pass).
 3. x86_64 Linux, CPython 3.15t (newest, free-threaded; results equal 3.15, threading covered).
 4. One i686 cell, CPython 3.13 (the lowest the manylinux i686 image offers; 3.13 == 3.14 there): it is the only cell that shows both 32-bit bugs
    (ssize_t overflow, x87). Add 3.15 on i686 only if the OverflowError fix should be checked against the 3.15 variant (66 extra commands).
-Can wait until the platform is taken on: armv7 (strict subset of i686), s390x / any big-endian (no pyc-specific difference; the
+Could wait until the platform is taken on (armv7l, aarch64, macOS, Windows, Pyodide have since got cells in `platforms.yml`, below): armv7 (strict subset of i686), s390x / any big-endian (no pyc-specific difference; the
 s390x 3.14/3.15 failures are the same demote bug), aarch64 and macOS arm64 (0 diff), Windows (not measurable here, no pyc-specific code),
 PyPy (same as 3.14; pytest cannot even collect), 3.12 / 3.13 / 3.14t / 3.15 non-t on x86_64 (identical to a listed cell).
 The JIT cells are independent: they exercise mmap/ABI/signal handlers per OS and architecture, which the pyc results say nothing about.
 They already run the pyc suite as a side effect (31 s native for the spec, ~12 s pytest), so a pyc check on an arch that has a JIT cell costs nothing extra;
-the pyc-only cells are just the ones without a JIT (i686 now; armv7 and the other architectures D48 leaves on `pyc`, Pyodide, etc. later).
-Fixes implied (not done, read-only): (a) map OverflowError like IndexError in `_run` or mask addresses; (b) keep f32 NaN bits out of struct
-float round trips (demote and loads) - after (a) and (b) the measured difference set is empty and the 3.14 and i686 cells become regression checks.
+the pyc-only cells are just the ones without a JIT. In `platforms.yml` (cibuildwheel, `ci/harness`) these are i686, armv7l (native on the arm runner) and Pyodide; ppc64le, s390x and riscv64 are optional QEMU jobs on `workflow_dispatch` (the architectures D48 leaves on `pyc`). The Linux cells run CPython 3.11, 3.14 and 3.15t (x86_64 glibc), 3.13 (musl x86_64, i686, armv7l) and 3.11 and 3.15t (aarch64 glibc); `ci.yml` `test` runs 3.11-3.15, 3.15t and PyPy 3.11, and the 3.13 cell also runs pyc with `WABOROS_PYC_FBITS=1`.
+Fixes implied (both done, section 5): (a) map OverflowError like IndexError in `_run` or mask addresses; (b) keep f32 NaN bits out of struct
+float round trips (demote and loads) - after (a) and (b) the measured difference set is empty and the 3.14 and i686 cells are regression checks.
 
 ## 5. Fixes done (2026-11-03) and what is left
 * Demote: `_demote` (runtime.py; used by `f32.demote_f64` and `f32x4.demote_f64x2_zero`) quiets a NaN with `x * 1.0` before the

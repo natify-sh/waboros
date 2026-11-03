@@ -2,7 +2,7 @@
 title: References
 kind: reference
 status: current
-updated: 2026-11-02
+updated: 2026-11-03
 ---
 
 # References
@@ -19,12 +19,12 @@ against wasmtime, and encodings checked against `objdump` / `llvm-mc` in CI.
 | source | what to look at | useful for |
 |---|---|---|
 | **Winch** — wasmtime's baseline compiler (Rust) | the closest project to our JIT: single-pass wasm → x64 / aarch64; lowering of every operator with Wasmtime's trap semantics; the lazy value stack and register cache; bounds checks; fuel and epoch checks; trap codes | `jit-x86_64`, `jit-aarch64`, LIR design |
-| **V8 Liftoff** — V8's baseline wasm compiler (C++) | the same job across **many architectures** (x64, ia32, arm, arm64, riscv, mips64, loong64, ppc64, s390x): how each wasm operator maps onto each ISA; how register state is reconciled at block merges (we avoid it by pinning locals — worth knowing what it costs); memory64 bounds checks | every new architecture |
+| **V8 Liftoff** — V8's baseline wasm compiler (C++) | the same job across **many architectures** (x64, ia32, arm, arm64, riscv, mips64, loong64, ppc64, s390x): how each wasm operator maps onto each ISA; how register state is reconciled at block merges (we avoid it by pinning locals — worth knowing what it costs); memory64 bounds checks | `jit-riscv64` and the micro-compilers (D48) |
 | **wasm2c** (`wasm-rt` and its helpers) | exact semantics of the awkward operators as C: NaN rules of `min`/`max`, `trunc`, `trunc_sat`, `nearest`, signed division and remainder, rotations, conversions | `pyc` helpers, JIT instruction sequences |
 | **The spec reference interpreter** (OCaml, `WebAssembly/spec`) | what an operator means when in doubt | everything |
-| **TinyCC** | small per-architecture back ends (`x86_64-gen.c`, `arm64-gen.c`, `riscv64-gen.c`, `arm-gen.c`, `i386-gen.c`): calling conventions, instruction encodings; the `vtop` value stack with `VT_CMP` — the same idea as our lazy entries and fused compare + branch | ABIs and encodings for new architectures |
+| **TinyCC** | small per-architecture back ends (`x86_64-gen.c`, `arm64-gen.c`, `riscv64-gen.c`, `arm-gen.c`, `i386-gen.c`): calling conventions, instruction encodings; the `vtop` value stack with `VT_CMP` — the same idea as our lazy entries and fused compare + branch | ABIs and encodings for `jit-riscv64` |
 | **asmjit** | complete encoding tables for x86 and AArch64, including SIMD | encoders, SIMD |
-| **DynASM** (LuaJIT) | encoders for x86/x64, ARM, ARM64, PPC and **MIPS** | MIPS (Ingenic X2000), PPC |
+| **DynASM** (LuaJIT) | encoders for x86/x64, ARM, ARM64, PPC and **MIPS** | encoder ideas only: MIPS and PPC run `pyc` (D48) |
 | **Cranelift's assemblers and lowering** | encodings for x64, aarch64, riscv64, s390x; x64 and aarch64 SIMD lowering (`cranelift/codegen/src/isa/x64/lower.isle`): which operators are one SSE2 sequence and which need SSE4.1 or fall back to libcalls (read for S0005; V8 enables wasm SIMD on x64 only with SSE4.1, `CpuFeatures::SupportsSimd128`) | encoders, SIMD |
 | **MicroPython's native emitters** (`py/emitnative.c`, `py/asmthumb.c`, `py/asmxtensa.c`, `py/asmrv32.c`, …) | code generation for MCU architectures (Thumb, Xtensa, RISC-V 32); how viper types and calls work | the `mpy` target, viper code, future Thumb/Xtensa back ends |
 | **CPython's JIT** (`Tools/jit`) | how copy-and-patch is built: stencils, holes, relocations | if copy-and-patch is chosen (TARGETS.md) |

@@ -80,7 +80,7 @@ Every file is `ET_REL` with OS/ABI `0xc8`, on Linux, macOS and Windows alike. Wh
 | 2 `ENTRIES` | symbols `__waboros_entry_sysv`, `__waboros_entry_win64`, … in `.symtab` |
 | 3 `FUNCS` | `.symtab` entries (`STT_FUNC`, offset and size; names from the name section or `wasm[N]`) + `.waboros.funcs` for type index and frame size |
 | 4-11 `TYPES` … `START` | `.waboros.types`, `.waboros.imports`, … the same payloads, one section each |
-| 12 `TRAPMAP` | `.waboros.traps` |
+| 12 `TRAPMAP` (frames and, with `BOUNDS_GUARD`, the guard fault map) | `.waboros.traps` |
 | 13 `RELOCS` | real `SHT_RELA` sections if copy-and-patch ever needs relocations |
 | 14 `WASM` (fat file) | `.waboros.wasm` |
 | `CHECKSUM` | `.waboros.checksum` (sha256 of the file with this section's bytes zeroed), or dropped in favour of `module_sha256` + `config_sha256` |
@@ -145,3 +145,9 @@ project has a name". The project is now waboros (D40), so the extension is decid
 container: e.g. `.wab` for our own container, or an ELF-flavoured name if (b) is chosen. The header,
 not the name, stays authoritative; the name carries what decides whether a file can run (target, ISA
 level, and the bounds mode: guard or explicit, S0006).
+
+## Also open: the guard flag and the fault map
+
+S0006 step 6 (the `BOUNDS_GUARD` flag and the fault map in `TRAPMAP` in the serialized artifact, and
+the C loader's fault handler) moved to the phase-5 artifact-format spec, to be done with the
+container chosen here. The package builds both in memory today and writes neither to a file.

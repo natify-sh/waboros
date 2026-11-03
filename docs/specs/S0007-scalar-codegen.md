@@ -6,12 +6,15 @@ status: approved
 superseded_by:
 related: [D14, D25, D26, D35, D39, D44, S0003, S0004, S0006, R2, R3]
 owner: maintainer
-updated: 2026-11-02
+updated: 2026-11-03
 ---
 
 # S0007 Scalar code generation in both JITs (addressing, returns, temporaries)
 
 ## Summary
+**Status (2026-11-03): approved, in progress.** Steps 1, 2 and 3 are done, step 1b was measured and dropped, the spec is
+paused while S0006 is closed (now implemented); steps 4-8 are open.
+
 `jit-x86_64` scalar code is 1.5–3.9× slower than Wasmtime on the scalar kernels and 38 % slower on
 CoreMark. A measured investigation (2026-11-02; Xeon 2.10 GHz, 4 vCPU, CPython 3.13.17, wasmtime-py
 50.0.1, alternated rounds, medians; every variant at 54 385 spec passes / 0 fail) traced the gap to
@@ -279,9 +282,9 @@ investigation's.
   word 2 after); (d) (b) without the stack-check part (no ABI change, about half the leaf gain).
   **Recommendation: (b)**, H = 256; (c) as a later step with its own `fib`/CoreMark measurement.
 * **Q4. Version of the context ABI change.** (a) an amendment of v1 (precedent: S0003, D38; no
-  serialized artifact exists before S0006 step 6); (b) `ctx_abi_version` 2 with a test that a v1
+  serialized artifact exists before the artifact-format spec of phase 5, to which S0006 step 6 moved); (b) `ctx_abi_version` 2 with a test that a v1
   artifact is refused. **Recommendation: (a)** if ARTIFACT.md part 2 is still unbuilt when step 6
-  lands, else (b).
+  lands, else (b). (S0006 step 6 is now the artifact-format spec of phase 5: no artifact is serialized yet.)
 * **Q5. R's save set.** (a) a second pass for functions that used temporaries; (b) prologue patching;
   (c) a pre-scan bounding the temporaries. **Recommendation: (a)**, measured on compile time; (c) only
   if (a) costs more than 10 %.
@@ -333,3 +336,4 @@ investigation's.
   acceptance asked for a gain beyond it); calls and corpus within noise; compile time +4–5 % (BENCHMARKS.md).
   The Test plan's unit-test sentence was corrected: from a local holding 0, `k = 2³² − 4` with offset 4 is
   2³², a trap, not address 0 (wasm wraps before adding the offset).
+* 2026-11-03: status note: S0006 is implemented, so the pause for it ends; steps 4-8 are still open.

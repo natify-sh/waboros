@@ -6,7 +6,7 @@ status: implemented
 superseded_by:
 related: [D10, D14, D23, D24, D25, D26, D29, D30, D31, D32, D34, D35, D36, D37, R2, R3, R6, S0002, S0003]
 owner: maintainer
-updated: 2026-11-02
+updated: 2026-11-03
 ---
 
 # S0004 jit-aarch64, the second architecture (phase 4, integer core)
@@ -288,7 +288,7 @@ Header: `arch` = 2 (aarch64), `isa_level` = 1 (ARMv8.0-A with FP and Advanced SI
 * **CI**: a new job on `ubuntu-24.04-arm` (native; QEMU stays for architectures without runners,
   ROADMAP): `pytest tests/jit` with `WABOROS_JIT_REQUIRE=1`, the spec runs (wasmtime oracle, `pyc`,
   `jit-aarch64`, `auto`), `tools/no_exec.py` fallback, `tools/stack_info.py`, the ISA gate, the
-  cross-compilation diff, CoreMark. `macos-latest` (arm64) and `windows-11-arm` run the same job (decision 2 of the Changes).
+  cross-compilation diff, CoreMark. `macos-latest` (arm64) and `windows-11-arm` ran the same job (decision 2 of the Changes); since 2026-11-03 the `arm64` job is Linux only and those two run the harness cells of `platforms.yml` (D47).
 * **Without arm64 hardware** (checked in this container, Ubuntu 24.04 x86-64):
   `apt-get install qemu-user libc6-arm64-cross libgcc-s1-arm64-cross`, then
   `uv python install cpython-3.13-linux-aarch64-gnu`, then

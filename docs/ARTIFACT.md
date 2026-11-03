@@ -2,7 +2,7 @@
 title: JIT artifact, ISA levels and the context ABI
 kind: reference
 status: current
-updated: 2026-11-02
+updated: 2026-11-03
 ---
 
 # JIT artifact, ISA levels and the context ABI
@@ -31,7 +31,8 @@ the CPU cannot run.
 |---|---|---|
 | x86-64 | **x86-64-v1**: SSE, SSE2 (every x86-64 CPU) | `x86-64-v2` (SSE3, SSSE3, SSE4.1, SSE4.2, POPCNT), `x86-64-v3` (AVX, AVX2, BMI1/2, LZCNT, FMA, MOVBE), single features by name |
 | aarch64 | **ARMv8.0-A** with FP and Advanced SIMD (NEON) | `lse` (v8.1 atomics), `fp16`, `dotprod`, `rcpc`, … by name |
-| later | each new architecture defines its baseline here before its first release | |
+| riscv64 | planned (D48, the third JIT architecture, after `arm64.wasm`); defines its baseline here before its first release | RVV 1.0 as an optional level |
+| later | none planned: every other architecture runs `pyc` (D48) | |
 
 Rules:
 
@@ -74,7 +75,7 @@ Wasmtime does; see [ARTIFACT-CONTAINER.md](ARTIFACT-CONTAINER.md) (maintainer's 
 | `arch` | u16 | 1 = x86-64, 2 = aarch64, 3 = riscv64, … (registry in this file) |
 | `isa_level` | u16 | per architecture: 1 = baseline, 2 = v2, 3 = v3, … |
 | `isa_features` | u64 | bitset of extra features (registry per architecture) |
-| `flags` | u32 | code-affecting options: fuel, epoch/interrupt polling, bounds-check mode, … |
+| `flags` | u32 | code-affecting options: fuel, epoch/interrupt polling, bounds-check mode, … Bit 0 `BOUNDS_GUARD` and bits 8–15 `GUARD_LOG2` are fixed by S0006; the package computes them (`FLAGS` in `guard.py`) but serializes no artifact before the phase-5 spec |
 | `compiler` | str | `waboros <version> <target> <target version>` |
 | `module_sha256` | 32 bytes | hash of the wasm bytes |
 | `config_sha256` | 32 bytes | hash of every code-affecting option |
@@ -95,7 +96,7 @@ Wasmtime does; see [ARTIFACT-CONTAINER.md](ARTIFACT-CONTAINER.md) (maintainer's 
 | 9 | `GLOBALS` | per global: type, mutability, initial value (or the import it comes from) |
 | 10 | `SEGMENTS` | data and element segments: active (target, offset) or passive, bytes / function indices |
 | 11 | `START` | start function index, if any |
-| 12 | `TRAPMAP` | code offset ranges → wasm function index + wasm byte offset (for `Trap.frames`) |
+| 12 | `TRAPMAP` | code offset ranges → wasm function index + wasm byte offset (for `Trap.frames`); with the guard flag also the fault map, `{fault_offset, resume_offset}` per memory instruction ([S0006](specs/S0006-guard-pages.md), "Artifact"). Neither is written to a file yet |
 | 13 | `RELOCS` | empty in version 1 (code is position-independent); reserved for copy-and-patch |
 | 14 | `WASM` | optional: the original wasm bytes. Its presence makes a **fat** file (below) |
 | 0xFFFF | `CHECKSUM` | sha256 of everything before it |
@@ -141,7 +142,7 @@ the phase-3 meaning of each word and the register roles are in [S0003](specs/S00
 
 | index | name | direction | meaning |
 |---|---|---|---|
-| 0 | `SAVED_SP` | internal | zero in phase 3 (traps return through frames); kept for the phase-5 fault handler |
+| 0 | `SAVED_SP` | internal | zero (traps return through frames, and the guard-page fault handler resumes at a stub, S0006, so neither uses it); kept reserved |
 | 1 | `TRAP_CODE` | code → host | written by the trampoline when it returns a non-zero status |
 | 2 | `INTERRUPT` | host → code | non-zero: the code returns `INTERRUPT` at its next poll (any thread may set it) |
 | 3 | `FUEL` | both | remaining fuel (signed), when compiled with fuel |

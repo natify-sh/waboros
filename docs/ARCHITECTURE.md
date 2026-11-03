@@ -41,7 +41,7 @@ updated: 2026-11-03
    │                             │ side-effect order, call graph    │ │
    └─────────────┬──────────────┘                                   │ │
    ┌─────────────▼──────────────┐   Artifact (serializable) ────────┘ │
-   │ targets                     │ pyc · mpy · jit-x86_64 · jit-aarch64 · …
+   │ targets                     │ pyc · mpy · jit-x86_64 · jit-aarch64 · jit-riscv64 (planned, D48)
    └─────────────┬──────────────┘   ◄─────────────────────────────────┘
    ┌─────────────▼──────────────┐
    │ runtime                     │ Engine · Store · Module · Linker · Instance
@@ -87,7 +87,7 @@ host side: `execmem.py`, `instance.py`, `target.py` the glue shared by the archi
 `abi.py`) imports no `ctypes`, `mmap`, threads or host-side module (`tests/test_source_rules.py`,
 MICRO-COMPILERS.md). There is no separate `ir/` yet: the JIT core reads the validated body directly
 (D26) and `pyc` has its own tree builder; HIR and its analyses wait for a measurement that needs
-them. `mpy`, `cache/`, `wasi/`, `cli/` and the public runtime objects do not exist yet.
+them. `mpy`, `cache/`, `wasi/`, `cli/` and the public runtime objects do not exist yet; `jit-riscv64` is planned (D48).
 
 The PoC files map onto this as follows: `w2py.py` holds the reader, the decoder, the stack-to-tree
 builder, the value-bounds analysis and the `pyc` code generator in one file; `w2jit.py`/`w2jit2.py`
@@ -145,6 +145,13 @@ shared layers:
 * the **integer model is a parameter of the target**, not a property of the analyses: unbounded ints
   (Python), wrapping int64 (Lua 5.4), doubles / `|0` (LuaJIT, JS), real 32-bit registers (JITs). The
   bounds/wrap analysis answers "where must this target normalise", given that model;
+* **f32/f64 constants leave the front end as bit patterns** (ints), not floats (D46), so the shared
+  layers hold no NaN-as-double convention; the JIT takes the bits directly and `pyc` turns them into
+  its float literals. `pyc` also has a second mode, **bits mode** (`ModGen.fb`, `runtime.FBITS`),
+  in which f32/f64 values are ints in every wasm value and arithmetic makes a float inside one
+  expression only. It is chosen by a probe at import (a host whose floats quiet a signalling NaN,
+  such as 32-bit x86 with the x87 FPU, gets it) or by `WABOROS_PYC_FBITS=1|0`; CI also runs it on
+  x86-64. A future `pyc` cache key must include the mode;
 * no Python objects, names or semantics in HIR/LIR nodes; whatever a backend needs from its language
   lives in the backend;
 * the compiler is written in Python, so for other languages it works ahead of time (generate code or
@@ -156,8 +163,8 @@ Other languages are **not in scope** now; this only keeps the door open cheaply.
 after unconditional branches; compare + branch fusion; in-place updates of pinned locals (`x op= y`);
 loads straight into a pinned local; and, the one that matters most for JITs, **bounds-check
 elimination** — e.g. one check per loop for a pointer that advances monotonically, or for accesses with
-a common base and small constant offsets — because where guard pages are unavailable (every row but
-Linux glibc x86-64 and aarch64 and Linux musl x86-64 today, D44) the package's JIT uses explicit checks, and these checks stay a large part of
+a common base and small constant offsets — because where guard pages are unavailable (the rows without a verified handler: Linux musl
+aarch64 and Android arm64 today, D44) the package's JIT uses explicit checks, and these checks stay a large part of
 the ~20 % gap to Cranelift.
 
 ## The object model (after Wasmtime)
@@ -208,13 +215,13 @@ memory without knowing the target.
   cannot run inside a signal) and installed with `sigaction` through ctypes. It resumes a fault at a
   reserved address raised by this module's code in the out-of-bounds trap stub (it rewrites RIP in the
   `ucontext`, as Wasmtime does), and passes everything else to the previous handler or restores the
-  default action. In the package (S0006): guard code on Linux glibc, `jit-x86_64` since step 1 and `jit-aarch64` since step 2, and on Linux musl for `jit-x86_64` — accesses with `offset + size ≤ 32 MiB` unchecked (stores too, as in Wasmtime: precise on native x86-64; an emulator that splits a store, or Arm hardware, may tear it; D45), a fault map of the instructions
+  default action. In the package (S0006, complete: steps 1-5 and 7): guard code on Linux glibc (`jit-x86_64` since step 1, `jit-aarch64` since step 2), on Linux musl and Android for `jit-x86_64`, on macOS and on Windows — accesses with `offset + size ≤ 32 MiB` unchecked (stores too, as in Wasmtime: precise on native x86-64; an emulator that splits a store, or Arm hardware, may tear it; D45), a fault map of the instructions
   that touch memory, a handler (`x86_64/abi.py`, `aarch64/abi.py`, registry in `common/guard.py`) that resumes at the
   function's own out-of-bounds stub and chains every other fault. The mode is `auto` by default (D44):
-  guard on the verified rows (Linux glibc x86-64 and aarch64, Linux musl x86-64, macOS x86-64 and arm64, Windows x64 and arm64), explicit elsewhere, silently; `WABOROS_JIT_BOUNDS=explicit`
+  guard on the verified rows (Linux glibc x86-64 and aarch64, Linux musl x86-64, macOS x86-64 and arm64, Windows x64 and arm64, Android x86-64), explicit elsewhere (Linux musl aarch64, Android arm64), silently; `WABOROS_JIT_BOUNDS=explicit`
   opts out, `=guard` requires it. macOS (both architectures, S0006 step 3) has a handler on SIGSEGV
-  and SIGBUS, verified in CI; Windows (S0006 step 4) has a vectored exception handler, verified in CI. CoreMark: +9 % on the package on a quiet machine (BENCHMARKS.md, "Guard
-  pages"; +14 % on a loaded one, the PoC measured +20–25 % on another day), 20 % less machine code. Explicit checks stay the fallback (larger offsets,
+  and SIGBUS, verified in CI; Windows (S0006 step 4) has a vectored exception handler, and Android x86-64 (step 5) a bionic `sigaction` behind ART's `libsigchain`, verified in CI (`platforms.yml`; D47: a per-OS optimisation starts on one row and grows by exception). CoreMark: +9 % on x86-64 on a quiet machine (BENCHMARKS.md, "Guard
+  pages"; +14 % on a loaded one, the PoC measured +20–25 % on another day) and +11 % on native aarch64, 20 % less machine code. The guard flag and the fault map (`TRAPMAP`) are not serialized yet: they go into the phase-5 artifact-format spec (ARTIFACT.md). Explicit checks stay the fallback (larger offsets,
   platforms without the handler yet, `memory64`); risks in RISKS.md, R6.
 
 ## State shared across targets
@@ -323,7 +330,9 @@ Targets report a numeric trap code that maps to Wasmtime's `TrapCode` (`UNREACHA
 `OUT_OF_FUEL`, `INTERRUPT`, `UNCAUGHT_EXCEPTION`, …).
 
 * `pyc`: a `Trap` exception raised by the generated code or its helpers; Python errors that mean a
-  trap (`struct.error`, `IndexError` on memory, `RecursionError`) are converted at the boundary.
+  trap (`struct.error`, `IndexError` on memory, `RecursionError`, and on 32-bit hosts the
+  `OverflowError` of an index too large for a C `ssize_t`, mapped to the out-of-bounds trap) are
+  converted at the boundary.
 * JIT: trap stubs store the code in the context and return it through every native frame (each call
   site checks the status, CET-safe, S0003) to the entry trampoline, which returns it to Python; the
   runtime raises. A frame list for `Trap.frames` needs a code-address → function map
@@ -360,6 +369,14 @@ Like Wasmtime's cache (and `Module.serialize`), compiled artifacts are kept on d
   trust problem of artifacts from other machines: RISKS.md, R1.
 * Measured cost it saves (PoC, CoreMark): `pyc` translation + `compile()` ≈ 111 ms, from cache
   ≈ 0.5 ms; the JIT compiles in ≈ 25 ms.
+
+## Targets and architectures (D48)
+
+Native JIT targets exist for x86-64 and aarch64 and are planned for riscv64 (the first
+micro-compiler after `arm64.wasm`, MICRO-COMPILERS.md); the JIT artifact is independent of the
+operating system (D23). Every other architecture (s390x, i686 and 32-bit Windows, armv7, ppc64le,
+loongarch64, …) runs `pyc`, permanently, with the D31 warning from `auto`. Pyodide is a track of its
+own (PYODIDE.md), not a JIT target. `mpy` is separate from this list (D48).
 
 ## Cross-compilation
 

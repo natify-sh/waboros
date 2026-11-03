@@ -43,7 +43,7 @@ wasmtime). Accepted with its costs: per-architecture work and platforms that for
 by D5.
 
 ### D5. Targets behind one interface, chosen automatically, falling back per module
-Status: accepted · Date: 2026-10-26 · Supersedes: — · Evidence: —
+Status: accepted (per-module fallback superseded by D25) · Date: 2026-10-26 · Supersedes: — · Evidence: —
 
 `pyc` always; `mpy` on MicroPython; `jit-<arch>` where the architecture matches and executable memory
 works. Architectures are added one by one; a module using a feature a JIT lacks runs on `pyc`.
@@ -95,7 +95,7 @@ Differential tests run every target against a pinned wasmtime; wabt, wasm-tools,
 MicroPython and QEMU are development tools too. None of them is a runtime dependency.
 
 ### D12. Dropped and parked
-Status: accepted · Date: 2026-10-26 · Supersedes: — · Evidence: —
+Status: accepted (the Lua item superseded by D20) · Date: 2026-10-26 · Supersedes: — · Evidence: —
 
 * **mypyc target** — dropped: needs `librt` at run time (a dependency) and a native build is better
   served by wasm2c/wasmext.
@@ -122,7 +122,7 @@ needed, subinterpreters / free-threaded builds / a process). One thread per stor
 (ARCHITECTURE.md, "Long calls and the GIL").
 
 ### D15. The JIT artifact is a language-neutral, versioned contract
-Status: accepted · Date: 2026-10-26 · Supersedes: — · Evidence: —
+Status: accepted (narrowed by D36) · Date: 2026-10-26 · Supersedes: — · Evidence: —
 
 Compiled code depends on nothing Python-specific (byte-identical output under CPython 3.8 and 3.13), so
 its boundary is fixed and versioned in ARTIFACT.md: (1) **ISA levels** — portable artifacts use the
@@ -135,7 +135,7 @@ contract honest. *Narrowed by D18*: the contract is first of all the format of c
 serialized files read by the waboros runtime; other-language loaders and the C loader are optional.
 
 ### D16. Our own thin IR; wasm is the portable IR; no LLVM
-Status: accepted · Date: 2026-10-26 · Supersedes: — · Evidence: —
+Status: accepted (LIR as a materialised list superseded by D26) · Date: 2026-10-26 · Supersedes: — · Evidence: —
 
 Wasm already is a typed, validated, producer-optimised IR, so no LLVM-class optimiser is needed (a
 baseline JIT reached ~80 % of Cranelift). A thin IR of our own carries what wasm lacks: **HIR** (trees,
@@ -155,7 +155,7 @@ Python-family targets (`pyc`, `mpy`, JITs loaded from Python) are in scope; the 
 insurance, not a commitment.
 
 ### D18. No embedded runtime: the Wasmtime model, not the wasmext model
-Status: accepted · Date: 2026-10-30 · Supersedes: — · Evidence: —
+Status: accepted (in part superseded by D36) · Date: 2026-10-30 · Supersedes: — · Evidence: —
 
 waboros generates code when a module is loaded, so what it generates is a derivative owned by the engine,
 as in Wasmtime — not a product that lives without the tool, as wasm2c + a C build is in wasmext (there
@@ -331,7 +331,7 @@ double and re-rounded to f32 once per operation (proved exact for add/sub/mul/di
 rounded once (sticky bit). A JIT libcall for an f32 operation reuses the same helpers (D25 parity).
 
 ### D29. JIT bounds checks: guard pages by default where the handler is verified; explicit checks as the fallback
-Status: accepted · Date: 2026-10-30 · Supersedes: — · Evidence: BENCHMARKS.md "Guard pages in the JIT" (PoC: explicit ~78 %, guard pages ~91 % of wasmtime on CoreMark)
+Status: accepted (its "guard by default where verified" superseded by D43, then restored by D44) · Date: 2026-10-30 · Supersedes: — · Evidence: BENCHMARKS.md "Guard pages in the JIT" (PoC: explicit ~78 %, guard pages ~91 % of wasmtime on CoreMark)
 
 The bounds-check mode is a compile-time property of JIT code, recorded in the artifact and the cache
 key (`guard` or `explicit`). As in Wasmtime (`signals_based_traps = true` by default), the default is

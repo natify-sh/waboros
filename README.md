@@ -2,7 +2,7 @@
 title: README
 kind: guide
 status: current
-updated: 2026-11-02
+updated: 2026-11-03
 ---
 
 # waboros
@@ -38,7 +38,13 @@ What passes (details: [`docs/FEATURES.md`](docs/FEATURES.md), [`docs/ROADMAP.md`
   `hashlib`, `zlib` and Wasmtime.
 
 Not there yet: the public API, the CLI and WASI (phase 6), memory64, relaxed SIMD, exceptions, GC,
-threads, fuel and epochs, the `mpy` (MicroPython) target, other architectures. Bounds checks use guard pages by default on Linux glibc (x86-64 and aarch64), Linux musl (x86-64), macOS, Windows and Android (x86-64) (S0006), and explicit checks elsewhere: there the first JIT compile installs a process-wide fault handler (SIGSEGV; also SIGBUS on macOS; a vectored exception handler on Windows), never removed, that passes every fault not raised by waboros's own code on to the previous handler; `WABOROS_JIT_BOUNDS=explicit` opts out and installs nothing.
+threads, fuel and epochs, the `mpy` (MicroPython) target and a JIT for riscv64 (the other architectures
+stay on `pyc`, D48). Bounds checks use guard pages by default on Linux glibc (x86-64 and aarch64), Linux
+musl (x86-64), macOS (x86-64 and arm64), Windows (x64 and arm64) and Android (x86-64) (S0006), and
+explicit checks elsewhere (Linux musl aarch64, Android arm64). Where guard pages are used, the first JIT
+compile installs a process-wide fault handler (SIGSEGV; also SIGBUS on macOS; a vectored exception handler
+on Windows), never removed, that passes every fault not raised by waboros's own code on to the previous
+handler; `WABOROS_JIT_BOUNDS=explicit` opts out and installs nothing.
 
 ## Install
 
@@ -60,12 +66,15 @@ uv run python tools/run_coremark_pyc.py poc/in/core.wasm                  # Core
 
 ## Platforms
 
-CI ([`docs/TESTING.md`](docs/TESTING.md), "CI matrix") runs the tests on Linux, macOS and Windows on
-x86-64, and `jit-aarch64` natively on Linux, macOS (Apple Silicon) and Windows arm64 runners. Besides
-that: `jit-aarch64` under QEMU with BTI enforced, `jit-x86_64` on an SSE2-only CPU model under QEMU, the
-python.org CPython on macOS (hardened runtime) and CPython's testbed app on an Android emulator. Each
-JIT is checked to emit only baseline instructions of its architecture. Where executable memory is
-refused, `auto` gives `pyc` and says why ([`docs/RISKS.md`](docs/RISKS.md), R2).
+CI ([`docs/TESTING.md`](docs/TESTING.md), "CI matrix") has two workflows. `platforms.yml` builds the
+package with cibuildwheel and runs the tests and the spec suite on the installed wheel: Linux x86-64
+(glibc and musl) and i686, Linux aarch64 and armv7l, macOS arm64 and x86-64 (the python.org CPython),
+Windows x64 and ARM64, an Android emulator (x86-64) and Pyodide; the JIT runs natively wherever the
+architecture has one, in guard and in explicit mode, and `pyc` everywhere else. `ci.yml` keeps what
+needs a source checkout: the Python versions 3.11-3.15, 3.15t and PyPy, `jit-aarch64` under QEMU with BTI
+enforced, `jit-x86_64` on an SSE2-only CPU model under QEMU, the spec suite, native arm64 CoreMark and
+the check that each JIT emits only baseline instructions of its architecture. Where executable memory
+is refused, `auto` gives `pyc` and says why ([`docs/RISKS.md`](docs/RISKS.md), R2).
 
 ## Speed
 

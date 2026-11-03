@@ -87,13 +87,13 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
 
 | axis | values |
 |---|---|
-| Python | CPython 3.11, 3.12, 3.13, 3.14, 3.15, 3.15t (free-threaded); PyPy 3.11 (D19) |
-| OS | Linux x86-64 (all jobs of `ci`); Windows x64 (`windows-latest`), macOS x64 (`macos-26-intel`), Windows ARM64 (`windows-11-arm`) and macOS arm64 (`macos-26`) only in `platforms.yml` (cibuildwheel, below) |
-| target | `pyc` everywhere; `jit-*` where the machine matches; `mpy` with the MicroPython unix port |
-| native arm64 | `jit-aarch64` on GitHub's arm64 runners: `ubuntu-24.04-arm` (job `arm64` of `ci`), `macos-26` (macOS arm64, `MAP_JIT`) and `windows-11-arm` (`platforms.yml`; labels per actions/runner-images) |
+| Python | `ci` job `test`: CPython 3.11, 3.12, 3.13, 3.14, 3.15, 3.15t (free-threaded); PyPy 3.11 (D19). `platforms.yml`: a narrower set per platform (`ci/harness/pyproject.toml`: the oldest and the newest free-threaded, 3.14 on Linux x86_64 glibc, 3.13 for musl, i686, armv7l, Android and Pyodide) |
+| OS | Linux x86-64 (all jobs of `ci`, and `platforms.yml`: glibc, musl, i686); Linux arm (`ubuntu-24.04-arm`: job `arm64` of `ci`, and aarch64 and armv7l in `platforms.yml`); Windows x64 (`windows-latest`), macOS x64 (`macos-26-intel`), Windows ARM64 (`windows-11-arm`) and macOS arm64 (`macos-26`) only in `platforms.yml` (cibuildwheel, below) |
+| target | `pyc` everywhere; `jit-*` where the machine matches; `mpy` with the MicroPython unix port (phase 7, not in CI yet) |
+| native arm64 | `jit-aarch64` on GitHub's arm64 runners: `ubuntu-24.04-arm` (job `arm64` of `ci`, and `platforms.yml`), `macos-26` (macOS arm64, `MAP_JIT`) and `windows-11-arm` (`platforms.yml`; labels per actions/runner-images) |
 | python.org macOS | the macOS cells of `platforms.yml` run the python.org framework CPython (hardened runtime) that cibuildwheel installs, on Apple Silicon (`macos-26`) and Intel; the JIT tests and the spec suite pass there, and a refusal by the hardened runtime would show as a failed cell (RISKS R2). The separate `macos-pythonorg` job, with its entitlements printout, is gone |
 | Android | the Android cell of `platforms.yml`: CPython's testbed app on a managed x86_64 emulator (cibuildwheel; `arm64_v8a` is built only), `python -m pytest tests --jit-bounds=guard,explicit` inside the app with every test that needs no wasmtime as an oracle (no wasmtime there; WAT comes from the WAT cache, below), among them `tests/jit/test_android.py` (Android only: the SELinux context, the probe and `auto`, guard faults through ART's libsigchain with a module written in binary, CoreMark's self-check; S0006 step 5); no arm64 test (RISKS R2). The `android` job and `tools/android_check.py` are gone |
-| emulated | QEMU user-mode only for architectures without native runners (riscv64; D48) as JIT targets appear |
+| emulated | QEMU user-mode: in `ci` for `jit-aarch64` (BTI) and `jit-x86_64` (SSE2-only CPU); the optional `exotic` jobs of `platforms.yml` (ppc64le, s390x, riscv64, `pyc` only, one QEMU runner each, started from the Actions tab, non-blocking); a JIT for an architecture without native runners (riscv64, D48) as it appears |
 
 JIT artifacts: run baseline artifacts on an emulated baseline CPU (e.g. QEMU `-cpu` without SSE4.1 /
 with plain ARMv8.0) and check that a higher-level artifact is refused there; load artifacts with the C
@@ -101,8 +101,8 @@ reference loader as well as from Python; refuse artifacts with an unknown format
 
 A newer push to the same ref cancels a `ci.yml` or `coverage.yml` run in progress (`concurrency`);
 `publish.yml` runs one release per ref and is never cancelled. Jobs of `.github/workflows/ci.yml`: `lint` (ruff, pyright, `check_docs.py`, `features.py --check`); `test`
-(`pytest -q` on the seven Pythons, in the default bounds mode, `auto` (D44: guard pages on Linux glibc x86-64
-and aarch64, Linux musl x86-64);
+(`pytest -q` on the seven Pythons, in the default bounds mode, `auto` (D44: guard pages on this Linux glibc x86-64
+runner);
 on 3.13 again with `WABOROS_JIT_BOUNDS=explicit`, so explicit checks stay covered, and the three `pyc`
 test files with `WABOROS_PYC_FBITS=1` (D46: f32/f64 as int bit patterns, the default only on 32-bit x86);
 `tools/stack_info.py` on

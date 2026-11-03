@@ -2,7 +2,7 @@
 title: Features
 kind: reference
 status: current
-updated: 2026-11-02
+updated: 2026-11-03
 ---
 
 # Features
@@ -111,7 +111,7 @@ directories (`test/core/<dir>/`) count only on a target that claims the feature
 | WASI 0.1 | `Linker.define_wasi`, `WasiConfig` | the WASI host (candidate: fusedwasi `p1` twin) |
 | WASI 0.2 (fused) | `Store.set_wasi`, `set_wasi_http` | the WASI host (candidate: fusedwasi `p2` twin); needs multi-memory |
 | traps with frames | `Trap.frames`, `Frame` | `pyc`: from Python tracebacks; JIT: code-address map |
-| NaN semantics | canonicalization option | spec rules met on every target (D28: f32 payloads ride in the double; SIMD NaN lanes by class, S0005); a canonicalization option with the `Config` work of phase 6 (S0005 Q5) |
+| NaN semantics | canonicalization option | spec rules met on every target (D28: f32 payloads ride in the double; SIMD NaN lanes by class, S0005; `pyc` on 32-bit x86, whose x87 quiets signalling NaNs, carries f32/f64 as int bit patterns, D46); a canonicalization option with the `Config` work of phase 6 (S0005 Q5) |
 
 ## Per-target notes
 

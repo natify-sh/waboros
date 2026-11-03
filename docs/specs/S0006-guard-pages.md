@@ -2,7 +2,7 @@
 title: Guard pages instead of explicit bounds checks on jit-x86_64 and jit-aarch64
 kind: spec
 id: S0006
-status: approved
+status: implemented
 superseded_by:
 related: [D10, D23, D25, D29, D31, D33, D35, D36, D37, D39, D42, R2, R3, R6, S0003, S0004, S0005]
 owner: maintainer
@@ -12,6 +12,11 @@ updated: 2026-11-03
 # S0006 Guard pages instead of explicit bounds checks on jit-x86_64 and jit-aarch64
 
 ## Summary
+**Status: implemented (2026-11-03).** Steps 1-5 and 7 are done and verified in CI; step 6 (the artifact
+flag and `TRAPMAP`) moved to the artifact-format spec of phase 5. `auto` is the default (D44) and gives guard pages on Linux
+glibc x86-64 and aarch64, Linux musl x86-64, macOS and Windows (x86-64/x64 and arm64) and Android x86_64; it gives explicit
+checks on Linux musl aarch64 and Android arm64 (table in "Selection and fallback").
+
 D29: JIT code may omit the bounds check of a 32-bit memory access when the memory sits in a
 reservation whose inaccessible tail catches every out-of-bounds address, and a fault handler turns
 the fault into the `MEMORY_OUT_OF_BOUNDS` trap. This spec fixes the code the JITs emit in that mode
@@ -50,7 +55,8 @@ scripts, not in the repo):
 * Goals: a `guard` mode on `jit-x86_64` and `jit-aarch64` with spec parity with `explicit` and `pyc`
   (D25); identical function code for every OS; the handler as a specified runtime service; `explicit`
   always available and selected automatically wherever the handler is not verified; a measured
-  CoreMark and SIMD gain recorded in BENCHMARKS.md.
+  CoreMark gain recorded in BENCHMARKS.md (x86-64 +9.35 %, native aarch64 +11.4 %) and the SIMD kernels measured
+  on x86-64.
 * Non-goals: stack-overflow detection by guard pages (prologue checks stay, S0003), traps by
   `SIGFPE`/`SIGILL` (division and `unreachable` stay explicit), memory64 and custom page sizes in
   guard mode, shared memories before threads exist, Mach exception ports, `pyc`/`mpy` (no change),
@@ -295,11 +301,11 @@ reservation is a crash, not a trap: the explicit-mode tests and differential run
 2b. **Linux musl** (added, maintainer 2026-11-02): musl named by its mapped image; x86-64 verified
    in an Alpine container in CI; aarch64 explicit while stock Alpine arm64 has no `__clear_cache`
    (S0004). Acceptance: the container runs the spec suite and `test_guard.py` in guard mode.
-3. **macOS x86-64 and arm64**: SIGBUS, Darwin offsets, `MAP_JIT`. Acceptance: the CI jobs run
-   `test_guard.py` and the spec suite in guard mode.
+3. **macOS x86-64 and arm64**: SIGBUS, Darwin offsets, `MAP_JIT`. Acceptance: the macOS CI legs (now the macOS cells of
+   `platforms.yml`) run `test_guard.py` and the spec suite in guard mode.
 4. **Windows x86-64 and arm64** (arm64 joined, maintainer 2026-11-02; done and verified 2026-11-03): the vectored handler; the EH-continuation question answered by a test that forces user
    shadow stacks and context-IP validation on a child python.exe (which is not CETCOMPAT itself).
-   Acceptance: the `os (windows-latest)` and `arm64 (windows-11-arm)` jobs as in 3.
+   Acceptance: the Windows legs (now the `Windows x64` and `Windows ARM64` cells of `platforms.yml`) as in 3.
 5. **Android x86_64** (built 2026-11-03, Changes): the Android cell of `platforms.yml` runs `tests/jit/test_android.py` (a binary module that takes real guard faults through libsigchain; `test_guard.py` there runs only the tests that need neither WAT nor a child Python, none of which faults, and logcat is not read: acceptance changed, Changes 2026-11-03).
    The cell also takes over what `tools/android_check.py` checked in the former `android` job (the JIT
    works in the app process and `auto` selects it; CoreMark passes its self-check there), and the
@@ -307,7 +313,7 @@ reservation is a crash, not a trap: the explicit-mode tests and differential run
 6. **Artifact** (moved to the artifact-format spec of phase 5, see Changes): the flag bits and `TRAPMAP` in the serialized format when phase 5 fixes it;
    ARTIFACT.md parts 2–3, DECISIONS (D29 amended), a test that a guard artifact is refused where
    guard mode is unavailable and regenerated when fat; the C loader's handler (D36).
-7. **Review** by a `reviewer` (handler, fault points, registry), SIMD rows, RISKS R6 status.
+7. **Review** by a `reviewer` (handler, fault points, registry), SIMD rows, RISKS R6 status. Done.
 
 ## Alternatives considered
 * **Mach exception ports on macOS** (Wasmtime's default): coexists with crash reporters that use
@@ -461,7 +467,7 @@ reservation is a crash, not a trap: the explicit-mode tests and differential run
   with `WABOROS_JIT_BOUNDS=explicit`. aarch64 is decided in step 2.
 * 2026-11-02: maintainer: step 6 (the guard flag and `TRAPMAP` in the serialized artifact, the C
   loader's handler) moves to the artifact-format spec of phase 5, done with the container (ELF or
-  other, ARTIFACT-CONTAINER.md) and the C loader; this spec closes with steps 2–5 and 7.
+  other, ARTIFACT-CONTAINER.md) and the C loader; this spec closes with steps 1–5 and 7.
 * 2026-11-02: **step 2 built (Linux glibc aarch64)**. As built:
   * **Backend.** `Backend(guard=True)` in `aarch64/backend.py`. `_bounds` forms the address as in
     explicit mode (`move(Reg(9), addr)`, then `add x9, x9, #offset`; a constant as an immediate
@@ -848,3 +854,4 @@ reservation is a crash, not a trap: the explicit-mode tests and differential run
   guard traps through libsigchain with the kernel's action still libsigchain's, CoreMark's self-check)
   and the JIT tests in guard and explicit mode: 260 passed, 0 failed. Android before CPython 3.13
   (`sys.platform == "linux"` there, e.g. Chaquopy) is not a target (maintainer): it stays explicit.
+* 2026-11-03: implemented: steps 1-5 and 7 done and verified in CI; step 6 moved to the artifact-format spec (phase 5).

@@ -2,7 +2,7 @@
 title: Benchmarks
 kind: log
 status: current
-updated: 2026-11-02
+updated: 2026-11-03
 ---
 
 # Benchmarks
@@ -168,6 +168,8 @@ comparison between the OSes or with x86-64; no Wasmtime or `pyc` run alternated 
 Under QEMU 8.2 user mode the same command passes its self-check (crcfinal 0x5275); QEMU speed says
 nothing about hardware. The same run: spec core 20509 pass / 0 fail and `auto` selects
 `jit-aarch64` on all three runners.
+(The macOS and Windows legs of the `arm64` job no longer exist; those platforms run in `platforms.yml`, which does not
+measure speed. The Linux leg stays: native CoreMark, guard against explicit, below.)
 
 ## Compile and load times (CoreMark)
 

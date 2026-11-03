@@ -2,7 +2,7 @@
 title: Briefing: read this first
 kind: guide
 status: current
-updated: 2026-11-02
+updated: 2026-11-03
 ---
 
 # Read this first
@@ -14,11 +14,11 @@ else under `docs/` is reference material: read it when a task needs it, not befo
 
 **A WebAssembly compiler written in pure Python that makes fast machine code at run time, with no
 native dependency.** Python can map executable memory (`mmap`) and call into it (`ctypes`), so a
-compiler written in Python can emit x86-64 (later AArch64, RISC-V, …) bytes for a wasm module and run
+compiler written in Python can emit x86-64 and AArch64 (RISC-V planned, D48) bytes for a wasm module and run
 them at native speed. The proof of concept already runs CoreMark at **86 % of Wasmtime/Cranelift with
 explicit bounds checks and ~91 % with guard pages**, from a `pip install` that contains only `.py`
 files. The package's `jit-x86_64` (explicit bounds checks) reaches 99.2 % of the PoC's JIT on CoreMark
-(17 526 vs 17 662 it/s, `docs/BENCHMARKS.md`); guard pages in the package are phase 5. Where machine code is not allowed or no backend exists yet, the same front end translates wasm
+(17 526 vs 17 662 it/s, `docs/BENCHMARKS.md`), and guard pages are the default where verified (D44; CoreMark +9.35 % over explicit checks on x86-64, S0006). Where machine code is not allowed or no backend exists yet, the same front end translates wasm
 to Python source (`pyc`), or to MicroPython code (`mpy`). Around the compiler sits a **thin runtime**
 (memories, tables, instances, traps, host calls, WASI) — necessary, but not the point.
 
@@ -31,7 +31,7 @@ to Python source (`pyc`), or to MicroPython code (`mpy`). Around the compiler si
 | WAMR AOT | ~120 % | `wamrc` (LLVM) per module per platform, a native runtime, `.aot` tied to the WAMR version; modules cannot share memories or tables |
 | wasm3 | ~13 % | a native extension |
 | pywasm (pure-Python interpreter) | ~0.003 % | nothing |
-| **this project** | **86–91 %** (JIT, PoC numbers; the package is at the PoC's level with explicit checks), ~0.8 % (`pyc` on CPython, PoC) | **nothing**: standard library only |
+| **this project** | **86–91 %** (JIT, PoC numbers; the package is at the PoC's level with explicit checks, and guard pages are its default where verified), ~0.8 % (`pyc` on CPython, PoC) | **nothing**: standard library only |
 
 Measured numbers and conditions: `docs/BENCHMARKS.md`. The niche: run wasm from Python fast,
 anywhere Python runs, without anyone building anything native.
@@ -98,12 +98,14 @@ State of `main` (phases 0–4 and SIMD merged on 2026-11-02, published as 0.0.0)
 * **Phase 4 done:** multi-memory on both targets; `jit-aarch64` on native arm64 runners at parity with `pyc`
   (interface frozen, D39); the macOS arm64 follow-ups (the python.org CPython runs the JIT); Android x86_64
   checked in CI (RISKS R2).
-* **Phase 5 under way, SIMD first** (`docs/specs/S0005-simd.md`, D41): the front end and `pyc` are done and
-  `pyc` claims `simd/`; `jit-x86_64` compiles every operator with SSE2 only and claims `simd/` at
-  parity with `pyc` (5d3); `jit-aarch64` compiles every operator in NEON and claims `simd/` too (5e2);
-  SIMD is complete (5a-5f: the benchmark and the review are done) and the rename to `waboros` is done (D40).
-  **Next, per `docs/ROADMAP.md`:** the merge to main and publishing (the maintainer's step), then
-  phase 5 continues: guard pages (D29), the rest of the opcode set; the public API only in phase 6.
+* **Phase 5 under way** (`docs/ROADMAP.md`): SIMD is complete on all three targets (`docs/specs/S0005-simd.md`,
+  D41) and the rename to `waboros` is done (D40). Guard pages are complete (S0006, D44): `auto` gives them on
+  Linux glibc and musl x86-64, Linux glibc aarch64, macOS, Windows and Android x86-64, explicit checks
+  elsewhere. Platform tests run through cibuildwheel (`platforms.yml`), and `pyc` has a bits mode for
+  32-bit x86 (D46). Scalar code generation (S0007) has steps 1-3 done. **Next:** S0007 steps 4-8, then
+  relaxed SIMD, memory64, exceptions and GC, then wide arithmetic and threads
+  (`docs/WASM-PROPOSALS.md`), and the artifact format; the public API only in phase 6.
+  Native JIT targets are x86-64, aarch64 and riscv64 (planned); every other architecture runs `pyc` (D48).
 
 1. **Read** this page, then `docs/BENCHMARKS.md`, then `docs/ARCHITECTURE.md` and the spec of the step
    in `docs/specs/`. Skip `docs/API.md` and `docs/FEATURES.md` until phase 6.
@@ -114,9 +116,10 @@ State of `main` (phases 0–4 and SIMD merged on 2026-11-02, published as 0.0.0)
    internal engine interface, with Wasmtime behind the same interface as the oracle. The work is a loop:
    take the largest group of failures for the current target, fix it, the number grows. `pyc` is the
    semantic floor every other target must match; `tools/spec_diff.py` shows the gap between two targets.
-4. **The JIT** keeps explicit bounds checks and baseline x86-64 only until phase 5 (D24, D29). The
-   second architecture (aarch64 on native arm64 runners, phase 4) comes **before** the opcode set is
-   widened: it is what proves the split, and the interface is frozen after it.
+4. **The JIT** emits baseline instructions only (D24); bounds checks are guard pages where verified and
+   explicit elsewhere (D44, S0006). The
+   second architecture (aarch64 on native arm64 runners, phase 4) came **before** the opcode set was
+   widened: it proved the split, and the interface was frozen after it (D39).
 5. **Only then** the public runtime API in the shape of wasmtime-py, WASI (fusedwasi is the candidate
    host), the cache and serialized files (thin/fat), the CLI.
 6. The PoC (`poc/`) stays runnable for comparisons (commands in `CLAUDE.md`).
@@ -142,7 +145,7 @@ a test. "Measure, do not estimate."
 | how it is built | `docs/ARCHITECTURE.md`, `docs/TARGETS.md` |
 | the order of work | `docs/ROADMAP.md` |
 | how it is tested | `docs/TESTING.md` |
-| why a choice was made | `docs/DECISIONS.md` (D1–D41) |
+| why a choice was made | `docs/DECISIONS.md` (D1–D48) |
 | what went wrong before | `docs/LESSONS.md` |
 | risks and possible answers | `docs/RISKS.md` |
 | the JIT artifact contract | `docs/ARTIFACT.md` |

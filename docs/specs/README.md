@@ -2,7 +2,7 @@
 title: Specifications index
 kind: index
 status: current
-updated: 2026-11-02
+updated: 2026-11-03
 ---
 
 # Specifications
@@ -17,5 +17,5 @@ lifecycle: [STANDARDS.md](../STANDARDS.md).
 | [S0003](S0003-jit-context-abi.md) | JIT context ABI and entry (phase 3, x86-64) | implemented | maintainer |
 | [S0004](S0004-jit-aarch64.md) | jit-aarch64, the second architecture (phase 4, integer core) | implemented | maintainer |
 | [S0005](S0005-simd.md) | Fixed-width SIMD (v128) on pyc, jit-x86_64 and jit-aarch64 | implemented | maintainer |
-| [S0006](S0006-guard-pages.md) | Guard pages instead of explicit bounds checks on jit-x86_64 and jit-aarch64 | approved | maintainer |
+| [S0006](S0006-guard-pages.md) | Guard pages instead of explicit bounds checks on jit-x86_64 and jit-aarch64 | implemented | maintainer |
 | [S0007](S0007-scalar-codegen.md) | Scalar code generation in both JITs (addressing, returns, temporaries) | approved | maintainer |
