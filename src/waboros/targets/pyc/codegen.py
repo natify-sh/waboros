@@ -6,6 +6,7 @@ import struct
 
 from waboros.frontend.binary import F32, F64, I32, I64, M32, M64
 from waboros.frontend.validate import valtype_key
+from waboros.targets.pyc import runtime as _rt
 
 BRTREE = int(
     os.environ.get("WABOROS_BT", "4")
@@ -42,7 +43,17 @@ def dep(*es, **kw):
     )
 
 
-def flit(v):
+def flit(bits, fb=False, w=64):
+    """Source for an f32 (w=32) / f64 constant given as its bit pattern (the front end's form)."""
+    if fb:  # f32/f64 carried as int bit patterns (ModGen.fb)
+        return str(bits)
+    if w == 32:  # a float; a NaN is the double NaN with the same sign and payload << 29
+        v = struct.unpack("<f", struct.pack("<I", bits))[0]
+        if v != v:
+            bits = (bits & 0x80000000) << 32 | 0x7FF0000000000000 | (bits & 0x7FFFFF) << 29
+            v = struct.unpack("<d", struct.pack("<Q", bits))[0]
+    else:
+        v = struct.unpack("<d", struct.pack("<Q", bits))[0]
     if v != v:
         return "_f64_i64(%#x)" % struct.unpack("<Q", struct.pack("<d", v))[0]
     if v in (float("inf"), float("-inf")):
@@ -93,6 +104,7 @@ class FuncGen:
         s.params, s.results = mg.types[tidx]
         s.ltypes = list(s.params) + locs
         s.ins = ins
+        s.fls = {}  # fb mode: (type, bits source) -> the float source it came from (fv/fr)
         s.lines = []
         s.ind = 1
         s.stack = []
@@ -128,6 +140,34 @@ class FuncGen:
 
     def lname(s, i):
         return "p%d" % i if i < len(s.params) else "l%d" % i
+
+    # --- f32/f64 carried as int bit patterns (ModGen.fb): arithmetic converts an operand to a float
+    # (`fv`) and its result back (`fr`); a bit-exact operation (load, store, select, neg, abs,
+    # copysign, reinterpret, constants, locals) never makes a float, so a signalling NaN survives
+    # Peephole: `fr` remembers the float source of its bits and `fv` of the same expression uses it,
+    # so a*b+c converts once at each end. Exact: an arithmetic result is a quiet NaN or no NaN.
+    def fv(s, e):
+        if not s.mg.fb:
+            return e.c
+        f = s.fls.get((e.t, e.c))
+        if f is not None:
+            return f
+        return ("_f32_i32(%s)" if e.t == F32 else "_f64_i64(%s)") % e.c
+
+    def fr(s, c, T):
+        if not s.mg.fb:
+            return c
+        r = ("_i32_f32(%s)" if T == F32 else "_i64_f64(%s)") % c
+        s.fls[(T, r)] = c
+        return r
+
+    def fconst(s, bits, T):
+        """A float constant: its bits, and (unless a NaN, which the host may quiet) its float form."""
+        c = flit(bits, True)
+        f = flit(bits, False, 32 if T == F32 else 64)
+        if not f.startswith("_f64_i64"):
+            s.fls[(T, c)] = f
+        return c
 
     # --- normalisation
     def n(s, e):
@@ -573,7 +613,7 @@ class FuncGen:
         if il:
             head.append("    " + " = ".join(il) + " = 0")
         if fl:
-            head.append("    " + " = ".join(fl) + " = 0.0")
+            head.append("    " + " = ".join(fl) + (" = 0" if s.mg.fb else " = 0.0"))
         if s.uses_br:
             head.append("    _br = 0")
         if not body:
@@ -720,10 +760,10 @@ class FuncGen:
             push(E(str(x[1]), I64, x[1]))
             return
         if op == 0x43:
-            push(E(flit(x[1]), F32))
+            push(E(s.fconst(x[1], F32) if s.mg.fb else flit(x[1], False, 32), F32))
             return
         if op == 0x44:
-            push(E(flit(x[1]), F64))
+            push(E(s.fconst(x[1], F64) if s.mg.fb else flit(x[1], False, 64), F64))
             return
         if 0x28 <= op <= 0x35:
             a = pop()
@@ -747,6 +787,8 @@ class FuncGen:
                 0x34: ("S32(M,%s)[0]", I64, None),
                 0x35: ("U32(M,%s)[0]", I64, M32),
             }[op]
+            if s.mg.fb and op in (0x2A, 0x2B):
+                L = ("U32(M,%s)[0]" if op == 0x2A else "U64(M,%s)[0]", L[1], L[2])
             push(E(L[0].replace("M", mn) % ad, L[1], L[2], **d))
             return
         if 0x36 <= op <= 0x3E:
@@ -761,9 +803,9 @@ class FuncGen:
             elif op == 0x37:
                 s.emit("P64(%s,%s,%s)" % (mn, ad, n(v)))
             elif op == 0x38:
-                s.emit("F32S(%s,%s,%s)" % (mn, ad, v.c))
+                s.emit(("P32(%s,%s,%s)" if s.mg.fb else "F32S(%s,%s,%s)") % (mn, ad, v.c))
             elif op == 0x39:
-                s.emit("F64S(%s,%s,%s)" % (mn, ad, v.c))
+                s.emit(("P64(%s,%s,%s)" if s.mg.fb else "F64S(%s,%s,%s)") % (mn, ad, v.c))
             elif op in (0x3A, 0x3C):
                 vc = v.c if v.b is not None and v.b <= 255 else "%s&255" % v.c
                 s.emit("%s[%s] = %s" % (mn, ad, vc))
@@ -1084,7 +1126,7 @@ class FuncGen:
             a = pop()
             k = (op - 0x5B) % 6
             pyop = ["==", "!=", "<", ">", "<=", ">="][k]
-            push(E("(%s%s%s)" % (a.c, pyop, b.c), "bool", 1, **dep(a, b)))
+            push(E("(%s%s%s)" % (s.fv(a), pyop, s.fv(b)), "bool", 1, **dep(a, b)))
             return
         if 0x8B <= op <= 0xA6:
             is32 = op <= 0x98
@@ -1094,36 +1136,52 @@ class FuncGen:
                 a = pop()
                 d = dep(a)
                 f = ["abs", "-", "_fceil", "_ffloor", "_ftrunc", "_fnearest", "_fsqrt"][k]
+                if s.mg.fb and k <= 1:
+                    sg = 0x80000000 if is32 else 1 << 63
+                    push(
+                        E(
+                            "(%s%s%d)" % (a.c, "&" if k == 0 else "^", sg - 1 if k == 0 else sg),
+                            T,
+                            None,
+                            **d,
+                        )
+                    )
+                    return
                 if k == 0:
                     c = "abs(%s)" % a.c
                 elif k == 1:
                     c = "(-%s)" % a.c
                 else:
-                    c = "%s(%s)" % (f, a.c)
+                    c = "%s(%s)" % (f, s.fv(a))
                 if k == 6 and is32:
                     c = "_f32(%s)" % c
-                push(E(c, T, None, **d))
+                push(E(s.fr(c, T), T, None, **d))
                 return
             b = pop()
             a = pop()
             d = dep(a, b)
+            if s.mg.fb and k == 13:
+                sg = 0x80000000 if is32 else 1 << 63
+                push(E("((%s&%d)|(%s&%d))" % (a.c, sg - 1, b.c, sg), T, None, **d))
+                return
+            ac, bc = s.fv(a), s.fv(b)
             if k == 7:
-                c = "(%s+%s)" % (a.c, b.c)
+                c = "(%s+%s)" % (ac, bc)
             elif k == 8:
-                c = "(%s-%s)" % (a.c, b.c)
+                c = "(%s-%s)" % (ac, bc)
             elif k == 9:
-                c = "(%s*%s)" % (a.c, b.c)
+                c = "(%s*%s)" % (ac, bc)
             elif k == 10:
-                c = "_fdiv(%s,%s)" % (a.c, b.c)
+                c = "_fdiv(%s,%s)" % (ac, bc)
             elif k == 11:
-                c = "_fmin(%s,%s)" % (a.c, b.c)
+                c = "_fmin(%s,%s)" % (ac, bc)
             elif k == 12:
-                c = "_fmax(%s,%s)" % (a.c, b.c)
+                c = "_fmax(%s,%s)" % (ac, bc)
             else:
-                c = "_copysign(%s,%s)" % (a.c, b.c)
+                c = "_copysign(%s,%s)" % (ac, bc)
             if is32 and k in (7, 8, 9, 10):
                 c = "_f32(%s)" % c
-            push(E(c, T, None, **d))
+            push(E(s.fr(c, T), T, None, **d))
             return
         # ---- conversions
         if op == 0xA7:
@@ -1136,7 +1194,7 @@ class FuncGen:
             sg = "s" if op in (0xA8, 0xAA, 0xAE, 0xB0) else "u"
             push(
                 E(
-                    "_trunc_%s%d(%s)" % (sg, W, a.c),
+                    "_trunc_%s%d(%s)" % (sg, W, s.fv(a)),
                     I32 if W == 32 else I64,
                     M32 if W == 32 else M64,
                     **dep(a, x=True),
@@ -1150,7 +1208,7 @@ class FuncGen:
             sg = "u" if k & 1 else "s"
             push(
                 E(
-                    "_tsat_%s%d(%s)" % (sg, W, a.c),
+                    "_tsat_%s%d(%s)" % (sg, W, s.fv(a)),
                     I32 if W == 32 else I64,
                     M32 if W == 32 else M64,
                     **dep(a),
@@ -1172,7 +1230,8 @@ class FuncGen:
                 c = "_i64_f32(%s)" % sgn(a)
             elif op == 0xB2:
                 c = "_f32(%s)" % c
-            push(E(c, F32 if op < 0xB7 else F64, None, **dep(a)))
+            T = F32 if op < 0xB7 else F64
+            push(E(s.fr(c, T), T, None, **dep(a)))
             return
         if op in (0xB3, 0xB5, 0xB8, 0xBA):
             a = pop()
@@ -1181,31 +1240,32 @@ class FuncGen:
                 c = "_i64_f32(%s)" % n(a)
             elif op == 0xB3:
                 c = "_f32(%s)" % c
-            push(E(c, F32 if op < 0xB7 else F64, None, **dep(a)))
+            T = F32 if op < 0xB7 else F64
+            push(E(s.fr(c, T), T, None, **dep(a)))
             return
         if op == 0xB6:
             a = pop()
-            push(E("_demote(%s)" % a.c, F32, None, **dep(a)))
+            push(E(s.fr("_demote(%s)" % s.fv(a), F32), F32, None, **dep(a)))
             return
         if op == 0xBB:
             a = pop()
-            push(E("(%s*1.0)" % a.c, F64, None, **dep(a)))
+            push(E(s.fr("(%s*1.0)" % s.fv(a), F64), F64, None, **dep(a)))
             return
         if op == 0xBC:
             a = pop()
-            push(E("_i32_f32(%s)" % a.c, I32, M32, **dep(a)))
+            push(E(a.c if s.mg.fb else "_i32_f32(%s)" % a.c, I32, M32, **dep(a)))
             return
         if op == 0xBD:
             a = pop()
-            push(E("_i64_f64(%s)" % a.c, I64, M64, **dep(a)))
+            push(E(a.c if s.mg.fb else "_i64_f64(%s)" % a.c, I64, M64, **dep(a)))
             return
         if op == 0xBE:
             a = pop()
-            push(E("_f32_i32(%s)" % n(a), F32, None, **dep(a)))
+            push(E(n(a) if s.mg.fb else "_f32_i32(%s)" % n(a), F32, None, **dep(a)))
             return
         if op == 0xBF:
             a = pop()
-            push(E("_f64_i64(%s)" % n(a), F64, None, **dep(a)))
+            push(E(n(a) if s.mg.fb else "_f64_i64(%s)" % n(a), F64, None, **dep(a)))
             return
         if 0xC0 <= op <= 0xC4:
             a = pop()
@@ -1308,8 +1368,9 @@ class FuncGen:
 
 # ----------------------------------------------------------------------------- module compiler
 class ModGen:
-    def __init__(s, mod):
+    def __init__(s, mod, fb=None):
         s.mod = mod
+        s.fb = _rt.FBITS if fb is None else fb  # f32/f64 as int bit patterns (host quiets a sNaN)
         s.types = mod["types"]
         im = mod["imports"]
         s.fimports = [i for i in im if i[0] == "func"]
@@ -1370,7 +1431,7 @@ class ModGen:
         if init[0] == "func":
             return s.fname(init[1])
         if init[0] in ("f32", "f64"):
-            return flit(init[1])
+            return flit(init[1], s.fb, 32 if init[0] == "f32" else 64)
         return "None" if init[0] == "null" else repr(init[1])
 
     def gen(s):
@@ -1482,6 +1543,7 @@ class ModGen:
         return "\n\n".join(out) + "\n"
 
 
-def generate(mod: dict) -> str:
-    """Source for a module that `parse` and `validate` have processed."""
-    return ModGen(mod).gen()
+def generate(mod: dict, fb: bool | None = None) -> str:
+    """Source for a module that `parse` and `validate` have processed. `fb`: carry f32/f64 as int
+    bit patterns (default: only on a host whose floats quiet a signalling NaN, `runtime.FBITS`)."""
+    return ModGen(mod, fb).gen()

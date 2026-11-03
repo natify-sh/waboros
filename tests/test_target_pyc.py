@@ -7,7 +7,6 @@ from collections.abc import Mapping, Sequence
 
 import pytest
 
-from tests.hosts import x87_quiets_snan
 from tests.test_pyc import DIV, SHARE_A, SHARE_B
 from waboros.frontend.binary import parse
 from waboros.frontend.validate import validate
@@ -113,7 +112,6 @@ def test_wasm_trap_codes() -> None:
     assert TrapCode.INTERRUPT == 12
 
 
-@x87_quiets_snan
 def test_f32_signalling_nan_survives() -> None:
     _, inst = _make(F32_ID)
     assert inst.call(0, [0x7FA00000]) == [0x7FA00000]

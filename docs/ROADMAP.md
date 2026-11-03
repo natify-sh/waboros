@@ -240,12 +240,9 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29) -> the rest below.
 * **`pyc`: host-dependent results** (maintainer, 2026-11-03). Measured over CPython 3.11-3.15(t), PyPy,
   i686, armv7, aarch64 and s390x ([PYC-PLATFORMS.md](PYC-PLATFORMS.md)). Done: `f32.demote_f64` and
   `sqrt` of a signalling NaN give a quiet NaN on every host (3.14, PyPy: 0 failures), and `OverflowError`
-  is mapped to the out-of-bounds trap (i686: 244 -> 88 failures). Open: x87 on i686 quiets signalling
-  NaNs in every double that passes through st0 (88 commands, 3 tests); it cannot be fixed while f32/f64
-  values are Python floats. Decided (maintainer, 2026-11-03): a separate `pyc` generation mode for
-  32-bit x86 that carries f32/f64 as int bit patterns (option 1 of PYC-PLATFORMS.md section 5),
-  deferred or given to a separate agent; until then the 3 tests are xfail on 32-bit x86
-  (`tests/hosts.py`) and the 88 spec commands are the known gap there.
+  is mapped to the out-of-bounds trap (i686: 244 -> 88 failures). Done (D46): a `pyc` generation mode
+  that carries f32/f64 as int bit patterns, chosen at import by a probe on 32-bit x86 (x87 quiets
+  signalling NaNs in any Python float); i686 CPython 3.13: 0 failures, 64-bit output unchanged.
 * **Guard pages with a JIT-emitted signal handler** (`poc/w2jit_guard.py`: +20–25 % on CoreMark, the gap
   to Cranelift was mostly the bounds checks), per OS and architecture (Linux `sigaction` +
   `ucontext` offsets, macOS also SIGBUS, Windows a vectored exception handler), `sigaltstack` per thread

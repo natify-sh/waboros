@@ -90,12 +90,23 @@ float round trips (demote and loads) - after (a) and (b) the measured difference
 * `OverflowError` is caught with `IndexError`/`struct.error` in `_run` (`__init__.py`). Nothing else in `pyc` raises it: float to int
   conversions test their range and raise `Trap` (`_tr`, `_sat`), float arithmetic overflows to inf, and `ldexp` is only called on a
   value already below 2^53 times a shift for an i64 that fits f32. i686 CPython 3.13 and 3.14: 244 -> 88 failures, 0 of them ssize_t.
-* Left: the 88 x87 commands on i686 (3.13 and 3.14 alike; float_exprs 20, float_memory 16+8, float_misc 16, conversions 8,
-  float_literals 8, select 8, simd_splat 3, local_tee 1). Probe in the i686 container: `struct`, `memoryview.cast('d')` and
-  `array('d')` all turn a signalling NaN into a quiet one when the float object is created or read; no way of making a float
-  from bits keeps it. Fixable only by a different representation of the NaN:
-  1. carry f32/f64 as ints (bit patterns) on 32-bit x86 only: separate code generation mode for every float op, load, store, select,
-     local; 64-bit hosts unchanged (CoreMark cost 0 there), large diff, the second code generator to maintain;
-  2. carry f32 as the integer bits everywhere: touches the CoreMark hot path (every f32 op unpacks and packs), not measured, certainly a loss;
-  3. accept: document that `pyc` on 32-bit x86 does not preserve signalling NaN payloads, keep the 88 commands and three tests as
-     expected failures on that host only (the harness conftest is not part of this step).
+* The 88 x87 commands are fixed by the mode of section 6 (D46): i686 CPython 3.13 `tests.spec.run --engine pyc`: 54 385 pass / 0 fail /
+  91 xfail / 1 171 skip. Options 2 and 3 of the earlier plan (f32 as bits everywhere; accepting the gap) were not taken.
+
+## 6. The bit-pattern mode (D46)
+Where f32/f64 are Python floats, a signalling NaN is lost on 32-bit x86 (section 5). `pyc` therefore has a second generation mode,
+`ModGen.fb`, that carries every f32 and f64 as an unsigned int holding the bits: stack values, locals, block parameters and results,
+globals, parameters and results, and the host boundary. Moves, constants, load/store, select, neg, abs, copysign, reinterpret and the
+scalar side of SIMD splat/extract/replace work on the bits; arithmetic, comparisons, conversions, demote and promote build a float
+inside one generated expression (`_f64_i64`/`_f32_i32`) and convert the result back (`_i64_f64`/`_i32_f32`); a bits-to-float-to-bits pair
+inside one expression is dropped, and an f32/f64 constant that is not a NaN is emitted as a float literal there.
+Selection: `runtime.FBITS` (a probe at import that a signalling NaN survives the helper round trip), `WABOROS_PYC_FBITS=1|0`, or
+`generate(mod, fb=...)`. On x86_64 the probe says no, so default output is unchanged; the mode is run there in CI with the variable set.
+Measured (the float loop `f64.add(f64.mul(x, c1), c2)` accumulated 1 000 000 times, best of 3, single float-heavy function; CoreMark has
+no float code): x86_64 CPython 3.13, float mode 0.056 s; bits mode 1.41 s without the peephole, 0.75 s with it. i686 CPython 3.13 (the
+only mode there that is correct): 3.34 s without the peephole, 1.94 s with it (the float mode there, wrong for NaN payloads, 0.074 s).
+A float-heavy program is therefore 13-26 times slower in the bits mode; programs without floats are not affected (CoreMark on i686: 70.3
+bits mode, 70.3 float mode; on x86_64 124.5, source identical to before). Spec: x86_64 `--engine pyc` with `WABOROS_PYC_FBITS=1` and
+without, and i686 (mode chosen by the probe): 54 385 pass / 0 fail. Method: `python -m tests.spec.run --engine pyc`, `tools/run_coremark_pyc.py
+poc/in/core.wasm` (CoreMark/MHz as printed), the loop as a wat module run through `load()`; i686 in the manylinux_2_28_i686 container.
+The mode is not cached anywhere; a future `pyc` artifact or cache key must include it (D46).

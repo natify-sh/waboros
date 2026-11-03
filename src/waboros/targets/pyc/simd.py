@@ -313,6 +313,9 @@ def gen(s, x):
     s.mg.simd = True
     e = OPS[x[0] - BASE]
     nm = _hname(e.name)
+    if s.mg.fb and e.name.split(".")[1] in ("splat", "extract_lane", "replace_lane"):
+        # the scalar is already the bit pattern: the integer lane helper of the same width
+        nm = _hname(e.name.replace("f32x4", "i32x4").replace("f64x2", "i64x2"))
     if e.imm in (MEM, MEMLANE):
         v = s.pop() if len(e.pops) > 1 else None
         a = s.pop()

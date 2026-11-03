@@ -10,17 +10,6 @@ import struct
 
 from waboros.frontend import simd
 
-
-def _f32c(raw):
-    """An f32 constant as a float; a NaN is the double NaN with the same sign and payload << 29."""
-    v = struct.unpack("<f", raw)[0]
-    if v == v:
-        return v
-    i = int.from_bytes(raw, "little")
-    q = (i & 0x80000000) << 32 | 0x7FF0000000000000 | (i & 0x7FFFFF) << 29
-    return struct.unpack("<d", struct.pack("<Q", q))[0]
-
-
 M32, M64 = 0xFFFFFFFF, 0xFFFFFFFFFFFFFFFF
 I32, I64, F32, F64 = 0x7F, 0x7E, 0x7D, 0x7C
 TN = {I32: "i32", I64: "i64", F32: "f32", F64: "f64", 0x7B: "v128", 0x70: "ref", 0x6F: "ref"}
@@ -211,9 +200,9 @@ def parse(data):
             elif op == 0x42:
                 st.append(("i64", r.s(64) & M64))
             elif op == 0x43:
-                st.append(("f32", _f32c(r.bytes(4))))
+                st.append(("f32", int.from_bytes(r.bytes(4), "little")))
             elif op == 0x44:
-                st.append(("f64", struct.unpack("<d", r.bytes(8))[0]))
+                st.append(("f64", int.from_bytes(r.bytes(8), "little")))
             elif op == 0x23:
                 st.append(("global", r.u()))
             elif op == 0xD2:
@@ -462,9 +451,9 @@ def decode(body):
         elif op == 0x42:
             out.append((op, r.s(64) & M64))
         elif op == 0x43:
-            out.append((op, _f32c(r.bytes(4))))
+            out.append((op, int.from_bytes(r.bytes(4), "little")))
         elif op == 0x44:
-            out.append((op, struct.unpack("<d", r.bytes(8))[0]))
+            out.append((op, int.from_bytes(r.bytes(8), "little")))
         elif op == 0x1C:
             out.append((0x1B, [r.vt() for _ in range(r.u())]))
         elif op == 0xD0:

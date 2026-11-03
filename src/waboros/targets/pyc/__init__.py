@@ -30,10 +30,14 @@ _i64_f64 = cast(Callable[[float], int], _rt._i64_f64)
 
 def _from_raw(ty: Any, r: Any) -> Any:
     """Raw -> the value `pyc` code uses: f32/f64 become floats. References pass as they are."""
+    if _rt.FBITS:
+        return r
     return _f32_i32(r) if ty == F32 else _f64_i64(r) if ty == F64 else r
 
 
 def _to_raw(ty: Any, v: Any) -> Any:
+    if _rt.FBITS:
+        return v
     return _i32_f32(v) if ty == F32 else _i64_f64(v) if ty == F64 else v
 
 

@@ -19,7 +19,6 @@ pinned locals (bisecting a pinning bug; D25 rules out mixing targets per functio
 """
 
 import os
-import struct
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -162,18 +161,6 @@ def unsupported(mod: ValidModule, ops: frozenset[int]) -> str | None:
                 if bad(t):
                     return bad(t)
     return None
-
-
-def f32_bits(x: float) -> int:
-    """A decoded f32 constant (a NaN carries its payload << 29 in the double, binary._f32c)."""
-    if x != x:
-        q = struct.unpack("<Q", struct.pack("<d", x))[0]
-        return (q >> 32) & 0x80000000 | 0x7F800000 | (q >> 29) & 0x7FFFFF
-    return struct.unpack("<I", struct.pack("<f", x))[0]
-
-
-def f64_bits(x: float) -> int:
-    return struct.unpack("<Q", struct.pack("<d", x))[0]
 
 
 @dataclass
@@ -786,9 +773,9 @@ class _Func:
             elif op == 0x0F:
                 self.br(len(self.ctl) - 1)
             elif op == 0x43:
-                push((CONST, f32_bits(ins[1])))
+                push((CONST, ins[1]))
             elif op == 0x44:
-                push((CONST, f64_bits(ins[1])))
+                push((CONST, ins[1]))
             elif op in FBINOPS:
                 name, w = FBINOPS[op]
                 y = pop()

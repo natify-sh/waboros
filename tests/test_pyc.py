@@ -3,9 +3,9 @@ import os
 
 import pytest
 
-from tests.hosts import x87_quiets_snan
+from waboros.frontend.binary import F32, F64
 from waboros.targets.base import TrapCode
-from waboros.targets.pyc import Trap, load, translate
+from waboros.targets.pyc import Trap, _from_raw, load, translate
 
 COREMARK = os.path.join(os.path.dirname(__file__), "..", "poc", "in", "core.wasm")
 
@@ -206,16 +206,21 @@ NEG32 = bytes.fromhex(
 )
 
 
-@x87_quiets_snan
-def test_f32_nan_payload_kept() -> None:
-    from waboros.targets.pyc import runtime as rt
+# (memory (export "m") 1) (func (export "f") (f32.store (i32.const 4) (f32.load (i32.const 0))))
+F32COPY = bytes.fromhex(
+    "0061736d0100000001040160000003020100050301000107090201660000016d0200"
+    + "0a0e010c00410441002a0200380200"
+    + "0b"
+)
 
-    assert load(NEG32, {})["f"](0x7FA00001) == 0xFFA00001  # sNaN stays signalling, payload kept
-    assert rt._i32_f32(rt._f32_i32(0x7FA00000)) == 0x7FA00000
-    assert rt._i64_f64(rt._f64_i64(0x7FF4000000000001)) == 0x7FF4000000000001
-    m = bytearray(8)
-    rt.F32S(m, 0, rt._f32_i32(0xFFA00003))
-    assert rt._i32_f32(rt._f32_i32(rt.U32(m, 0)[0])) == 0xFFA00003 == rt.U32(m, 0)[0]
+
+def test_f32_nan_payload_kept() -> None:
+    # a signalling NaN keeps its bits through neg, and through load -> store, in either pyc mode
+    assert load(NEG32, {})["f"](0x7FA00001) == 0xFFA00001
+    ex = load(F32COPY, {})
+    ex["m"][0:4] = (0xFFA00003).to_bytes(4, "little")  # pyright: ignore[reportIndexIssue]
+    ex["f"]()  # pyright: ignore[reportIndexIssue]
+    assert bytes(ex["m"][4:8]) == (0xFFA00003).to_bytes(4, "little")  # pyright: ignore[reportIndexIssue]
 
 
 def test_demote_and_sqrt_of_nan_are_arithmetic_on_every_host() -> None:
@@ -440,7 +445,7 @@ def test_trap_trunc_precedes_store() -> None:
         ' (func (export "r") (result i32) (i32.load8_u (i32.const 0))))'
     )
     with pytest.raises(Trap):
-        ex["f"](float("nan"))  # pyright: ignore[reportIndexIssue]
+        ex["f"](_from_raw(F32, 0x7FC00000))  # a NaN  # pyright: ignore[reportIndexIssue]
     assert ex["r"]() == 0  # pyright: ignore[reportIndexIssue]
 
 
@@ -488,7 +493,7 @@ def test_return_call_to_host_import_and_multi_value() -> None:
         return x + 1
 
     def mv(a: int, b: float, c: float) -> tuple[int, int, float, float]:
-        return (7, a + 1, b, c * 2)
+        return (7, a + 1, b, c)  # f32/f64 are floats, or their bits in the FBITS mode
 
     ex = _effect_before_trap(
         """(module
@@ -504,7 +509,8 @@ def test_return_call_to_host_import_and_multi_value() -> None:
         ex["f"](99)  # pyright: ignore[reportIndexIssue,reportCallIssue]
     with pytest.raises(KeyError):
         ex["f"](98)  # pyright: ignore[reportIndexIssue,reportCallIssue]
-    assert ex["g"](1, 1.5, 2.0) == (7, 2, 1.5, 4.0)  # pyright: ignore[reportIndexIssue,reportCallIssue]
+    b, c = _from_raw(F32, 0x3FC00000), _from_raw(F64, 0x4000000000000000)  # 1.5, 2.0
+    assert ex["g"](1, b, c) == (7, 2, b, c)  # pyright: ignore[reportIndexIssue,reportCallIssue]
 
 
 def _sec(sid: int, body: bytes) -> bytes:

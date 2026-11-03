@@ -651,3 +651,28 @@ QEMU 8.2.2 a straddling 16-byte `str q` wrote its first 8 bytes before the trap 
 stores wrote nothing). On aarch64 `test_guard.py` records a torn store rather than failing, and
 CI's QEMU SIMD step runs in explicit mode. What native Arm hardware does is shown by the `arm64`
 runner, not assumed.
+
+### D46. Float constants cross the front end as bit patterns; `pyc` has a mode that carries f32/f64 as ints
+Status: accepted (maintainer, 2026-11-03) · Date: 2026-11-03 · Supersedes: — · Evidence: [PYC-PLATFORMS.md](PYC-PLATFORMS.md) sections 5 and 6 (i686: 88 failures -> 0; CoreMark and the 64-bit output unchanged)
+
+On 32-bit x86 the x87 FPU quiets a signalling NaN in any Python float, so `pyc` cannot keep f32/f64 NaN
+payloads while those values are floats (LESSONS 63). Decided:
+1. The decoder (`frontend/binary.py`, function bodies and constant expressions) yields an f32/f64
+   constant as its bit pattern, an int. This keeps the shared layers language-neutral (D17): no NaN-as-double
+   convention. The JIT takes the bits directly (its machine code is byte-identical: `tools/jit_dump.py`
+   lists of both targets, both bounds modes); `pyc` turns the bits into the same float literal as before,
+   so its default source is byte-identical (sha256 over `generate()` for CoreMark and every spec module).
+2. `pyc` generates a second mode (`ModGen.fb`): f32/f64 are ints (32/64-bit unsigned) in every wasm
+   value; moves, constants, load, store, select, neg, abs, copysign, reinterpret and the SIMD scalar
+   boundary work on the bits, arithmetic, comparison, conversion, demote and promote make a float inside
+   one expression and convert the result back; inside one expression a bits-to-float-to-bits pair is
+   dropped (exact: an arithmetic result is a quiet NaN or no NaN). The host boundary (`Raw`) is bits already.
+3. Selection: a behavioural probe at import (`runtime.FBITS`: a signalling NaN must survive the helper round
+   trip), overridden by `WABOROS_PYC_FBITS=1|0` and `generate(mod, fb=...)`. Only a host whose floats quiet
+   gets the mode by default; CI runs it on x86_64 as well (`ci.yml`).
+4. `pyc.load()` (test helper) exposes bit patterns for f32/f64 in this mode.
+5. `pyc` has no on-disk cache. A future `pyc` artifact or cache key must include the mode (`fb`), since the
+   same wasm gives two different sources.
+Rejected: a `float` subclass that carries the bits of a NaN constant (prototype; one more convention for
+every consumer of the front end), f32 as bits everywhere (slows the CoreMark path of every host).
+

@@ -427,3 +427,10 @@ What went wrong or surprised us while building the PoC, so it is not found again
     daemon thread still runs at exit) lives on the C heap or in a mapping no Python object owns,
     and is freed only by an explicit step after nothing can read it. Found: S0006 final review,
     2026-11-03.
+
+65. **A test that passes a float through `load()` proves nothing in the bits mode, and may pass by
+    accident.** In the `pyc` mode that carries f32/f64 as ints (D46) `load()` and its host functions see bit
+    patterns; `test_return_call_to_host_import_and_multi_value` passed floats and doubled one in the host
+    and still passed, because the value only travelled through. Rule: build f32/f64 test values with
+    `_from_raw(ty, bits)`, and keep host functions that must work in both modes free of float arithmetic.
+    Found: D46, 2026-11-03.

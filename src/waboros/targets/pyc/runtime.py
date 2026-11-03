@@ -1,7 +1,7 @@
 # pyright: basic, reportArgumentType=false, reportOptionalMemberAccess=false, reportAttributeAccessIssue=false, reportSelfClsParameterName=false
 """Runtime helpers imported by generated `pyc` modules (D18); ported from the poc/w2py.py prelude."""
 
-import struct as _st, math as _m
+import struct as _st, math as _m, os as _os
 
 from waboros.targets.base import Trap, TrapCode
 
@@ -414,8 +414,24 @@ def _f64_i64(x):
     return _st.unpack("<d", _st.pack("<Q", x))[0]
 
 
+def _keeps_snan():
+    return (
+        _i32_f32(_f32_i32(0x7FA00001)) == 0x7FA00001
+        and _i64_f64(_f64_i64(0x7FF0000000000001)) == 0x7FF0000000000001
+    )
+
+
+# a host whose floats quiet a signalling NaN (32-bit x86, x87) gets generated code that carries
+# f32/f64 as int bit patterns (codegen ModGen.fb); WABOROS_PYC_FBITS=1/0 forces the mode
+FBITS = _os.environ.get("WABOROS_PYC_FBITS", "") == "1" or (
+    _os.environ.get("WABOROS_PYC_FBITS", "") != "0" and not _keeps_snan()
+)
+
+
 _NAMES = [
-    n for n in dir() if n.startswith("_") and not n.startswith("__") and n not in ("_st", "_m")
+    n
+    for n in dir()
+    if n.startswith("_") and not n.startswith("__") and n not in ("_st", "_m", "_os")
 ]
 __all__ = _NAMES + [
     "Trap",

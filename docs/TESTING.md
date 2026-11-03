@@ -103,7 +103,9 @@ A newer push to the same ref cancels a `ci.yml` or `coverage.yml` run in progres
 `publish.yml` runs one release per ref and is never cancelled. Jobs of `.github/workflows/ci.yml`: `lint` (ruff, pyright, `check_docs.py`, `features.py --check`); `test`
 (`pytest -q` on the seven Pythons, in the default bounds mode, `auto` (D44: guard pages on Linux glibc x86-64
 and aarch64, Linux musl x86-64);
-on 3.13 again with `WABOROS_JIT_BOUNDS=explicit`, so explicit checks stay covered; `tools/stack_info.py` on
+on 3.13 again with `WABOROS_JIT_BOUNDS=explicit`, so explicit checks stay covered, and the three `pyc`
+test files with `WABOROS_PYC_FBITS=1` (D46: f32/f64 as int bit patterns, the default only on 32-bit x86);
+`tools/stack_info.py` on
 3.13, also in a musl container); `jit`
 (`tests/jit` with `WABOROS_JIT_REQUIRE=1`; the aarch64 ABI, compiler, tail-call and SIMD tests
 (`test_simd_abi.py`, `test_simd_aarch64.py`, in explicit mode: QEMU splits a straddling 16-byte store,
@@ -118,7 +120,7 @@ on other hosts, but fails under
 `WABOROS_JIT_REQUIRE=1` when `auto` does not give guard pages), so a regression in the
 verified-row check cannot silently turn guard pages off;
 then both ISA gates and the D35 lists of both targets in both bounds modes, named on both hosts);
-`spec` (the spec run on `wasmtime`, `pyc`, `jit-x86_64` in the default mode and with
+`spec` (the spec run on `wasmtime`, `pyc` (also with `WABOROS_PYC_FBITS=1`), `jit-x86_64` in the default mode and with
 `WABOROS_JIT_BOUNDS=explicit`, then `auto` under `no_exec.py`); `arm64`
 (Linux arm64 only: the `jit-aarch64` spec suite in both bounds modes, `test_guard.py` in guard mode and
 `tests/jit` in explicit mode, S0006 step 2).

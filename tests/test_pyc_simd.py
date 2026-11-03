@@ -9,7 +9,6 @@ from typing import Any
 
 import pytest
 
-from tests.hosts import x87_quiets_snan
 from tests.spec.target_engine import TargetEngine
 from waboros.frontend.binary import parse
 from waboros.frontend.validate import validate
@@ -258,7 +257,6 @@ def _is_quiet_nan32(x: int) -> bool:
     return x & 0x7FC00000 == 0x7FC00000
 
 
-@x87_quiets_snan
 def test_nan_lanes() -> None:
     snan = 0x7FA00000
     v = int.from_bytes(struct.pack("<4I", snan, 0x3F800000, 0xFFFFFFFF, 0x7FC00001), "little")

@@ -18,7 +18,7 @@ from waboros.frontend import validate
 from waboros.runtime.store import StoreState
 from waboros.targets.base import Extern, HostError, HostFunc, Raw, Trap, TrapCode
 from waboros.targets.jit.common import guard, simd
-from waboros.targets.jit.common.compiler import M32, M64, NARROW, Compiled, f32_bits, f64_bits
+from waboros.targets.jit.common.compiler import M32, M64, NARROW, Compiled
 from waboros.targets.jit.common.context import (
     DATA_DROP,
     ELEM_DROP,
@@ -673,12 +673,8 @@ class JitInstance(Instance):
 
     def _const(self, e: tuple[Any, ...]) -> int:
         k = e[0]
-        if k in ("i32", "i64", "v128"):
+        if k in ("i32", "i64", "f32", "f64", "v128"):
             return e[1]
-        if k == "f32":
-            return f32_bits(e[1])
-        if k == "f64":
-            return f64_bits(e[1])
         if k == "global":
             g: int = e[1]
             return self._read_global(g)
