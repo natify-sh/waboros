@@ -443,7 +443,14 @@ arm64 gives the same code), `WABOROS_JIT_BOUNDS=explicit` vs `=guard`: code 37 3
 (x86-64: 324). CoreMark under QEMU 8.2.2 user mode (`python3 tools/run_arm64.py
 tools/run_coremark_jit.py poc/in/core.wasm --target jit-aarch64`, one run per mode): "Correct operation
 validated" in both modes. The it/s (guard 3 606, explicit 2 154) come from TCG emulation and are not a
-measurement of either mode. The native number comes from the `arm64` CI runner.
+measurement of either mode.
+
+**Package `jit-aarch64`, guard pages against explicit checks, native.** 2026-11-03, the Linux `arm64`
+job of `ci` (GitHub `ubuntu-24.04-arm` runner, CPython 3.13, CI run 41711993940), `tools/run_coremark_jit.py
+poc/in/core.wasm --target jit-aarch64`, modes alternated, two runs each, both "Correct operation
+validated": guard 19 465 and 19 430 it/s, explicit 17 463 and 17 447 it/s; guard +11.4 % (median of
+each mode; the runs of a mode differ by less than 0.2 %). A shared CI runner, not a quiet machine; the
+gap is larger than on x86-64 (+9.35 %, step 1) and supports `auto` giving guard pages on aarch64.
 
 ## `wasm-opt -O3` (binaryen 125) on CoreMark
 

@@ -155,8 +155,8 @@ know, otherwise recompile" is the simplest robust rule. It needs the wasm at han
 ## R6. A signal handler of our own (guard pages in the JIT)
 
 **Status at HEAD: partly mitigated: the default on Linux glibc x86-64 and aarch64, Linux musl x86-64, macOS, Windows x64 and arm64, and Android x86_64 (step 5; CI run 41708608127).** S0006 step 1:
-guard code on `jit-x86_64`; step 2 the same on `jit-aarch64` (`aarch64/abi.py`, verified under QEMU, the native
-runner to confirm). The handler is emitted machine code (`x86_64/abi.py`, `aarch64/abi.py`) reading this copy's registry
+guard code on `jit-x86_64`; step 2 the same on `jit-aarch64` (`aarch64/abi.py`, verified under QEMU and on the native
+arm64 runner; CoreMark +11.4 % there, BENCHMARKS.md). The handler is emitted machine code (`x86_64/abi.py`, `aarch64/abi.py`) reading this copy's registry
 (`common/guard.py`), chaining every fault it does not claim (tests: `tests/jit/test_guard.py`, foreign faults
 with and without `faulthandler`, a broken chain, a foreign chaining handler, wasmtime above ours, two copies of
 the package in either order). Since D44 `auto` is the default: guard on the verified rows (Linux glibc x86-64
@@ -173,7 +173,10 @@ CI's qemu64 steps run in explicit mode. aarch64 follows the same rule (D45): und
 store wrote its first 8 bytes, and native Arm hardware is allowed to do the same. Under FEX or box64 on an Arm server an x86-64 Python sees
 x86_64 and glibc, the verified row, so `auto` turns guard pages on exactly where a store may tear;
 Wasmtime does not detect this either. Open: detect an emulator (`/proc/cpuinfo`, FEX's and box64's
-environment variables) and fall back to explicit, or keep it a documented limitation (D45). Windows x64
+environment variables) and fall back to explicit, or keep it a documented limitation (D45). The same
+holds for Rosetta 2 (an x86-64 Python on Apple Silicon reports x86_64 on the verified `darwin` row) and
+Prism (an x64 Python on Windows on Arm reports AMD64 on the verified `win32` row): `auto` gives guard
+pages there, and no CI job runs them; their fault delivery and store tearing are unverified. Windows x64
 and arm64 (S0006 step 4): a vectored exception handler (offsets from the Windows SDK headers), verified by CI
 runs 41633456821 (`arm64 (windows-11-arm)`) and 41640149866 (`os (windows-latest)`), jobs now in `platforms.yml`; `win32` is a verified
 row, so `auto` gives guard there. Android x86_64 (S0006 step 5): bionic's

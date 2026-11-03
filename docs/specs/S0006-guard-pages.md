@@ -195,7 +195,9 @@ trap).
   the native-stack budget (S0003), and `SA_ONSTACK` uses an alternate stack where one exists
   (CPython's `faulthandler` installs one).
 * **Several waboros copies or sub-interpreters** in one process each install their own handler,
-  chained; the "still ours" check of the first then fails (Q8).
+  chained; each claims only faults on its own fault points and passes every other on (Q8 as revised,
+  Changes 2026-11-02). What a handler reads lives on the C heap and is never freed, so a finished
+  sub-interpreter's handler stays valid in the chain (Changes 2026-11-03).
 * **macOS**: signals, not Mach ports (Q5). PROT_NONE faults arrive as SIGBUS (and SIGSEGV for
   unmapped addresses): both are installed. The handler's code area is `MAP_JIT`; it executes on the
   faulting thread, which is in execute mode except during our own short `write_toggled` copies, where
