@@ -205,6 +205,13 @@ jobs:
       - run: |
           uv run python tools/run_coremark_jit.py poc/in/core.wasm --target jit-aarch64 | tee coremark.txt
           uv run python tools/run_coremark_jit.py --check coremark.txt
+      # S0006: guard pages against explicit checks on native aarch64 (guard is the default here,
+      # chosen on the x86-64 measurement); alternated, twice each, to see the runner's noise
+      - run: |
+          for i in 1 2; do for b in guard explicit; do
+            echo "== $b run $i"
+            WABOROS_JIT_BOUNDS=$b uv run python tools/run_coremark_jit.py poc/in/core.wasm --target jit-aarch64 | grep -E "Iterations/Sec|Correct"
+          done; done
       # S0004 4c/4e: the spec suite on jit-aarch64 (0 unexpected) and with `auto` (selects
       # jit-aarch64 since 4e); MDWE (`auto` falls back to pyc), the ISA gate on the runner's own compile,
       # and D35 in both directions against the x86-64 job's lists
