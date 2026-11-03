@@ -200,6 +200,28 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29) -> the rest below.
   For the GC spec: at every call the operand stack is in slots (S0007 keeps this: temporaries are
   flushed before calls), but pinned locals stay in pool registers across calls; either
   reference-typed locals are never pinned, or stack maps cover the pinned registers.
+* **Platform tests through cibuildwheel** (maintainer, 2026-11-03; before S0006 step 5, Android):
+  waboros is one pure wheel, but cibuildwheel runs a test command on every platform of the map in
+  TARGETS.md (Android emulator x86_64, iOS simulator, musllinux, the QEMU architectures i686, armv7,
+  ppc64le, s390x, riscv64, Pyodide). It refuses a pure wheel, so a small test-only harness package
+  with an empty C extension that depends on waboros is built per platform and runs our tests (the
+  pattern of py-wasmext's coremark example). Publishing does not use cibuildwheel (maintainer): the
+  one `py3-none-any` wheel is still built by `uv build` in `publish.yml`. The waboros wheel under
+  test is built from the repository root by cibuildwheel's `before-build` hook and found by the
+  test environment through `PIP_FIND_LINKS` (as py-wasmext does for Android and Pyodide), so
+  waboros's own packaging is not touched. Per-platform test commands carry pytest flags and
+  environment (`WABOROS_JIT_BOUNDS=guard|explicit`, `WABOROS_JIT_REQUIRE=1`, `-k` subsets), so most of
+  the CI test matrix moves there, not only the platform jobs (the spec cache and WAT-compiled modules
+  are prepared on the host and shipped with the tests where a sandbox has no network or wasmtime).
+  The aim is one matrix over every target the project supports: the Python versions (cp311 to
+  cp315, the free-threaded builds, PyPy if cibuildwheel still builds it), every OS and architecture
+  of the map, and every JIT variant (`jit-x86_64`, `jit-aarch64`, each in guard and explicit mode;
+  `pyc` where there is no JIT); a platform is supported when its cell is green.
+  cibuildwheel itself is a dev dependency (`uv add --dev cibuildwheel`: its version is pinned in
+  `uv.lock`, CI runs `uv run cibuildwheel`, dependabot updates it).
+  It replaces the hand-made Android job and adds iOS and the pyc-only platforms; the jobs that need our own tools or emulator flags stay (QEMU `qemu64`
+  without SSE3+, QEMU with BTI enforced, D35 dumps, MDWE, the objdump/llvm-mc ISA gates, native
+  CoreMark). Where wasmtime has no wheel (iOS, Android, Pyodide) only tests that need no WAT run.
 * **Guard pages with a JIT-emitted signal handler** (`poc/w2jit_guard.py`: +20–25 % on CoreMark, the gap
   to Cranelift was mostly the bounds checks), per OS and architecture (Linux `sigaction` +
   `ucontext` offsets, macOS also SIGBUS, Windows a vectored exception handler), `sigaltstack` per thread
