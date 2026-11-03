@@ -378,4 +378,23 @@ What went wrong or surprised us while building the PoC, so it is not found again
     the chain cannot break, but the output lies. Rule: for each OS, read how the other handlers in the
     process are installed and what they do with a fault they do not own before reusing another OS's
     rule; test the install orders on that OS (`test_a_broken_chain_raises_at_the_next_call` on
-    Windows). Found: S0006 step 4, by reading CPython's source (no Windows machine here), 2026-11-03.
+    Windows). Outcome (the maintainer's option A): when faulthandler turns on after our install, the
+    next check puts our handler back in front (add first, then remove the old entry). Found: S0006
+    step 4, by reading CPython's source (no Windows machine here), 2026-11-03.
+60. **A mutant restored within the same second can keep running from its `.pyc`.** A mutation check
+    reordered two lines of `common/guard.py` (same file size), ran the test (it failed, as wanted) and
+    copied the original back at once. CPython validates a cached `.pyc` by the source's mtime in
+    seconds and its size, both unchanged, so the next full pytest run still executed the mutant and the
+    test failed for no reason in the restored code. Rule: after restoring a mutated module, delete its
+    `__pycache__` entry (or `touch` the file a second later) before trusting the next run. Found: S0006
+    step 4, option A, 2026-11-03.
+61. **"No stack is unwound" does not satisfy Windows' context-IP validation.** Step 4 reasoned that
+    resuming at the function's own stub, in the same frame with the shadow stack untouched, would be
+    allowed under user shadow stacks. CI's `windows-latest` has user CET; a child with shadow stacks and
+    context-IP validation forced on died with 0xC0000409 at its first guard trap: every new `Rip` a
+    handler sets must be a registered EH continuation target (an image's `/guard:ehcont` table, or
+    `SetProcessDynamicEHContinuationTargets` for dynamic code), whatever the stack. The same run showed
+    the system adding CetDynamicApisOutOfProcOnly to the policy unasked, which forbids that call in
+    process. Rule: test a security mitigation by forcing it on hardware that has it, not by reasoning
+    about why it should not apply; read the whole policy back, since the system may add bits. Found:
+    S0006 step 4, CI run 41633456821, 2026-11-03.

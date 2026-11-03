@@ -226,9 +226,15 @@ machine code. Risks and possible answers:
   **faulthandler is a vectored handler too** (CPython `Modules/faulthandler.c`, 3.13): enabled after
   ours it sits in front, prints "Windows fatal exception: access violation" and a traceback for every
   guard fault, disables its SIGSEGV handler and passes the fault on, so the trap still happens but
-  stderr fills with false "fatal" reports (LESSONS 59; tested). Enabled before ours (pytest,
-  `-X faulthandler`) it stays silent. Not detected; moving ours to the front again when faulthandler
-  is enabled later is an open question of S0006 step 4. Vectored **continue** handlers run after a
+  stderr would fill with false "fatal" reports (LESSONS 59). Answer (the maintainer's option A): the
+  check before each entry and after each host call sees faulthandler turned on since the last check
+  and puts ours in front again (add, then remove the old entry; tested). Enabled before ours (pytest,
+  `-X faulthandler`) it stays behind and silent. Still running before ours: faulthandler disabled and
+  re-enabled between two checks while it was already on (the state reads the same; the false reports
+  return, tested); and any other vectored handler added later with `first = 1`, e.g. another
+  runtime's trap handler (Wasmtime's, a .NET or JVM runtime hosted in the process) or another waboros
+  copy installed later. Those seen so far pass faults they do not own on, so they cost a call, not a
+  trap. A long JIT call on one thread that makes no host calls does not see faulthandler enabled by another thread meanwhile: its guard faults bring the false reports until its next entry or host-call return. Vectored **continue** handlers run after a
   handler returns `EXCEPTION_CONTINUE_EXECUTION`; one that ends the process for every exception (Go's
   runtime does, per Wasmtime's `vectored_exceptions.rs`) would end it on a guard trap. Wasmtime adds a
   continue handler of its own in front for this; we do not (no Go embedding in a Python process seen).
@@ -241,12 +247,14 @@ machine code. Risks and possible answers:
   vectored handler is checked against the CFG bitmap, and `VirtualProtect` to an executable protection
   marks the whole area as valid targets by default (Microsoft, "Memory Protection Constants",
   `PAGE_TARGETS_NO_UPDATE`), which is how `common/execmem.py` seals code. Under user shadow stacks,
-  setting a new `Rip` in the context is subject to context-IP validation; resuming in the same frame
-  needs no unwind, so the shadow stack stays balanced, but whether a dynamic-code resume address passes
-  the IP check without `SetProcessDynamicEHContinuationTargets` is unverified: a test starts a child with
-  shadow stacks forced on in strict mode and IP validation on and requires two traps (`test_guard.py`,
-  skipped where the machine has no user CET; whether GitHub's Windows runners expose it is unknown). If Windows refuses, the fix is to register each
-  fault map's resume addresses there (S0006).
+  setting a new `Rip` in the context is subject to context-IP validation, and resuming in the same
+  frame does not help: CI's `windows-latest` has user CET, and a child with shadow stacks forced on
+  (strict, IP validation) died with 0xC0000409 at its first guard trap (run 41633456821; LESSONS 61).
+  Answer: under that policy the runtime registers every resume address with
+  `SetProcessDynamicEHContinuationTargets` before the code runs and removes them when the code is freed;
+  where the policy also says CetDynamicApisOutOfProcOnly (it did there, unasked) or the API is missing,
+  guard mode is refused and `auto` gives explicit. A process that turns validation on after our
+  install is not covered (the policy is read once). The forced-CET test checks both cases.
 * **macOS arm64: `MAP_JIT` write mode and PAC.** The handler's code is `MAP_JIT` memory, which a thread
   cannot execute while it is in write mode (`pthread_jit_write_protect_np(0)`). A fault on such a
   thread (another library's JIT writing its code) cannot run our handler and faults again inside the

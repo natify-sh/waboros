@@ -574,14 +574,15 @@ _DARWIN_ONLY = pytest.mark.skipif(sys.platform != "darwin", reason="SIGBUS is ou
 def test_a_broken_chain_raises_at_the_next_call(how: str, fh: bool) -> None:
     """S0006 Q1 (revised): the cases that recognisably break the chain to our handler. On
     Windows none of them touches our vectored handler: the next guard fault still traps.
-    faulthandler enabled after ours sits in front of it and prints a "fatal" traceback for that
-    fault, then passes it on (CPython's faulthandler.c; RISKS R6)."""
+    faulthandler enabled after ours went in front of it, but the check before the call moves ours
+    back, so no false "fatal" report; disabled and re-enabled while it was already on at our
+    install, the check cannot see it and the report appears (the residual case, RISKS R6)."""
     if WIN:
         p = _child(f"{how}\ntry:\n    inst('f', 65536)\nexcept Trap as e:\n"
                    "    print('trap', e.code.name)\n", faulthandler=fh)  # fmt: skip
         assert p.returncode == 0 and p.stdout.count("trap MEMORY_OUT_OF_BOUNDS") == 2, p
-        if how.endswith("faulthandler.enable()"):
-            assert "Windows fatal exception: access violation" in p.stderr, p
+        residual = how == "faulthandler.disable(); faulthandler.enable()"
+        assert ("Windows fatal exception" in p.stderr) == residual, p
         return
     p = _child(f"{how}\ntry:\n    inst('f', 65536)\n"
                "except RuntimeError as e:\n    print('error', e)\n",
@@ -643,6 +644,119 @@ def test_install_puts_back_what_it_installed_when_a_later_sigaction_fails(
     segv, bus = guard.SIGSEGV, signal.SIGBUS
     assert calls == [(segv, False), (bus, False), (segv, True), (bus, True), (segv, True)]
     assert not guard._handler  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.skipif(not WIN, reason="Windows' vectored exception list")
+def test_faulthandler_enabled_after_ours_stays_behind_ours_on_windows() -> None:
+    """S0006 step 4, option A: faulthandler enabled after ours (before the call, or inside a host
+    call) is put in front of our vectored handler; the next check moves ours back in front, so the
+    guard fault traps with no false "Windows fatal exception" report (LESSONS 59)."""
+    for pre, call in (("faulthandler.enable()", "inst('f', 65536)"),
+                      ("HOOK = faulthandler.enable", "inst('g', 65536)")):  # fmt: skip
+        p = _child(f"{pre}\ntry:\n    {call}\nexcept Trap as e:\n    print('trap', e.code.name)\n")
+        assert p.returncode == 0 and p.stdout.count("trap MEMORY_OUT_OF_BOUNDS") == 2, p
+        assert "Windows fatal exception" not in p.stderr, p
+
+
+def test_windows_puts_our_handler_back_in_front_when_faulthandler_turns_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The trigger and the order of `_to_front`, with a fake kernel32 (any host): nothing while
+    faulthandler's state is unchanged or it turns off; when it turns on, add ours first, then
+    remove the old entry, and keep the new handle; a failed add keeps the old one and retries."""
+    calls: list[tuple[Any, ...]] = []
+    handles = iter(range(2, 10))
+    fail = [False]
+
+    def add(first: int, addr: int) -> int:
+        h = 0 if fail[0] else next(handles)
+        calls.append(("add", first, addr, h))
+        return h
+
+    on = [False]
+    monkeypatch.setattr(guard.sys, "platform", "win32")
+    monkeypatch.setattr(guard.faulthandler, "is_enabled", lambda: on[0])
+    remove = lambda h: calls.append(("remove", h)) or 1  # noqa: E731  # pyright: ignore[reportUnknownLambdaType]
+    state = {"addr": 0x1000, "veh": 1, "fh": False, "add": add, "remove": remove}
+    monkeypatch.setattr(guard, "_handler", state)
+    assert guard.broken() is None and calls == []
+    on[0] = True
+    assert guard.broken() is None
+    assert calls == [("add", 1, 0x1000, 2), ("remove", 1)] and state["veh"] == 2
+    calls.clear()
+    guard.broken()
+    on[0] = False
+    guard.broken()
+    assert calls == [] and not state["fh"]
+    on[0], fail[0] = True, True
+    guard.broken()
+    assert calls == [("add", 1, 0x1000, 0)] and state["veh"] == 2 and not state["fh"]
+    fail[0] = False
+    calls.clear()
+    guard.broken()
+    assert calls == [("add", 1, 0x1000, 3), ("remove", 2)] and state["veh"] == 3
+
+
+def test_eh_continuation_targets_follow_the_shadow_stack_policy() -> None:
+    """S0006 step 4, CI run 41633456821, any host: which policies need the resume addresses
+    registered (bits 0 and 2 of PROCESS_MITIGATION_USER_SHADOW_STACK_POLICY), which refuse guard
+    mode (bit 8, or no registration API), and the entries `_eh_targets` passes: {address, Flags}
+    with ADD (1) or 0, PROCESSED (2) required back."""
+    seen: list[list[int]] = []
+
+    def setter(proc: Any, n: int, arr: Any) -> int:
+        seen.append(list(arr))
+        for i in range(n):
+            arr[2 * i + 1] |= 2  # PROCESSED
+        return 1
+
+    def setter_obj() -> Any:  # `_eh_policy` sets argtypes on it, as on a ctypes function
+        return type("F", (), {"__call__": staticmethod(setter)})()
+
+    eh_policy = guard._eh_policy  # pyright: ignore[reportPrivateUsage]
+    assert eh_policy(0, None) is None and eh_policy(0x1, None) is None  # no IP validation
+    assert eh_policy(0x5, setter_obj()) is not None and eh_policy(0x15, setter_obj()) is not None
+    for flags, s in ((0x115, setter_obj()), (0x5, None)):  # out of process only; no API
+        with pytest.raises(RuntimeError, match="cannot register"):
+            eh_policy(flags, s)
+    eh_targets = guard._eh_targets  # pyright: ignore[reportPrivateUsage]
+    assert eh_targets(setter, [0x1000, 0x2040], True) and seen == [[0x1000, 1, 0x2040, 1]]
+    assert eh_targets(setter, [0x1000], False) and seen[-1] == [0x1000, 0]
+    assert not eh_targets(lambda p, n, a: 1, [0x1000], True)  # not PROCESSED: a failure  # pyright: ignore[reportUnknownLambdaType]
+
+    def partly(proc: Any, n: int, arr: Any) -> int:  # adds the first entry only, then fails
+        seen.append(list(arr))
+        arr[1] |= 2 * bool(arr[1] & 1 or n == 1)
+        return int(not arr[1] & 1)
+
+    seen.clear()
+    assert not eh_targets(partly, [0x1000, 0x2040], True)
+    assert seen == [[0x1000, 1, 0x2040, 1], [0x1000, 0]]  # what was added is removed again
+
+
+def test_a_guard_code_area_registers_its_resume_addresses_until_freed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Where the policy needs it (`_handler["ehcont"]`), `add_code` registers each distinct
+    resume address (code base + resume offset) before the code can run and removes them when
+    the area is freed, before it is unmapped."""
+    from waboros.targets.jit.common.execmem import load
+
+    calls: list[tuple[list[int], bool]] = []
+
+    def setter(proc: Any, n: int, arr: Any) -> int:
+        calls.append(([arr[2 * i] for i in range(n)], bool(arr[1] & 1)))
+        for i in range(n):
+            arr[2 * i + 1] |= 2
+        return 1
+
+    monkeypatch.setattr(guard, "_handler", {"ehcont": setter})
+    code = load(b"\xc3" * 64)
+    lo = code.addr
+    guard.add_code(code, [(0, 40), (8, 40), (16, 48)])
+    assert calls == [([lo + 40, lo + 48], True)]
+    code.free()
+    assert calls[-1] == ([lo + 40, lo + 48], False)
 
 
 @_POSIX_ONLY
@@ -861,8 +975,13 @@ for name, k in (("cfg", 7), ("shadow_stack", 15)):
     print(name, f.value if ok else -1, file=out, flush=True)
 from tests.jit.test_compiler import build, wat
 from waboros.targets.base import Trap
-inst = build(wat('(module (memory 1) (func (export "f") (param i32) (result i32) '
-                 '(i32.load (local.get 0))))'))
+try:
+    inst = build(wat('(module (memory 1) (func (export "f") (param i32) (result i32) '
+                     '(i32.load (local.get 0))))'))
+except RuntimeError as e:  # guard mode refused here (no way to register the resume addresses)
+    print("error", e, file=out, flush=True)
+    sys.exit(0)
+print("ok", inst("f", 0), file=out, flush=True)  # the code runs; then the guard faults
 for a in (65536, 65533):
     try:
         inst("f", a)
@@ -872,7 +991,8 @@ for a in (65536, 65533):
 
 
 @pytest.mark.skipif(not WIN or JIT != "jit-x86_64", reason="CET shadow stacks: Windows x64")
-def test_guard_traps_under_forced_cet_shadow_stacks(tmp_path: Path) -> None:
+@pytest.mark.parametrize("dynamic", ["system", "in-process"])
+def test_guard_traps_under_forced_cet_shadow_stacks(dynamic: str, tmp_path: Path) -> None:
     """S0006 step 4, the EH-continuation question. python.exe is not CETCOMPAT (python.org 3.13.9
     and 3.14.0, uv's 3.13.18: no IMAGE_DLLCHARACTERISTICS_EX_CET_COMPAT, no /guard:cf), so user
     shadow stacks are off by default. This child is created with them on in strict mode and with
@@ -882,7 +1002,12 @@ def test_guard_traps_under_forced_cet_shadow_stacks(tmp_path: Path) -> None:
     venv's python.exe is a launcher that starts the real one as a second process, which would not
     inherit the policy. Skips only where the machine has no user CET
     (`IsUserCetAvailableInEnvironment`); with CET, a child that reads the policy back as off
-    fails the test."""
+    fails the test. CI run 41633456821 answered the question: without registration the child
+    died with 0xC0000409, so the resume addresses are registered as EH continuation targets
+    (`guard._eh_policy`). `dynamic`: "in-process" also allows the dynamic CET APIs in process
+    (..._CET_DYNAMIC_APIS_OUT_OF_PROC_ONLY_ALWAYS_OFF): registration works, two traps; "system"
+    leaves that to the system (it was on in that run, policy 0x115): guard mode must be refused
+    with an error there, never crash."""
     import ctypes as C
     import site
     import subprocess as sp
@@ -896,7 +1021,8 @@ def test_guard_traps_under_forced_cet_shadow_stacks(tmp_path: Path) -> None:
     k32.InitializeProcThreadAttributeList(None, 1, 0, C.byref(size))
     attrs = C.create_string_buffer(size.value)
     assert k32.InitializeProcThreadAttributeList(attrs, 1, 0, C.byref(size)), C.get_last_error()  # pyright: ignore[reportAttributeAccessIssue]
-    policy = (C.c_uint64 * 2)(0, 3 << 28 | 1 << 32)  # shadow stacks strict; set-context IP check
+    in_proc = 2 << 48 if dynamic == "in-process" else 0  # dynamic CET APIs: ALWAYS_OFF (winbase.h)
+    policy = (C.c_uint64 * 2)(0, 3 << 28 | 1 << 32 | in_proc)  # strict; set-context IP check
     k32.UpdateProcThreadAttribute.argtypes = [C.c_void_p, W.DWORD, C.c_size_t, C.c_void_p,
                                               C.c_size_t, C.c_void_p, C.c_void_p]  # fmt: skip
     mitigation = 0x20007  # PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY
@@ -929,7 +1055,10 @@ def test_guard_traps_under_forced_cet_shadow_stacks(tmp_path: Path) -> None:
         k32.CloseHandle(C.c_void_p(h))
     text = out.read_text() if out.exists() else ""
     assert not timeout, f"the child ran for 120 s: {text!r}"
-    if "shadow_stack" in text:  # the machine has CET: the forced policy must be on in the child
-        assert int(text.split("shadow_stack ")[1].split()[0]) & 1, f"policy not applied: {text!r}"
-    traps = text.count("trap MEMORY_OUT_OF_BOUNDS")
-    assert status.value == 0 and traps == 2, (hex(status.value), text)
+    flags = int(text.split("shadow_stack ")[1].split()[0]) if "shadow_stack" in text else -1
+    assert flags != -1 and flags & 5 == 5, f"policy not applied: {text!r}"  # enabled, IP check
+    assert status.value == 0, (hex(status.value), text)
+    if flags & 0x100:  # CetDynamicApisOutOfProcOnly: no registration in process, so no guard
+        assert dynamic == "system" and "cannot register" in text, text
+    else:
+        assert "ok [0]" in text and text.count("trap MEMORY_OUT_OF_BOUNDS") == 2, text

@@ -135,8 +135,10 @@ handlers through llvm-mc (x86-64 also through GNU objdump; the Windows ones also
 write), and the handler of the machine called as a C function with fabricated Linux, Darwin and Windows
 contexts (x86-64 off Windows through a SysV-to-Win64 thunk), so the macOS and Windows code paths run on
 Linux too (aarch64 under QEMU). On Windows x64, `test_guard.py` also starts a child with user shadow
-stacks forced on in strict mode and context-IP validation on (the CET question of S0006 step 4): it must
-print two guard traps; the child is the base interpreter, not the venv launcher, and the test skips only
+stacks forced on in strict mode and context-IP validation on (the CET question of S0006 step 4), twice:
+with the dynamic CET APIs allowed in process it must print two guard traps (the resume addresses are
+registered); as the system sets them, either two traps or, where they are out-of-process only, our refusal
+of guard mode; the child is the base interpreter, not the venv launcher, and the test skips only
 where `IsUserCetAvailableInEnvironment` says the machine has no user CET (with CET, a policy read back as off
 fails).
 

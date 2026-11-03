@@ -189,7 +189,9 @@ class _Registry:
 
 _registry = _Registry()
 _install_lock = threading.Lock()
-_handler: dict[str, Any] = {}  # the handler's code area, its address, the saved action, libc
+# the handler's code area, its address, the saved action, libc; empty until installed, then
+# replaced by the complete dict in one assignment (`install` returns early without the lock)
+_handler: dict[str, Any] = {}
 
 
 def install(target: Any) -> None:
@@ -238,9 +240,9 @@ def install(target: Any) -> None:
                 raise OSError(err, "sigaction")
         # a Python-level handler set before ours is only chained to: not a break later
         py = {sig: signal.getsignal(sig) for sig in SIGNALS}
-        _handler.update(code=mem, addr=mem.addr, prev=prev, sigaction=sigaction, py=py)
-        _handler["fh"] = faulthandler.is_enabled()  # enabled before ours: it sits below us
-        _handler.update(_image_finder(libc))
+        h = dict(code=mem, addr=mem.addr, prev=prev, sigaction=sigaction, py=py)
+        h["fh"] = faulthandler.is_enabled()  # enabled before ours: it sits below us
+        _publish({**h, **_image_finder(libc)})
 
 
 def _install_vectored(target: Any) -> None:
@@ -248,17 +250,109 @@ def _install_vectored(target: Any) -> None:
     (`AddVectoredExceptionHandler(1, h)`, as Wasmtime), so it sees an access violation before any
     frame-based handler (ctypes' own `__except` included). The OS walks the list, so there is no
     saved action and nothing to chain; only the holder of the returned handle can remove an
-    entry, so it stays ours for the process's lifetime (`broken()`)."""
-    code = target.fault_handler(ctypes.addressof(_registry.heads), 0, 0, 0, windows=True)
-    mem: ExecMem = load(code)
+    entry, so it stays in the list for the process's lifetime. A handler added in front later
+    runs first: `_to_front` moves ours back when faulthandler was enabled since (`broken()`)."""
     if sys.platform == "win32":  # for the type checker: WinDLL exists on Windows only
-        add = ctypes.WinDLL("kernel32", use_last_error=True).AddVectoredExceptionHandler
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        policy = ctypes.c_uint32()  # ProcessUserShadowStackPolicy (15); FALSE before 20H1: 0
+        k32.GetProcessMitigationPolicy.argtypes = [
+            ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_size_t,
+        ]  # fmt: skip
+        k32.GetProcessMitigationPolicy(ctypes.c_void_p(-1), 15, ctypes.byref(policy), 4)
+        setter = None
+        for dll in ("kernelbase", "kernel32"):
+            setter = setter or getattr(
+                ctypes.WinDLL(dll), "SetProcessDynamicEHContinuationTargets", None
+            )
+        ehcont = _eh_policy(policy.value, setter)  # raises where resumes cannot be allowed
+        code = target.fault_handler(ctypes.addressof(_registry.heads), 0, 0, 0, windows=True)
+        mem: ExecMem = load(code)
+        add, remove = k32.AddVectoredExceptionHandler, k32.RemoveVectoredExceptionHandler
         add.restype, add.argtypes = ctypes.c_void_p, [ctypes.c_uint32, ctypes.c_void_p]
+        remove.restype, remove.argtypes = ctypes.c_uint32, [ctypes.c_void_p]
         veh = add(1, mem.addr)
         if not veh:
             mem.free()
             raise ctypes.WinError(ctypes.get_last_error())
-        _handler.update(code=mem, addr=mem.addr, veh=veh)
+        # first in the list now; faulthandler's state as seen here (the trigger of _to_front)
+        fh = faulthandler.is_enabled()
+        _publish(
+            dict(code=mem, addr=mem.addr, veh=veh, add=add, remove=remove, ehcont=ehcont, fh=fh)
+        )
+
+
+def _publish(h: dict[str, Any]) -> None:
+    """Make the installed handler visible: one assignment, so a thread that sees `_handler`
+    non-empty (the unlocked early return in `install`, `broken()`) sees every key."""
+    global _handler
+    _handler = h
+
+
+def _eh_policy(flags: int, setter: Any) -> Any:
+    """Windows x64 under user shadow stacks (S0006 step 4; CI run 41633456821): with context-IP
+    validation on, the Rip our handler writes must be a registered EH continuation target, or
+    the process ends with 0xC0000409 when it continues. `flags`: the
+    PROCESS_MITIGATION_USER_SHADOW_STACK_POLICY bits (winnt.h): 0 EnableUserShadowStack, 2
+    SetContextIpValidation, 8 CetDynamicApisOutOfProcOnly. Returns the registration function
+    where every resume address must be registered, None where nothing is validated (the
+    default: python.exe is not CETCOMPAT; Windows on Arm has no CET); raises where
+    registration is impossible (the dynamic CET APIs refused in process, or absent), so guard
+    mode is not used there (`auto` gives explicit)."""
+    if not (flags & 1 and flags & 4):
+        return None
+    if flags & 0x100 or setter is None:
+        raise RuntimeError(
+            "guard-mode code (WABOROS_JIT_BOUNDS=guard) cannot run here: user shadow stacks "
+            "validate the resume address and this process cannot register it "
+            f"(shadow-stack policy {flags:#x}; S0006)"
+        )
+    setter.restype = ctypes.c_int
+    setter.argtypes = [ctypes.c_void_p, ctypes.c_uint16, ctypes.c_void_p]
+    return setter
+
+
+def _eh_targets(setter: Any, addrs: Sequence[int], add: bool) -> bool:
+    """Add (or remove) `addrs` as EH continuation targets of this process:
+    PROCESS_DYNAMIC_EH_CONTINUATION_TARGET {ULONG_PTR TargetAddress, ULONG_PTR Flags}, Flags
+    DYNAMIC_EH_CONTINUATION_TARGET_ADD (1) or 0 to remove; the call sets
+    DYNAMIC_EH_CONTINUATION_TARGET_PROCESSED (2) on each entry it handled (winnt.h). At most
+    65 535 per call (a USHORT count). A failed add removes again what it had added."""
+    done: list[int] = []
+    for at in range(0, len(addrs), 0xFFFF):
+        chunk = addrs[at : at + 0xFFFF]
+        arr = (ctypes.c_uint64 * (2 * len(chunk)))()
+        for i, a in enumerate(chunk):
+            arr[2 * i], arr[2 * i + 1] = a, int(add)
+        ok = setter(ctypes.c_void_p(-1), len(chunk), arr)
+        done += [a for i, a in enumerate(chunk) if arr[2 * i + 1] & 2]
+        if not ok or len(done) < at + len(chunk):
+            if add and done:  # nothing stays registered for code that will not run
+                _eh_targets(setter, done, False)
+            return False
+    return True
+
+
+def _to_front() -> None:
+    """Windows (S0006 step 4, the maintainer's option A): faulthandler is a vectored handler too
+    and `enable()` puts it in front of ours, where it reports every guard fault as "Windows
+    fatal exception" before passing it on (LESSONS 59). When faulthandler has been enabled since
+    the last check, ours is added in front again and then the old entry removed (in that order,
+    so the list never lacks it; for a moment it is there twice, which only calls it twice for a
+    foreign fault). Two calls that take the list's lock (the add also allocates an entry, the
+    remove frees one), so they run only on that change, not on every entry. Not seen:
+    faulthandler disabled and re-enabled between two checks, and any other handler added in
+    front (RISKS R6)."""
+    if faulthandler.is_enabled() == _handler["fh"]:
+        return
+    with _install_lock:
+        fh = faulthandler.is_enabled()  # again: it may have changed before we took the lock
+        if fh and not _handler["fh"]:
+            veh = _handler["add"](1, _handler["addr"])
+            if not veh:  # keep the old entry; try again at the next check
+                return
+            _handler["remove"](_handler["veh"])  # cannot fail: only we hold this handle
+            _handler["veh"] = veh
+        _handler["fh"] = fh
 
 
 class _DlInfo(ctypes.Structure):
@@ -308,7 +402,8 @@ def broken() -> str | None:
     handler with faulthandler enabled counts as a break (a false error rather than a crash)."""
     if not _handler:
         return "not installed"
-    if sys.platform == "win32":  # a vectored handler cannot be replaced (RISKS R6)
+    if sys.platform == "win32":  # a vectored handler cannot be removed by others (RISKS R6)
+        _to_front()
         return None
     for sig in SIGNALS:
         why = _broken(sig)
@@ -349,8 +444,21 @@ def add_code(code: ExecMem, faults: Sequence[tuple[int, int]]) -> None:
     """Register a code area and its fault map until the area is unmapped."""
     flat = (ctypes.c_uint32 * max(1, 2 * len(faults)))(*(x for p in faults for x in p))
     lo = code.addr
+    setter = _handler.get("ehcont")
+    targets = sorted({lo + r for _, r in faults}) if setter else []
+    # before any of the code can run. A refusal is an error under `auto` too: the module is
+    # compiled already (no wasm here to compile it explicit again), and `install` checked the
+    # policy, so only an OS failure gets here
+    if targets and not _eh_targets(setter, targets, True):
+        raise OSError("SetProcessDynamicEHContinuationTargets refused the resume addresses")
     slot = _registry.add(0, [lo, lo + code.size, ctypes.addressof(flat), len(faults)])
-    code.on_free(functools.partial(_registry.remove, 0, slot, flat))
+    code.on_free(functools.partial(_forget_code, slot, flat, setter, targets))
+
+
+def _forget_code(slot: int, flat: object, setter: Any, targets: list[int]) -> None:
+    _registry.remove(0, slot, flat)
+    if targets:  # before the area is unmapped; a failure only leaves stale targets behind
+        _eh_targets(setter, targets, False)
 
 
 def add_reservation(res: Reservation) -> None:

@@ -181,9 +181,11 @@ trap).
   uninstalled. Windows: `AddVectoredExceptionHandler(1, h)`.
 * **Is it still ours?** Before every entry from the host (`Instance.call`, outermost and nested) and
   after every host call returns to guard code, the runtime checks that the current disposition is
-  still our handler (`sigaction(sig, NULL, &cur)`; Windows: only the holder of the handle can remove
-  our entry from the vectored list, so installed once means installed and nothing is checked; a
-  handler added in front later, e.g. faulthandler, still runs before ours: RISKS R6, LESSONS 59). If it is not, the call raises an error
+  still our handler (`sigaction(sig, NULL, &cur)`). Windows: only the holder of the handle can remove
+  our entry from the vectored list, so the check never raises; instead, when faulthandler has been
+  enabled since the last check (and so went in front of ours), it adds ours in front again and then
+  removes the old entry (option A, Changes; other handlers added in front still run first: RISKS R6,
+  LESSONS 59). On POSIX, if it is not ours, the call raises an error
   instead of running guard code (Q1); re-installing on top is wrong (measured: a loop with
   `faulthandler`). Cost: one ctypes call of ~580 ns against a ~4.1 µs entry (Q2).
 * **Threads and free-threaded builds**: the handler runs on the faulting thread and uses no
@@ -201,10 +203,10 @@ trap).
   lldb stops on `EXC_BAD_ACCESS` (`process handle` to pass it).
 * **Windows**: a vectored handler (first in the list), `CONTEXT.Rip`/`Pc`; no unwind tables are
   needed because we resume in the same frame (R3's note on `RtlAddFunctionTable` stays as is). Under
-  hardware-enforced stack protection with context-IP validation, the resume addresses may have to be
+  hardware-enforced stack protection with context-IP validation, the resume addresses must be
   registered with `SetProcessDynamicEHContinuationTargets` (the fault map's resume offsets are exactly
-  that list); python.exe does not opt in, and a test with the policy forced answers it in CI (Changes,
-  step 4).
+  that list), or the process ends with 0xC0000409 (CI run 41633456821); the runtime registers them
+  where the policy asks for it and refuses guard mode where it cannot (Changes, step 4).
 * **Android**: in app processes ART's libsigchain interposes `sigaction`: by its design our handler
   becomes a user handler, called after ART's own (implicit null checks, its stack overflow). Using libc's
   `sigaction` symbol through ctypes is what keeps this working. Checked in the CI `android` job.
@@ -682,8 +684,75 @@ reservation is a crash, not a trap: the explicit-mode tests and differential run
   * **CI**: the `os` job's macOS steps now run on `windows-latest` too, and the `arm64` job's macOS
     steps on `windows-11-arm`: the spec suite and `test_guard.py` + `test_fault_handler.py` with
     `WABOROS_JIT_BOUNDS=guard` and `WABOROS_JIT_REQUIRE=1`.
-  * **Open.** (a) When faulthandler is enabled after ours, move ours to the front again at the next
-    check (`AddVectoredExceptionHandler(1)` anew, then remove the old entry; cheap, but it only
-    covers faulthandler enabled while we can see it), or keep the noise documented. (b) If the CET
-    test shows the resume refused, register the fault maps' resume addresses with
-    `SetProcessDynamicEHContinuationTargets` whenever the process has context-IP validation on.
+  * **Open.** (a) faulthandler enabled after ours: decided below (option A). (b) the resume refused under CET: answered,
+    the resume addresses are registered (the 2026-11-03 "first Windows CI run" entry below).
+* 2026-11-03: **Windows: our vectored handler goes back in front of faulthandler** (the maintainer's
+  option A for open question (a) of step 4). As built (`common/guard.py` `_to_front`, called from
+  `broken()`, so before every entry and after every successful host call into a store with guard
+  code, where POSIX checks Q1):
+  * **Trigger.** faulthandler's state is recorded at install (ours is first then, by
+    `AddVectoredExceptionHandler(1, …)`, so nothing more is needed right after install). A check that
+    finds faulthandler enabled when it was not before calls `AddVectoredExceptionHandler(1, h)` with the
+    same code, then `RemoveVectoredExceptionHandler(old)`, and keeps the new handle, under the install
+    lock. Add first, then remove: the list never lacks ours; for a moment it holds it twice, which only
+    runs it twice for a foreign fault. A failed add keeps the old entry and the check retries next time.
+    Turning faulthandler off is only recorded.
+  * **Cost** (reasoned, not measured: no Windows machine here). Each call allocates or frees an entry
+    on the process heap and takes the vectored list's lock (ReactOS `sdk/lib/rtl/vectoreh.c`, read
+    2026-11-03, as a readable model of ntdll; Windows' own code may differ), plus ~0.3 µs of ctypes each
+    (LESSONS 9). The list lock is also taken by every exception dispatch, so doing this on every entry
+    (~4 µs) would add a noticeable share and contend with faults on other threads; the trigger makes the
+    steady-state cost one `faulthandler.is_enabled()` call.
+  * **Not covered.** faulthandler disabled and re-enabled between two checks while it was on at the
+    previous one (pytest, `-X faulthandler`): the state reads the same, so it stays in front and the
+    false reports return (tested as the residual case). A long JIT call on one thread that makes no host calls does not see faulthandler enabled by another thread meanwhile: its guard faults bring the false reports until its next entry or host-call return. Any other vectored handler
+    added in front later (RISKS R6) still runs first.
+  * **Tests.** `test_windows_puts_our_handler_back_in_front_when_faulthandler_turns_on` (any host, a
+    fake kernel32): the trigger, the add-then-remove order, the kept handle, the retry after a failed
+    add; a reversed order fails it. `test_faulthandler_enabled_after_ours_stays_behind_ours_on_windows`
+    (Windows CI only): faulthandler enabled before the call and inside a host call, then a guard fault:
+    two traps and no "Windows fatal exception" on stderr.
+* 2026-11-03: **first Windows CI run** (run 41633456821, the step-4 commit). `arm64 (windows-11-arm)`
+  was fully green, the guard-mode spec suite and `test_guard.py` + `test_fault_handler.py` included.
+  On `os (windows-latest)` everything in `tests/jit` passed except the forced-CET test, which stopped
+  the job before its later guard steps: the runner **has** user CET; the child read its shadow-stack
+  policy back as 0x115 (bits 0 EnableUserShadowStack, 2 SetContextIpValidation, 4 strict mode, 8
+  CetDynamicApisOutOfProcOnly, the last not asked for), then died with 0xC0000409
+  (STATUS_STACK_BUFFER_OVERRUN, CET's fail-fast) and printed no trap. So with context-IP
+  validation, Windows refuses to continue at a resume address that is not a registered EH
+  continuation target, although the frame and the shadow stack are unchanged (LESSONS 61). Fix, as
+  built in `common/guard.py`:
+  * **When.** At install on Windows, `GetProcessMitigationPolicy(ProcessUserShadowStackPolicy = 15)`
+    (FALSE before Windows 10 20H1: no CET, nothing to do). Bits 0 and 2 both set: every resume
+    address must be registered. Bit 8 set too, or no `SetProcessDynamicEHContinuationTargets` in
+    kernelbase or kernel32: registration in process is impossible, so `install` raises and guard
+    mode is refused (`auto` gives explicit; `guard` is an error at instantiation, never a crash).
+    Otherwise nothing is registered: a default python.exe, and Windows on Arm, which has no CET.
+    Registering only under validation was chosen over always registering on x64: the call is
+    documented for CET processes only, and what it does without shadow stacks is unknown here.
+  * **What.** `add_code` registers each distinct resume address of the area (code base + resume
+    offset: the `Rip` the handler writes) before any of its code can run, and fails the
+    instantiation if the call or any entry's `DYNAMIC_EH_CONTINUATION_TARGET_PROCESSED` bit says
+    no, after removing again every entry it had added (earlier chunks and the processed entries of
+    the failing one). That error stands under `auto` too: the module is already compiled and the
+    instantiation has no wasm to compile it explicit again, and `install` has checked the policy,
+    so only an OS failure gets there. When the area is freed, after its registry entry is removed and before it is unmapped, the
+    same addresses are removed (Flags 0); a failure there only leaves stale targets behind.
+  * **Constants** (mingw-w64-headers, master e3d18511): `PROCESS_DYNAMIC_EH_CONTINUATION_TARGET`
+    {`ULONG_PTR TargetAddress`, `ULONG_PTR Flags`} (16 bytes), `DYNAMIC_EH_CONTINUATION_TARGET_ADD` 1,
+    `..._PROCESSED` 2 (`winnt.h`); `SetProcessDynamicEHContinuationTargets(HANDLE, USHORT,
+    PPROCESS_DYNAMIC_EH_CONTINUATION_TARGET)` (`processthreadsapi.h`, NTDDI_WIN10_VB); the policy
+    bits of `PROCESS_MITIGATION_USER_SHADOW_STACK_POLICY` (`winnt.h`);
+    `PROCESS_CREATION_MITIGATION_POLICY2_CET_DYNAMIC_APIS_OUT_OF_PROC_ONLY_ALWAYS_OFF` 2 << 48
+    (`winbase.h`).
+  * **Tests.** The forced-CET test now runs twice. "in-process" also turns the out-of-process-only
+    rule off: the child must print `ok [0]` and two traps. "system" leaves it as the system sets it:
+    with bit 8 on (as in that run) it must print our refusal and exit 0; with it off, two traps.
+    `test_eh_continuation_targets_follow_the_shadow_stack_policy` and
+    `test_a_guard_code_area_registers_its_resume_addresses_until_freed` (any host, fakes) cover the
+    policy decision, the entries passed, and registration until free.
+  * **Review fixes to option A**: `_to_front` reads `faulthandler.is_enabled()` again under the
+    lock; the long-call gap is added to "Not covered" above. `install` now builds the whole handler
+    state and publishes it with one assignment (`_publish`), on POSIX and Windows alike: its early
+    return without the lock, `broken()` and `_to_front` could otherwise see it half filled (a
+    KeyError, or no `ehcont` on a free-threaded build).
