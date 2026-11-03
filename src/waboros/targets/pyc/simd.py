@@ -247,7 +247,7 @@ def _float() -> None:
         )
     (f32r, f32w, f32q), (f64r, f64w, _), u32, u64, s32 = _FM[32], _FM[64], _U[32], _U[64], _S[32]
     H["f32x4.demote_f64x2_zero"] = lambda v: _join(
-        [f32w(f32q(f64r(x))) for x in _lanes(v, u64)] + [0, 0], 32
+        [f32w(_rt._demote(f64r(x))) for x in _lanes(v, u64)] + [0, 0], 32
     )
     # promote quiets a signalling NaN, as the scalar `f64.promote_f32` does (x * 1.0)
     H["f64x2.promote_low_f32x4"] = lambda v: _join(

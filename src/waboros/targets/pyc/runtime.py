@@ -41,6 +41,12 @@ def _f32(x):
         return _m.copysign(INF, x)
 
 
+def _demote(x):
+    """f32.demote_f64: a NaN becomes an arithmetic NaN (quiet bit set); pack('<f') keeps the
+    signalling bit on CPython 3.14+ and PyPy (docs/PYC-PLATFORMS.md)."""
+    return _f32(x * 1.0) if x != x else _f32(x)
+
+
 def _grow(M, maxpages, n):
     old = len(M) >> 16
     if old + n > maxpages:
@@ -275,6 +281,8 @@ def _fdiv(a, b):
 
 
 def _fsqrt(x):
+    if x != x:  # PyPy's math.sqrt keeps the signalling bit
+        return x * 1.0
     if x < 0:
         return NAN
     return _m.sqrt(x)

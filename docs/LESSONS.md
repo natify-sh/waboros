@@ -407,3 +407,12 @@ What went wrong or surprised us while building the PoC, so it is not found again
     (also makes a no-git build, version 0.0.0, fail instead of testing the wrong code); and `uv` ignores
     `PIP_FIND_LINKS`, so `UV_FIND_LINKS` is set too. Rule: after installing "the wheel under test", check
     the installed version in the log. Found: cibuildwheel draft, 2026-11-03.
+63. **A NaN's bit pattern is the C library's business, not Python's, and on i686 nothing keeps a
+    signalling NaN as a float.** `struct.pack('<f', sNaN-double)` quiets it on CPython <= 3.13 and keeps the
+    signalling bit on 3.14+ and PyPy; PyPy's `math.sqrt` also returns an sNaN unchanged. `x * 1.0` quiets it
+    on every host measured, so `pyc` quiets explicitly (`_demote`, `_fsqrt`). On 32-bit x86 the x87 FPU
+    quiets any sNaN that passes through st0, and a double returned from C does: probed in the manylinux i686
+    container, `struct.unpack`, `memoryview.cast('d')` and `array('d')` all lose the signalling bit on the
+    way into a float object, so no float-valued representation can carry it. Also, on 32-bit hosts an
+    index >= 2^31 raises `OverflowError`, not `IndexError`. Rule: probe a bit-exact float claim on the host
+    that has the odd FPU, not only on x86-64. Found: PYC-PLATFORMS measurement and fix, 2026-11-03.

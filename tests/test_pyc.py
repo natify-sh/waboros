@@ -216,6 +216,29 @@ def test_f32_nan_payload_kept() -> None:
     assert rt._i32_f32(rt._f32_i32(rt.U32(m, 0)[0])) == 0xFFA00003 == rt.U32(m, 0)[0]
 
 
+def test_demote_and_sqrt_of_nan_are_arithmetic_on_every_host() -> None:
+    from waboros.targets.pyc import runtime as rt
+
+    for b in (0x7FF4000000000000, 0xFFF4000000000001, 0x7FF8000000000001):
+        got = rt._i32_f32(rt._demote(rt._f64_i64(b)))
+        assert got & 0x7FC00000 == 0x7FC00000 and got >> 31 == b >> 63  # quiet bit set, sign kept
+    assert rt._i64_f64(rt._fsqrt(rt._f64_i64(0x7FF4000000000000))) == 0x7FFC000000000000
+    assert rt._demote(1.5) == 1.5 and rt._demote(1e300) == rt.INF
+
+
+def test_overflow_error_from_an_address_is_an_out_of_bounds_trap() -> None:
+    # 32-bit hosts raise OverflowError ("C ssize_t") for an index >= 2**31
+    from waboros.runtime.store import StoreState
+    from waboros.targets.pyc import _run
+
+    def f() -> None:
+        raise OverflowError("Python int too large to convert to C ssize_t")
+
+    with pytest.raises(Trap) as e:
+        _run(StoreState(), f)
+    assert e.value.code == TrapCode.MEMORY_OUT_OF_BOUNDS
+
+
 def test_float_rounding_helpers() -> None:
     from waboros.targets.pyc import runtime as rt
 

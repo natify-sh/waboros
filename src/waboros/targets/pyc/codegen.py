@@ -1185,7 +1185,7 @@ class FuncGen:
             return
         if op == 0xB6:
             a = pop()
-            push(E("_f32(%s)" % a.c, F32, None, **dep(a)))
+            push(E("_demote(%s)" % a.c, F32, None, **dep(a)))
             return
         if op == 0xBB:
             a = pop()

@@ -61,7 +61,8 @@ def _run(store: StoreState, fn: Callable[..., Any], *args: Any) -> Any:
         raise
     except Trap:
         raise
-    except (IndexError, struct.error):
+    # OverflowError: an address of 2**31 or more on a 32-bit host (Py_ssize_t)
+    except (IndexError, struct.error, OverflowError):
         raise Trap(TrapCode.MEMORY_OUT_OF_BOUNDS, "out of bounds memory access") from None
     except ZeroDivisionError:
         raise Trap(TrapCode.INTEGER_DIVISION_BY_ZERO, "integer divide by zero") from None

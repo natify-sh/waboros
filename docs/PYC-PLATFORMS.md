@@ -80,3 +80,22 @@ They already run the pyc suite as a side effect (31 s native for the spec, ~12 s
 the pyc-only cells are just the ones without a JIT (i686 now; armv7, Pyodide, etc. later).
 Fixes implied (not done, read-only): (a) map OverflowError like IndexError in `_run` or mask addresses; (b) keep f32 NaN bits out of struct
 float round trips (demote and loads) - after (a) and (b) the measured difference set is empty and the 3.14 and i686 cells become regression checks.
+
+## 5. Fixes done (2026-11-03) and what is left
+* Demote: `_demote` (runtime.py; used by `f32.demote_f64` and `f32x4.demote_f64x2_zero`) quiets a NaN with `x * 1.0` before the
+  C pack. Wasm requires an arithmetic NaN; Wasmtime quiets and keeps the payload, so does this. `_fsqrt` got the same NaN branch
+  (PyPy's `math.sqrt` kept the signalling bit: f64.wast:2436,2438 and simd_f64x2_arith.wast:5137,5139, which the table in section 2
+  attributed to nothing; they were a fifth and sixth pair hidden next to the demote four). Result: x86_64 3.13, 3.14 and PyPy: 54 385 / 0 / 91.
+  The generated code of CoreMark calls neither function, so the hot path is unchanged (pyc CoreMark 98.38, 31.5 s wall, passes its check).
+* `OverflowError` is caught with `IndexError`/`struct.error` in `_run` (`__init__.py`). Nothing else in `pyc` raises it: float to int
+  conversions test their range and raise `Trap` (`_tr`, `_sat`), float arithmetic overflows to inf, and `ldexp` is only called on a
+  value already below 2^53 times a shift for an i64 that fits f32. i686 CPython 3.13 and 3.14: 244 -> 88 failures, 0 of them ssize_t.
+* Left: the 88 x87 commands on i686 (3.13 and 3.14 alike; float_exprs 20, float_memory 16+8, float_misc 16, conversions 8,
+  float_literals 8, select 8, simd_splat 3, local_tee 1). Probe in the i686 container: `struct`, `memoryview.cast('d')` and
+  `array('d')` all turn a signalling NaN into a quiet one when the float object is created or read; no way of making a float
+  from bits keeps it. Fixable only by a different representation of the NaN:
+  1. carry f32/f64 as ints (bit patterns) on 32-bit x86 only: separate code generation mode for every float op, load, store, select,
+     local; 64-bit hosts unchanged (CoreMark cost 0 there), large diff, the second code generator to maintain;
+  2. carry f32 as the integer bits everywhere: touches the CoreMark hot path (every f32 op unpacks and packs), not measured, certainly a loss;
+  3. accept: document that `pyc` on 32-bit x86 does not preserve signalling NaN payloads, keep the 88 commands and three tests as
+     expected failures on that host only (the harness conftest is not part of this step).

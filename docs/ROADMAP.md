@@ -235,15 +235,12 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29) -> the rest below.
   It replaces the hand-made Android job and adds iOS and the pyc-only platforms; the jobs that need our own tools or emulator flags stay (QEMU `qemu64`
   without SSE3+, QEMU with BTI enforced, D35 dumps, MDWE, the objdump/llvm-mc ISA gates, native
   CoreMark). Where wasmtime has no wheel (iOS, Android, Pyodide) only tests that need no WAT run.
-* **`pyc`: host-dependent results** (maintainer, 2026-11-03: fix them in one step, right after the
-  cibuildwheel step). A measurement over CPython 3.11–3.15(t), PyPy, i686, armv7, aarch64 and s390x
-  (spec suite on `pyc`, [PYC-PLATFORMS.md](PYC-PLATFORMS.md)) found three causes and nothing else:
-  (1) f32 NaN bits through `struct`/`float`: `f32.demote_f64` of a signalling NaN differs on
-  CPython 3.14+ and PyPy (4 commands), and x87 quiets signalling NaNs on i686 (88 commands);
-  (2) on 32-bit hosts an address of 2^31 or more raises `OverflowError`, which `pyc` does not turn
-  into a trap (156 commands on i686 and armv7; the "never crash" rule). Fix: keep f32 bit patterns
-  out of the float round trips, and map `OverflowError` like `IndexError`. Until then the tests that
-  show it are xfail on 32-bit x86.
+* **`pyc`: host-dependent results** (maintainer, 2026-11-03). Measured over CPython 3.11-3.15(t), PyPy,
+  i686, armv7, aarch64 and s390x ([PYC-PLATFORMS.md](PYC-PLATFORMS.md)). Done: `f32.demote_f64` and
+  `sqrt` of a signalling NaN give a quiet NaN on every host (3.14, PyPy: 0 failures), and `OverflowError`
+  is mapped to the out-of-bounds trap (i686: 244 -> 88 failures). Open: x87 on i686 quiets signalling
+  NaNs in every double that passes through st0 (88 commands, 3 tests); it cannot be fixed while f32/f64
+  values are Python floats, options in PYC-PLATFORMS.md section 5 await a decision.
 * **Guard pages with a JIT-emitted signal handler** (`poc/w2jit_guard.py`: +20–25 % on CoreMark, the gap
   to Cranelift was mostly the bounds checks), per OS and architecture (Linux `sigaction` +
   `ucontext` offsets, macOS also SIGBUS, Windows a vectored exception handler), `sigaltstack` per thread
