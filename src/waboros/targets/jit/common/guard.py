@@ -8,7 +8,8 @@ Chain and claim (Q8, as Wasmtime): every copy of waboros in the process (a vendo
 sub-interpreter) has its own registry and installs its own handler, which saves the action it
 replaces. A handler claims a fault only when the PC is a fault point of its own code and the
 address lies in one of its own reservations; everything else goes to the saved action. So copies
-work in either install order and nested.
+work in either install order and nested. Windows (step 4) has no signals: the handler is a
+vectored exception handler, first in the list, and the OS walks the list, so nothing is chained.
 
 Mode (D44): `WABOROS_JIT_BOUNDS=auto` (the default; empty counts as unset) | `explicit` | `guard`.
 `explicit` installs nothing. `guard` compiles guard code wherever the backend has the mode and fails
@@ -209,6 +210,9 @@ def install(target: Any) -> None:
     with _install_lock:
         if _handler:
             return
+        if sys.platform == "win32":
+            _install_vectored(target)
+            return
         libc = ctypes.CDLL(None, use_errno=True)
         sigaction = libc.sigaction
         sigaction.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p]
@@ -237,6 +241,24 @@ def install(target: Any) -> None:
         _handler.update(code=mem, addr=mem.addr, prev=prev, sigaction=sigaction, py=py)
         _handler["fh"] = faulthandler.is_enabled()  # enabled before ours: it sits below us
         _handler.update(_image_finder(libc))
+
+
+def _install_vectored(target: Any) -> None:
+    """Windows (S0006 step 4): the handler goes first in the process's vectored exception list
+    (`AddVectoredExceptionHandler(1, h)`, as Wasmtime), so it sees an access violation before any
+    frame-based handler (ctypes' own `__except` included). The OS walks the list, so there is no
+    saved action and nothing to chain; only the holder of the returned handle can remove an
+    entry, so it stays ours for the process's lifetime (`broken()`)."""
+    code = target.fault_handler(ctypes.addressof(_registry.heads), 0, 0, 0, windows=True)
+    mem: ExecMem = load(code)
+    if sys.platform == "win32":  # for the type checker: WinDLL exists on Windows only
+        add = ctypes.WinDLL("kernel32", use_last_error=True).AddVectoredExceptionHandler
+        add.restype, add.argtypes = ctypes.c_void_p, [ctypes.c_uint32, ctypes.c_void_p]
+        veh = add(1, mem.addr)
+        if not veh:
+            mem.free()
+            raise ctypes.WinError(ctypes.get_last_error())
+        _handler.update(code=mem, addr=mem.addr, veh=veh)
 
 
 class _DlInfo(ctypes.Structure):
@@ -286,6 +308,8 @@ def broken() -> str | None:
     handler with faulthandler enabled counts as a break (a false error rather than a crash)."""
     if not _handler:
         return "not installed"
+    if sys.platform == "win32":  # a vectored handler cannot be replaced (RISKS R6)
+        return None
     for sig in SIGNALS:
         why = _broken(sig)
         if why:

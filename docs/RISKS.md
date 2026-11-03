@@ -173,8 +173,10 @@ CI's qemu64 steps run in explicit mode. aarch64 follows the same rule (D45): und
 store wrote its first 8 bytes, and native Arm hardware is allowed to do the same. Under FEX or box64 on an Arm server an x86-64 Python sees
 x86_64 and glibc, the verified row, so `auto` turns guard pages on exactly where a store may tear;
 Wasmtime does not detect this either. Open: detect an emulator (`/proc/cpuinfo`, FEX's and box64's
-environment variables) and fall back to explicit, or keep it a documented limitation (D45). Open:
-Windows x64 and arm64 (S0006 step 4), Android x86_64 (step 5); Linux musl aarch64 (no
+environment variables) and fall back to explicit, or keep it a documented limitation (D45). Windows x64
+and arm64 (S0006 step 4): a vectored exception handler is built (offsets from the Windows SDK headers, run
+off Windows on fabricated contexts) but **unverified until the Windows CI steps run**; `auto` stays explicit
+there. Open: Android x86_64 (step 5); Linux musl aarch64 (no
 `__clear_cache` without libgcc, S0004). Android arm64 stays explicit, a documented limitation (S0006).
 
 Guard pages need a SIGSEGV handler in the process (ARCHITECTURE.md, "Memory"); the PoC emits it as
@@ -215,6 +217,36 @@ machine code. Risks and possible answers:
   routinely inside a reservation, so a `kill -BUS`/`-SEGV` that lands while the PC is on a fault point
   becomes a `MEMORY_OUT_OF_BOUNDS` trap and the signal is swallowed. Accepted, as in Wasmtime, which
   decides by the PC alone. A previous SIG_DFL/SIG_IGN is always followed by `raise`. For a real fault and SIG_DFL, the pending signal ends the process before the instruction runs again, with the same signal. With SIG_IGN, xnu's `threadsignal` drops the signal, so a real fault runs again forever (a 100 % CPU hang): xnu's behaviour without us too, not a regression (Linux force-unignores a fault signal).
+* **Windows: a vectored list instead of a chain** (S0006 step 4). Our handler is added first
+  (`AddVectoredExceptionHandler(1, h)`) and only the holder of the returned handle can remove it, so
+  nothing can unhook or replace it and `broken()` is always None there; but any handler added later with
+  `first = 1` runs before ours. One that returned `EXCEPTION_CONTINUE_EXECUTION` for a guard fault, or
+  ended the process, would defeat guard mode; none is known (Wasmtime's claims only faults of its own
+  wasm on the thread; ctypes' `__except` is frame-based and comes after every vectored handler).
+  **faulthandler is a vectored handler too** (CPython `Modules/faulthandler.c`, 3.13): enabled after
+  ours it sits in front, prints "Windows fatal exception: access violation" and a traceback for every
+  guard fault, disables its SIGSEGV handler and passes the fault on, so the trap still happens but
+  stderr fills with false "fatal" reports (LESSONS 59; tested). Enabled before ours (pytest,
+  `-X faulthandler`) it stays silent. Not detected; moving ours to the front again when faulthandler
+  is enabled later is an open question of S0006 step 4. Vectored **continue** handlers run after a
+  handler returns `EXCEPTION_CONTINUE_EXECUTION`; one that ends the process for every exception (Go's
+  runtime does, per Wasmtime's `vectored_exceptions.rs`) would end it on a guard trap. Wasmtime adds a
+  continue handler of its own in front for this; we do not (no Go embedding in a Python process seen).
+  A debugger gets every guard fault as a first-chance exception before any vectored handler and must
+  pass it on unhandled (in WinDbg, e.g., `sxd av`; not checked here), like lldb on macOS.
+* **Windows: CFG and CET.** python.exe is neither CFG-instrumented nor CETCOMPAT (read from the PE
+  headers of python.org 3.13.9 and 3.14.0, x64 and arm64, and of uv's 3.13.18: no `GUARD_CF`, no
+  `IMAGE_DLLCHARACTERISTICS_EX_CET_COMPAT`; the bundled `vcruntime140.dll` has both, as a control), so
+  neither CFG nor user shadow stacks are on in a default Python process. Were CFG on, ntdll's call of a
+  vectored handler is checked against the CFG bitmap, and `VirtualProtect` to an executable protection
+  marks the whole area as valid targets by default (Microsoft, "Memory Protection Constants",
+  `PAGE_TARGETS_NO_UPDATE`), which is how `common/execmem.py` seals code. Under user shadow stacks,
+  setting a new `Rip` in the context is subject to context-IP validation; resuming in the same frame
+  needs no unwind, so the shadow stack stays balanced, but whether a dynamic-code resume address passes
+  the IP check without `SetProcessDynamicEHContinuationTargets` is unverified: a test starts a child with
+  shadow stacks forced on in strict mode and IP validation on and requires two traps (`test_guard.py`,
+  skipped where the machine has no user CET; whether GitHub's Windows runners expose it is unknown). If Windows refuses, the fix is to register each
+  fault map's resume addresses there (S0006).
 * **macOS arm64: `MAP_JIT` write mode and PAC.** The handler's code is `MAP_JIT` memory, which a thread
   cannot execute while it is in write mode (`pthread_jit_write_protect_np(0)`). A fault on such a
   thread (another library's JIT writing its code) cannot run our handler and faults again inside the

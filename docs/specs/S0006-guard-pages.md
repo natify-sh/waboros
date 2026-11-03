@@ -127,8 +127,9 @@ A host that runs a `BOUNDS_GUARD` artifact must, for the whole time any of its c
 process-wide fault handler that does the following. **A fault is ours if and only if**:
 1. it is a hardware access fault: `SIGSEGV`, or `SIGBUS` on macOS and the BSDs, with `si_code > 0`
    (kernel-generated, so a `kill`/`raise` is never ours; on macOS `si_code` does not tell, so there
-   2 and 3 decide alone, Changes, step 3); Windows: `EXCEPTION_ACCESS_VIOLATION`;
-2. the PC is inside the `CODE` of a loaded guard artifact and its offset is a `fault_offset` of that
+   2 and 3 decide alone, Changes, step 3); Windows: `EXCEPTION_ACCESS_VIOLATION` with its two
+   parameters (`STATUS_IN_PAGE_ERROR`, a paging I/O failure, is never ours; step 4);
+2. the PC (Windows: `ContextRecord->Rip` / `->Pc`) is inside the `CODE` of a loaded guard artifact and its offset is a `fault_offset` of that
    artifact's `TRAPMAP` (binary search);
 3. the fault address (`si_addr`; Windows `ExceptionInformation[1]`) is inside a memory reservation
    `[base, base + 4 GiB + GUARD)` of the process. The whole reservation counts, not only the
@@ -180,8 +181,9 @@ trap).
   uninstalled. Windows: `AddVectoredExceptionHandler(1, h)`.
 * **Is it still ours?** Before every entry from the host (`Instance.call`, outermost and nested) and
   after every host call returns to guard code, the runtime checks that the current disposition is
-  still our handler (`sigaction(sig, NULL, &cur)`; Windows: the handler is in a list that nobody can
-  reorder behind us, so installed once means installed). If it is not, the call raises an error
+  still our handler (`sigaction(sig, NULL, &cur)`; Windows: only the holder of the handle can remove
+  our entry from the vectored list, so installed once means installed and nothing is checked; a
+  handler added in front later, e.g. faulthandler, still runs before ours: RISKS R6, LESSONS 59). If it is not, the call raises an error
   instead of running guard code (Q1); re-installing on top is wrong (measured: a loop with
   `faulthandler`). Cost: one ctypes call of ~580 ns against a ~4.1 µs entry (Q2).
 * **Threads and free-threaded builds**: the handler runs on the faulting thread and uses no
@@ -198,10 +200,11 @@ trap).
   terminates instead of returning `KERN_FAILURE` defeats guard mode (documented; `explicit` remains).
   lldb stops on `EXC_BAD_ACCESS` (`process handle` to pass it).
 * **Windows**: a vectored handler (first in the list), `CONTEXT.Rip`/`Pc`; no unwind tables are
-  needed because we resume in the same frame (R3's note on `RtlAddFunctionTable` stays as is). Open:
-  under hardware-enforced stack protection in strict mode, changing the context's PC may require the
-  resume addresses to be registered with `SetProcessDynamicEHContinuationTargets`; the fault map's
-  resume offsets are exactly that list (checked in step 4).
+  needed because we resume in the same frame (R3's note on `RtlAddFunctionTable` stays as is). Under
+  hardware-enforced stack protection with context-IP validation, the resume addresses may have to be
+  registered with `SetProcessDynamicEHContinuationTargets` (the fault map's resume offsets are exactly
+  that list); python.exe does not opt in, and a test with the policy forced answers it in CI (Changes,
+  step 4).
 * **Android**: in app processes ART's libsigchain interposes `sigaction`: by its design our handler
   becomes a user handler, called after ART's own (implicit null checks, its stack overflow). Using libc's
   `sigaction` symbol through ctypes is what keeps this working. Checked in the CI `android` job.
@@ -231,7 +234,7 @@ trap).
 | Linux glibc | **verified** (D44) | **verified** (step 2; the native runner confirms) | `jit` (aarch64 under QEMU), `arm64` native runner |
 | Linux musl | **verified** (musl step) | explicit: `jit-aarch64` needs libgcc's `__clear_cache`, absent from the stock image (Changes) | `jit` (`python:3.13-alpine` container) |
 | macOS | **verified** (step 3; CI run 41610392553) | **verified** (step 3; CI run 41610392553) | `os` (`macos-26-intel`), `arm64` (`macos-latest`) |
-| Windows | step 4 | with step 4 | `windows`, `arm64` (`windows-11-arm`) |
+| Windows | implemented (step 4), verification pending CI | implemented (step 4), verification pending CI | `os` (`windows-latest`), `arm64` (`windows-11-arm`) |
 | Android (bionic, libsigchain) | step 5 | explicit (documented limitation) | `android` (x86_64 emulator) |
 
 The BSDs are not a target (TARGETS.md), so they have no row.
@@ -287,8 +290,9 @@ reservation is a crash, not a trap: the explicit-mode tests and differential run
    (S0004). Acceptance: the container runs the spec suite and `test_guard.py` in guard mode.
 3. **macOS x86-64 and arm64**: SIGBUS, Darwin offsets, `MAP_JIT`. Acceptance: the CI jobs run
    `test_guard.py` and the spec suite in guard mode.
-4. **Windows x86-64 and arm64** (arm64 joined, maintainer 2026-11-02): the vectored handler; the EH-continuation question answered by a test on a
-   CETCOMPAT process. Acceptance: the `windows` job as in 3.
+4. **Windows x86-64 and arm64** (arm64 joined, maintainer 2026-11-02): the vectored handler; the EH-continuation question answered by a test that forces user
+   shadow stacks and context-IP validation on a child python.exe (which is not CETCOMPAT itself).
+   Acceptance: the `os (windows-latest)` and `arm64 (windows-11-arm)` jobs as in 3.
 5. **Android x86_64**: the `android` job runs `test_guard.py`; logcat shows no ART complaint.
 6. **Artifact** (moved to the artifact-format spec of phase 5, see Changes): the flag bits and `TRAPMAP` in the serialized format when phase 5 fixes it;
    ARTIFACT.md parts 2–3, DECISIONS (D29 amended), a test that a guard artifact is refused where
@@ -616,3 +620,70 @@ reservation is a crash, not a trap: the explicit-mode tests and differential run
   `arm64 (macos-latest)` the `jit-aarch64` spec suite and the same tests). `darwin` is now in `verified`
   of both targets, so `auto` gives guard pages on macOS, Intel and Apple Silicon. The macOS CI steps
   keep `WABOROS_JIT_BOUNDS=guard` explicit, as the Linux steps do. Step 3 is done; next step 4.
+* 2026-11-03: **step 4 built (Windows x64 and Windows on Arm64); unverified until the Windows CI steps
+  run.** No Windows machine was available: the constants come from the Windows SDK headers as
+  mingw-w64 ships them, the handlers run off Windows on fabricated contexts, and the `win32` row is in
+  `guard_rows` of both targets but not in `verified`, so `auto` stays explicit on Windows until CI
+  passes (then a separate commit, as for macOS). As built:
+  * **Constants** (mingw-w64-headers `winnt.h`, `excpt.h`, `winbase.h`, master e3d18511, read
+    2026-11-03; every offset also checked with clang's `offsetof` against those headers for
+    `x86_64-w64-windows-gnu` and `aarch64-w64-windows-gnu`, with a wrong value as a negative control):
+    `EXCEPTION_POINTERS` {`ExceptionRecord` 0, `ContextRecord` 8}; `EXCEPTION_RECORD` {`ExceptionCode`
+    0, `NumberParameters` 24, `ExceptionInformation` 32: [0] read 0 / write 1 / execute 8, [1] the
+    address}; x64 `CONTEXT.Rip` 0xF8 (after P1Home-P6Home, ContextFlags, MxCsr, six segment words,
+    EFlags, Dr0-Dr3, Dr6, Dr7 and the 16 integer registers); `ARM64_NT_CONTEXT.Pc` 0x108 (after ContextFlags, Cpsr,
+    X0-X28, Fp, Lr, Sp at 0x100); `STATUS_ACCESS_VIOLATION` 0xC0000005; `EXCEPTION_CONTINUE_EXECUTION`
+    -1, `EXCEPTION_CONTINUE_SEARCH` 0. The reservation was already Windows-ready: `VirtualAlloc`
+    `MEM_RESERVE` with `PAGE_NOACCESS` for 4 GiB + 32 MiB, `MEM_COMMIT` `PAGE_READWRITE` on grow
+    (`common/execmem.py`); nothing changed there.
+  * **Handlers.** `fault_handler(..., windows=True)` in both `abi.py` (a keyword added to
+    `JitTarget.fault_handler`): `LONG h(EXCEPTION_POINTERS *)`. Ours: an access violation with at
+    least two parameters, the PC a fault point of a registered code area, `ExceptionInformation[1]` in
+    a registered reservation; then the PC in the context becomes the resume address and it returns -1,
+    else 0. No calls (no shadow space, no stack use), no chaining: the OS walks the vectored list.
+    x64: the pointer in rcx, kept in rdx; writes only rax, rcx, rdx, r8-r11 (Win64 volatile); 269
+    bytes. Arm64: x0 in, x1/x2 take the record and the context, then the Linux path; writes only x0-x2
+    and x9-x17, never x18 (the TEB); `bti c` stays (a no-op hint, Windows enforces no BTI); 276
+    bytes. The Linux and Darwin bytes are unchanged (same sha256 as before for both architectures and
+    both OSes), and so are the D35 lists of both targets in both modes.
+  * **Install** (`common/guard.py`): `AddVectoredExceptionHandler(1, h)` once per process, under the
+    install lock, after the same row and architecture checks; the handle is kept, never removed.
+    `broken()` is None once installed: only the holder of the handle can remove the entry, so Q1 has
+    nothing to detect. A handler added in front later could claim or swallow our faults; none that
+    does is known, so this is documented (RISKS R6), not detected. faulthandler is such a handler but
+    passes the fault on: enabled after ours it prints a false "fatal exception" report for every guard
+    fault, the trap still happens (LESSONS 59). No vectored continue handler is added (Wasmtime adds
+    one for Go's runtime, whose last continue handler ends the process).
+  * **CFG and CET.** The PE headers of python.exe and python3x.dll (python.org 3.13.9 and 3.14.0, x64
+    and arm64; uv's python-build-standalone 3.13.18, which the CI runners use) have neither `GUARD_CF`
+    nor `IMAGE_DLLCHARACTERISTICS_EX_CET_COMPAT` (the bundled `vcruntime140.dll` has both: the parser's
+    control), so a default Python process runs with neither CFG nor user shadow stacks. With CFG on, the
+    handler would still be a valid call target: `VirtualProtect` to an executable protection marks the
+    area valid by default (Microsoft, "Memory Protection Constants"). Shadow stacks: the resume stays in
+    the faulting frame, so no return is skipped; whether context-IP validation accepts a resume address
+    in dynamic code without `SetProcessDynamicEHContinuationTargets` is answered by
+    `test_guard_traps_under_forced_cet_shadow_stacks`, which starts a child with
+    `PROCESS_CREATION_MITIGATION_POLICY2_CET_USER_SHADOW_STACKS_STRICT_MODE` and
+    `..._USER_CET_SET_CONTEXT_IP_VALIDATION_ALWAYS_ON` and requires two traps. The child is the base
+    interpreter (`sys._base_executable`, the venv's site-packages added by argument): a venv's
+    python.exe is a launcher whose second process would not inherit the policy (found by the step's
+    review). It skips only where `IsUserCetAvailableInEnvironment(USER_CET_ENVIRONMENT_WIN32_PROCESS
+    = 0)` says the machine has no user CET (sysinfoapi.h); with CET, a policy read back as off fails.
+  * **Tests.** `test_fault_handler.py`: the Windows offsets against ctypes mirrors of the headers;
+    both Windows handlers through llvm-mc (aarch64 byte for byte, x86-64 through GNU objdump), with
+    the registers they write; and the machine's handler called on fabricated `EXCEPTION_POINTERS`
+    (x86-64 off Windows through a SysV-to-Win64 thunk): ours, an in-page error, too few parameters,
+    a PC off a fault point or outside the code, an address outside the reservations, and nothing but
+    the PC written. Three injected handler bugs (return value, parameter check, PC offset) each failed
+    it. `test_guard.py` runs on Windows: the chain tests are POSIX-only, the foreign-fault test
+    expects Windows' own outcome (ctypes' `__except` gives OSError, `os.kill` exits 11) with and without
+    us, and the Q1 cases (SIG_DFL, faulthandler enabled after ours, a Python handler) must leave guard
+    traps working there.
+  * **CI**: the `os` job's macOS steps now run on `windows-latest` too, and the `arm64` job's macOS
+    steps on `windows-11-arm`: the spec suite and `test_guard.py` + `test_fault_handler.py` with
+    `WABOROS_JIT_BOUNDS=guard` and `WABOROS_JIT_REQUIRE=1`.
+  * **Open.** (a) When faulthandler is enabled after ours, move ours to the front again at the next
+    check (`AddVectoredExceptionHandler(1)` anew, then remove the old entry; cheap, but it only
+    covers faulthandler enabled while we can see it), or keep the noise documented. (b) If the CET
+    test shows the resume refused, register the fault maps' resume addresses with
+    `SetProcessDynamicEHContinuationTargets` whenever the process has context-IP validation on.

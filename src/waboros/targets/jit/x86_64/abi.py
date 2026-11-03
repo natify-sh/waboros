@@ -168,10 +168,29 @@ UC_RIP = 40 + 8 * 16  # uc_flags, uc_link, uc_stack (24 bytes), then mcontext gr
 # libc's `struct sigaction` is {handler, u32 mask, int flags}: 16 bytes.
 DARWIN_SI_ADDR, DARWIN_UC_MCONTEXT, DARWIN_MC_RIP = 24, 48, 16 + 8 * 16
 DARWIN_SIGBUS, DARWIN_SIGACTION = 10, 16
+# Windows x64 (S0006 step 4), from the SDK's winnt.h and excpt.h as mingw-w64 has them
+# (mingw-w64-headers, master e3d18511, read 2026-11-03; offsets checked with clang's offsetof
+# for x86_64- and aarch64-w64-windows-gnu): EXCEPTION_POINTERS {ExceptionRecord, ContextRecord};
+# EXCEPTION_RECORD {DWORD ExceptionCode, DWORD ExceptionFlags, ExceptionRecord *, PVOID
+# ExceptionAddress, DWORD NumberParameters, ULONG_PTR ExceptionInformation[15] at 32}: for an
+# access violation [0] is read (0) / write (1) / execute (8) and [1] the address. CONTEXT:
+# P1Home-P6Home, ContextFlags, MxCsr, six segment words, EFlags, Dr0-Dr3, Dr6, Dr7, Rax-R15,
+# then Rip at 0xF8. STATUS_ACCESS_VIOLATION 0xC0000005 (STATUS_IN_PAGE_ERROR, a paging I/O
+# failure, is never ours); EXCEPTION_CONTINUE_EXECUTION -1, EXCEPTION_CONTINUE_SEARCH 0.
+WIN_EP_RECORD, WIN_EP_CONTEXT = 0, 8
+WIN_ER_CODE, WIN_ER_NPARAMS, WIN_ER_INFO = 0, 24, 32
+WIN_CTX_RIP = 0xF8
+WIN_ACCESS_VIOLATION = 0xC0000005
 
 
 def fault_handler(
-    a: Asm, tables: int, prev: int, sigaction: int, reraise: int, darwin: bool = False
+    a: Asm,
+    tables: int,
+    prev: int,
+    sigaction: int,
+    reraise: int,
+    darwin: bool = False,
+    windows: bool = False,
 ) -> None:
     """void handler(int sig, siginfo_t *si, ucontext_t *uc), installed with SA_SIGINFO (S0006,
     "The handler contract"). `tables`: two words, the addresses of the registry's code table
@@ -194,17 +213,35 @@ def fault_handler(
     a fault then ends the process from the pending signal before the instruction runs again,
     with the same signal; under SIG_IGN xnu drops both and the fault repeats forever, as it does
     without us (LESSONS 57).
+    `windows` (S0006 step 4): a vectored exception handler, `LONG h(EXCEPTION_POINTERS *ep)` in
+    the Win64 convention (ep in rcx, kept in rdx): ours is an access violation (with its two
+    parameters) whose ContextRecord->Rip is a fault point and whose ExceptionInformation[1] lies
+    in a reservation; then Rip becomes the resume address and the handler returns
+    EXCEPTION_CONTINUE_EXECUTION (-1), else EXCEPTION_CONTINUE_SEARCH (0): the OS walks the
+    vectored list itself, so nothing is chained and `prev`, `sigaction` and `reraise` are
+    unused. It calls nothing (no shadow space) and writes only rax, rcx, rdx and r8-r11, all
+    volatile in Win64. Wasmtime's `vectored_exceptions.rs` (read, not copied) does the same.
     The idea of resuming at the module's trap stub and of chaining is poc/w2jit_guard.py's;
     "ours by PC and fault address" is Wasmtime's `test_if_trap` (read, not copied)."""
     notours, scan, skip, search, bisect, below, found, rscan, rskip, ours, dfl, done = (
         a.label() for _ in range(12)
     )
     a.endbr64()  # entered indirectly by the kernel (CET IBT)
-    a.alu_imm("cmp", Mem(RSI, SI_CODE), 0)
-    a.jcc("le", notours)  # kill/raise/sigqueue: never ours (on Linux)
-    if darwin:
-        a.mov(R8, Mem(RDX, DARWIN_UC_MCONTEXT), w=True)
-        a.mov(R8, Mem(R8, DARWIN_MC_RIP), w=True)
+    if windows:
+        a.mov(RDX, RCX, w=True)  # ep, kept here as uc is on Unix
+        a.mov(RAX, Mem(RDX, WIN_EP_RECORD), w=True)
+        a.alu_imm("cmp", Mem(RAX, WIN_ER_CODE), WIN_ACCESS_VIOLATION)
+        a.jcc("ne", notours)
+        a.alu_imm("cmp", Mem(RAX, WIN_ER_NPARAMS), 2)
+        a.jcc("b", notours)
+    else:
+        a.alu_imm("cmp", Mem(RSI, SI_CODE), 0)
+        a.jcc("le", notours)  # kill/raise/sigqueue: never ours (on Linux)
+    # where the PC is: behind a pointer (Darwin's uc_mcontext, Windows' ContextRecord) or in uc
+    ptr, pc = (WIN_EP_CONTEXT, WIN_CTX_RIP) if windows else (DARWIN_UC_MCONTEXT, DARWIN_MC_RIP)
+    if darwin or windows:
+        a.mov(R8, Mem(RDX, ptr), w=True)
+        a.mov(R8, Mem(R8, pc), w=True)
     else:
         a.mov(R8, Mem(RDX, UC_RIP), w=True)
     a.mov_imm(R10, tables, w=True)
@@ -245,7 +282,11 @@ def fault_handler(
     a.mov(RCX, Mem(R10, 4, R9, 8))  # the resume offset, zero-extended
     a.alu("sub", R8, RAX, w=True)
     a.alu("add", R8, RCX, w=True)  # r8 = code base + resume offset
-    a.mov(R9, Mem(RSI, DARWIN_SI_ADDR if darwin else SI_ADDR), w=True)
+    if windows:
+        a.mov(R9, Mem(RDX, WIN_EP_RECORD), w=True)
+        a.mov(R9, Mem(R9, WIN_ER_INFO + 8), w=True)  # ExceptionInformation[1]
+    else:
+        a.mov(R9, Mem(RSI, DARWIN_SI_ADDR if darwin else SI_ADDR), w=True)
     a.mov_imm(R10, tables, w=True)
     a.mov(R10, Mem(R10, 8), w=True)
     a.mov(R11, Mem(R10), w=True)
@@ -262,11 +303,18 @@ def fault_handler(
     a.alu_imm("sub", R11, 1, w=True)
     a.jmp(rscan)
     a.bind(ours)
-    if darwin:
-        a.mov(RAX, Mem(RDX, DARWIN_UC_MCONTEXT), w=True)
-        a.mov(Mem(RAX, DARWIN_MC_RIP), R8, w=True)
+    if darwin or windows:
+        a.mov(RAX, Mem(RDX, ptr), w=True)
+        a.mov(Mem(RAX, pc), R8, w=True)
     else:
         a.mov(Mem(RDX, UC_RIP), R8, w=True)
+    if windows:
+        a.mov_imm(RAX, -1)  # EXCEPTION_CONTINUE_EXECUTION
+        a.ret()
+        a.bind(notours)
+        a.alu("xor", RAX, RAX)  # EXCEPTION_CONTINUE_SEARCH: the next vectored handler
+        a.ret()
+        return
     a.ret()
     a.bind(notours)
     if darwin:  # rcx = the saved action of this signal

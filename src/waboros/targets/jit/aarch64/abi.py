@@ -159,10 +159,23 @@ UC_PC = 176 + 8 + 8 * 31 + 8  # uc_mcontext at 176: fault_address, x0-x30, sp, t
 # machine_thread_state_convert_from_user). SIGBUS 10; libc's `struct sigaction` is 16 bytes.
 DARWIN_SI_ADDR, DARWIN_UC_MCONTEXT, DARWIN_MC_PC = 24, 48, 16 + 8 * 32
 DARWIN_SIGBUS, DARWIN_SIGACTION = 10, 16
+# Windows on Arm64 (S0006 step 4): EXCEPTION_POINTERS and EXCEPTION_RECORD as on x64
+# (x86_64/abi.py, same sources). ARM64_NT_CONTEXT (winnt.h): ContextFlags, Cpsr, X0-X28, Fp, Lr,
+# Sp at 0x100, then Pc at 0x108.
+WIN_EP_RECORD, WIN_EP_CONTEXT = 0, 8
+WIN_ER_CODE, WIN_ER_NPARAMS, WIN_ER_INFO = 0, 24, 32
+WIN_CTX_PC = 0x108
+WIN_ACCESS_VIOLATION = 0xC0000005
 
 
 def fault_handler(
-    a: Asm, tables: int, prev: int, sigaction: int, reraise: int, darwin: bool = False
+    a: Asm,
+    tables: int,
+    prev: int,
+    sigaction: int,
+    reraise: int,
+    darwin: bool = False,
+    windows: bool = False,
 ) -> None:
     """void handler(int sig, siginfo_t *si, ucontext_t *uc), installed with SA_SIGINFO: the
     contract of x86_64/abi.py `fault_handler` (S0006 "The handler contract") in A64. A fault is
@@ -180,15 +193,32 @@ def fault_handler(
     (the pc behind the uc_mcontext pointer, a saved action per signal in x15, always `raise`:
     under SIG_DFL the pending signal ends the process, under SIG_IGN xnu drops it and a fault
     repeats forever, as without us);
-    Darwin enforces no BTI on user code, so `bti c` is a no-op there."""
+    Darwin enforces no BTI on user code, so `bti c` is a no-op there.
+    `windows`: the vectored exception handler of x86_64/abi.py in A64, `LONG h(EXCEPTION_POINTERS
+    *ep)` with ep in x0; x1 and x2 take the record and the ContextRecord, so the rest is the
+    Linux path with Windows offsets; it returns -1 or 0 in w0, calls nothing and writes only
+    x0-x2 and x9-x17 (volatile on Windows Arm64), never x18 (the TEB)."""
     notours, scan, skip, search, bisect, below, found, rscan, rskip, ours, dfl, done = (
         a.label() for _ in range(12)
     )
     a.bti("c")
-    a.ld(9, 1, SI_CODE, 4)
-    a.addsub_imm("subs", ZR, 9, 0, False)  # cmp w9, #0: signed
-    a.bcc("le", notours)  # kill/raise/sigqueue: never ours (on Linux)
-    if darwin:
+    if windows:
+        a.ld(1, 0, WIN_EP_RECORD)
+        a.ld(2, 0, WIN_EP_CONTEXT)
+        a.ld(9, 1, WIN_ER_CODE, 4)
+        a.mov_imm(10, WIN_ACCESS_VIOLATION, wide=False)
+        a.cmp(9, 10, wide=False)
+        a.bcc("ne", notours)
+        a.ld(9, 1, WIN_ER_NPARAMS, 4)
+        a.addsub_imm("subs", ZR, 9, 2, False)
+        a.bcc("lo", notours)
+    else:
+        a.ld(9, 1, SI_CODE, 4)
+        a.addsub_imm("subs", ZR, 9, 0, False)  # cmp w9, #0: signed
+        a.bcc("le", notours)  # kill/raise/sigqueue: never ours (on Linux)
+    if windows:
+        a.ld(10, 2, WIN_CTX_PC)
+    elif darwin:
         a.ld(10, 2, DARWIN_UC_MCONTEXT)
         a.ld(10, 10, DARWIN_MC_PC)
     else:
@@ -232,7 +262,7 @@ def fault_handler(
     a.bind(found)
     a.ld(16, 17, 4, 4)  # the resume offset
     a.addsub("add", 13, 13, 16)  # x13 = code base + resume offset
-    a.ld(9, 1, DARWIN_SI_ADDR if darwin else SI_ADDR)
+    a.ld(9, 1, WIN_ER_INFO + 8 if windows else DARWIN_SI_ADDR if darwin else SI_ADDR)
     a.mov_imm(11, tables)
     a.ld(11, 11, 8)
     a.ld(12, 11)
@@ -254,7 +284,14 @@ def fault_handler(
         a.ld(9, 2, DARWIN_UC_MCONTEXT)
         a.st(13, 9, DARWIN_MC_PC)
     else:
-        a.st(13, 2, UC_PC)
+        a.st(13, 2, WIN_CTX_PC if windows else UC_PC)
+    if windows:
+        a.mov_imm(0, -1, wide=False)  # EXCEPTION_CONTINUE_EXECUTION
+        a.ret()
+        a.bind(notours)
+        a.mov_imm(0, 0, wide=False)  # EXCEPTION_CONTINUE_SEARCH: the next vectored handler
+        a.ret()
+        return
     a.ret()
     a.bind(notours)
     if darwin:  # x15 = the saved action of this signal

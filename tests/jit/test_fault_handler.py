@@ -1,9 +1,10 @@
 # pyright: reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnknownLambdaType=false
-"""The emitted fault handlers off their OS (S0006 step 3): the Darwin offsets against ctypes
-mirrors of xnu's headers, both Darwin handlers through llvm-mc (and GNU objdump for x86-64), and
-the handler of this machine's architecture called directly with fabricated Linux and Darwin
-signal contexts, so the Darwin code paths run on a Linux host. Runs anywhere; the behaviour of
-real faults on macOS is test_guard.py's, in CI."""
+"""The emitted fault handlers off their OS (S0006 steps 3, 4): the Darwin and Windows offsets
+against ctypes mirrors of xnu's and the Windows SDK's headers, the Darwin and Windows handlers
+through llvm-mc (and GNU objdump for x86-64), and the handler of this machine's architecture
+called directly with fabricated Linux, Darwin and Windows contexts, so those code paths run on a
+Linux host. Runs anywhere; the behaviour of real faults on macOS and Windows is test_guard.py's,
+in CI."""
 
 import ctypes as C
 import re
@@ -45,6 +46,17 @@ ARM_MC = _s(("es", _s(("far", U64), ("esr", U32), ("exception", U32))),
             ("ss", _s(("x", U64 * 29), ("fp", U64), ("lr", U64), ("sp", U64), ("pc", U64),
                       ("cpsr", U32), ("pad", U32))))  # osfmk/mach/arm/_structs.h  # fmt: skip
 SIGACTION = _s(("handler", C.c_void_p), ("mask", U32), ("flags", C.c_int32))  # user struct
+# the Windows SDK's winnt.h (mingw-w64-headers, master e3d18511, read 2026-11-03)
+EXC_POINTERS = _s(("record", C.c_void_p), ("context", C.c_void_p))
+EXC_RECORD = _s(("code", U32), ("flags", U32), ("record", C.c_void_p), ("address", C.c_void_p),
+                ("nparams", U32), ("info", U64 * 15))  # fmt: skip
+X64_CONTEXT = _s(*[(f"p{i}home", U64) for i in range(1, 7)], ("flags", U32), ("mxcsr", U32),
+                 *[(f"seg{r}", C.c_uint16) for r in "cs ds es fs gs ss".split()], ("eflags", U32),
+                 *[(f"dr{i}", U64) for i in (0, 1, 2, 3, 6, 7)],
+                 *[(r, U64) for r in "rax rcx rdx rbx rsp rbp rsi rdi r8 r9 r10 r11 r12 r13 "
+                   "r14 r15 rip".split()])  # fmt: skip
+ARM64_CONTEXT = _s(("flags", U32), ("cpsr", U32), ("x", U64 * 29), ("fp", U64), ("lr", U64),
+                   ("sp", U64), ("pc", U64))  # ARM64_NT_CONTEXT  # fmt: skip
 
 
 def _off(s: Any, path: str) -> int:
@@ -65,14 +77,26 @@ def test_darwin_offsets_match_the_xnu_headers() -> None:
     assert x64.DARWIN_SIGBUS == a64.DARWIN_SIGBUS == 10
 
 
+def test_windows_offsets_match_the_sdk_headers() -> None:
+    ep = (_off(EXC_POINTERS, "record"), _off(EXC_POINTERS, "context"))
+    er = (_off(EXC_RECORD, "code"), _off(EXC_RECORD, "nparams"), _off(EXC_RECORD, "info"))
+    for m in (x64, a64):
+        assert (m.WIN_EP_RECORD, m.WIN_EP_CONTEXT) == ep == (0, 8)
+        assert (m.WIN_ER_CODE, m.WIN_ER_NPARAMS, m.WIN_ER_INFO) == er == (0, 24, 32)
+        assert m.WIN_ACCESS_VIOLATION == 0xC0000005  # STATUS_ACCESS_VIOLATION
+    assert _off(X64_CONTEXT, "rip") == x64.WIN_CTX_RIP == 0xF8
+    assert _off(ARM64_CONTEXT, "pc") == a64.WIN_CTX_PC == 0x108
+
+
 ARGS = (0x7F00_1122_3340, 0x7F00_5566_7780, 0x7F00_99AA_BBC0, 0x7F00_CCDD_EEF0)
+OSES = {"linux": {}, "darwin": {"darwin": True}, "windows": {"windows": True}}
 
 
 def test_the_aarch64_handlers_round_trip_through_llvm_mc() -> None:
     mc = shutil.which("llvm-mc")
     need(mc, "llvm-mc")
-    for darwin in (False, True):
-        code = JitAarch64Target().fault_handler(*ARGS, darwin=darwin)
+    for os_, kw in OSES.items():
+        code = JitAarch64Target().fault_handler(*ARGS, **kw)
         words = " ".join(f"0x{b:02x}" for b in code)
         run = [str(mc), "-triple=aarch64", "-mattr=+bti"]
         out = subprocess.run([*run, "--disassemble"], input=words, capture_output=True, text=True)
@@ -83,17 +107,25 @@ def test_the_aarch64_handlers_round_trip_through_llvm_mc() -> None:
         encs = re.findall(r"encoding: \[([^\]]*)\]", back)
         assert b"".join(bytes(int(x, 16) for x in e.split(",")) for e in encs) == code
         assert not any(re.search(r"\b[xw]18\b", ln) for ln in lines)  # the platform register
-        darwin_only = {"ldr x10, [x2, #48]", "ldr x10, [x10, #272]", "ldr x9, [x1, #24]",
-                       "str x13, [x9, #272]", "cmp w0, #10"}  # fmt: skip
-        assert darwin_only <= {re.sub(r"\s+", " ", ln) for ln in lines} or not darwin
+        only = {"darwin": {"ldr x10, [x2, #48]", "ldr x10, [x10, #272]", "ldr x9, [x1, #24]",
+                           "str x13, [x9, #272]", "cmp w0, #10"},
+                "windows": {"ldr x1, [x0]", "ldr x2, [x0, #8]", "ldr x10, [x2, #264]",
+                            "ldr x9, [x1, #40]", "str x13, [x2, #264]", "mov w0, #-1"}}  # fmt: skip
+        texts = {re.sub(r"\s+", " ", ln.split("//")[0].strip()) for ln in lines}
+        assert only.get(os_, set()) <= texts
+        if os_ == "windows":  # writes only x0-x2 and x9-x17 (volatile), never x18 (the TEB)
+            for ln in lines:
+                op, _, rest = ln.partition("\t")
+                if not re.match(r"(cmp|b\.|b$|cbz|str|ret|bti)", op):
+                    assert int(re.match(r"[xw](\d+)", rest)[1]) in {0, 1, 2, *range(9, 18)}, ln  # pyright: ignore[reportOptionalSubscript]
 
 
 def test_the_x86_64_handlers_decode_and_reassemble(tmp_path: Path) -> None:
     from tests.jit.test_encoder import LLVM_MC, OBJDUMP, llvm_mc
 
     need(LLVM_MC and OBJDUMP, "llvm-mc and GNU objdump")
-    for darwin in (False, True):
-        code = JitX86_64Target().fault_handler(*ARGS, darwin=darwin)
+    for os_, kw in OSES.items():
+        code = JitX86_64Target().fault_handler(*ARGS, **kw)
         (tmp_path / "h.bin").write_bytes(code)
         cmd = [str(OBJDUMP), "-D", "-b", "binary", "-m", "i386:x86-64", "-M", "intel"]
         out = subprocess.run([*cmd, "--insn-width=15", str(tmp_path / "h.bin")],
@@ -107,10 +139,19 @@ def test_the_x86_64_handlers_decode_and_reassemble(tmp_path: Path) -> None:
             if re.match(r"(j\w+|call)\s+0x", t):
                 assert int(t.split()[-1], 16) in starts, (hex(at), t)
         assert [b for b, _ in plain] == llvm_mc([t for _, t in plain])
-        darwin_only = {"mov r8,QWORD PTR [rdx+0x30]", "mov r8,QWORD PTR [r8+0x90]",
-                       "mov r9,QWORD PTR [rsi+0x18]", "mov QWORD PTR [rax+0x90],r8",
-                       "cmp edi,0xa"}  # fmt: skip
-        assert darwin_only <= {re.sub(r"\s+", " ", t) for _, t in plain} or not darwin
+        only = {"darwin": {"mov r8,QWORD PTR [rdx+0x30]", "mov r8,QWORD PTR [r8+0x90]",
+                           "mov r9,QWORD PTR [rsi+0x18]", "mov QWORD PTR [rax+0x90],r8",
+                           "cmp edi,0xa"},
+                "windows": {"mov rdx,rcx", "cmp DWORD PTR [rax],0xc0000005",
+                            "mov r8,QWORD PTR [r8+0xf8]", "mov r9,QWORD PTR [r9+0x28]",
+                            "mov QWORD PTR [rax+0xf8],r8", "mov eax,0xffffffff"}}  # fmt: skip
+        texts = [re.sub(r"\s+", " ", t) for _, t in plain]
+        assert only.get(os_, set()) <= set(texts)
+        if os_ == "windows":  # writes only volatile registers (Win64) and the context's Rip
+            for t in texts:
+                dst = re.match(r"(?:mov|movabs|lea|add|sub|xor|shr) ([^,]+),", t)
+                assert not dst or re.fullmatch(r"[re]?(ax|cx|dx)|r(8|9|10|11)d?|"
+                                               r"QWORD PTR \[rax\+0xf8\]", dst[1]), t  # fmt: skip
 
 
 # a fabricated context: (signal of a guard fault, pc slot, si_addr slot; pc behind a pointer)
@@ -187,3 +228,55 @@ def test_the_handler_on_fabricated_contexts(darwin: bool) -> None:
             7,
             [("sigaction", 11, C.addressof(prev), None), ("raise", 11)],
         )
+
+
+def test_the_windows_handler_on_fabricated_contexts() -> None:
+    """S0006 step 4: the vectored handler as a C function, `LONG h(EXCEPTION_POINTERS *)`: ours
+    (the PC rewritten, -1) and each way of not being ours (0): another exception code (an in-page
+    error), too few parameters, a PC off a fault point or outside the code, an address outside
+    the reservations; nothing else is written. Off Windows, x86-64 calls it through a SysV ->
+    Win64 thunk (the argument in rcx); aarch64 passes it in x0 everywhere."""
+    jit = native_jit()
+    native(jit)
+    area, res = (C.c_uint8 * 4096)(), (C.c_uint8 * 256)()
+    lo, rlo = C.addressof(area), C.addressof(res)
+    fmap = (U32 * 4)(16, 100, 40, 200)
+    codes = (U64 * 9)(2, 0, 0, 0, 0, lo, lo + 4096, C.addressof(fmap), 2)
+    resv = (U64 * 3)(1, rlo, rlo + 256)
+    heads = (U64 * 2)(C.addressof(codes), C.addressof(resv))
+    mem = load(TARGETS[jit]().fault_handler(C.addressof(heads), 0, 0, 0, windows=True))
+    entry = mem.addr
+    if jit == "jit-x86_64" and sys.platform != "win32":
+        from waboros.targets.jit.x86_64.encoder import RAX, RCX, RDI, Asm
+
+        a = Asm()
+        a.endbr64()
+        a.mov(RCX, RDI, w=True)
+        a.mov_imm(RAX, mem.addr, w=True)
+        a.jmp(RAX)
+        thunk = load(a.finish())
+        entry = thunk.addr
+    handler = C.CFUNCTYPE(C.c_int32, C.c_void_p)(entry)
+    rec, ctx = (U64 * 20)(), (U64 * 128)()
+    ep = (U64 * 2)(C.addressof(rec), C.addressof(ctx))
+    pc_at = (x64.WIN_CTX_RIP if jit == "jit-x86_64" else a64.WIN_CTX_PC) // 8
+
+    def rest() -> bytes:
+        return bytes(ep) + bytes(rec) + bytes(ctx)[: 8 * pc_at] + bytes(ctx)[8 * pc_at + 8 :]
+
+    def fault(code: int, nparams: int, addr: int, pc: int) -> tuple[int, int]:
+        rec[0], rec[3], rec[4], rec[5] = code, nparams, 1, addr  # code; count; write, address
+        ctx[pc_at] = pc
+        before = rest()
+        got = handler(C.addressof(ep))
+        assert rest() == before  # nothing but the PC written
+        return got, ctx[pc_at]
+
+    av = 0xC0000005
+    assert fault(av, 2, rlo + 100, lo + 40) == (-1, lo + 200)  # EXCEPTION_CONTINUE_EXECUTION
+    assert fault(av, 2, rlo, lo + 16) == (-1, lo + 100)
+    for code, n, addr, pc in ((0xC0000006, 3, rlo + 100, lo + 40), (av, 1, rlo + 100, lo + 40),
+                              (av, 2, rlo + 100, lo + 41), (av, 2, rlo + 256, lo + 40),
+                              (av, 2, rlo + 100, lo + 4096),
+                              (0x80000003, 2, rlo, lo + 40)):  # fmt: skip
+        assert fault(code, n, addr, pc) == (0, pc)  # EXCEPTION_CONTINUE_SEARCH

@@ -119,17 +119,26 @@ on other hosts, but fails under
 verified-row check cannot silently turn guard pages off;
 then both ISA gates and the D35 lists of both targets in both bounds modes, named on both hosts);
 `spec` (the spec run on `wasmtime`, `pyc`, `jit-x86_64` in the default mode and with
-`WABOROS_JIT_BOUNDS=explicit`, then `auto` under `no_exec.py`); `os` (on `macos-26-intel` also the
-`jit-x86_64` spec suite and `test_guard.py` with `WABOROS_JIT_BOUNDS=guard` and `WABOROS_JIT_REQUIRE=1`,
-S0006 step 3; the disassembly checks are left out there, the runner has no llvm-mc or GNU objdump); `arm64`
+`WABOROS_JIT_BOUNDS=explicit`, then `auto` under `no_exec.py`); `os` (on `macos-26-intel` and
+`windows-latest` also the `jit-x86_64` spec suite and `test_guard.py` + `test_fault_handler.py` with
+`WABOROS_JIT_BOUNDS=guard` and `WABOROS_JIT_REQUIRE=1`, S0006 steps 3 and 4; the disassembly checks are left
+out there, the runners need no llvm-mc or GNU objdump; on Windows the chain tests are POSIX-only and
+the forced-CET child test runs, below); `arm64`
 (on the Linux runner also the `jit-aarch64` spec suite in both bounds modes, `test_guard.py` in guard mode and
 `tests/jit` in explicit mode, S0006 step 2; on `macos-latest` the `jit-aarch64` spec suite and
 `test_guard.py` in guard mode with `WABOROS_JIT_REQUIRE=1`, S0006 step 3; they passed in CI run 41610392553, so
-the macOS row is verified and `auto` gives guard there, the step keeps `guard` named); `macos-pythonorg`; `android`.
-`tests/jit/test_fault_handler.py` checks the emitted fault handlers off their OS: the Darwin offsets
-against ctypes mirrors of xnu's headers, both Darwin handlers through llvm-mc (x86-64 also through GNU
-objdump), and the handler of the machine called as a C function with fabricated Linux and Darwin contexts,
-so the macOS code paths run on Linux too (aarch64 under QEMU).
+the macOS row is verified and `auto` gives guard there, the step keeps `guard` named; the same steps on
+`windows-11-arm`, S0006 step 4, whose `win32` row is not verified until they pass); `macos-pythonorg`; `android`.
+`tests/jit/test_fault_handler.py` checks the emitted fault handlers off their OS: the Darwin and
+Windows offsets against ctypes mirrors of xnu's and the Windows SDK's headers, the Darwin and Windows
+handlers through llvm-mc (x86-64 also through GNU objdump; the Windows ones also for the registers they
+write), and the handler of the machine called as a C function with fabricated Linux, Darwin and Windows
+contexts (x86-64 off Windows through a SysV-to-Win64 thunk), so the macOS and Windows code paths run on
+Linux too (aarch64 under QEMU). On Windows x64, `test_guard.py` also starts a child with user shadow
+stacks forced on in strict mode and context-IP validation on (the CET question of S0006 step 4): it must
+print two guard traps; the child is the base interpreter, not the venv launcher, and the test skips only
+where `IsUserCetAvailableInEnvironment` says the machine has no user CET (with CET, a policy read back as off
+fails).
 
 Packaging workflows (D40): `.github/workflows/coverage.yml` runs `pytest --cov` on Python 3.13 and keeps
 `coverage.xml` as an artifact and to Codecov (OIDC); `publish.yml` runs on a `v*` tag, builds the sdist and the wheel,

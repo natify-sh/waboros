@@ -368,3 +368,14 @@ What went wrong or surprised us while building the PoC, so it is not found again
     musl test failed there too because `host_row` read the real `sys.platform`. Rule: a test of
     guard behaviour names `guard`, or `auto` only on a verified row; a test of one OS's path fixes
     `sys.platform`. Found: S0006 step 3, 2026-11-03.
+59. **On Windows, faulthandler is a vectored exception handler, not a signal handler.**
+    `faulthandler.enable()` calls `AddVectoredExceptionHandler(1, …)` (CPython `Modules/faulthandler.c`,
+    3.13): its handler goes in front of every one added before, prints "Windows fatal exception: access
+    violation" and a traceback for any access violation, disables its own SIGSEGV handler, and returns
+    `EXCEPTION_CONTINUE_SEARCH`. Enabled after our guard handler, it therefore reports every guard fault
+    as fatal on stderr, although our handler, next in the list, still turns the fault into a trap. The
+    POSIX reasoning (faulthandler on top re-raises and ends the process, S0006 Q1) does not carry over:
+    the chain cannot break, but the output lies. Rule: for each OS, read how the other handlers in the
+    process are installed and what they do with a fault they do not own before reusing another OS's
+    rule; test the install orders on that OS (`test_a_broken_chain_raises_at_the_next_call` on
+    Windows). Found: S0006 step 4, by reading CPython's source (no Windows machine here), 2026-11-03.

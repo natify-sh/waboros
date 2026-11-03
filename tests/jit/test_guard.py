@@ -1,11 +1,13 @@
 # pyright: reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false
-"""Guard pages on the JIT of this machine (S0006 steps 1-3: Linux glibc and musl, macOS;
+"""Guard pages on the JIT of this machine (S0006 steps 1-4: Linux glibc and musl, macOS, Windows;
 jit-x86_64 and jit-aarch64; aarch64 also under QEMU, tools/run_arm64.py): accesses the
 reservation's guard catches go unchecked and the emitted fault handler turns their faults into
 MEMORY_OUT_OF_BOUNDS at the function's own trap stub. Every trapping access kind at the edge of
 memory, scalar and SIMD, on memory 0, memory n and an imported memory; deep frames, inner
 entries, threads; and faults that are not ours, which must behave exactly as without the handler
-(in subprocesses: the handler stays for the process's lifetime)."""
+(in subprocesses: the handler stays for the process's lifetime). Windows has a vectored
+handler instead of a signal chain: the chain tests are POSIX-only, and the cases that break a
+chain must not break it there."""
 
 import io
 import os
@@ -30,6 +32,9 @@ from waboros.targets.jit.common import guard
 from waboros.targets.jit.common.compiler import Compiled
 
 ROOT = Path(__file__).resolve().parents[2]
+WIN = sys.platform == "win32"
+# signal chains: Windows has a vectored handler list, which nothing can reorder behind us
+_POSIX_ONLY = pytest.mark.skipif(WIN, reason="a POSIX signal chain (S0006 step 4)")
 OOB = TrapCode.MEMORY_OUT_OF_BOUNDS
 PAGE = 65536
 SIZES = {"8": 1, "16": 2, "32": 4, "64": 8}
@@ -56,11 +61,11 @@ SIMD = {  # name -> (access size, expression of the address `A`, result is v128)
 def _guard(monkeypatch: pytest.MonkeyPatch) -> None:
     native(JIT)
     tgt = base.TARGETS[JIT]()
-    if not sys.platform.startswith(("linux", "darwin")):  # Windows: S0006 step 4
+    if not sys.platform.startswith(("linux", "darwin", "win32")):
         pytest.skip(f"no guard pages on {sys.platform} yet")
     # under WABOROS_JIT_REQUIRE=1 (the CI `jit` and `arm64` jobs on Linux glibc, the `jit` job's
-    # musl container, the macOS steps) a skip is a failure: the row check or `auto` must not stop
-    # engaging unnoticed; `auto` only where the row is verified
+    # musl container, the macOS and Windows steps) a skip is a failure: the row check or `auto`
+    # must not stop engaging unnoticed; `auto` only where the row is verified
     need(guard.host_row() in tgt.guard_rows, f"a guard-page handler for {guard.host_row()}")  # pyright: ignore[reportAttributeAccessIssue]
     if guard.host_row() in tgt.verified:  # pyright: ignore[reportAttributeAccessIssue]
         monkeypatch.setenv("WABOROS_JIT_BOUNDS", "auto")
@@ -536,13 +541,18 @@ def _child(
 @pytest.mark.parametrize("fh", [False, True], ids=["plain", "faulthandler"])
 @pytest.mark.parametrize("fault", ["ctypes.string_at(16)", "os.kill(os.getpid(), signal.SIGSEGV)"])
 def test_a_foreign_fault_behaves_as_without_us(fault: str, fh: bool) -> None:
+    """Windows: ctypes' own `__except` turns the access violation into OSError and os.kill
+    terminates with code 11, with and without our vectored handler in front."""
     want = _child(f"print('x', flush=True); {fault}", "explicit", fh)
     got = _child(f"print('x', flush=True); {fault}", "guard", fh)
-    assert want.returncode == got.returncode == -11, (want, got)
+    code = (11 if "kill" in fault else 1) if WIN else -11  # Windows: an uncaught OSError
+    assert want.returncode == got.returncode == code, (want, got)
     assert got.stdout == want.stdout == "trap MEMORY_OUT_OF_BOUNDS\nx\n"
-    if fh:  # faulthandler (enabled before us) still prints its traceback
-        assert "Segmentation fault" in want.stderr and "Segmentation fault" in got.stderr
+    say = "Windows fatal exception: access violation" if WIN else "Segmentation fault"
+    if fh and not (WIN and "kill" in fault):  # faulthandler (enabled before us) still prints
+        assert say in want.stderr and say in got.stderr
         assert "<string>" in got.stderr
+        assert got.stderr.count(say) == want.stderr.count(say)  # not for our guard trap
 
 
 _DARWIN_ONLY = pytest.mark.skipif(sys.platform != "darwin", reason="SIGBUS is ours on macOS only")
@@ -562,7 +572,17 @@ _DARWIN_ONLY = pytest.mark.skipif(sys.platform != "darwin", reason="SIGBUS is ou
     ],
 )
 def test_a_broken_chain_raises_at_the_next_call(how: str, fh: bool) -> None:
-    """S0006 Q1 (revised): the cases that recognisably break the chain to our handler."""
+    """S0006 Q1 (revised): the cases that recognisably break the chain to our handler. On
+    Windows none of them touches our vectored handler: the next guard fault still traps.
+    faulthandler enabled after ours sits in front of it and prints a "fatal" traceback for that
+    fault, then passes it on (CPython's faulthandler.c; RISKS R6)."""
+    if WIN:
+        p = _child(f"{how}\ntry:\n    inst('f', 65536)\nexcept Trap as e:\n"
+                   "    print('trap', e.code.name)\n", faulthandler=fh)  # fmt: skip
+        assert p.returncode == 0 and p.stdout.count("trap MEMORY_OUT_OF_BOUNDS") == 2, p
+        if how.endswith("faulthandler.enable()"):
+            assert "Windows fatal exception: access violation" in p.stderr, p
+        return
     p = _child(f"{how}\ntry:\n    inst('f', 65536)\n"
                "except RuntimeError as e:\n    print('error', e)\n",
                faulthandler=fh)  # fmt: skip
@@ -572,6 +592,7 @@ def test_a_broken_chain_raises_at_the_next_call(how: str, fh: bool) -> None:
     )
 
 
+@_POSIX_ONLY
 def test_broken_checks_every_signal_we_take(monkeypatch: pytest.MonkeyPatch) -> None:
     """S0006 step 3: with SIGBUS ours too (macOS), a SIGBUS action reset after ours, or a
     Python-level SIGBUS handler, breaks the chain although SIGSEGV is still ours (any host)."""
@@ -595,6 +616,7 @@ def test_broken_checks_every_signal_we_take(monkeypatch: pytest.MonkeyPatch) -> 
         assert guard.broken() == "a Python-level SIGBUS handler set after ours"
 
 
+@_POSIX_ONLY
 def test_install_puts_back_what_it_installed_when_a_later_sigaction_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -623,6 +645,7 @@ def test_install_puts_back_what_it_installed_when_a_later_sigaction_fails(
     assert not guard._handler  # pyright: ignore[reportPrivateUsage]
 
 
+@_POSIX_ONLY
 def test_a_broken_chain_during_a_host_call_fails_that_call() -> None:
     p = _child("HOOK = faulthandler.enable\ntry:\n    inst('g', 65536)\nexcept RuntimeError as e:\n"
                "    print('error', e)\n")  # fmt: skip
@@ -658,6 +681,7 @@ for sig in SIGNALS:  # SIGSEGV; and SIGBUS on macOS
 """
 
 
+@_POSIX_ONLY
 def test_a_foreign_chaining_handler_after_ours_is_no_error() -> None:
     p = _child(_CHAINER + "for a in (65536, 65533):\n    try:\n        inst('f', a)\n"
                "    except Trap as e:\n        print('trap', e.code.name, flush=True)\n"
@@ -685,6 +709,8 @@ def test_a_library_handler_after_ours_under_faulthandler_is_no_error(above: str)
     another waboros copy's) is assumed to chain; guard traps keep working."""
     if above == "wasmtime":
         pytest.importorskip("wasmtime")
+    elif WIN:
+        pytest.skip("a POSIX signal chain (S0006 step 4)")
     p = _child((_WASMTIME if above == "wasmtime" else _CHAINER)
                + "from waboros.targets.jit.common import guard\nprint('broken', guard.broken())\n"
                + "for a in (65536, 65533):\n    try:\n        inst('f', a)\n"
@@ -695,6 +721,7 @@ def test_a_library_handler_after_ours_under_faulthandler_is_no_error(above: str)
     assert p.stdout == head + "broken None\n" + "trap MEMORY_OUT_OF_BOUNDS\n" * 2
 
 
+@_POSIX_ONLY
 @pytest.mark.parametrize("above", ["wasmtime", "anonymous"])
 def test_faulthandler_enabled_after_ours_then_a_library_handler_is_an_error(above: str) -> None:
     """The reviewer's crash: ours, then faulthandler enabled, then a library's handler on top.
@@ -714,6 +741,7 @@ def test_faulthandler_enabled_after_ours_then_a_library_handler_is_an_error(abov
     assert "error the guard-page fault handler" in p.stdout, p
 
 
+@_POSIX_ONLY
 def test_faulthandler_back_on_top_of_a_foreign_handler_is_an_error_not_a_crash() -> None:
     """faulthandler, then a chaining foreign handler, then ours; then faulthandler re-enabled on
     top: a guard fault would reach faulthandler (fatal, 139), so the next call must raise."""
@@ -729,6 +757,7 @@ def test_faulthandler_back_on_top_of_a_foreign_handler_is_an_error_not_a_crash()
     )
 
 
+@_POSIX_ONLY
 def test_a_python_handler_set_before_ours_is_no_error() -> None:
     """A Python-level handler set before our install is only chained to; a chaining foreign
     handler on top of ours then is no break either."""
@@ -814,3 +843,93 @@ def test_explicit_installs_nothing() -> None:
                "print('installed', bool(guard._handler))",
                "explicit")  # fmt: skip
     assert p.returncode == 0 and p.stdout.endswith("installed False\n"), p
+
+
+_CET = """
+import ctypes, os, site, sys
+os.environ["WABOROS_JIT_BOUNDS"] = "guard"
+for p in sys.argv[2:]:  # the venv's site-packages (its .pth files too) and the checkout
+    site.addsitedir(p)
+k32 = ctypes.WinDLL("kernel32")
+k32.GetProcessMitigationPolicy.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p,
+                                           ctypes.c_size_t]
+out = open(sys.argv[1], "w")
+# ProcessControlFlowGuardPolicy 7, ProcessUserShadowStackPolicy 15 (winnt.h)
+for name, k in (("cfg", 7), ("shadow_stack", 15)):
+    f = ctypes.c_uint32()
+    ok = k32.GetProcessMitigationPolicy(ctypes.c_void_p(-1), k, ctypes.byref(f), 4)
+    print(name, f.value if ok else -1, file=out, flush=True)
+from tests.jit.test_compiler import build, wat
+from waboros.targets.base import Trap
+inst = build(wat('(module (memory 1) (func (export "f") (param i32) (result i32) '
+                 '(i32.load (local.get 0))))'))
+for a in (65536, 65533):
+    try:
+        inst("f", a)
+    except Trap as e:
+        print("trap", e.code.name, file=out, flush=True)
+"""
+
+
+@pytest.mark.skipif(not WIN or JIT != "jit-x86_64", reason="CET shadow stacks: Windows x64")
+def test_guard_traps_under_forced_cet_shadow_stacks(tmp_path: Path) -> None:
+    """S0006 step 4, the EH-continuation question. python.exe is not CETCOMPAT (python.org 3.13.9
+    and 3.14.0, uv's 3.13.18: no IMAGE_DLLCHARACTERISTICS_EX_CET_COMPAT, no /guard:cf), so user
+    shadow stacks are off by default. This child is created with them on in strict mode and with
+    context-IP validation always on (PROCESS_CREATION_MITIGATION_POLICY2_*, winbase.h): if
+    Windows refused the resume address the handler writes into the context, the child would die
+    instead of printing two traps. The child is the base interpreter (`sys._base_executable`): a
+    venv's python.exe is a launcher that starts the real one as a second process, which would not
+    inherit the policy. Skips only where the machine has no user CET
+    (`IsUserCetAvailableInEnvironment`); with CET, a child that reads the policy back as off
+    fails the test."""
+    import ctypes as C
+    import site
+    import subprocess as sp
+    from ctypes import wintypes as W
+
+    k32 = C.WinDLL("kernel32", use_last_error=True)  # pyright: ignore[reportAttributeAccessIssue]
+    available = getattr(k32, "IsUserCetAvailableInEnvironment", None)  # Windows 10 2004 and later
+    if not (available and available(0)):  # USER_CET_ENVIRONMENT_WIN32_PROCESS (sysinfoapi.h)
+        pytest.skip("no user CET on this machine (IsUserCetAvailableInEnvironment: no)")
+    size = C.c_size_t()
+    k32.InitializeProcThreadAttributeList(None, 1, 0, C.byref(size))
+    attrs = C.create_string_buffer(size.value)
+    assert k32.InitializeProcThreadAttributeList(attrs, 1, 0, C.byref(size)), C.get_last_error()  # pyright: ignore[reportAttributeAccessIssue]
+    policy = (C.c_uint64 * 2)(0, 3 << 28 | 1 << 32)  # shadow stacks strict; set-context IP check
+    k32.UpdateProcThreadAttribute.argtypes = [C.c_void_p, W.DWORD, C.c_size_t, C.c_void_p,
+                                              C.c_size_t, C.c_void_p, C.c_void_p]  # fmt: skip
+    mitigation = 0x20007  # PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY
+    assert k32.UpdateProcThreadAttribute(attrs, 0, mitigation, policy, 16, None, None)
+    dwords = [(n, W.DWORD) for n in ("x", "y", "xs", "ys", "xc", "yc", "fill", "flags")]
+    si = type("SIEX", (C.Structure,), {"_fields_": [
+        ("cb", W.DWORD), ("r", C.c_void_p), ("desk", C.c_void_p), ("title", C.c_void_p), *dwords,
+        ("show", W.WORD), ("cb2", W.WORD), ("r2", C.c_void_p), ("hin", W.HANDLE),
+        ("hout", W.HANDLE), ("herr", W.HANDLE), ("attrs", C.c_void_p)]})()  # fmt: skip
+    si.cb, si.attrs = C.sizeof(si), C.addressof(attrs)
+    pi = (C.c_void_p * 3)()  # hProcess, hThread, {dwProcessId, dwThreadId}
+    out = tmp_path / "out.txt"
+    paths = [*site.getsitepackages(), str(ROOT / "src"), str(ROOT)]
+    base = getattr(sys, "_base_executable", sys.executable)
+    cmd = C.create_unicode_buffer(sp.list2cmdline([base, "-c", _CET, str(out), *paths]))
+    k32.CreateProcessW.argtypes = [C.c_void_p, C.c_void_p, C.c_void_p, C.c_void_p, W.BOOL,
+                                   W.DWORD, C.c_void_p, C.c_wchar_p, C.c_void_p,
+                                   C.c_void_p]  # fmt: skip
+    if not k32.CreateProcessW(None, cmd, None, None, False, 0x80000, None, str(ROOT),
+                              C.byref(si), pi):  # EXTENDED_STARTUPINFO_PRESENT  # fmt: skip
+        pytest.fail(f"CreateProcessW with forced shadow stacks: error {C.get_last_error()}")  # pyright: ignore[reportAttributeAccessIssue]
+    k32.WaitForSingleObject.argtypes = [C.c_void_p, W.DWORD]
+    timeout = k32.WaitForSingleObject(pi[0], 120_000) != 0  # WAIT_OBJECT_0
+    if timeout:
+        k32.TerminateProcess(C.c_void_p(pi[0]), 1)
+        k32.WaitForSingleObject(pi[0], 10_000)
+    status = W.DWORD()
+    k32.GetExitCodeProcess(C.c_void_p(pi[0]), C.byref(status))
+    for h in pi[:2]:
+        k32.CloseHandle(C.c_void_p(h))
+    text = out.read_text() if out.exists() else ""
+    assert not timeout, f"the child ran for 120 s: {text!r}"
+    if "shadow_stack" in text:  # the machine has CET: the forced policy must be on in the child
+        assert int(text.split("shadow_stack ")[1].split()[0]) & 1, f"policy not applied: {text!r}"
+    traps = text.count("trap MEMORY_OUT_OF_BOUNDS")
+    assert status.value == 0 and traps == 2, (hex(status.value), text)

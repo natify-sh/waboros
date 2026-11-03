@@ -48,11 +48,18 @@ class JitTarget:
         raise NotImplementedError
 
     def fault_handler(
-        self, tables: int, prev: int, sigaction: int, reraise: int, darwin: bool = False
+        self,
+        tables: int,
+        prev: int,
+        sigaction: int,
+        reraise: int,
+        darwin: bool = False,
+        windows: bool = False,
     ) -> bytes:
         """The fault handler's code for this host (S0006, x86_64/abi.py `fault_handler`).
         `darwin`: macOS's signal context and two saved actions at `prev`, SIGSEGV's then
-        SIGBUS's (step 3)."""
+        SIGBUS's (step 3). `windows`: a vectored exception handler; `prev`, `sigaction` and
+        `reraise` are unused (step 4)."""
         raise NotImplementedError
 
     def probe(self) -> str | None:

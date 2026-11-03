@@ -185,15 +185,14 @@ jobs:
       - run: uv run python tests/spec/fetch.py
       - run: uv run python -m tests.spec.run --engine wasmtime
       - run: uv run python -m tests.spec.run --engine pyc
-      # S0006 step 3: guard pages on macOS x86-64. The `darwin` row has a handler but is not
-      # verified, so `auto` stays explicit here; these steps are what verifies it. No llvm-mc or
-      # GNU objdump on this runner: the disassembly checks are left out
-      - if: runner.os == 'macOS'
-        run: uv run python -m tests.spec.run --engine jit-x86_64
+      # S0006 steps 3, 4: guard pages on macOS x86-64 (verified, CI run 41610392553) and Windows
+      # x64 (a vectored exception handler; the `win32` row is not verified, so `auto` stays
+      # explicit there and these steps are what verifies it). The disassembly checks are left
+      # out (no llvm-mc or GNU objdump required on these runners)
+      - run: uv run python -m tests.spec.run --engine jit-x86_64
         env:
           WABOROS_JIT_BOUNDS: guard
-      - if: runner.os == 'macOS'
-        run: >-
+      - run: >-
           uv run pytest tests/jit/test_guard.py tests/jit/test_fault_handler.py -v -rs
           -k "not the_fault_map and not llvm_mc and not decode_and_reassemble"
         env:
@@ -285,13 +284,14 @@ jobs:
           WABOROS_JIT_REQUIRE: "1"
       - if: runner.os == 'Linux'
         run: uv run python tools/no_exec.py -- uv run python -m tests.spec.run --engine auto
-      # S0006 step 3: guard pages on macOS arm64 (Apple Silicon, MAP_JIT). The `darwin` row has a
-      # handler but is not verified, so `auto` above stays explicit; these steps verify it
-      - if: runner.os == 'macOS'
+      # S0006 steps 3, 4: guard pages on macOS arm64 (Apple Silicon, MAP_JIT; verified, CI run
+      # 41610392553) and Windows on Arm64 (a vectored exception handler; the `win32` row is not
+      # verified, so `auto` above stays explicit there and these steps are what verifies it)
+      - if: runner.os != 'Linux'
         run: uv run python -m tests.spec.run --engine jit-aarch64
         env:
           WABOROS_JIT_BOUNDS: guard
-      - if: runner.os == 'macOS'
+      - if: runner.os != 'Linux'
         run: uv run pytest tests/jit/test_guard.py tests/jit/test_fault_handler.py -v -rs -k "not decode_and_reassemble"
         env:
           WABOROS_JIT_BOUNDS: guard
