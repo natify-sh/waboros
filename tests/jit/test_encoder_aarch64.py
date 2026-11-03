@@ -40,7 +40,11 @@ def _llvm_objcopy() -> str | None:
     )
     for d in os.environ.get("PATH", "").split(os.pathsep):
         if not found and os.path.isdir(d):
-            found = next((str(Path(d) / f) for f in sorted(os.listdir(d), reverse=True)
+            try:
+                names = sorted(os.listdir(d), reverse=True)
+            except OSError:  # an unreadable directory on PATH (Android's /system_ext/bin)
+                continue
+            found = next((str(Path(d) / f) for f in names
                           if re.fullmatch(r"llvm-objcopy-\d+(\.exe)?", f)), None)  # fmt: skip
     return found or None
 

@@ -49,6 +49,10 @@ test-command = "pytest {project}/tests -q -rs -p no:cacheprovider --ignore={proj
 # Android and iOS run the tests inside an app: no shell, no {project}; the tests are copied in.
 # No wasmtime wheel there (ROADMAP): the tests that need no WAT / oracle only. UNPROVEN.
 [[tool.cibuildwheel.overrides]]
+select = "*-ios_*"
+build-frontend = "build"  # cibuildwheel: "uv doesn't support iOS"
+
+[[tool.cibuildwheel.overrides]]
 select = ["*-android_*", "*-ios_*"]
 test-requires = ["pytest"]
 test-sources = ["tests", "tools", "poc/in/core.wasm"]
