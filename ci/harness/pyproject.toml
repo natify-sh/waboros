@@ -59,14 +59,16 @@ environment-pass = ["WABOROS_JIT_REQUIRE"]  # from the job, if set
 # PATH (run 5: cp311 passed, cp315t "pip: command not found"); uv is on the runner (setup-uv).
 before-build = "uv build --wheel --out-dir {project}/ci/deps {project}"
 
-# Android runs the tests inside an app: no shell, no {project}; the tests are copied in. The mode is
-# `auto`. No wasmtime wheel there (ROADMAP): the tests that need no WAT / oracle only. UNPROVEN.
+# Android runs the tests inside an app: no shell, no {project}; the tests are copied in. Both bounds
+# modes, as on the other JIT platforms. No wasmtime wheel there (ROADMAP): the tests that need no WAT
+# / oracle only; tests/jit/test_android.py checks the app itself (the JIT and `auto` in an app
+# process, guard faults through ART's libsigchain, CoreMark's self-check; S0006 step 5).
 [tool.cibuildwheel.android]
 build = "cp313-*"
 test-skip = "*-android_arm64_v8a"  # the emulator has the runner's architecture: x86_64 only
 test-requires = ["pytest"]
 test-sources = ["tests", "tools", "docs", "poc/in/core.wasm"]  # docs: tests/test_features.py copies it
-test-command = "python -m pytest tests --jit-bounds=auto -q -rs -p no:cacheprovider --ignore=tests/spec --ignore=tests/jit/test_guard.py --ignore=tests/jit/test_tables.py --ignore=tests/test_pyc.py"
+test-command = "python -m pytest tests --jit-bounds=guard,explicit -q -rs -p no:cacheprovider --ignore=tests/spec --ignore=tests/jit/test_tables.py --ignore=tests/test_pyc.py"
 
 # Pyodide: pyc only, no wasmtime wheel.
 [tool.cibuildwheel.pyodide]

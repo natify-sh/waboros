@@ -155,7 +155,8 @@ trap).
   area, from a small per-architecture emitter and a per-(OS, architecture) offset table: `si_code`,
   `si_addr`, the PC in `ucontext`/`CONTEXT`. The `ucontext` is the kernel's frame (Linux: the same
   for glibc, musl and bionic); the `struct sigaction` used to install is the libc's (a layout per
-  libc; glibc's and musl's are the same on x86-64 and aarch64). The handler reads only the registry and the context, calls nothing but the previous handler
+  libc; glibc's and musl's are the same on x86-64 and aarch64; bionic's LP64 one is 32 bytes with
+  `int sa_flags` first and the handler at 8, step 5). The handler reads only the registry and the context, calls nothing but the previous handler
   or libc's `sigaction` (async-signal-safe; never a raw syscall, which would bypass Android's
   libsigchain and needs per-OS numbers), takes no lock, allocates nothing. It starts with `endbr64`
   (x86-64) or `bti c` (aarch64; measured: without it the kernel's entry raises SIGILL under BTI).
@@ -207,9 +208,11 @@ trap).
   registered with `SetProcessDynamicEHContinuationTargets` (the fault map's resume offsets are exactly
   that list), or the process ends with 0xC0000409 (CI run 41633456821); the runtime registers them
   where the policy asks for it and refuses guard mode where it cannot (Changes, step 4).
-* **Android**: in app processes ART's libsigchain interposes `sigaction`: by its design our handler
-  becomes a user handler, called after ART's own (implicit null checks, its stack overflow). Using libc's
-  `sigaction` symbol through ctypes is what keeps this working. Checked in the CI `android` job.
+* **Android** (step 5): in app processes ART's libsigchain interposes `sigaction`: by its design our handler
+  becomes a user handler, called after ART's own (implicit null checks, its stack overflow). Calling the
+  `sigaction` that `ctypes.CDLL(None)` finds (libsigchain's, which is linked `-z global`) is what keeps
+  this working; a raw syscall would put ours in front of ART. `tests/jit/test_android.py` checks it in the
+  Android cell of `platforms.yml` (Changes, step 5).
 * **Partial stores**: Arm does not promise that a misaligned store crossing into a faulting page
   writes nothing (nor does RISC-V; Wasmtime issue 7237), and QEMU's TCG splits 16-byte x86 stores
   (LESSONS 50). On x86-64 this is accepted as in Wasmtime (D45: native faults are precise, emulators
@@ -237,7 +240,7 @@ trap).
 | Linux musl | **verified** (musl step) | explicit: `jit-aarch64` needs libgcc's `__clear_cache`, absent from the stock image (Changes) | `jit` (`python:3.13-alpine` container) |
 | macOS | **verified** (step 3; CI run 41610392553) | **verified** (step 3; CI run 41610392553) | `platforms.yml` (`macOS x86_64`, `macOS arm64`) |
 | Windows | **verified** (step 4; CI run 41640149866) | **verified** (step 4; CI run 41633456821) | `platforms.yml` (`Windows x64`, `Windows ARM64`) |
-| Android (bionic, libsigchain) | step 5 | explicit (documented limitation) | `android` (x86_64 emulator) |
+| Android (bionic, libsigchain) | **verified, pending CI** (step 5: in `verified` so that `tests/jit/test_android.py` can assert `auto` gives guard; the run ID goes here once the Android cell is green) | explicit (documented limitation) | `platforms.yml` (`Android`, x86_64 emulator) |
 
 The BSDs are not a target (TARGETS.md), so they have no row.
 
@@ -295,7 +298,7 @@ reservation is a crash, not a trap: the explicit-mode tests and differential run
 4. **Windows x86-64 and arm64** (arm64 joined, maintainer 2026-11-02; done and verified 2026-11-03): the vectored handler; the EH-continuation question answered by a test that forces user
    shadow stacks and context-IP validation on a child python.exe (which is not CETCOMPAT itself).
    Acceptance: the `os (windows-latest)` and `arm64 (windows-11-arm)` jobs as in 3.
-5. **Android x86_64**: the Android cell of `platforms.yml` runs `test_guard.py`; logcat shows no ART complaint.
+5. **Android x86_64** (built 2026-11-03, Changes): the Android cell of `platforms.yml` runs `tests/jit/test_android.py` (a binary module that takes real guard faults through libsigchain; `test_guard.py` there runs only the tests that need neither WAT nor a child Python, none of which faults, and logcat is not read: acceptance changed, Changes 2026-11-03).
    The cell also takes over what `tools/android_check.py` checked in the former `android` job (the JIT
    works in the app process and `auto` selects it; CoreMark passes its self-check there), and the
    script is then deleted (maintainer, 2026-11-03).
@@ -786,3 +789,55 @@ reservation is a crash, not a trap: the explicit-mode tests and differential run
   `broken()` is unchanged: a finished copy's handler is anonymous memory, still valid, and chains.
   Tests: `test_a_finished_sub_interpreter_leaves_a_working_handler_chain` (`_testcapi` or
   `_interpreters`; 139 before), `test_a_failed_registration_leaves_nothing_behind`.
+* 2026-11-03: **step 5 built (Android x86_64); the first CI run of the Android cell verifies it.** No
+  emulator here (no KVM). Read, not copied: bionic (`libc/include/bits/signal_types.h`,
+  `libc/bionic/sigaction.cpp`, `libc/include/sys/ucontext.h`, `linker/linker.cpp`), ART
+  (`sigchainlib/sigchain.cc`, `sigchainlib/Android.bp`, `runtime/fault_handler.cc`) and
+  `frameworks/base/cmds/app_process/Android.bp`, through the LineageOS 22.2 and aosp-mirror copies on
+  GitHub (android.googlesource.com was not reachable from here); Wasmtime's `unix/signals.rs` (main).
+  * **Layout.** bionic's LP64 `struct sigaction` is `{int sa_flags; handler; sigset_t sa_mask (8
+    bytes); sa_restorer}`, 32 bytes, handler at 8; `sigaction64` is the same struct and an alias.
+    Passing glibc's 152-byte layout would have installed SIG_DFL with our address as the flags.
+    `guard._SIGACTION["android"]` is chosen when `sys.platform == "android"` (CPython 3.13+, PEP 738), and
+    the x86-64 handler reads the saved handler at 8 (`bionic=True`); `test_fault_handler.py` runs that
+    path on fabricated contexts on any x86-64 host and checks the layout against the header. The
+    `ucontext_t` and `siginfo_t` are the kernel's frame: `REG_RIP` 16 at 40 + 8 * 16, `si_code` 8,
+    `si_addr` 16, as on Linux, so the handler is otherwise unchanged. bionic's x86-64 `sigaction` adds
+    `SA_RESTORER` and its own restorer when a new action lacks it, so re-installing a saved action works.
+  * **libsigchain** (in every app process: a `DT_NEEDED` of `app_process`, linked `-z global`, so it is
+    in every linker namespace's global group and `dlsym` of the main handle finds its `sigaction` before
+    bionic's). With SIGSEGV claimed by ART (`AddSpecialSignalHandlerFn`), its `sigaction` records ours
+    as the "user" action and returns the previous user action (faulthandler's under pytest, otherwise
+    debuggerd's), never touching the kernel's. Its handler calls ART's fault manager first, which takes
+    only faults in ART's generated code on a thread in the Runnable state (a thread in JNI, where Python
+    runs, is not), then debuggerd's GWP-ASan recovery hook, then ours with the kernel's
+    `siginfo`/`ucontext`. Our handler rewrites the PC and returns into libsigchain's, which returns to
+    the kernel. A foreign fault goes from ours to the saved action as on Linux; ART's own faults never
+    reach us. So plain `sigaction` through the interposition is right, as Wasmtime does it (`libc::sigaction`, no
+    Android case); `AddSpecialSignalHandlerFn` is not an NDK API and would put us in front of ART.
+    `broken()` reads the user action through the same `sigaction` (ours: not broken).
+  * **Residual Android cases.** The SIG_DFL/SIG_IGN path calls libsigchain's `sigaction` inside the
+    signal handler, which logs "Setting SIGSEGV to SIG_DFL" with a stack unwind (not async-signal-safe).
+    It is reached only when the saved action is SIG_DFL and the process is ending anyway; in an app the saved action is
+    debuggerd's or faulthandler's. Where a debuggable app turns libsigchain's hooks off
+    (`SkipAddSignalHandler`), its `sigaction` does nothing: `broken()` then reads SIG_DFL, so `auto` gives
+    explicit and `guard` raises the Q1 error. `ctypes.CDLL(None)` does not see libpython in an app (CPython
+    uses `PyDLL("libpython3.x.so")` there), so rule A's `dladdr` test has no interpreter image and the
+    step-1 rule applies (faulthandler enabled under any foreign handler is a break): a false error at
+    worst.
+  * **Rows.** `android` is in `guard_rows` and `verified` of `jit-x86_64`; `jit-aarch64` refuses
+    `bionic` (Android arm64 stays explicit). `faulthandler` and `broken()` need nothing else.
+  * **Tests and harness.** The app has no wasmtime, so `wat()` skips nearly all of `test_guard.py` there
+    (7 tests run, none of them traps through a real fault; LESSONS 66). `tests/jit/test_android.py`
+    (Android only) writes its module in binary: in the default mode, `auto` gives guard and the module is guard code; 200 traps
+    and a valid load after them; `broken()` is None; the saved action is a handler in a shared object;
+    the kernel's SIGSEGV action, read with a raw `rt_sigaction` query, is still libsigchain's handler. It
+    also carries `tools/android_check.py`'s checks: the SELinux context is `untrusted_app`, the probe
+    succeeds and `auto` selects `jit-x86_64` without a warning, CoreMark (`auto`, so guard) passes its
+    self-check. The cell runs `python -m pytest tests --jit-bounds=guard,explicit` without ignoring
+    `test_guard.py`; `test_two_copies_of_waboros_chain_in_either_order` copies the package under test
+    (`guard.__file__`), not `src/`, then skips there for want of a child interpreter.
+    `tools/android_check.py` is deleted. Not read by a test: logcat. libsigchain logs only when an
+    action is set to SIG_DFL, when it falls back to SIG_DFL, and when `EnsureFrontOfChain` finds another
+    handler as the kernel's ("Unexpected sigaction action found"). A passing run takes none of these
+    paths, and the test checks the last one directly.

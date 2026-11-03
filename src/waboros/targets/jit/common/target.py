@@ -55,11 +55,12 @@ class JitTarget:
         reraise: int,
         darwin: bool = False,
         windows: bool = False,
+        bionic: bool = False,
     ) -> bytes:
         """The fault handler's code for this host (S0006, x86_64/abi.py `fault_handler`).
         `darwin`: macOS's signal context and two saved actions at `prev`, SIGSEGV's then
         SIGBUS's (step 3). `windows`: a vectored exception handler; `prev`, `sigaction` and
-        `reraise` are unused (step 4)."""
+        `reraise` are unused (step 4). `bionic`: `prev` is bionic's struct sigaction (step 5)."""
         raise NotImplementedError
 
     def probe(self) -> str | None:

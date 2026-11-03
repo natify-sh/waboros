@@ -92,7 +92,7 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
 | target | `pyc` everywhere; `jit-*` where the machine matches; `mpy` with the MicroPython unix port |
 | native arm64 | `jit-aarch64` on GitHub's arm64 runners: `ubuntu-24.04-arm` (job `arm64` of `ci`), `macos-26` (macOS arm64, `MAP_JIT`) and `windows-11-arm` (`platforms.yml`; labels per actions/runner-images) |
 | python.org macOS | the macOS cells of `platforms.yml` run the python.org framework CPython (hardened runtime) that cibuildwheel installs, on Apple Silicon (`macos-26`) and Intel; the JIT tests and the spec suite pass there, and a refusal by the hardened runtime would show as a failed cell (RISKS R2). The separate `macos-pythonorg` job, with its entitlements printout, is gone |
-| Android | the Android cell of `platforms.yml`: CPython's testbed app on a managed x86_64 emulator (cibuildwheel; `arm64_v8a` is built only), `python -m pytest tests --jit-bounds=auto` inside the app with the tests that need no WAT or wasmtime (no wasmtime there); no arm64 test (RISKS R2). The `android` job and `tools/android_check.py` (unused since) are gone from `ci` |
+| Android | the Android cell of `platforms.yml`: CPython's testbed app on a managed x86_64 emulator (cibuildwheel; `arm64_v8a` is built only), `python -m pytest tests --jit-bounds=guard,explicit` inside the app with the tests that need no WAT or wasmtime (no wasmtime there), among them `tests/jit/test_android.py` (Android only: the SELinux context, the probe and `auto`, guard faults through ART's libsigchain with a module written in binary, CoreMark's self-check; S0006 step 5); no arm64 test (RISKS R2). The `android` job and `tools/android_check.py` are gone |
 | emulated | QEMU user-mode only for architectures without native runners (riscv64, armv7, mips32el) as JIT targets appear |
 
 JIT artifacts: run baseline artifacts on an emulated baseline CPU (e.g. QEMU `-cpu` without SSE4.1 /
@@ -129,7 +129,7 @@ then both ISA gates and the D35 lists of both targets in both bounds modes, name
 as `ci`, its own concurrency group) is the only place where macOS, Windows, Android and Pyodide are
 tested, and also runs the Linux wheels (glibc and musl x86_64, i686, aarch64, armv7l). It tests the
 installed wheel, not `src/`: `pytest tests --jit-bounds=guard,explicit` on every cell (`auto,explicit` on Linux
-aarch64, `auto` on Android), and once per JIT platform (Linux glibc and musl x86_64, Linux aarch64,
+aarch64), and once per JIT platform (Linux glibc and musl x86_64, Linux aarch64,
 macOS, Windows, both architectures; one Python each) `ci/harness/spec.py`: the spec suite on `wasmtime`, `pyc`,
 the JIT in guard mode and in explicit mode, and `auto` (S0006 steps 3 and 4: the guard rows of macOS and
 Windows are verified there on every push). Left in `ci` because they need a source checkout or special
@@ -163,8 +163,8 @@ default spec run includes `simd/` for both: the `spec` job for `jit-x86_64`, the
 `jit` job and the native `arm64` job for `jit-aarch64`. The x86 `qemu64` step stays: it runs `simd/` on
 another CPU model (SSE2 only); the aarch64 explicit step was dropped at 5e2, the claimed QEMU run covers it.
 
-CoreMark on a JIT is checked with `tools/run_coremark_jit.py --check FILE` (the `arm64` job, the
-`android` job): a run is valid with "Correct operation validated", or when the only error is
+CoreMark on a JIT is checked with `tools/run_coremark_jit.py --check FILE` (the `arm64` job; in the
+Android app `tests/jit/test_android.py` calls `valid` itself): a run is valid with "Correct operation validated", or when the only error is
 CoreMark's "at least 10 secs" rule and the CRCs are the 2K-performance values (a correct run on a
 slow runner took 9.6 s). The interrupt-latency test (`tests/jit/test_abi.py`) allows 1 s, not 0.05 s,
 for loaded runners.

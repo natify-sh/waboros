@@ -154,7 +154,7 @@ know, otherwise recompile" is the simplest robust rule. It needs the wasm at han
 
 ## R6. A signal handler of our own (guard pages in the JIT)
 
-**Status at HEAD: partly mitigated: the default on Linux glibc x86-64 and aarch64, Linux musl x86-64, macOS and Windows x64 and arm64.** S0006 step 1:
+**Status at HEAD: partly mitigated: the default on Linux glibc x86-64 and aarch64, Linux musl x86-64, macOS, Windows x64 and arm64, and Android x86_64 (step 5; the first CI run of the Android cell decides).** S0006 step 1:
 guard code on `jit-x86_64`; step 2 the same on `jit-aarch64` (`aarch64/abi.py`, verified under QEMU, the native
 runner to confirm). The handler is emitted machine code (`x86_64/abi.py`, `aarch64/abi.py`) reading this copy's registry
 (`common/guard.py`), chaining every fault it does not claim (tests: `tests/jit/test_guard.py`, foreign faults
@@ -176,7 +176,9 @@ Wasmtime does not detect this either. Open: detect an emulator (`/proc/cpuinfo`,
 environment variables) and fall back to explicit, or keep it a documented limitation (D45). Windows x64
 and arm64 (S0006 step 4): a vectored exception handler (offsets from the Windows SDK headers), verified by CI
 runs 41633456821 (`arm64 (windows-11-arm)`) and 41640149866 (`os (windows-latest)`), jobs now in `platforms.yml`; `win32` is a verified
-row, so `auto` gives guard there. Open: Android x86_64 (step 5); Linux musl aarch64 (no
+row, so `auto` gives guard there. Android x86_64 (S0006 step 5): bionic's
+32-byte `struct sigaction`, installed through ART's libsigchain (below); `tests/jit/test_android.py` in the
+Android cell of `platforms.yml`. Open: Linux musl aarch64 (no
 `__clear_cache` without libgcc, S0004). Android arm64 stays explicit, a documented limitation (S0006).
 
 Guard pages need a SIGSEGV handler in the process (ARCHITECTURE.md, "Memory"); the PoC emits it as
@@ -202,6 +204,16 @@ machine code. Risks and possible answers:
   and reservations; several copies chain (S0006 Q8 as revised; tested with a renamed copy).
 * **CET / BTI**: the handler is entered indirectly by the kernel; with IBT enforced it needs `endbr64`
   (R2).
+* **Android: ART's libsigchain sits in front** (S0006 step 5). In an app process it interposes `sigaction`
+  and owns the kernel's SIGSEGV action: ours becomes its "user" action, called after ART's fault manager
+  (which takes only faults in ART's own generated code on a Runnable thread) and debuggerd's GWP-ASan hook.
+  This holds only while we call libsigchain's `sigaction` (the one `ctypes.CDLL(None)` finds; a raw
+  syscall, or bionic's own symbol, would put ours in front and a later `EnsureFrontOfChain` would make our
+  saved action point back into the chain). `test_android.py` checks that the kernel's action is still
+  libsigchain's after our install. Residual: the SIG_DFL path makes libsigchain log with a stack unwind
+  inside the handler (only when the process is ending); a debuggable app with libsigchain's hooks off
+  makes `sigaction` a no-op, which `broken()` reads as SIG_DFL (`auto` gives explicit); rule A has no
+  interpreter image there (`CDLL(None)` does not see libpython), so the conservative step-1 rule applies.
 * **macOS: Mach exceptions come first.** A fault is an `EXC_BAD_ACCESS` Mach exception before it becomes
   a signal, so a debugger or a crash reporter on a thread or task exception port (Breakpad, Crashpad,
   Sentry's native SDK) sees every guard fault before our handler. One that returns `KERN_FAILURE` lets

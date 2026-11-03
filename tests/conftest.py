@@ -31,7 +31,7 @@ subprocess.Popen.__init__ = _popen  # type: ignore[method-assign,assignment]
 # tests/jit modules whose tests do not depend on the bounds mode, or choose it themselves
 _MODE_FREE = {
     "test_encoder", "test_encoder_aarch64", "test_execmem", "test_probe", "test_isa_aarch64",
-    "test_fault_handler", "test_guard", "test_scalar_fuzz",
+    "test_fault_handler", "test_guard", "test_scalar_fuzz", "test_android",
 }  # fmt: skip
 
 

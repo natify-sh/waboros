@@ -54,6 +54,7 @@ class JitAarch64Target(JitTarget):
         reraise: int,
         darwin: bool = False,
         windows: bool = False,
+        bionic: bool = False,
     ) -> bytes:
         from waboros.targets.jit.aarch64.abi import fault_handler
         from waboros.targets.jit.aarch64.encoder import Asm

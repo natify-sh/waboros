@@ -19,6 +19,7 @@ import pytest
 from tests.jit import native, native_jit, need
 from waboros.targets.jit.aarch64 import JitAarch64Target
 from waboros.targets.jit.aarch64 import abi as a64
+from waboros.targets.jit.common import guard
 from waboros.targets.jit.common.execmem import load
 from waboros.targets.jit.x86_64 import JitX86_64Target
 from waboros.targets.jit.x86_64 import abi as x64
@@ -172,15 +173,24 @@ TARGETS = {"jit-x86_64": JitX86_64Target, "jit-aarch64": JitAarch64Target}
 HANDLER = C.CFUNCTYPE(None, C.c_int, C.c_void_p, C.c_void_p)
 
 
-@pytest.mark.parametrize("darwin", [False, True], ids=["linux", "darwin"])
-def test_the_handler_on_fabricated_contexts(darwin: bool) -> None:
+@pytest.mark.parametrize("os_", ["linux", "darwin", "android"])
+def test_the_handler_on_fabricated_contexts(os_: str) -> None:
     """The handler as a C function: ours (pc rewritten, nothing called), each way of not being
     ours, the saved action chosen by the signal (Darwin: SIGSEGV's, then SIGBUS's), SIG_DFL put
-    back with `sigaction` and re-sent with `raise` (Linux: only a sent signal, si_code <= 0)."""
+    back with `sigaction` and re-sent with `raise` (Linux: only a sent signal, si_code <= 0).
+    Android (step 5): the Linux context with bionic's struct sigaction, as guard.py lays it out."""
+    darwin = os_ == "darwin"
     if sys.platform == "win32":  # no signals; the handler's calls are SysV/AAPCS64 (step 4)
         pytest.skip("no signal handler on Windows")
     jit = native_jit()
     native(jit)
+    if os_ == "android" and jit != "jit-x86_64":
+        pytest.skip("Android arm64 has no guard mode (S0006)")
+    sigaction = type("S", (C.Structure,), {"_fields_": guard._SIGACTION[os_]})  # pyright: ignore[reportPrivateUsage]
+    size, at = C.sizeof(sigaction), sigaction.handler.offset  # pyright: ignore[reportAttributeAccessIssue]
+    # glibc/musl, xnu's user struct, bionic LP64 (libc/include/bits/signal_types.h)
+    assert (size, at) == {"linux": (152, 0), "darwin": (16, 0), "android": (32, 8)}[os_]
+    assert os_ != "android" or at == x64.BIONIC_SA_HANDLER
     sig, pc_at, addr_at, indirect = LAYOUTS[jit, darwin]
     area, res = (C.c_uint8 * 4096)(), (C.c_uint8 * 256)()
     lo, rlo = C.addressof(area), C.addressof(res)
@@ -188,7 +198,6 @@ def test_the_handler_on_fabricated_contexts(darwin: bool) -> None:
     codes = (U64 * 9)(2, 0, 0, 0, 0, lo, lo + 4096, C.addressof(fmap), 2)  # a free entry first
     resv = (U64 * 3)(1, rlo, rlo + 256)
     heads = (U64 * 2)(C.addressof(codes), C.addressof(resv))
-    size = 16 if darwin else 152  # the libc's struct sigaction
     prev = (C.c_uint8 * (2 * size))()
     calls: list[tuple[Any, ...]] = []
     keep = [
@@ -200,8 +209,9 @@ def test_the_handler_on_fabricated_contexts(darwin: bool) -> None:
     ]
     entry, reraise, prev0, prev1 = (C.cast(f, C.c_void_p).value or 0 for f in keep)
     code = TARGETS[jit]().fault_handler(
-        C.addressof(heads), C.addressof(prev), entry, reraise, darwin=darwin
-    )
+        C.addressof(heads), C.addressof(prev), entry, reraise, darwin=darwin,
+        bionic=os_ == "android",
+    )  # fmt: skip
     mem = load(code)
     handler = HANDLER(mem.addr)
     si, uc, mc = (U64 * 16)(), (U64 * 128)(), (U64 * 128)()
@@ -218,7 +228,7 @@ def test_the_handler_on_fabricated_contexts(darwin: bool) -> None:
     assert fault(sig, 2, rlo + 100, lo + 40) == (lo + 200, [])  # ours
     assert fault(sig, 2, rlo, lo + 16) == (lo + 100, [])
     for p, k in ((prev0, 0), (prev1, 1)):
-        C.memmove(C.addressof(prev) + k * size, C.byref(C.c_void_p(p)), 8)
+        C.memmove(C.addressof(prev) + k * size + at, C.byref(C.c_void_p(p)), 8)
     first = "prev1" if darwin else "prev0"
     for s, code, addr, pc in ((sig, 2, rlo + 100, lo + 41), (sig, 2, rlo + 256, lo + 40),
                               (sig, 0, rlo + 100, lo + 40), (sig, 2, rlo, lo + 4096)):  # fmt: skip

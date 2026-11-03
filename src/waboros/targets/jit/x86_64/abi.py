@@ -155,9 +155,12 @@ def assemble(win64: bool) -> tuple[bytes, list[int]]:
 
 # The S0006 fault handler, Linux x86-64: the kernel's siginfo_t and ucontext_t (the same for
 # glibc, musl and bionic); the saved `struct sigaction` is the libc's (glibc's and musl's agree:
-# sa_handler first).
+# sa_handler first; bionic's LP64 one starts with int sa_flags, the handler at 8: S0006 step 5,
+# bionic libc/include/bits/signal_types.h; its ucontext_t, libc/include/sys/ucontext.h, is the
+# kernel's frame with REG_RIP 16 as below).
 SI_CODE, SI_ADDR = 8, 16  # si_signo, si_errno, si_code, padding, then si_addr
 UC_RIP = 40 + 8 * 16  # uc_flags, uc_link, uc_stack (24 bytes), then mcontext gregs[REG_RIP = 16]
+BIONIC_SA_HANDLER = 8
 # macOS x86-64 (S0006 step 3), from xnu (apple-oss-distributions/xnu, main, read 2026-11-03):
 # siginfo_t (bsd/sys/signal.h): si_signo, si_errno, si_code, si_pid, si_uid, si_status, si_addr
 # at 24. ucontext_t (bsd/sys/_types/_ucontext.h): uc_onstack, uc_sigmask (u32), uc_stack (24
@@ -191,6 +194,7 @@ def fault_handler(
     reraise: int,
     darwin: bool = False,
     windows: bool = False,
+    bionic: bool = False,
 ) -> None:
     """void handler(int sig, siginfo_t *si, ucontext_t *uc), installed with SA_SIGINFO (S0006,
     "The handler contract"). `tables`: two words, the addresses of the registry's code table
@@ -213,6 +217,7 @@ def fault_handler(
     a fault then ends the process from the pending signal before the instruction runs again,
     with the same signal; under SIG_IGN xnu drops both and the fault repeats forever, as it does
     without us (LESSONS 57).
+    `bionic` (Android, S0006 step 5): `prev` is bionic's struct sigaction, sa_handler at 8.
     `windows` (S0006 step 4): a vectored exception handler, `LONG h(EXCEPTION_POINTERS *ep)` in
     the Win64 convention (ep in rcx, kept in rdx): ours is an access violation (with its two
     parameters) whose ContextRecord->Rip is a fault point and whose ExceptionInformation[1] lies
@@ -327,7 +332,7 @@ def fault_handler(
         a.mov(RAX, Mem(RCX), w=True)
     else:
         a.mov_imm(RAX, prev, w=True)
-        a.mov(RAX, Mem(RAX), w=True)  # its sa_handler / sa_sigaction
+        a.mov(RAX, Mem(RAX, BIONIC_SA_HANDLER if bionic else 0), w=True)  # sa_handler/sigaction
     a.alu_imm("cmp", RAX, 1, w=True)
     a.jcc("be", dfl)
     a.jmp(RAX)  # rdi, rsi, rdx as the kernel passed them

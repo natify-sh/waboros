@@ -434,3 +434,13 @@ What went wrong or surprised us while building the PoC, so it is not found again
     and still passed, because the value only travelled through. Rule: build f32/f64 test values with
     `_from_raw(ty, bits)`, and keep host functions that must work in both modes free of float arithmetic.
     Found: D46, 2026-11-03.
+66. **A test file run where its dev tools are missing can pass while testing nothing.** S0006 step 5
+    planned to verify guard pages on Android by running `test_guard.py` in the testbed app. The app
+    has no wasmtime, and `wat()` skips without it, so a dry run of the Android command on Linux
+    (wasmtime, wasm-tools and pywasm blocked, `sys.executable` empty, nothing on `PATH`) ran 7 of its
+    tests. None of them takes a real guard fault, and the file "passed". The same run found that
+    `test_two_copies_of_waboros_chain_in_either_order` failed outside a checkout (it copied `src/`).
+    Rule: before a test file is named as a platform's verification, run it once in that platform's
+    environment (or a faithful imitation) and count what actually runs. Cover the platform-specific
+    path with a test that needs nothing the platform lacks: `test_android.py` writes its module in
+    binary. Found: S0006 step 5, 2026-11-03.

@@ -48,6 +48,7 @@ FLAGS = BOUNDS_GUARD | GUARD_LOG2 << 8
 MODES = ("explicit", "guard", "auto")
 SIGSEGV = 11
 DARWIN = sys.platform == "darwin"
+BIONIC = sys.platform == "android"  # CPython 3.13+ in an Android app (PEP 738)
 # The signals the handler takes and the libc's sigaction flags. Linux: SIGSEGV; SA_SIGINFO 4,
 # SA_ONSTACK 0x08000000. macOS (S0006 step 3; xnu bsd/sys/signal.h): SIGSEGV 11 and SIGBUS 10,
 # since a PROT_NONE page (the guard) faults with KERN_PROTECTION_FAILURE, which xnu turns into
@@ -71,7 +72,8 @@ def mode() -> str:
 
 @functools.cache
 def host_row() -> str:
-    """This host's row of the S0006 table: `<os>-<libc>` (`linux-glibc`, `linux-musl`). glibc is
+    """This host's row of the S0006 table: `<os>-<libc>` (`linux-glibc`, `linux-musl`), or
+    `sys.platform` elsewhere (`darwin`, `win32`, `android`: bionic, step 5). glibc is
     what `platform.libc_ver()` names (glibc's `confstr(_CS_GNU_LIBC_VERSION)`); musl, which has
     no such call, is named by its mapped image (`_libc_of`); anything else is `linux-unknown`,
     so `auto` stays explicit there. Only `glibc` is taken from `libc_ver`: without the confstr it
@@ -121,22 +123,34 @@ def wanted(target: Any) -> bool:
     return True
 
 
-class _Sigaction(ctypes.Structure):
-    """The libc `struct sigaction` on x86-64 and aarch64: glibc's and musl's layout (sa_handler,
-    a 128-byte mask, sa_flags, sa_restorer; 152 bytes; measured with musl 1.2.6's headers).
-    macOS: {sa_handler, u32 sa_mask, int sa_flags}, 16 bytes (xnu bsd/sys/signal.h, the user
-    `struct sigaction`; libplatform's `__platform_sigaction` adds the trampoline itself)."""
+_SIGACTION: dict[str, list[tuple[str, Any]]] = {
+    # glibc's and musl's on x86-64 and aarch64 (sa_handler, a 128-byte mask, sa_flags,
+    # sa_restorer; 152 bytes; measured with musl 1.2.6's headers); also Windows, which has none
+    "linux": [
+        ("handler", ctypes.c_void_p),
+        ("mask", ctypes.c_uint64 * 16),
+        ("flags", ctypes.c_int),
+        ("restorer", ctypes.c_void_p),
+    ],
+    # macOS: the user `struct sigaction`, 16 bytes (xnu bsd/sys/signal.h; libplatform's
+    # `__platform_sigaction` adds the trampoline itself)
+    "darwin": [("handler", ctypes.c_void_p), ("mask", ctypes.c_uint32), ("flags", ctypes.c_int)],
+    # bionic LP64 (libc/include/bits/signal_types.h, `__SIGACTION_BODY`; `sigaction64` is the
+    # same struct and an alias): int sa_flags first, the handler at 8, the kernel's 8-byte
+    # sigset_t, sa_restorer; 32 bytes (S0006 step 5)
+    "android": [
+        ("flags", ctypes.c_int),
+        ("handler", ctypes.c_void_p),
+        ("mask", ctypes.c_uint64),
+        ("restorer", ctypes.c_void_p),
+    ],
+}
 
-    _fields_ = (
-        [("handler", ctypes.c_void_p), ("mask", ctypes.c_uint32), ("flags", ctypes.c_int)]
-        if DARWIN
-        else [
-            ("handler", ctypes.c_void_p),
-            ("mask", ctypes.c_uint64 * 16),
-            ("flags", ctypes.c_int),
-            ("restorer", ctypes.c_void_p),
-        ]
-    )
+
+class _Sigaction(ctypes.Structure):
+    """The libc's `struct sigaction` of this OS (`_SIGACTION`)."""
+
+    _fields_ = _SIGACTION.get(sys.platform, _SIGACTION["linux"])
 
 
 if sys.platform == "win32":  # for the type checker: WinDLL exists on Windows only
@@ -252,6 +266,11 @@ def install(target: Any) -> None:
         if sys.platform == "win32":
             _install_vectored(target)
             return
+        # Android app processes (step 5): ART's libsigchain exports `sigaction` and is linked
+        # with -z global (art/sigchainlib/Android.bp), so this lookup finds its `sigaction`
+        # before bionic's. With SIGSEGV claimed by ART, it only records ours as the "user"
+        # action and returns the previous one, and its handler calls ours after ART's
+        # (art/sigchainlib/sigchain.cc, SignalChain::Handler); test_android.py checks this
         libc = ctypes.CDLL(None, use_errno=True)
         sigaction = libc.sigaction
         sigaction.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p]
@@ -264,7 +283,12 @@ def install(target: Any) -> None:
             ctypes.cast(f, ctypes.c_void_p).value or 0 for f in (sigaction, getattr(libc, "raise"))
         )
         code = target.fault_handler(
-            ctypes.addressof(_registry.heads), ctypes.addressof(prev), entry, reraise, darwin=DARWIN
+            ctypes.addressof(_registry.heads),
+            ctypes.addressof(prev),
+            entry,
+            reraise,
+            darwin=DARWIN,
+            bionic=BIONIC,
         )
         mem: ExecMem = load(code)
         _keep(mem)  # before sigaction: an installed handler's code is never unmapped

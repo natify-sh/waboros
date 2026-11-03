@@ -1,13 +1,14 @@
 # pyright: reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false
-"""Guard pages on the JIT of this machine (S0006 steps 1-4: Linux glibc and musl, macOS, Windows;
-jit-x86_64 and jit-aarch64; aarch64 also under QEMU, tools/run_arm64.py): accesses the
-reservation's guard catches go unchecked and the emitted fault handler turns their faults into
+"""Guard pages on the JIT of this machine (S0006 steps 1-5: Linux glibc and musl, macOS, Windows,
+Android x86_64; jit-x86_64 and jit-aarch64; aarch64 also under QEMU, tools/run_arm64.py): accesses
+the reservation's guard catches go unchecked and the emitted fault handler turns their faults into
 MEMORY_OUT_OF_BOUNDS at the function's own trap stub. Every trapping access kind at the edge of
 memory, scalar and SIMD, on memory 0, memory n and an imported memory; deep frames, inner
 entries, threads; and faults that are not ours, which must behave exactly as without the handler
 (in subprocesses: the handler stays for the process's lifetime). Windows has a vectored
 handler instead of a signal chain: the chain tests are POSIX-only, and the cases that break a
-chain must not break it there."""
+chain must not break it there. In the Android app (step 5) only the tests that need neither WAT
+(no wasmtime there) nor a child interpreter run; test_android.py traps there in binary."""
 
 import io
 import os
@@ -61,7 +62,7 @@ SIMD = {  # name -> (access size, expression of the address `A`, result is v128)
 def _guard(monkeypatch: pytest.MonkeyPatch) -> None:
     native(JIT)
     tgt = base.TARGETS[JIT]()
-    if not sys.platform.startswith(("linux", "darwin", "win32")):
+    if not sys.platform.startswith(("linux", "darwin", "win32", "android")):
         pytest.skip(f"no guard pages on {sys.platform} yet")
     # under WABOROS_JIT_REQUIRE=1 (the CI `jit` and `arm64` jobs on Linux glibc, the `jit` job's
     # musl container, the macOS and Windows steps) a skip is a failure: the row check or `auto`
@@ -1012,9 +1013,8 @@ def test_two_copies_of_waboros_chain_in_either_order(order: int, tmp_path: Path)
     import re
     import shutil
 
-    shutil.copytree(
-        ROOT / "src/waboros", tmp_path / "waboros_b", ignore=shutil.ignore_patterns("__pycache__")
-    )
+    pkg = Path(guard.__file__).parents[3]  # the package under test: src/ or the installed wheel
+    shutil.copytree(pkg, tmp_path / "waboros_b", ignore=shutil.ignore_patterns("__pycache__"))
     for f in (tmp_path / "waboros_b").rglob("*.py"):
         text = f.read_text(encoding="utf-8")
         f.write_text(re.sub(r"\bwaboros(\.| import)", r"waboros_b\1", text), encoding="utf-8")
