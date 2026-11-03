@@ -759,6 +759,87 @@ def test_a_guard_code_area_registers_its_resume_addresses_until_freed(
     assert calls[-1] == ([lo + 40, lo + 48], False)
 
 
+def test_a_failed_registration_leaves_nothing_behind(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When the registry cannot take an entry, a reservation is not left marked as registered
+    (the next instance that binds it registers it) and a code area's resume addresses go again."""
+    from waboros.targets.jit.common.execmem import Reservation, load
+
+    reg = guard._registry  # pyright: ignore[reportPrivateUsage]
+    res, code = Reservation(PAGE), load(b"\xc3" * 64)
+    calls: list[tuple[list[int], bool]] = []
+
+    def setter(proc: Any, n: int, arr: Any) -> int:
+        calls.append(([arr[2 * i] for i in range(n)], bool(arr[1] & 1)))
+        for i in range(n):
+            arr[2 * i + 1] |= 2
+        return 1
+
+    def full(kind: int, words: object) -> int:
+        raise MemoryError
+
+    with monkeypatch.context() as m:
+        m.setattr(reg, "add", full)
+        m.setattr(guard, "_handler", {"ehcont": setter})
+        with pytest.raises(MemoryError):
+            guard.add_reservation(res)
+        assert res.addr not in reg.reservations
+        with pytest.raises(MemoryError):
+            guard.add_code(code, [(0, 40)])
+        assert calls == [([code.addr + 40], True), ([code.addr + 40], False)]
+    guard.add_reservation(res)
+    assert reg.reservations[res.addr] >= 0
+
+
+_SUBINTERP = """
+import gc, sys
+sys.path[:0] = [sys.argv[1]]
+try:
+    from _testcapi import run_in_subinterp
+except ImportError:  # builds without the test modules (3.13+: _interpreters, legacy config)
+    try:
+        import _interpreters
+    except ImportError:
+        print("no sub-interpreters"); raise SystemExit
+    def run_in_subinterp(src):
+        i = _interpreters.create("legacy")
+        try:
+            return 0 if _interpreters.exec(i, src) is None else 1
+        finally:
+            _interpreters.destroy(i)
+from tests.jit.test_compiler import build, trap_of, wat
+TEXT = '(module (memory 1) (func (export "f") (param i32) (result i32) (i32.load (local.get 0))))'
+inst = build(wat(TEXT))
+print("main", trap_of(inst, "f", 70000).name, flush=True)
+SUB = f'''
+import sys
+sys.path[:0] = [{sys.argv[1]!r}]
+from tests.jit.test_compiler import build, trap_of, wat
+print("sub", trap_of(build(wat({TEXT!r})), "f", 70000).name, flush=True)
+'''
+assert run_in_subinterp(SUB) == 0
+gc.collect()
+junk = [bytearray(b"\\xff" * n) for n in (16, 24, 32, 152, 160, 304, 520) for _ in range(20000)]
+print("main", trap_of(inst, "f", 70000).name, flush=True)
+"""
+
+
+def test_a_finished_sub_interpreter_leaves_a_working_handler_chain() -> None:
+    """S0006 Q8: a sub-interpreter imports its own copy, installs its handler on top of ours and
+    ends; its handler stays first in the chain and must still read valid memory (it chains our
+    fault to us): before, its registry died with its module objects and the next guard fault
+    in the main interpreter read freed memory (139; LESSONS 64)."""
+    env = {**os.environ, "WABOROS_JIT_BOUNDS": "guard"}
+    cmd = [sys.executable, "-c", _SUBINTERP, str(ROOT)]
+    try:
+        p = subprocess.run(cmd, cwd=ROOT, env=env, capture_output=True, text=True, timeout=120)
+    except OSError as e:  # QEMU user mode without binfmt cannot start a child interpreter
+        pytest.skip(f"no child interpreter: {e}")
+    if p.stdout.startswith("no sub-interpreters"):
+        pytest.skip("neither _testcapi.run_in_subinterp nor _interpreters here")
+    assert p.returncode == 0, p
+    assert p.stdout == "".join(f"{w} MEMORY_OUT_OF_BOUNDS\n" for w in ("main", "sub", "main")), p
+
+
 @_POSIX_ONLY
 def test_a_broken_chain_during_a_host_call_fails_that_call() -> None:
     p = _child("HOOK = faulthandler.enable\ntry:\n    inst('g', 65536)\nexcept RuntimeError as e:\n"

@@ -765,3 +765,24 @@ reservation is a crash, not a trap: the explicit-mode tests and differential run
     return without the lock, `broken()` and `_to_front` could otherwise see it half filled (a
     KeyError, or no `ehcont` on a free-threaded build).
 * 2026-11-03: **CI moved.** The `os` job, the macOS and Windows legs of `arm64`, `macos-pythonorg` and `android` left `ci.yml`; the guard rows of macOS and Windows (x86-64 and arm64) are now verified on every push and pull request by `platforms.yml` (cibuildwheel, the installed wheel): `tests --jit-bounds=guard,explicit` and `ci/harness/spec.py` (the spec suite on `jit-<arch>` in guard and explicit mode). The older entries above name the jobs of their time.
+* 2026-11-03: **The handler's memory outlives its copy.** The final review found that a
+  sub-interpreter that imported its own copy, installed its handler on top of the main one's and
+  ended left that handler first in the chain, reading registry heads, tables and saved actions
+  that were ctypes arrays of its module state, freed with the sub-interpreter: the main
+  interpreter's next guard fault read freed memory and ended the process (139; LESSONS 64). As
+  built: everything the handler reads is allocated on the C heap (`calloc`; Windows `HeapAlloc`)
+  and seen through `from_address` views that do not own it, so no interpreter teardown frees it;
+  heads, tables and saved actions are never freed, and a fault map is freed only by its code
+  area's finalizer after its entry is zeroed. The handler's code area is never unmapped (its
+  finalizer is detached). Cost per copy: 16 bytes of heads, the saved actions (one 152-byte
+  `sigaction` on Linux, two 16-byte ones on macOS), the first tables (520 + 264 bytes) and every larger table published since (each
+  doubles), plus the handler's code page: about 1.1 KiB of heap and one page. The same holds for a
+  daemon thread still in guard code while the main interpreter tears its modules down. Also: a
+  failed `_registry.add` no longer leaves a reservation marked as registered, and a failure
+  between the EH-continuation add and the registry entry removes the targets and the map again.
+  `on_free` is the commit point, outside the rollback (the review found that an exception after it
+  had registered its finalizer made the rollback and the finalizer both free the map and the
+  slot), and the handler's code area is kept before `sigaction` installs it.
+  `broken()` is unchanged: a finished copy's handler is anonymous memory, still valid, and chains.
+  Tests: `test_a_finished_sub_interpreter_leaves_a_working_handler_chain` (`_testcapi` or
+  `_interpreters`; 139 before), `test_a_failed_registration_leaves_nothing_behind`.

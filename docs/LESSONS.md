@@ -416,3 +416,14 @@ What went wrong or surprised us while building the PoC, so it is not found again
     way into a float object, so no float-valued representation can carry it. Also, on 32-bit hosts an
     index >= 2^31 raises `OverflowError`, not `IndexError`. Rule: probe a bit-exact float claim on the host
     that has the odd FPU, not only on x86-64. Found: PYC-PLATFORMS measurement and fix, 2026-11-03.
+64. **Memory a signal handler reads must not belong to an interpreter.** The guard-page handler
+    embedded the addresses of its registry heads, tables and saved `sigaction`, all ctypes arrays
+    held by module globals. A sub-interpreter that imported its own copy installed a second
+    handler on top (chain and claim, S0006 Q8) and ended: its module state was freed, its handler
+    stayed first in the process's chain (nothing can take it out), and the main interpreter's next
+    guard fault walked freed memory: exit 139, while the reverse order worked. The handler's own
+    code area survived only because `weakref.finalize` stops running callbacks after its atexit
+    hook. Rule: anything machine code reads after its owner may be gone (a signal handler, code a
+    daemon thread still runs at exit) lives on the C heap or in a mapping no Python object owns,
+    and is freed only by an explicit step after nothing can read it. Found: S0006 final review,
+    2026-11-03.

@@ -19,7 +19,10 @@ process of the target's architecture on a host row that is verified (`JitTarget.
 
 Registry: per kind (code areas, reservations) one table `[capacity, entries...]` of 64-bit words
 that never moves, published through one pointer word (`heads`); a full table is replaced by a
-larger copy and the old one is kept forever. An entry `{lo, hi, ...}` is written with `hi` last
+larger copy and the old one is kept forever. Everything the handler reads (heads, tables,
+saved actions, fault maps) is on the C heap and its code area is never unmapped: a finished
+sub-interpreter's or an unloaded copy's handler stays in the chain, so its memory must outlive
+this module's objects (LESSONS 64). An entry `{lo, hi, ...}` is written with `hi` last
 and removed (in every table) with `hi` zeroed first, before its area is unmapped, so a reused
 address is never misclassified. Writers (add, grow, remove) hold one re-entrant lock: removal runs
 from finalizers, which may fire on a thread already inside `add`; the handler's reads take none."""
@@ -136,12 +139,47 @@ class _Sigaction(ctypes.Structure):
     )
 
 
+if sys.platform == "win32":  # for the type checker: WinDLL exists on Windows only
+    _k32 = ctypes.WinDLL("kernel32")
+    _k32.GetProcessHeap.restype = ctypes.c_void_p
+    _k32.HeapAlloc.restype = ctypes.c_void_p
+    _k32.HeapAlloc.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_size_t]
+    _k32.HeapFree.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p]
+    _heap = _k32.GetProcessHeap()
+
+    def _calloc(n: int) -> int | None:
+        return _k32.HeapAlloc(_heap, 8, n)  # HEAP_ZERO_MEMORY
+
+    def _cfree(addr: int) -> None:
+        _k32.HeapFree(_heap, 0, addr)
+
+else:
+    _c = ctypes.CDLL(None)
+    _c.calloc.restype, _c.calloc.argtypes = ctypes.c_void_p, [ctypes.c_size_t, ctypes.c_size_t]
+    _c.free.argtypes = [ctypes.c_void_p]
+
+    def _calloc(n: int) -> int | None:
+        return _c.calloc(1, n)
+
+    def _cfree(addr: int) -> None:
+        _c.free(addr)
+
+
+def _raw(ctype: Any) -> Any:
+    """A zeroed `ctype` on the C heap: a ctypes view that does not own it, so neither this
+    module's teardown nor its interpreter's frees it."""
+    addr = _calloc(ctypes.sizeof(ctype))
+    if not addr:
+        raise MemoryError("guard-page registry")
+    return ctype.from_address(addr)
+
+
 class _Registry:
     WIDTH = (4, 2)  # words per entry: code {lo, hi, map, count}, reservation {lo, hi}
 
     def __init__(self) -> None:
         self.lock = threading.RLock()  # re-entrant: a finalizer's `remove` inside `add`
-        self.heads = (ctypes.c_uint64 * 2)()
+        self.heads = _raw(ctypes.c_uint64 * 2)
         self.tables: tuple[list[Any], list[Any]] = ([], [])  # every table published, kept
         self.next = [0, 0]
         self.free: tuple[list[int], list[int]] = ([], [])  # slots removal gave back
@@ -152,7 +190,7 @@ class _Registry:
     def _publish(self, kind: int, capacity: int) -> None:
         """A table of `capacity` entries with the live entries copied, then the pointer word."""
         w = self.WIDTH[kind]
-        table = (ctypes.c_uint64 * (1 + w * capacity))()
+        table = _raw(ctypes.c_uint64 * (1 + w * capacity))
         self.tables[kind].append(table)  # a removal from here on (a finalizer) zeroes it too
         if len(self.tables[kind]) > 1:  # under the lock: no other thread removes meanwhile
             old = self.tables[kind][-2]
@@ -173,9 +211,8 @@ class _Registry:
             table[at + 1] = words[1]  # hi last: the entry is live from here
             return slot
 
-    def remove(self, kind: int, slot: int, *keep: object) -> None:
-        """Zero the entry in every table (hi first), then give the slot back. `keep`: objects
-        the entry points to, alive until now."""
+    def remove(self, kind: int, slot: int) -> None:
+        """Zero the entry in every table (hi first), then give the slot back."""
         w = self.WIDTH[kind]
         with self.lock:
             for table in self.tables[kind]:
@@ -219,7 +256,7 @@ def install(target: Any) -> None:
         sigaction = libc.sigaction
         sigaction.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p]
         # one saved action per signal, in SIGNALS order: read by the handler, never freed
-        prev = (_Sigaction * len(SIGNALS))()
+        prev = _raw(_Sigaction * len(SIGNALS))
         for i, sig in enumerate(SIGNALS):
             if sigaction(sig, None, ctypes.byref(prev[i])) != 0:
                 raise OSError(ctypes.get_errno(), "sigaction")
@@ -230,6 +267,7 @@ def install(target: Any) -> None:
             ctypes.addressof(_registry.heads), ctypes.addressof(prev), entry, reraise, darwin=DARWIN
         )
         mem: ExecMem = load(code)
+        _keep(mem)  # before sigaction: an installed handler's code is never unmapped
         act = _Sigaction()
         act.handler, act.flags = mem.addr, SA_SIGINFO | SA_ONSTACK  # no SA_NODEFER
         for i, sig in enumerate(SIGNALS):
@@ -274,11 +312,17 @@ def _install_vectored(target: Any) -> None:
         if not veh:
             mem.free()
             raise ctypes.WinError(ctypes.get_last_error())
+        _keep(mem)
         # first in the list now; faulthandler's state as seen here (the trigger of _to_front)
         fh = faulthandler.is_enabled()
         _publish(
             dict(code=mem, addr=mem.addr, veh=veh, add=add, remove=remove, ehcont=ehcont, fh=fh)
         )
+
+
+def _keep(mem: ExecMem) -> None:
+    """The installed handler's code area is never unmapped, also when this copy's objects go."""
+    mem._release.detach()  # pyright: ignore[reportPrivateUsage]
 
 
 def _publish(h: dict[str, Any]) -> None:
@@ -442,21 +486,37 @@ def check() -> None:
 
 def add_code(code: ExecMem, faults: Sequence[tuple[int, int]]) -> None:
     """Register a code area and its fault map until the area is unmapped."""
-    flat = (ctypes.c_uint32 * max(1, 2 * len(faults)))(*(x for p in faults for x in p))
-    lo = code.addr
+    pairs = [x for p in faults for x in p]
+    flat = _raw(ctypes.c_uint32 * max(1, len(pairs)))  # freed after its entry (_forget_code)
+    flat[: len(pairs)] = pairs
+    lo, mp = code.addr, ctypes.addressof(flat)
     setter = _handler.get("ehcont")
     targets = sorted({lo + r for _, r in faults}) if setter else []
     # before any of the code can run. A refusal is an error under `auto` too: the module is
     # compiled already (no wasm here to compile it explicit again), and `install` checked the
     # policy, so only an OS failure gets here
     if targets and not _eh_targets(setter, targets, True):
+        _cfree(mp)
         raise OSError("SetProcessDynamicEHContinuationTargets refused the resume addresses")
-    slot = _registry.add(0, [lo, lo + code.size, ctypes.addressof(flat), len(faults)])
-    code.on_free(functools.partial(_forget_code, slot, flat, setter, targets))
+    slot = -1
+    try:
+        slot = _registry.add(0, [lo, lo + code.size, mp, len(faults)])
+    except BaseException:  # nothing stays registered for code that will not run
+        if slot >= 0:
+            _registry.remove(0, slot)
+        if targets:
+            _eh_targets(setter, targets, False)
+        _cfree(mp)
+        raise
+    # the commit point, outside the rollback: once on_free has registered its finalizer, an
+    # exception after it (a KeyboardInterrupt in its own Python code) must not undo it, or the
+    # finalizer later frees the map and the entry a second time (S0006 review, 2026-11-03)
+    code.on_free(functools.partial(_forget_code, slot, mp, setter, targets))
 
 
-def _forget_code(slot: int, flat: object, setter: Any, targets: list[int]) -> None:
-    _registry.remove(0, slot, flat)
+def _forget_code(slot: int, mp: int, setter: Any, targets: list[int]) -> None:
+    _registry.remove(0, slot)
+    _cfree(mp)  # no handler reads it now: the entry is zeroed, the code no longer runs
     if targets:  # before the area is unmapped; a failure only leaves stale targets behind
         _eh_targets(setter, targets, False)
 
@@ -467,12 +527,18 @@ def add_reservation(res: Reservation) -> None:
         if res.addr in _registry.reservations:
             return
         _registry.reservations[res.addr] = -1
-    slot = _registry.add(1, [res.addr, res.addr + res.size])
-    _registry.reservations[res.addr] = slot
-    res.on_free(functools.partial(_forget, res.addr, slot))
+    slot = -1
+    try:
+        slot = _registry.add(1, [res.addr, res.addr + res.size])
+        _registry.reservations[res.addr] = slot
+    except BaseException:  # not left half-registered: a later instance registers it again
+        _forget(res.addr, slot)
+        raise
+    res.on_free(functools.partial(_forget, res.addr, slot))  # the commit point, as in add_code
 
 
 def _forget(addr: int, slot: int) -> None:
     with _registry.lock:
-        _registry.remove(1, slot)
+        if slot >= 0:
+            _registry.remove(1, slot)
         _registry.reservations.pop(addr, None)
