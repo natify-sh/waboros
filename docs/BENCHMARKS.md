@@ -780,3 +780,36 @@ OK in all 16 runs); every case within the spread (for example x25519 #0 139.5 �
 modules, `jit-x86_64`, median of 10 compilations per run): 178.6 → 186.9 ms (5 alternated pairs) and 185.7 →
 193.6 ms (8 more), +4–5 %, within the +10 % bound; a `pop` without the extra call was measured and did not pay.
 Every CoreMark run "Correct operation validated".
+
+### Step 5: a parameter accessed once is not pinned (2026-11-03; dropped)
+
+Not merged: the calls benchmark's `leaf` does not get faster, so by S0007's rule the step is dropped. The
+numbers are kept for a revisit.
+
+The change (core, both JITs): `choose_pins` skipped a parameter of weight 1 (one `local.get`/`set`/`tee`,
+outside every loop). Such a parameter stayed in its slot. The leaf `$add` of `poc/bench/calls/` lost
+`push rbx; push rbp`, the two pops and one load (`mov ebx,[r12]; mov ebp,[r12+8]; lea eax,[rbx+rbp]` became
+`mov eax,[r12]; add eax,[r12+8]`): 25 → 21 instructions, 99 → 92 bytes. 319 spec modules changed on each target
+(the same 319), exactly the modules where the rule changed some function's pins. CoreMark's code changed too
+(x86-64 33 993 → 33 997 bytes in guard mode: a parameter left in its slot loses the K path). Conditions:
+2026-11-03 21:15–21:24 UTC, Intel Xeon @ 2.10 GHz, 4 vCPU VM, CPython 3.13.17, `jit-x86_64` in its default
+bounds mode (guard, D44), one benchmark process at a time, load average 0.1–1.0. Baseline: HEAD ffd4c9f
+(`git archive`, `PYTHONPATH`, `waboros.__file__` checked), alternated run by run with the order swapped each
+pair. `tools/run_calls_bench.py --targets jit-x86_64 --rounds 11`, the median of the run medians (range).
+
+| benchmark | runs | before | after | change |
+|---|---|---|---|---|
+| calls, `leaf` (ns per call), as built | 16 pairs | 2.00 (1.94–2.19) | 2.31 (2.19–3.48) | +16 %, slower in 16 of 16 (placement, below) |
+| calls, `leaf`, padding sweep 0–56 bytes | 8 pads × 8 pairs | 2.06 (1.87–3.24) | 2.13 (1.85–2.64) | +3 %, faster in 23 of 64 |
+| calls, `leaf`, the rest of the module at the baseline's offsets | 4 pads × 8 pairs | 2.04 (1.94–2.40) | 2.13 (2.02–3.43) | +4 %, faster in 8 of 32 |
+| calls, `fib(27)` (code unchanged), as built / sweep / control | 16 / 64 / 32 pairs | 2.77 / 3.11 / 3.12 | 3.15 / 3.10 / 3.11 | placement; equal when placed alike |
+| CoreMark (it/s) | 8 pairs | 17 099 (16 850–17 309) | 17 212 (15 795–17 785) | +0.7 %, faster in 6 of 8 (within the spread) |
+
+Padding control (LESSONS 51): both trees had 0, 8, …, 56 bytes of `int3` before the first function (a scratch
+patch). Placement alone moves `leaf` from 1.91 to 2.29 ns and `fib` from 2.77 to 3.17 ns in the baseline. The
+last control padded the new tree with 7 bytes of `int3` after `$add`. Then the code from the caller on was
+byte-identical to the baseline's and at the same offsets, so only `$add`'s body differed. With everything else
+equal, removing the two pushes, the two pops and one load did not make the call faster; it was slightly
+slower, if anything. Every CoreMark run "Correct operation validated". Spec parity held with the change
+(54 385 pass, 0 fail, 91 xfail on `jit-x86_64` in explicit and guard mode and on `jit-aarch64` under QEMU in
+both modes; the ISA gates clean).

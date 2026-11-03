@@ -12,8 +12,8 @@ updated: 2026-11-03
 # S0007 Scalar code generation in both JITs (addressing, returns, temporaries)
 
 ## Summary
-**Status (2026-11-03): approved, in progress.** Steps 1, 2 and 3 are done, step 1b was measured and dropped, the spec is
-paused while S0006 is closed (now implemented); steps 4-8 are open.
+**Status (2026-11-03): approved, in progress.** Steps 1, 2 and 3 are done, steps 1b and 5 were measured and dropped, the spec is
+paused while S0006 is closed (now implemented); steps 4 and 6-8 are open.
 
 `jit-x86_64` scalar code is 1.5–3.9× slower than Wasmtime on the scalar kernels and 38 % slower on
 CoreMark. A measured investigation (2026-11-02; Xeon 2.10 GHz, 4 vCPU, CPython 3.13.17, wasmtime-py
@@ -337,3 +337,11 @@ investigation's.
   The Test plan's unit-test sentence was corrected: from a local holding 0, `k = 2³² − 4` with offset 4 is
   2³², a trap, not address 0 (wasm wraps before adding the offset).
 * 2026-11-03: status note: S0006 is implemented, so the pause for it ends; steps 4-8 are still open.
+* 2026-11-03: step 5 (a parameter of weight 1 is not pinned, Q6 (a)), **measured and dropped**. Spec parity
+  on both JITs (54 385 pass, 0 fail, 91 xfail; `jit-x86_64` explicit and guard, `jit-aarch64` under QEMU in
+  both modes); D35: the same 319 modules change on each target, exactly those where the rule changes a
+  function's pins; ISA gates clean. The calls benchmark's leaf lost two pushes, two pops and a load (25 → 21
+  instructions) but was not faster. As built it was 2.00 → 2.31 ns (placement). Over a padding sweep it was
+  2.06 → 2.13 (faster in 23 of 64 pairs). With the rest of the module byte-identical at the baseline's
+  offsets it was 2.04 → 2.13 (8 of 32). CoreMark was +0.7 %, within the spread (BENCHMARKS.md). The code
+  is reverted; the patch can be re-measured after step 6 (call-free leaves without checks).
