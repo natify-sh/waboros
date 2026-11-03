@@ -2,7 +2,7 @@
 title: The artifact container - our own format or ELF (as Wasmtime does)
 kind: reference
 status: draft
-updated: 2026-11-02
+updated: 2026-11-03
 ---
 
 # The artifact container: our own format or an ELF container
@@ -22,7 +22,7 @@ means a `format_version` bump, plus changes to the C reference loader and to eve
      OS, because the loader is ours;
    * Android 10+ does not let apps execute files from their data directory and iOS does not allow
      it at all. Our anonymous `mmap` path is what passes in the Android app process (RISKS R2, CI
-     job `android`);
+     the Android cell of `platforms.yml`);
    * a file on disk (temp dirs, `noexec` mounts, cleanup), dynamic linking against runtime symbols,
      the OS loader's policies.
 2. **ELF as a container only**, parsed by our own loader (Python and the C reference loader),

@@ -235,8 +235,8 @@ trap).
 |---|---|---|---|
 | Linux glibc | **verified** (D44) | **verified** (step 2; the native runner confirms) | `jit` (aarch64 under QEMU), `arm64` native runner |
 | Linux musl | **verified** (musl step) | explicit: `jit-aarch64` needs libgcc's `__clear_cache`, absent from the stock image (Changes) | `jit` (`python:3.13-alpine` container) |
-| macOS | **verified** (step 3; CI run 41610392553) | **verified** (step 3; CI run 41610392553) | `os` (`macos-26-intel`), `arm64` (`macos-latest`) |
-| Windows | **verified** (step 4; CI run 41640149866) | **verified** (step 4; CI run 41633456821) | `os` (`windows-latest`), `arm64` (`windows-11-arm`) |
+| macOS | **verified** (step 3; CI run 41610392553) | **verified** (step 3; CI run 41610392553) | `platforms.yml` (`macOS x86_64`, `macOS arm64`) |
+| Windows | **verified** (step 4; CI run 41640149866) | **verified** (step 4; CI run 41633456821) | `platforms.yml` (`Windows x64`, `Windows ARM64`) |
 | Android (bionic, libsigchain) | step 5 | explicit (documented limitation) | `android` (x86_64 emulator) |
 
 The BSDs are not a target (TARGETS.md), so they have no row.
@@ -761,3 +761,4 @@ reservation is a crash, not a trap: the explicit-mode tests and differential run
     state and publishes it with one assignment (`_publish`), on POSIX and Windows alike: its early
     return without the lock, `broken()` and `_to_front` could otherwise see it half filled (a
     KeyError, or no `ehcont` on a free-threaded build).
+* 2026-11-03: **CI moved.** The `os` job, the macOS and Windows legs of `arm64`, `macos-pythonorg` and `android` left `ci.yml`; the guard rows of macOS and Windows (x86-64 and arm64) are now verified on every push and pull request by `platforms.yml` (cibuildwheel, the installed wheel): `tests --jit-bounds=guard,explicit` and `ci/harness/spec.py` (the spec suite on `jit-<arch>` in guard and explicit mode). The older entries above name the jobs of their time.

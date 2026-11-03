@@ -80,6 +80,17 @@ test-command = "pytest {project}/tests -q -rs -p no:cacheprovider --ignore={proj
 select = "*-manylinux_aarch64"
 test-command = "pytest {project}/tests --jit-bounds=auto,explicit -q -rs -p no:cacheprovider"
 
+# The spec suite (ci/harness/spec.py: wasmtime, pyc, the JIT in guard and explicit mode, auto) runs
+# once per JIT platform, after the tests, on one Python: cp311 (musl x86_64 has only cp313). The
+# overrides are in this order because a later one wins: the aarch64 glibc cell keeps its modes.
+[[tool.cibuildwheel.overrides]]
+select = ["cp311-manylinux_x86_64", "cp313-musllinux_x86_64", "cp311-macosx_*", "cp311-win_*"]
+test-command = "pytest {project}/tests --jit-bounds=guard,explicit -q -rs -p no:cacheprovider && python {project}/ci/harness/spec.py"
+
+[[tool.cibuildwheel.overrides]]
+select = "cp311-manylinux_aarch64"
+test-command = "pytest {project}/tests --jit-bounds=auto,explicit -q -rs -p no:cacheprovider && python {project}/ci/harness/spec.py"
+
 # Linux i686 and armv7l (32-bit) and the optional exotic jobs (ppc64le, s390x, riscv64; under QEMU): no JIT here, no
 # wheels of wasmtime / wasm-tools, no uv wheels: pyc-only subset, no oracle.
 # The --ignore list is what fails on x86-64 Linux without wasmtime / wat2wasm (their tests compile

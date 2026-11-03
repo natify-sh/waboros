@@ -1,23 +1,24 @@
 name: platforms
-# DRAFT for review (ROADMAP, "Platform tests through cibuildwheel"). workflow_dispatch only works for a
-# workflow on the default branch, so TEMPORARILY it also runs on a push to phase5 that touches the
-# harness or this file (remove the push trigger when it lands on main). cibuildwheel builds the test-only harness (ci/harness) per platform and runs tests/ with the
-# waboros wheel built from the repository root; the config is ci/harness/pyproject.toml.
+# The only place where macOS, Windows, Android, Pyodide and the Linux wheels (glibc, musl, 32-bit,
+# arm) are tested, on every push and pull request like `ci` (ROADMAP, "Platform tests through
+# cibuildwheel"). cibuildwheel builds the test-only harness (ci/harness) per platform and runs tests/
+# and the spec suite (ci/harness/spec.py) with the waboros wheel built from the repository root, as an
+# installed package; the config is ci/harness/pyproject.toml. `ci` keeps what needs a source checkout
+# (llvm-mc, objdump, QEMU, CoreMark, the D35 diff). The optional `exotic` job runs from the Actions tab.
 # "proven" = the same recipe runs in a sibling natify-sh repository (py-wasmext, wabt-package);
 # "new" = nobody has run it yet.
 on:
+  push:
+  pull_request:
   workflow_dispatch:
     inputs:
       exotic:
         description: also run the optional QEMU jobs (ppc64le, s390x, riscv64)
         type: boolean
         default: false
-  push:
-    branches: [phase5]
-    paths: [ci/harness/**, .github/workflows/platforms.yml]
-# its own group: never cancels the `ci` workflow
+# a newer push to the same ref cancels the run in progress; its own group: never cancels the `ci` workflow
 concurrency:
-  group: platforms-${{ github.ref }}
+  group: platforms-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 env:
   PYTHONUTF8: "1"

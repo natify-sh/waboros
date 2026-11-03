@@ -88,11 +88,11 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
 | axis | values |
 |---|---|
 | Python | CPython 3.11, 3.12, 3.13, 3.14, 3.15, 3.15t (free-threaded); PyPy 3.11 (D19) |
-| OS | Linux x86-64 (all jobs), Windows x64 (`windows-latest`) and macOS x64 (`macos-26-intel`) (`os` job: `pytest` including `tests/jit`, the stack bounds, and the spec run for wasmtime and `pyc`, not for `jit-x86_64`) (the `arm64` job below covers aarch64) |
+| OS | Linux x86-64 (all jobs of `ci`); Windows x64 (`windows-latest`), macOS x64 (`macos-26-intel`), Windows ARM64 (`windows-11-arm`) and macOS arm64 (`macos-26`) only in `platforms.yml` (cibuildwheel, below) |
 | target | `pyc` everywhere; `jit-*` where the machine matches; `mpy` with the MicroPython unix port |
-| native arm64 | `jit-aarch64` on GitHub's arm64 runners: `ubuntu-24.04-arm`, `macos-latest` (macOS arm64, `MAP_JIT`), `windows-11-arm` (labels per actions/runner-images) |
-| python.org macOS | `macos-pythonorg` job: the pinned python.org 3.13.17 CPython (hardened runtime) on Apple Silicon; prints its entitlements, then either the JIT tests pass or `auto` gives `pyc` with one D31 warning that names the refusal; the spec suite with `auto` (RISKS R2) |
-| Android | `android` job: the python.org CPython for Android in CPython's testbed app on a managed x86_64 emulator (KVM, `ubuntu-latest`); `tools/android_check.py` then `tests/jit/test_probe.py`, `test_execmem.py`, `test_abi.py`, `tests/test_fallback.py`, `tests/test_target_pyc.py` (no wasmtime there, so tests that compile WAT skip); either outcome of the probe passes if the behaviour is right (JIT runs, or `auto` gives `pyc` with one D31 warning); the log is the artifact `android-log`; the step is retried once (the emulator's own download and start-up failures); no arm64 job (RISKS R2) |
+| native arm64 | `jit-aarch64` on GitHub's arm64 runners: `ubuntu-24.04-arm` (job `arm64` of `ci`), `macos-26` (macOS arm64, `MAP_JIT`) and `windows-11-arm` (`platforms.yml`; labels per actions/runner-images) |
+| python.org macOS | the macOS cells of `platforms.yml` run the python.org framework CPython (hardened runtime) that cibuildwheel installs, on Apple Silicon (`macos-26`) and Intel; the JIT tests and the spec suite pass there, and a refusal by the hardened runtime would show as a failed cell (RISKS R2). The separate `macos-pythonorg` job, with its entitlements printout, is gone |
+| Android | the Android cell of `platforms.yml`: CPython's testbed app on a managed x86_64 emulator (cibuildwheel; `arm64_v8a` is built only), `python -m pytest tests --jit-bounds=auto` inside the app with the tests that need no WAT or wasmtime (no wasmtime there); no arm64 test (RISKS R2). The `android` job and `tools/android_check.py` (unused since) are gone from `ci` |
 | emulated | QEMU user-mode only for architectures without native runners (riscv64, armv7, mips32el) as JIT targets appear |
 
 JIT artifacts: run baseline artifacts on an emulated baseline CPU (e.g. QEMU `-cpu` without SSE4.1 /
@@ -119,17 +119,20 @@ on other hosts, but fails under
 verified-row check cannot silently turn guard pages off;
 then both ISA gates and the D35 lists of both targets in both bounds modes, named on both hosts);
 `spec` (the spec run on `wasmtime`, `pyc`, `jit-x86_64` in the default mode and with
-`WABOROS_JIT_BOUNDS=explicit`, then `auto` under `no_exec.py`); `os` (on `macos-26-intel` and
-`windows-latest` also the `jit-x86_64` spec suite and `test_guard.py` + `test_fault_handler.py` with
-`WABOROS_JIT_BOUNDS=guard` and `WABOROS_JIT_REQUIRE=1`, S0006 steps 3 and 4; the disassembly checks are left
-out there, the runners need no llvm-mc or GNU objdump; on Windows the chain tests are POSIX-only and
-the forced-CET child test runs, below); `arm64`
-(on the Linux runner also the `jit-aarch64` spec suite in both bounds modes, `test_guard.py` in guard mode and
-`tests/jit` in explicit mode, S0006 step 2; on `macos-latest` the `jit-aarch64` spec suite and
-`test_guard.py` in guard mode with `WABOROS_JIT_REQUIRE=1`, S0006 step 3; they passed in CI run 41610392553, so
-the macOS row is verified and `auto` gives guard there, the step keeps `guard` named; the same steps on
-`windows-11-arm`, S0006 step 4; they passed in CI runs 41633456821 (arm64) and 41640149866 (`windows-latest`), so
-the `win32` row is verified and `auto` gives guard on Windows); `macos-pythonorg`; `android`.
+`WABOROS_JIT_BOUNDS=explicit`, then `auto` under `no_exec.py`); `arm64`
+(Linux arm64 only: the `jit-aarch64` spec suite in both bounds modes, `test_guard.py` in guard mode and
+`tests/jit` in explicit mode, S0006 step 2).
+
+`.github/workflows/platforms.yml` (cibuildwheel; config `ci/harness/pyproject.toml`; the same triggers
+as `ci`, its own concurrency group) is the only place where macOS, Windows, Android and Pyodide are
+tested, and also runs the Linux wheels (glibc and musl x86_64, i686, aarch64, armv7l). It tests the
+installed wheel, not `src/`: `pytest tests --jit-bounds=guard,explicit` on every cell (`auto,explicit` on Linux
+aarch64, `auto` on Android), and once per JIT platform (Linux glibc and musl x86_64, Linux aarch64,
+macOS, Windows, both architectures; one Python each) `ci/harness/spec.py`: the spec suite on `wasmtime`, `pyc`,
+the JIT in guard mode and in explicit mode, and `auto` (S0006 steps 3 and 4: the guard rows of macOS and
+Windows are verified there on every push). Left in `ci` because they need a source checkout or special
+tools: the disassembly checks (llvm-mc, GNU objdump), QEMU, CoreMark, the D35 lists, MDWE.
+
 `tests/jit/test_fault_handler.py` checks the emitted fault handlers off their OS: the Darwin and
 Windows offsets against ctypes mirrors of xnu's and the Windows SDK's headers, the Darwin and Windows
 handlers through llvm-mc (x86-64 also through GNU objdump; the Windows ones also for the registers they
