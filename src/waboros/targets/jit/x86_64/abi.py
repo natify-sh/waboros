@@ -158,9 +158,21 @@ def assemble(win64: bool) -> tuple[bytes, list[int]]:
 # sa_handler first).
 SI_CODE, SI_ADDR = 8, 16  # si_signo, si_errno, si_code, padding, then si_addr
 UC_RIP = 40 + 8 * 16  # uc_flags, uc_link, uc_stack (24 bytes), then mcontext gregs[REG_RIP = 16]
+# macOS x86-64 (S0006 step 3), from xnu (apple-oss-distributions/xnu, main, read 2026-11-03):
+# siginfo_t (bsd/sys/signal.h): si_signo, si_errno, si_code, si_pid, si_uid, si_status, si_addr
+# at 24. ucontext_t (bsd/sys/_types/_ucontext.h): uc_onstack, uc_sigmask (u32), uc_stack (24
+# bytes), uc_link, uc_mcsize, then uc_mcontext at 48: a pointer to the mcontext, which sigreturn
+# reads back through it (bsd/dev/i386/unix_signal.c). __darwin_mcontext64 (bsd/i386/_mcontext.h):
+# __es (x86_exception_state64, osfmk/mach/i386/_structs.h: trapno, cpu, err, faultvaddr; 16
+# bytes), then __ss (rax rbx rcx rdx rdi rsi rbp rsp r8-r15, then rip). SIGBUS is 10 there, and
+# libc's `struct sigaction` is {handler, u32 mask, int flags}: 16 bytes.
+DARWIN_SI_ADDR, DARWIN_UC_MCONTEXT, DARWIN_MC_RIP = 24, 48, 16 + 8 * 16
+DARWIN_SIGBUS, DARWIN_SIGACTION = 10, 16
 
 
-def fault_handler(a: Asm, tables: int, prev: int, sigaction: int, reraise: int) -> None:
+def fault_handler(
+    a: Asm, tables: int, prev: int, sigaction: int, reraise: int, darwin: bool = False
+) -> None:
     """void handler(int sig, siginfo_t *si, ucontext_t *uc), installed with SA_SIGINFO (S0006,
     "The handler contract"). `tables`: two words, the addresses of the registry's code table
     `[capacity, {lo, hi, map, count}...]` and reservation table `[capacity, {lo, hi}...]`; a
@@ -173,6 +185,15 @@ def fault_handler(a: Asm, tables: int, prev: int, sigaction: int, reraise: int) 
     faults again under it; a signal that was sent (si_code <= 0) does not recur by itself, so it
     is sent again with libc's `raise` (`reraise`), pending until the handler returns. Only rax,
     rcx and r8-r11 are written; no lock, no allocation.
+    `darwin` (macOS, S0006 step 3): the Darwin offsets above, the PC behind the uc_mcontext
+    pointer; `prev` is an array of two saved actions, SIGSEGV's then SIGBUS's (PROT_NONE faults
+    arrive as SIGBUS, xnu bsd/uxkern/ux_exception.c), chosen by the signal. xnu's sendsig fills
+    si_code of every SIGSEGV/SIGBUS, a sent one included (SIGBUS always BUS_ADRERR; SIGSEGV from
+    the thread's last exception code), so si_code > 0 does not mean a fault there: "ours" rests
+    on the PC and the address, and SIG_DFL/SIG_IGN is always followed by `raise`. Under SIG_DFL
+    a fault then ends the process from the pending signal before the instruction runs again,
+    with the same signal; under SIG_IGN xnu drops both and the fault repeats forever, as it does
+    without us (LESSONS 57).
     The idea of resuming at the module's trap stub and of chaining is poc/w2jit_guard.py's;
     "ours by PC and fault address" is Wasmtime's `test_if_trap` (read, not copied)."""
     notours, scan, skip, search, bisect, below, found, rscan, rskip, ours, dfl, done = (
@@ -180,8 +201,12 @@ def fault_handler(a: Asm, tables: int, prev: int, sigaction: int, reraise: int) 
     )
     a.endbr64()  # entered indirectly by the kernel (CET IBT)
     a.alu_imm("cmp", Mem(RSI, SI_CODE), 0)
-    a.jcc("le", notours)  # kill/raise/sigqueue: never ours
-    a.mov(R8, Mem(RDX, UC_RIP), w=True)
+    a.jcc("le", notours)  # kill/raise/sigqueue: never ours (on Linux)
+    if darwin:
+        a.mov(R8, Mem(RDX, DARWIN_UC_MCONTEXT), w=True)
+        a.mov(R8, Mem(R8, DARWIN_MC_RIP), w=True)
+    else:
+        a.mov(R8, Mem(RDX, UC_RIP), w=True)
     a.mov_imm(R10, tables, w=True)
     a.mov(R10, Mem(R10), w=True)
     a.mov(R11, Mem(R10), w=True)  # capacity
@@ -220,7 +245,7 @@ def fault_handler(a: Asm, tables: int, prev: int, sigaction: int, reraise: int) 
     a.mov(RCX, Mem(R10, 4, R9, 8))  # the resume offset, zero-extended
     a.alu("sub", R8, RAX, w=True)
     a.alu("add", R8, RCX, w=True)  # r8 = code base + resume offset
-    a.mov(R9, Mem(RSI, SI_ADDR), w=True)
+    a.mov(R9, Mem(RSI, DARWIN_SI_ADDR if darwin else SI_ADDR), w=True)
     a.mov_imm(R10, tables, w=True)
     a.mov(R10, Mem(R10, 8), w=True)
     a.mov(R11, Mem(R10), w=True)
@@ -237,11 +262,24 @@ def fault_handler(a: Asm, tables: int, prev: int, sigaction: int, reraise: int) 
     a.alu_imm("sub", R11, 1, w=True)
     a.jmp(rscan)
     a.bind(ours)
-    a.mov(Mem(RDX, UC_RIP), R8, w=True)
+    if darwin:
+        a.mov(RAX, Mem(RDX, DARWIN_UC_MCONTEXT), w=True)
+        a.mov(Mem(RAX, DARWIN_MC_RIP), R8, w=True)
+    else:
+        a.mov(Mem(RDX, UC_RIP), R8, w=True)
     a.ret()
     a.bind(notours)
-    a.mov_imm(RAX, prev, w=True)
-    a.mov(RAX, Mem(RAX), w=True)  # its sa_handler / sa_sigaction
+    if darwin:  # rcx = the saved action of this signal
+        segv = a.label()
+        a.mov_imm(RCX, prev, w=True)
+        a.alu_imm("cmp", RDI, DARWIN_SIGBUS)
+        a.jcc("ne", segv, short=True)
+        a.alu_imm("add", RCX, DARWIN_SIGACTION, w=True)
+        a.bind(segv)
+        a.mov(RAX, Mem(RCX), w=True)
+    else:
+        a.mov_imm(RAX, prev, w=True)
+        a.mov(RAX, Mem(RAX), w=True)  # its sa_handler / sa_sigaction
     a.alu_imm("cmp", RAX, 1, w=True)
     a.jcc("be", dfl)
     a.jmp(RAX)  # rdi, rsi, rdx as the kernel passed them
@@ -249,13 +287,17 @@ def fault_handler(a: Asm, tables: int, prev: int, sigaction: int, reraise: int) 
     a.push(RDI)
     a.push(RSI)
     a.alu_imm("sub", RSP, 8, w=True)  # rsp = 8 mod 16 on entry: aligned for the calls
-    a.mov_imm(RSI, prev, w=True)
+    if darwin:
+        a.mov(RSI, RCX, w=True)
+    else:
+        a.mov_imm(RSI, prev, w=True)
     a.alu("xor", RDX, RDX)
     a.mov_imm(RAX, sigaction, w=True)
     a.call(RAX)
-    a.mov(RSI, Mem(RSP, 8), w=True)
-    a.alu_imm("cmp", Mem(RSI, SI_CODE), 0)
-    a.jcc("g", done)  # a fault: the instruction faults again
+    if not darwin:  # Darwin: always re-sent (above)
+        a.mov(RSI, Mem(RSP, 8), w=True)
+        a.alu_imm("cmp", Mem(RSI, SI_CODE), 0)
+        a.jcc("g", done)  # a fault: the instruction faults again
     a.mov(RDI, Mem(RSP, 16), w=True)
     a.mov_imm(RAX, reraise, w=True)
     a.call(RAX)  # raise(sig)

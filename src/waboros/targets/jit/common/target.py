@@ -47,8 +47,12 @@ class JitTarget:
         """The backend in guard mode (S0006); only where `guard_rows` is not empty."""
         raise NotImplementedError
 
-    def fault_handler(self, tables: int, prev: int, sigaction: int, reraise: int) -> bytes:
-        """The fault handler's code for this host (S0006, x86_64/abi.py `fault_handler`)."""
+    def fault_handler(
+        self, tables: int, prev: int, sigaction: int, reraise: int, darwin: bool = False
+    ) -> bytes:
+        """The fault handler's code for this host (S0006, x86_64/abi.py `fault_handler`).
+        `darwin`: macOS's signal context and two saved actions at `prev`, SIGSEGV's then
+        SIGBUS's (step 3)."""
         raise NotImplementedError
 
     def probe(self) -> str | None:

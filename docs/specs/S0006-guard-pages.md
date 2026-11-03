@@ -6,7 +6,7 @@ status: approved
 superseded_by:
 related: [D10, D23, D25, D29, D31, D33, D35, D36, D37, D39, D42, R2, R3, R6, S0003, S0004, S0005]
 owner: maintainer
-updated: 2026-11-02
+updated: 2026-11-03
 ---
 
 # S0006 Guard pages instead of explicit bounds checks on jit-x86_64 and jit-aarch64
@@ -126,7 +126,8 @@ of LESSONS 5; aarch64: a `uxtw` register offset or a 32-bit `mov`), and the acce
 A host that runs a `BOUNDS_GUARD` artifact must, for the whole time any of its code can run, have a
 process-wide fault handler that does the following. **A fault is ours if and only if**:
 1. it is a hardware access fault: `SIGSEGV`, or `SIGBUS` on macOS and the BSDs, with `si_code > 0`
-   (kernel-generated, so a `kill`/`raise` is never ours); Windows: `EXCEPTION_ACCESS_VIOLATION`;
+   (kernel-generated, so a `kill`/`raise` is never ours; on macOS `si_code` does not tell, so there
+   2 and 3 decide alone, Changes, step 3); Windows: `EXCEPTION_ACCESS_VIOLATION`;
 2. the PC is inside the `CODE` of a loaded guard artifact and its offset is a `fault_offset` of that
    artifact's `TRAPMAP` (binary search);
 3. the fault address (`si_addr`; Windows `ExceptionInformation[1]`) is inside a memory reservation
@@ -139,7 +140,10 @@ process-wide fault handler that does the following. **A fault is ours if and onl
 exactly as if the handler were absent: the previous `SA_SIGINFO` handler is called with the same
 three arguments, a previous plain handler with the signal number; a previous `SIG_DFL`/`SIG_IGN` is
 put back with `sigaction` and the handler returns, so the instruction faults again and the default
-action happens (core, exit status 139); Windows returns `EXCEPTION_CONTINUE_SEARCH`. A PC in our code
+action happens (core, exit status 139). A signal that was sent (`si_code <= 0` on Linux) does not
+recur, so it is sent again with `raise` after `sigaction` (LESSONS 46). On macOS `si_code` cannot
+tell, so `raise` always follows (LESSONS 57; Changes, step 3). Windows returns
+`EXCEPTION_CONTINUE_SEARCH`. A PC in our code
 that is not a fault point is **not** ours (a JIT bug crashes, as in Wasmtime, rather than becoming a
 trap).
 
@@ -226,7 +230,7 @@ trap).
 |---|---|---|---|
 | Linux glibc | **verified** (D44) | **verified** (step 2; the native runner confirms) | `jit` (aarch64 under QEMU), `arm64` native runner |
 | Linux musl | **verified** (musl step) | explicit: `jit-aarch64` needs libgcc's `__clear_cache`, absent from the stock image (Changes) | `jit` (`python:3.13-alpine` container) |
-| macOS | step 3 | step 3 | `macos-x64`, `macos-pythonorg` |
+| macOS | implemented (step 3), verification pending CI | implemented (step 3), verification pending CI | `os` (`macos-26-intel`), `arm64` (`macos-latest`) |
 | Windows | step 4 | with step 4 | `windows`, `arm64` (`windows-11-arm`) |
 | Android (bionic, libsigchain) | step 5 | explicit (documented limitation) | `android` (x86_64 emulator) |
 
@@ -530,3 +534,72 @@ reservation is a crash, not a trap: the explicit-mode tests and differential run
     documented limitation: CI has no arm64 emulator, bionic's `struct sigaction` differs, and
     libsigchain sits in between. The BSDs are not a target (TARGETS.md, cibuildwheel's map), so
     they have no row.
+* 2026-11-03: **step 3 built (macOS x86-64 and arm64), verification pending CI.** No macOS machine
+  was available: every constant comes from Apple's sources (`apple-oss-distributions` on GitHub, `main`,
+  read 2026-11-03), is mirrored field by field as ctypes structures in
+  `tests/jit/test_fault_handler.py`, and the macOS behaviour itself is unverified until the CI steps
+  run. As built:
+  * **Constants** (LP64): SIGSEGV 11, SIGBUS 10; `SA_ONSTACK` 0x1, `SA_SIGINFO` 0x40 (`SA_NODEFER`
+    0x10, not used) (xnu `bsd/sys/signal.h`). `siginfo_t`: `si_code` at 8, `si_addr` at 24 (after
+    `si_pid`, `si_uid`, `si_status`) (`bsd/sys/signal.h`). `ucontext_t`: `uc_onstack`, `uc_sigmask`
+    (u32), `uc_stack` (24 bytes), `uc_link`, `uc_mcsize`, then `uc_mcontext` at 48, a **pointer**;
+    sigreturn reads the mcontext back through it (`bsd/sys/_types/_ucontext.h`,
+    `bsd/dev/{arm,i386}/unix_signal.c`). `__darwin_mcontext64`: `__es` (16 bytes) then `__ss`. On
+    x86-64 `__es` is {trapno, cpu, err, `__faultvaddr` at 8} and `__ss.__rip` is at 16 + 128 = 144
+    (`bsd/i386/_mcontext.h`, `osfmk/mach/i386/_structs.h`). On arm64 `__es` is {`__far` at 0, esr,
+    exception} and `__ss.__pc` is at 16 + 256 = 272, after x0-x28, fp, lr, sp (`bsd/arm/_mcontext.h`,
+    `osfmk/mach/arm/_structs.h`). `si_addr` is `__faultvaddr` / `__far` for SIGSEGV and SIGBUS.
+    libc's `struct sigaction` is {`sa_handler`, u32 `sa_mask`, int `sa_flags`}, 16 bytes, with no
+    restorer (xnu `bsd/sys/signal.h`). libplatform's `__platform_sigaction`
+    (`src/setjmp/generic/sigaction.c`) adds `_sigtramp` itself, so re-installing a saved action
+    works. A PROT_NONE page faults with `KERN_PROTECTION_FAILURE`, which becomes SIGBUS; an unmapped
+    one gets `KERN_INVALID_ADDRESS`, which becomes SIGSEGV (`bsd/uxkern/ux_exception.c`). So both
+    signals are installed, with one saved action each.
+  * **Handlers.** `fault_handler(..., darwin=True)` in both `abi.py`: the PC behind the
+    `uc_mcontext` pointer. The saved action is chosen by the signal: SIGSEGV's, then SIGBUS's, at
+    `prev + 16`. x86-64 still writes only rax, rcx and r8-r11; aarch64 only x9-x17 and x29 (x15 holds
+    the chosen action), never x18. The Linux bytes are unchanged (the same sha256 as before for both
+    architectures). The handlers are 296 bytes (x86-64) and 308 bytes (aarch64), for small immediates.
+  * **`si_code` on Darwin** (LESSONS 57): xnu's `sendsig` fills it by signal number, a sent signal
+    included. On arm64 every SIGBUS gets `BUS_ADRALN` and every SIGSEGV `SEGV_ACCERR`; on x86-64
+    SIGBUS gets `BUS_ADRERR` and SIGSEGV a code from the thread's last exception. So "ours" rests on
+    the PC and the address (the `si_code > 0` test stays, as a filter: x86 GP faults have 0). When
+    the saved action is SIG_DFL/SIG_IGN, the handler always calls `raise` after `sigaction`. Under
+    SIG_DFL a real fault then ends the process from the pending signal before the instruction runs
+    again: the same signal and exit status as without us. Under SIG_IGN xnu's `threadsignal` drops
+    the signal, so a real foreign fault runs again forever (100 % CPU): xnu's own behaviour without
+    us, not a regression (Linux force-unignores a fault signal). `si_addr` of any SIGSEGV/SIGBUS is
+    the thread's last page-fault address (`es.faultvaddr`/`es.far`), routinely inside a
+    reservation while wasm runs: a `kill -BUS`/`-SEGV` landing while the PC is on a fault point
+    becomes a `MEMORY_OUT_OF_BOUNDS` trap and the signal is swallowed. Accepted, as in Wasmtime
+    (PC only).
+  * **Async-signal safety** (read): libc's `sigaction` is a check plus the `__sigaction` syscall.
+    `raise` is `pthread_kill(pthread_self())`, and for the calling thread libpthread takes no lock
+    (`_pthread_is_valid`). Neither allocates.
+  * **`MAP_JIT`, BTI, PAC.** The handler is loaded like all code, `MAP_JIT` on arm64. It writes only
+    the signal context, never JIT memory, so no write toggle is involved. The faulting thread runs
+    wasm code, so it is in execute mode. Darwin enforces no BTI on user code, so `bti c` is a
+    harmless no-op there. The saved PC is unsigned in an arm64 (not arm64e) process: such threads
+    run with user JOP disabled, and `machine_thread_state_convert_from_user`
+    (`osfmk/arm64/status.c`) takes the state as is. RISKS R6 has the remaining cases: a thread in
+    write mode, Mach exception ports, debuggers.
+  * **Wasmtime on macOS** (read, not copied: `crates/wasmtime/src/runtime/vm/sys/unix/machports.rs`
+    and `signals.rs`). It uses Mach exception ports by default: a helper thread, adopted from
+    SpiderMonkey after a crash reporter (Breakpad) swallowed its faults, issue 2456. Its signal
+    fallback installs SIGBUS too and reads `(*uc_mcontext).__ss.__pc`/`__rip`. Q5 stands: we use
+    signals; with Mach ports, Wasmtime in-process installs no signal handler, so ours stays on top.
+  * **`common/guard.py`**: `SIGNALS` (SIGSEGV; and SIGBUS on macOS), the OS's flags, and its
+    `struct sigaction`. `install` saves one action per signal and puts back the ones already
+    installed if a later `sigaction` fails. `broken()` checks every signal; on macOS this means two
+    `sigaction` queries per check. Rows: `darwin` is in `guard_rows` of both targets and not in
+    `verified`.
+  * **Tests.** `test_guard.py` runs on macOS: the fixture requires the row and requires `auto` to
+    give guard only where the row is verified. The foreign chaining handler covers every signal we
+    take. `test_fault_handler.py` runs anywhere. It checks the offsets against the header mirrors
+    and puts both Darwin handlers through llvm-mc: aarch64 byte for byte, x86-64 instruction by
+    instruction through GNU objdump. It also calls the machine's handler as a C function with
+    fabricated Linux and Darwin contexts and stand-ins for `sigaction`, `raise` and the saved
+    handlers, so the Darwin paths run on Linux, natively and under QEMU.
+  * **CI**: `os` (`macos-26-intel`) and `arm64` (`macos-latest`) run the spec suite and
+    `test_guard.py` with `WABOROS_JIT_BOUNDS=guard` and `WABOROS_JIT_REQUIRE=1`. Once they pass,
+    a separate commit adds `darwin` to `verified` (D44's rule).

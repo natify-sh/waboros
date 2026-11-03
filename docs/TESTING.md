@@ -2,7 +2,7 @@
 title: Testing
 kind: reference
 status: current
-updated: 2026-11-02
+updated: 2026-11-03
 ---
 
 # Testing
@@ -119,9 +119,17 @@ on other hosts, but fails under
 verified-row check cannot silently turn guard pages off;
 then both ISA gates and the D35 lists of both targets in both bounds modes, named on both hosts);
 `spec` (the spec run on `wasmtime`, `pyc`, `jit-x86_64` in the default mode and with
-`WABOROS_JIT_BOUNDS=explicit`, then `auto` under `no_exec.py`); `os`; `arm64` (on the Linux runner also the
-`jit-aarch64` spec suite in both bounds modes, `test_guard.py` in guard mode and `tests/jit` in explicit
-mode, S0006 step 2); `macos-pythonorg`; `android`.
+`WABOROS_JIT_BOUNDS=explicit`, then `auto` under `no_exec.py`); `os` (on `macos-26-intel` also the
+`jit-x86_64` spec suite and `test_guard.py` with `WABOROS_JIT_BOUNDS=guard` and `WABOROS_JIT_REQUIRE=1`,
+S0006 step 3; the disassembly checks are left out there, the runner has no llvm-mc or GNU objdump); `arm64`
+(on the Linux runner also the `jit-aarch64` spec suite in both bounds modes, `test_guard.py` in guard mode and
+`tests/jit` in explicit mode, S0006 step 2; on `macos-latest` the `jit-aarch64` spec suite and
+`test_guard.py` in guard mode with `WABOROS_JIT_REQUIRE=1`, S0006 step 3: the macOS row is not verified
+until these pass, so `auto` stays explicit there); `macos-pythonorg`; `android`.
+`tests/jit/test_fault_handler.py` checks the emitted fault handlers off their OS: the Darwin offsets
+against ctypes mirrors of xnu's headers, both Darwin handlers through llvm-mc (x86-64 also through GNU
+objdump), and the handler of the machine called as a C function with fabricated Linux and Darwin contexts,
+so the macOS code paths run on Linux too (aarch64 under QEMU).
 
 Packaging workflows (D40): `.github/workflows/coverage.yml` runs `pytest --cov` on Python 3.13 and keeps
 `coverage.xml` as an artifact and to Codecov (OIDC); `publish.yml` runs on a `v*` tag, builds the sdist and the wheel,

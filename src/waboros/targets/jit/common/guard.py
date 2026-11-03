@@ -43,10 +43,18 @@ BOUNDS_GUARD = 1  # artifact header flag bit 0; GUARD_LOG2 in bits 8-15 (S0006 "
 FLAGS = BOUNDS_GUARD | GUARD_LOG2 << 8
 MODES = ("explicit", "guard", "auto")
 SIGSEGV = 11
-SA_SIGINFO, SA_ONSTACK = 4, 0x08000000
+DARWIN = sys.platform == "darwin"
+# The signals the handler takes and the libc's sigaction flags. Linux: SIGSEGV; SA_SIGINFO 4,
+# SA_ONSTACK 0x08000000. macOS (S0006 step 3; xnu bsd/sys/signal.h): SIGSEGV 11 and SIGBUS 10,
+# since a PROT_NONE page (the guard) faults with KERN_PROTECTION_FAILURE, which xnu turns into
+# SIGBUS, and an unmapped one with KERN_INVALID_ADDRESS, SIGSEGV (bsd/uxkern/ux_exception.c);
+# SA_SIGINFO 0x40, SA_ONSTACK 0x1.
+SIGNALS = (SIGSEGV, 10) if DARWIN else (SIGSEGV,)
+SA_SIGINFO, SA_ONSTACK = (0x40, 0x1) if DARWIN else (4, 0x08000000)
 LOST = (
-    "the guard-page fault handler no longer receives SIGSEGV: guard-mode code cannot run "
-    "(S0006 Q1); compile with WABOROS_JIT_BOUNDS=explicit"
+    "the guard-page fault handler no longer receives "
+    + "/".join(signal.Signals(s).name for s in SIGNALS)
+    + ": guard-mode code cannot run (S0006 Q1); compile with WABOROS_JIT_BOUNDS=explicit"
 )
 
 
@@ -111,14 +119,20 @@ def wanted(target: Any) -> bool:
 
 class _Sigaction(ctypes.Structure):
     """The libc `struct sigaction` on x86-64 and aarch64: glibc's and musl's layout (sa_handler,
-    a 128-byte mask, sa_flags, sa_restorer; 152 bytes; measured with musl 1.2.6's headers)."""
+    a 128-byte mask, sa_flags, sa_restorer; 152 bytes; measured with musl 1.2.6's headers).
+    macOS: {sa_handler, u32 sa_mask, int sa_flags}, 16 bytes (xnu bsd/sys/signal.h, the user
+    `struct sigaction`; libplatform's `__platform_sigaction` adds the trampoline itself)."""
 
-    _fields_ = [
-        ("handler", ctypes.c_void_p),
-        ("mask", ctypes.c_uint64 * 16),
-        ("flags", ctypes.c_int),
-        ("restorer", ctypes.c_void_p),
-    ]
+    _fields_ = (
+        [("handler", ctypes.c_void_p), ("mask", ctypes.c_uint32), ("flags", ctypes.c_int)]
+        if DARWIN
+        else [
+            ("handler", ctypes.c_void_p),
+            ("mask", ctypes.c_uint64 * 16),
+            ("flags", ctypes.c_int),
+            ("restorer", ctypes.c_void_p),
+        ]
+    )
 
 
 class _Registry:
@@ -198,22 +212,28 @@ def install(target: Any) -> None:
         libc = ctypes.CDLL(None, use_errno=True)
         sigaction = libc.sigaction
         sigaction.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p]
-        prev, old = _Sigaction(), _Sigaction()  # prev: read by the handler, never freed
-        if sigaction(SIGSEGV, None, ctypes.byref(prev)) != 0:
-            raise OSError(ctypes.get_errno(), "sigaction")
+        # one saved action per signal, in SIGNALS order: read by the handler, never freed
+        prev = (_Sigaction * len(SIGNALS))()
+        for i, sig in enumerate(SIGNALS):
+            if sigaction(sig, None, ctypes.byref(prev[i])) != 0:
+                raise OSError(ctypes.get_errno(), "sigaction")
         entry, reraise = (
             ctypes.cast(f, ctypes.c_void_p).value or 0 for f in (sigaction, getattr(libc, "raise"))
         )
         code = target.fault_handler(
-            ctypes.addressof(_registry.heads), ctypes.addressof(prev), entry, reraise
+            ctypes.addressof(_registry.heads), ctypes.addressof(prev), entry, reraise, darwin=DARWIN
         )
         mem: ExecMem = load(code)
         act = _Sigaction()
         act.handler, act.flags = mem.addr, SA_SIGINFO | SA_ONSTACK  # no SA_NODEFER
-        if sigaction(SIGSEGV, ctypes.byref(act), ctypes.byref(old)) != 0:
-            raise OSError(ctypes.get_errno(), "sigaction")
+        for i, sig in enumerate(SIGNALS):
+            if sigaction(sig, ctypes.byref(act), None) != 0:
+                err = ctypes.get_errno()
+                for k in range(i):  # nothing half-installed: a retry would chain to itself
+                    sigaction(SIGNALS[k], ctypes.byref(prev[k]), None)
+                raise OSError(err, "sigaction")
         # a Python-level handler set before ours is only chained to: not a break later
-        py = signal.getsignal(signal.SIGSEGV)
+        py = {sig: signal.getsignal(sig) for sig in SIGNALS}
         _handler.update(code=mem, addr=mem.addr, prev=prev, sigaction=sigaction, py=py)
         _handler["fh"] = faulthandler.is_enabled()  # enabled before ours: it sits below us
         _handler.update(_image_finder(libc))
@@ -252,12 +272,13 @@ def _image(dladdr: Any, addr: int) -> int:
 
 
 def broken() -> str | None:
-    """Is the chain to our handler recognisably broken (S0006 Q1, rule A)? Our handler still the
-    SIGSEGV action: no. Otherwise these break it: the action reset to SIG_DFL/SIG_IGN; a
-    Python-level handler set after ours (it only sets a flag, the access faults forever); a
-    handler inside the interpreter's own image (`dladdr`): faulthandler, which re-raises instead
-    of chaining, or the `signal` module's; faulthandler enabled now but not at our install, with
-    any foreign handler on top (faulthandler then sits between it and us). A handler in any other
+    """Is the chain to our handler recognisably broken (S0006 Q1, rule A), for any signal it
+    takes (SIGSEGV; and SIGBUS on macOS)? Our handler still the action: no. Otherwise these
+    break it: the action reset to SIG_DFL/SIG_IGN; a Python-level handler set after ours (it
+    only sets a flag, the access faults forever); a handler inside the interpreter's own image
+    (`dladdr`): faulthandler, which re-raises instead of chaining, or the `signal` module's;
+    faulthandler enabled now but not at our install, with any foreign handler on top
+    (faulthandler then sits between it and us). A handler in any other
     shared object (wasmtime, another library) or in anonymous memory (another waboros copy's
     emitted handler, another JIT's) is otherwise assumed to chain, as Wasmtime assumes. Not
     detected: faulthandler already enabled at our install, then disabled and re-enabled while a
@@ -265,16 +286,25 @@ def broken() -> str | None:
     handler with faulthandler enabled counts as a break (a false error rather than a crash)."""
     if not _handler:
         return "not installed"
+    for sig in SIGNALS:
+        why = _broken(sig)
+        if why:
+            return why
+    return None
+
+
+def _broken(sig: int) -> str | None:
+    name = signal.Signals(sig).name
     cur = _Sigaction()
-    _handler["sigaction"](SIGSEGV, None, ctypes.byref(cur))
+    _handler["sigaction"](sig, None, ctypes.byref(cur))
     h = cur.handler or 0
     if h == _handler["addr"]:
         return None
     if h <= 1:
-        return "SIGSEGV reset to SIG_DFL/SIG_IGN"
-    py = signal.getsignal(signal.SIGSEGV)
-    if callable(py) and py is not _handler["py"]:
-        return "a Python-level SIGSEGV handler set after ours"
+        return f"{name} reset to SIG_DFL/SIG_IGN"
+    py = signal.getsignal(sig)
+    if callable(py) and py is not _handler["py"][sig]:
+        return f"a Python-level {name} handler set after ours"
     if faulthandler.is_enabled() and ("python" not in _handler or not _handler["fh"]):
         return "faulthandler enabled after ours and another handler above ours"
     if "python" not in _handler:

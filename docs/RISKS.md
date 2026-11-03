@@ -2,7 +2,7 @@
 title: Risks and possible solutions
 kind: log
 status: current
-updated: 2026-11-02
+updated: 2026-11-03
 ---
 
 # Risks and possible solutions
@@ -154,14 +154,16 @@ know, otherwise recompile" is the simplest robust rule. It needs the wasm at han
 
 ## R6. A signal handler of our own (guard pages in the JIT)
 
-**Status at HEAD: partly mitigated, Linux glibc x86-64 and aarch64 only, the default there.** S0006 step 1:
+**Status at HEAD: partly mitigated: the default on Linux glibc x86-64 and aarch64 and Linux musl x86-64; macOS built, verification pending CI.** S0006 step 1:
 guard code on `jit-x86_64`; step 2 the same on `jit-aarch64` (`aarch64/abi.py`, verified under QEMU, the native
 runner to confirm). The handler is emitted machine code (`x86_64/abi.py`, `aarch64/abi.py`) reading this copy's registry
 (`common/guard.py`), chaining every fault it does not claim (tests: `tests/jit/test_guard.py`, foreign faults
 with and without `faulthandler`, a broken chain, a foreign chaining handler, wasmtime above ours, two copies of
 the package in either order). Since D44 `auto` is the default: guard on the verified rows (Linux glibc x86-64
 and aarch64, Linux musl x86-64),
-explicit elsewhere; `WABOROS_JIT_BOUNDS=explicit` installs nothing. **Not detected** (rule A, S0006 Changes):
+explicit elsewhere; `WABOROS_JIT_BOUNDS=explicit` installs nothing. macOS x86-64 and arm64 (step 3): a handler
+on SIGSEGV and SIGBUS, built from xnu's sources without a macOS machine; CI's macOS steps run the spec suite and
+`test_guard.py` in guard mode, and the row is not verified (so `auto` stays explicit there) until they pass. **Not detected** (rule A, S0006 Changes):
 faulthandler that was already enabled when ours was installed (as under pytest), then disabled and re-enabled
 while a library's handler is above ours; a guard fault then reaches faulthandler through that library and ends
 the process (139). faulthandler enabled only after ours, under any foreign handler, is detected (the Q1 error). A
@@ -172,7 +174,7 @@ store wrote its first 8 bytes, and native Arm hardware is allowed to do the same
 x86_64 and glibc, the verified row, so `auto` turns guard pages on exactly where a store may tear;
 Wasmtime does not detect this either. Open: detect an emulator (`/proc/cpuinfo`, FEX's and box64's
 environment variables) and fall back to explicit, or keep it a documented limitation (D45). Open:
-macOS, Windows x64 and arm64 (S0006 steps 3-4), Android x86_64 (step 5); Linux musl aarch64 (no
+Windows x64 and arm64 (S0006 step 4), Android x86_64 (step 5); Linux musl aarch64 (no
 `__clear_cache` without libgcc, S0004). Android arm64 stays explicit, a documented limitation (S0006).
 
 Guard pages need a SIGSEGV handler in the process (ARCHITECTURE.md, "Memory"); the PoC emits it as
@@ -198,6 +200,30 @@ machine code. Risks and possible answers:
   and reservations; several copies chain (S0006 Q8 as revised; tested with a renamed copy).
 * **CET / BTI**: the handler is entered indirectly by the kernel; with IBT enforced it needs `endbr64`
   (R2).
+* **macOS: Mach exceptions come first.** A fault is an `EXC_BAD_ACCESS` Mach exception before it becomes
+  a signal, so a debugger or a crash reporter on a thread or task exception port (Breakpad, Crashpad,
+  Sentry's native SDK) sees every guard fault before our handler. One that returns `KERN_FAILURE` lets
+  the signal through; one that terminates the process defeats guard mode (`WABOROS_JIT_BOUNDS=explicit`
+  is the answer). lldb stops at each guard trap (lldb 15 and later can pass them with
+  `settings set platform.plugin.darwin.ignored-exceptions EXC_BAD_ACCESS`; not checked here). Wasmtime
+  moved to Mach ports for this reason (its `machports.rs`, issue 2456); we keep signals (S0006 Q5) until a
+  user's crash reporter breaks them. Wasmtime itself, with its default Mach ports, installs no signal
+  handler, so in one process with it ours stays on top.
+* **macOS: sent signals look like faults** (LESSONS 57): xnu gives a sent SIGSEGV/SIGBUS a positive
+  `si_code`, and its `si_addr` is the thread's last page-fault address (x86-64 `es.faultvaddr`, arm64
+  `es.far`; `bsd/dev/{i386,arm}/unix_signal.c`). For a thread running memory-heavy wasm that address is
+  routinely inside a reservation, so a `kill -BUS`/`-SEGV` that lands while the PC is on a fault point
+  becomes a `MEMORY_OUT_OF_BOUNDS` trap and the signal is swallowed. Accepted, as in Wasmtime, which
+  decides by the PC alone. A previous SIG_DFL/SIG_IGN is always followed by `raise`. For a real fault and SIG_DFL, the pending signal ends the process before the instruction runs again, with the same signal. With SIG_IGN, xnu's `threadsignal` drops the signal, so a real fault runs again forever (a 100 % CPU hang): xnu's behaviour without us too, not a regression (Linux force-unignores a fault signal).
+* **macOS arm64: `MAP_JIT` write mode and PAC.** The handler's code is `MAP_JIT` memory, which a thread
+  cannot execute while it is in write mode (`pthread_jit_write_protect_np(0)`). A fault on such a
+  thread (another library's JIT writing its code) cannot run our handler and faults again inside the
+  signal delivery; on xnu a fault while its signal is blocked stays pending (`threadsignal`, read, not
+  measured), so this may hang rather than crash. Our own write windows are copies into fresh pages and
+  cannot fault. The handler writes no JIT memory, only the signal context. The saved PC is unsigned in an
+  arm64 process (CPython's builds are arm64 or universal2, not arm64e): its threads run with user JOP
+  disabled and sigreturn takes the state as written (`osfmk/arm64/status.c`). An arm64e host would need
+  the PC signed; it is not supported.
 
 ## R5. Other known risks (detailed elsewhere)
 

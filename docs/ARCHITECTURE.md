@@ -2,7 +2,7 @@
 title: Architecture
 kind: reference
 status: current
-updated: 2026-11-02
+updated: 2026-11-03
 ---
 
 # Architecture
@@ -212,7 +212,8 @@ memory without knowing the target.
   that touch memory, a handler (`x86_64/abi.py`, `aarch64/abi.py`, registry in `common/guard.py`) that resumes at the
   function's own out-of-bounds stub and chains every other fault. The mode is `auto` by default (D44):
   guard on the verified rows (Linux glibc x86-64 and aarch64, Linux musl x86-64), explicit elsewhere, silently; `WABOROS_JIT_BOUNDS=explicit`
-  opts out, `=guard` requires it. CoreMark: +9 % on the package on a quiet machine (BENCHMARKS.md, "Guard
+  opts out, `=guard` requires it. macOS (both architectures, S0006 step 3) has a handler too, on SIGSEGV
+  and SIGBUS, so `=guard` works there; its row is not verified until CI runs it, so `auto` stays explicit. CoreMark: +9 % on the package on a quiet machine (BENCHMARKS.md, "Guard
   pages"; +14 % on a loaded one, the PoC measured +20–25 % on another day), 20 % less machine code. Explicit checks stay the fallback (larger offsets,
   platforms without the handler yet, `memory64`); risks in RISKS.md, R6.
 

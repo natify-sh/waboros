@@ -150,9 +150,20 @@ def assemble() -> tuple[bytes, list[int]]:
 # 128 bytes, then the 16-aligned `struct sigcontext` {fault_address, regs[31], sp, pc, ...}).
 SI_CODE, SI_ADDR = 8, 16  # si_signo, si_errno, si_code, padding, then si_addr
 UC_PC = 176 + 8 + 8 * 31 + 8  # uc_mcontext at 176: fault_address, x0-x30, sp, then pc
+# macOS arm64 (S0006 step 3), from xnu (apple-oss-distributions/xnu, main, read 2026-11-03):
+# siginfo_t and ucontext_t as on x86-64 (x86_64/abi.py: si_addr at 24, uc_mcontext at 48 is a
+# pointer). __darwin_mcontext64 (bsd/arm/_mcontext.h): __es (arm_exception_state64,
+# osfmk/mach/arm/_structs.h: far, esr, exception; 16 bytes), then __ss (x0-x28, fp, lr, sp, then
+# pc). The pc is unsigned in an arm64 (not arm64e) process, which CPython is: its threads run
+# with user JOP disabled, so sigreturn takes the state as is (osfmk/arm64/status.c,
+# machine_thread_state_convert_from_user). SIGBUS 10; libc's `struct sigaction` is 16 bytes.
+DARWIN_SI_ADDR, DARWIN_UC_MCONTEXT, DARWIN_MC_PC = 24, 48, 16 + 8 * 32
+DARWIN_SIGBUS, DARWIN_SIGACTION = 10, 16
 
 
-def fault_handler(a: Asm, tables: int, prev: int, sigaction: int, reraise: int) -> None:
+def fault_handler(
+    a: Asm, tables: int, prev: int, sigaction: int, reraise: int, darwin: bool = False
+) -> None:
     """void handler(int sig, siginfo_t *si, ucontext_t *uc), installed with SA_SIGINFO: the
     contract of x86_64/abi.py `fault_handler` (S0006 "The handler contract") in A64. A fault is
     ours when si_code > 0, the PC is a fault point of a registered code area (binary search of
@@ -165,15 +176,23 @@ def fault_handler(a: Asm, tables: int, prev: int, sigaction: int, reraise: int) 
     x18, the platform register, never; no lock, no allocation. It starts with `bti c`: the
     kernel enters it by a branch that BTI checks (measured under QEMU, S0006); the resume point
     needs no pad (sigreturn is not a branch). Wasmtime's aarch64 Linux path (read, not copied)
-    likewise rewrites `pc` in the saved mcontext and returns."""
+    likewise rewrites `pc` in the saved mcontext and returns. `darwin`: as in x86_64/abi.py
+    (the pc behind the uc_mcontext pointer, a saved action per signal in x15, always `raise`:
+    under SIG_DFL the pending signal ends the process, under SIG_IGN xnu drops it and a fault
+    repeats forever, as without us);
+    Darwin enforces no BTI on user code, so `bti c` is a no-op there."""
     notours, scan, skip, search, bisect, below, found, rscan, rskip, ours, dfl, done = (
         a.label() for _ in range(12)
     )
     a.bti("c")
     a.ld(9, 1, SI_CODE, 4)
     a.addsub_imm("subs", ZR, 9, 0, False)  # cmp w9, #0: signed
-    a.bcc("le", notours)  # kill/raise/sigqueue: never ours
-    a.ld(10, 2, UC_PC)  # x10 = pc
+    a.bcc("le", notours)  # kill/raise/sigqueue: never ours (on Linux)
+    if darwin:
+        a.ld(10, 2, DARWIN_UC_MCONTEXT)
+        a.ld(10, 10, DARWIN_MC_PC)
+    else:
+        a.ld(10, 2, UC_PC)  # x10 = pc
     a.mov_imm(11, tables)
     a.ld(11, 11)
     a.ld(12, 11)  # capacity
@@ -213,7 +232,7 @@ def fault_handler(a: Asm, tables: int, prev: int, sigaction: int, reraise: int) 
     a.bind(found)
     a.ld(16, 17, 4, 4)  # the resume offset
     a.addsub("add", 13, 13, 16)  # x13 = code base + resume offset
-    a.ld(9, 1, SI_ADDR)
+    a.ld(9, 1, DARWIN_SI_ADDR if darwin else SI_ADDR)
     a.mov_imm(11, tables)
     a.ld(11, 11, 8)
     a.ld(12, 11)
@@ -231,11 +250,24 @@ def fault_handler(a: Asm, tables: int, prev: int, sigaction: int, reraise: int) 
     a.addsub_imm("sub", 12, 12, 1)
     a.b(rscan)
     a.bind(ours)
-    a.st(13, 2, UC_PC)
+    if darwin:
+        a.ld(9, 2, DARWIN_UC_MCONTEXT)
+        a.st(13, 9, DARWIN_MC_PC)
+    else:
+        a.st(13, 2, UC_PC)
     a.ret()
     a.bind(notours)
-    a.mov_imm(16, prev)
-    a.ld(16, 16)  # its sa_handler / sa_sigaction
+    if darwin:  # x15 = the saved action of this signal
+        segv = a.label()
+        a.mov_imm(15, prev)
+        a.addsub_imm("subs", ZR, 0, DARWIN_SIGBUS, False)
+        a.bcc("ne", segv)
+        a.addsub_imm("add", 15, 15, DARWIN_SIGACTION)
+        a.bind(segv)
+        a.ld(16, 15)
+    else:
+        a.mov_imm(16, prev)
+        a.ld(16, 16)  # its sa_handler / sa_sigaction
     a.addsub_imm("subs", ZR, 16, 1)
     a.bcc("ls", dfl)
     a.br(16)  # x0, x1, x2 as the kernel passed them
@@ -243,14 +275,18 @@ def fault_handler(a: Asm, tables: int, prev: int, sigaction: int, reraise: int) 
     a.pair(False, FP, LR, SP, -32, "pre")
     a.mov(FP, SP)
     a.pair(False, 0, 1, SP, 16)
-    a.mov_imm(1, prev)
+    if darwin:
+        a.mov(1, 15)
+    else:
+        a.mov_imm(1, prev)
     a.mov_imm(2, 0)
     a.mov_imm(16, sigaction)
     a.blr(16)
-    a.ld(1, SP, 24)
-    a.ld(9, 1, SI_CODE, 4)
-    a.addsub_imm("subs", ZR, 9, 0, False)
-    a.bcc("gt", done)  # a fault: the instruction faults again
+    if not darwin:  # Darwin: always re-sent (x86_64/abi.py)
+        a.ld(1, SP, 24)
+        a.ld(9, 1, SI_CODE, 4)
+        a.addsub_imm("subs", ZR, 9, 0, False)
+        a.bcc("gt", done)  # a fault: the instruction faults again
     a.ld(0, SP, 16)
     a.mov_imm(16, reraise)
     a.blr(16)  # raise(sig)

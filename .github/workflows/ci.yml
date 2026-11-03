@@ -185,6 +185,20 @@ jobs:
       - run: uv run python tests/spec/fetch.py
       - run: uv run python -m tests.spec.run --engine wasmtime
       - run: uv run python -m tests.spec.run --engine pyc
+      # S0006 step 3: guard pages on macOS x86-64. The `darwin` row has a handler but is not
+      # verified, so `auto` stays explicit here; these steps are what verifies it. No llvm-mc or
+      # GNU objdump on this runner: the disassembly checks are left out
+      - if: runner.os == 'macOS'
+        run: uv run python -m tests.spec.run --engine jit-x86_64
+        env:
+          WABOROS_JIT_BOUNDS: guard
+      - if: runner.os == 'macOS'
+        run: >-
+          uv run pytest tests/jit/test_guard.py tests/jit/test_fault_handler.py -v -rs
+          -k "not the_fault_map and not llvm_mc and not decode_and_reassemble"
+        env:
+          WABOROS_JIT_BOUNDS: guard
+          WABOROS_JIT_REQUIRE: "1"
   arm64:
     # jit-aarch64 step 4a (S0004): the encoder against llvm-mc, the trampolines and executable
     # memory (I-cache flush; Linux PROT_BTI on BTI CPUs; macOS MAP_JIT) on the three arm64 OSes.
@@ -227,11 +241,11 @@ jobs:
           'PROT_BTI:', getattr(execmem, '_PROT_BTI', None), 'auto:', target_order('auto'));
           sys.exit(platform.machine().lower() not in ('arm64', 'aarch64') or why is not None
           or target_order('auto') != ['jit-aarch64'])"
-      # every tests/jit test runs or fails; only the x86-64 ISA checks are left out (they need
-      # GNU objdump with x86-64, which these runners lack). Explicit bounds: Arm may tear a
-      # straddling 16-byte store in guard mode (D45), which test_simd_abi compares; guard mode is
-      # covered by the spec suite and test_guard.py below
-      - run: uv run pytest tests/jit -v -rs -k "not isa_check and not isa_levels"
+      # every tests/jit test runs or fails; only the x86-64 ISA checks and the x86-64 handler's
+      # disassembly are left out (they need GNU objdump with x86-64, which these runners lack).
+      # Explicit bounds: Arm may tear a straddling 16-byte store in guard mode (D45), which
+      # test_simd_abi compares; guard mode is covered by the spec suite and test_guard.py below
+      - run: uv run pytest tests/jit -v -rs -k "not isa_check and not isa_levels and not decode_and_reassemble"
         env:
           WABOROS_JIT_REQUIRE: "1"
           WABOROS_JIT_BOUNDS: explicit
@@ -271,6 +285,17 @@ jobs:
           WABOROS_JIT_REQUIRE: "1"
       - if: runner.os == 'Linux'
         run: uv run python tools/no_exec.py -- uv run python -m tests.spec.run --engine auto
+      # S0006 step 3: guard pages on macOS arm64 (Apple Silicon, MAP_JIT). The `darwin` row has a
+      # handler but is not verified, so `auto` above stays explicit; these steps verify it
+      - if: runner.os == 'macOS'
+        run: uv run python -m tests.spec.run --engine jit-aarch64
+        env:
+          WABOROS_JIT_BOUNDS: guard
+      - if: runner.os == 'macOS'
+        run: uv run pytest tests/jit/test_guard.py tests/jit/test_fault_handler.py -v -rs -k "not decode_and_reassemble"
+        env:
+          WABOROS_JIT_BOUNDS: guard
+          WABOROS_JIT_REQUIRE: "1"
       - if: runner.os == 'Linux'
         run: uv run python tools/isa_all.py --target jit-aarch64
       - if: runner.os == 'Linux'

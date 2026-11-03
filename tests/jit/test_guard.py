@@ -1,11 +1,11 @@
 # pyright: reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false
-"""Guard pages on the JIT of this machine (S0006 steps 1-2, Linux glibc, jit-x86_64 and
-jit-aarch64; aarch64 also under QEMU, tools/run_arm64.py): accesses the reservation's guard catches
-go unchecked and the emitted fault handler turns their faults into MEMORY_OUT_OF_BOUNDS at the
-function's own trap stub. Every trapping access kind at the edge of memory, scalar and SIMD, on
-memory 0, memory n and an imported memory; deep frames, inner entries, threads; and faults that
-are not ours, which must behave exactly as without the handler (in subprocesses: the handler
-stays for the process's lifetime)."""
+"""Guard pages on the JIT of this machine (S0006 steps 1-3: Linux glibc and musl, macOS;
+jit-x86_64 and jit-aarch64; aarch64 also under QEMU, tools/run_arm64.py): accesses the
+reservation's guard catches go unchecked and the emitted fault handler turns their faults into
+MEMORY_OUT_OF_BOUNDS at the function's own trap stub. Every trapping access kind at the edge of
+memory, scalar and SIMD, on memory 0, memory n and an imported memory; deep frames, inner
+entries, threads; and faults that are not ours, which must behave exactly as without the handler
+(in subprocesses: the handler stays for the process's lifetime)."""
 
 import io
 import os
@@ -56,13 +56,15 @@ SIMD = {  # name -> (access size, expression of the address `A`, result is v128)
 def _guard(monkeypatch: pytest.MonkeyPatch) -> None:
     native(JIT)
     tgt = base.TARGETS[JIT]()
-    if not sys.platform.startswith("linux"):  # macOS, Windows: S0006 steps 3-4
+    if not sys.platform.startswith(("linux", "darwin")):  # Windows: S0006 step 4
         pytest.skip(f"no guard pages on {sys.platform} yet")
     # under WABOROS_JIT_REQUIRE=1 (the CI `jit` and `arm64` jobs on Linux glibc, the `jit` job's
-    # musl container) a skip is a failure: the row check or `auto` must not stop engaging unnoticed
+    # musl container, the macOS steps) a skip is a failure: the row check or `auto` must not stop
+    # engaging unnoticed; `auto` only where the row is verified (not yet macOS, S0006 step 3)
     need(guard.host_row() in tgt.guard_rows, f"a guard-page handler for {guard.host_row()}")  # pyright: ignore[reportAttributeAccessIssue]
-    monkeypatch.setenv("WABOROS_JIT_BOUNDS", "auto")
-    need(guard.wanted(tgt), f"`auto` giving guard pages on {guard.host_row()}")
+    if guard.host_row() in tgt.verified:  # pyright: ignore[reportAttributeAccessIssue]
+        monkeypatch.setenv("WABOROS_JIT_BOUNDS", "auto")
+        need(guard.wanted(tgt), f"`auto` giving guard pages on {guard.host_row()}")
     monkeypatch.setenv("WABOROS_JIT_BOUNDS", "guard")
 
 
@@ -167,8 +169,10 @@ LOAD = '(module (memory 1) (func (export "f") (param i32) (result i32) (i32.load
 
 
 def test_the_modes_and_the_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    """D44: `auto` is the default (unset or empty) and gives guard on this verified row;
-    `explicit` opts out; anything else is an error."""
+    """D44: `auto` is the default (unset or empty) and gives guard on a verified row (explicit
+    on a row with a handler that CI has not verified yet); `explicit` opts out; anything else is
+    an error."""
+    verified = guard.host_row() in base.TARGETS[JIT]().verified  # pyright: ignore[reportAttributeAccessIssue]
     for m in (None, "", "auto", "guard"):
         if m is None:
             monkeypatch.delenv("WABOROS_JIT_BOUNDS")
@@ -176,7 +180,7 @@ def test_the_modes_and_the_default(monkeypatch: pytest.MonkeyPatch) -> None:
             monkeypatch.setenv("WABOROS_JIT_BOUNDS", m)
         assert guard.mode() == (m or "auto")
         c = compiled(LOAD)
-        assert c.flags == guard.FLAGS and c.faults, m
+        assert bool(c.faults) == (c.flags == guard.FLAGS) == (verified or m == "guard"), m
     monkeypatch.setenv("WABOROS_JIT_BOUNDS", "explicit")
     assert (compiled(LOAD).flags, compiled(LOAD).faults) == (0, [])
     monkeypatch.setenv("WABOROS_JIT_BOUNDS", "fast")
@@ -539,6 +543,9 @@ def test_a_foreign_fault_behaves_as_without_us(fault: str, fh: bool) -> None:
         assert "<string>" in got.stderr
 
 
+_DARWIN_ONLY = pytest.mark.skipif(sys.platform != "darwin", reason="SIGBUS is ours on macOS only")
+
+
 @pytest.mark.parametrize(
     ("how", "fh"),
     [
@@ -548,6 +555,8 @@ def test_a_foreign_fault_behaves_as_without_us(fault: str, fh: bool) -> None:
         ("faulthandler.enable()", False),
         ("faulthandler.disable(); faulthandler.enable()", True),  # its handler on top again
         ("signal.signal(signal.SIGSEGV, lambda *a: None)", False),  # Python-level
+        pytest.param("signal.signal(signal.SIGBUS, signal.SIG_DFL)", False, marks=_DARWIN_ONLY),
+        pytest.param("signal.signal(signal.SIGBUS, lambda *a: None)", False, marks=_DARWIN_ONLY),
     ],
 )
 def test_a_broken_chain_raises_at_the_next_call(how: str, fh: bool) -> None:
@@ -561,6 +570,57 @@ def test_a_broken_chain_raises_at_the_next_call(how: str, fh: bool) -> None:
     )
 
 
+def test_broken_checks_every_signal_we_take(monkeypatch: pytest.MonkeyPatch) -> None:
+    """S0006 step 3: with SIGBUS ours too (macOS), a SIGBUS action reset after ours, or a
+    Python-level SIGBUS handler, breaks the chain although SIGSEGV is still ours (any host)."""
+    import signal
+
+    acts = {guard.SIGSEGV: 0x1000, signal.SIGBUS: 0x1000}
+
+    def query(sig: int, new: None, cur: Any) -> int:
+        cur._obj.handler = acts[sig]
+        return 0
+
+    monkeypatch.setattr(guard, "SIGNALS", (guard.SIGSEGV, signal.SIGBUS))
+    py = {s: signal.getsignal(s) for s in guard.SIGNALS}
+    monkeypatch.setattr(guard, "_handler", {"addr": 0x1000, "sigaction": query, "py": py})
+    assert guard.broken() is None
+    acts[signal.SIGBUS] = 0  # SIG_DFL
+    assert guard.broken() == "SIGBUS reset to SIG_DFL/SIG_IGN"
+    acts[signal.SIGBUS] = 0x2000
+    with monkeypatch.context() as m:
+        m.setattr(guard.signal, "getsignal", lambda s: print if s == signal.SIGBUS else py[s])  # pyright: ignore[reportUnknownLambdaType]
+        assert guard.broken() == "a Python-level SIGBUS handler set after ours"
+
+
+def test_install_puts_back_what_it_installed_when_a_later_sigaction_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """S0006 step 3: two signals (macOS); the second `sigaction` fails, so the first is put back
+    and nothing counts as installed (a retry would otherwise chain to our own handler)."""
+    import ctypes
+    import signal
+
+    calls: list[tuple[int, bool]] = []
+
+    def fake(sig: int, new: int | None, old: int | None) -> int:
+        calls.append((sig, bool(new)))
+        if old:
+            ctypes.memset(old, 0, ctypes.sizeof(guard._Sigaction))  # pyright: ignore[reportPrivateUsage]
+        return -1 if new and sig == signal.SIGBUS else 0
+
+    proto = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
+    libc = type("Libc", (), {"sigaction": proto(fake), "raise": proto(fake)})()
+    monkeypatch.setattr(guard.ctypes, "CDLL", lambda *a, **k: libc)  # pyright: ignore[reportUnknownLambdaType]
+    monkeypatch.setattr(guard, "SIGNALS", (guard.SIGSEGV, signal.SIGBUS))
+    monkeypatch.setattr(guard, "_handler", {})
+    with pytest.raises(OSError, match="sigaction"):
+        guard.install(base.TARGETS[JIT]())
+    segv, bus = guard.SIGSEGV, signal.SIGBUS
+    assert calls == [(segv, False), (bus, False), (segv, True), (bus, True), (segv, True)]
+    assert not guard._handler  # pyright: ignore[reportPrivateUsage]
+
+
 def test_a_broken_chain_during_a_host_call_fails_that_call() -> None:
     p = _child("HOOK = faulthandler.enable\ntry:\n    inst('g', 65536)\nexcept RuntimeError as e:\n"
                "    print('error', e)\n")  # fmt: skip
@@ -570,26 +630,29 @@ def test_a_broken_chain_during_a_host_call_fails_that_call() -> None:
 
 _CHAINER = """
 from waboros.targets.jit.common.execmem import load
-from waboros.targets.jit.common.guard import _Sigaction
+from waboros.targets.jit.common.guard import SA_ONSTACK, SA_SIGINFO, SIGNALS, _Sigaction
 libc = ctypes.CDLL(None)
-prev, act = _Sigaction(), _Sigaction()
-libc.sigaction(11, None, ctypes.byref(prev))
-if platform.machine().lower() in ("aarch64", "arm64"):
-    from waboros.targets.jit.aarch64.encoder import Asm
-    a = Asm()
-    a.bti("c")
-    a.mov_imm(16, ctypes.addressof(prev))
-    a.ld(16, 16)
-    a.br(16)  # a foreign handler that passes every fault on
-else:
-    from waboros.targets.jit.x86_64.encoder import RAX, Asm, Mem
-    a = Asm()
-    a.endbr64()
-    a.mov_imm(RAX, ctypes.addressof(prev), w=True)
-    a.jmp(Mem(RAX))  # a foreign handler that passes every fault on
-code = load(a.finish())
-act.handler, act.flags = code.addr, 4 | 0x08000000
-libc.sigaction(11, ctypes.byref(act), None)
+kept = []
+for sig in SIGNALS:  # SIGSEGV; and SIGBUS on macOS
+    prev, act = _Sigaction(), _Sigaction()
+    libc.sigaction(sig, None, ctypes.byref(prev))
+    if platform.machine().lower() in ("aarch64", "arm64"):
+        from waboros.targets.jit.aarch64.encoder import Asm
+        a = Asm()
+        a.bti("c")
+        a.mov_imm(16, ctypes.addressof(prev))
+        a.ld(16, 16)
+        a.br(16)  # a foreign handler that passes every fault on
+    else:
+        from waboros.targets.jit.x86_64.encoder import RAX, Asm, Mem
+        a = Asm()
+        a.endbr64()
+        a.mov_imm(RAX, ctypes.addressof(prev), w=True)
+        a.jmp(Mem(RAX))  # a foreign handler that passes every fault on
+    code = load(a.finish())
+    kept += [prev, code]
+    act.handler, act.flags = code.addr, SA_SIGINFO | SA_ONSTACK
+    libc.sigaction(sig, ctypes.byref(act), None)
 """
 
 

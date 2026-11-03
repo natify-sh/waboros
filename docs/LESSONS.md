@@ -2,7 +2,7 @@
 title: Lessons
 kind: log
 status: current
-updated: 2026-11-02
+updated: 2026-11-03
 ---
 
 # Lessons
@@ -344,3 +344,18 @@ What went wrong or surprised us while building the PoC, so it is not found again
     claiming a platform, run the product's probe on the platform's stock image with nothing added.
     List every package the test setup installs and ask which of them the product itself loads.
     Found: S0006 musl step, 2026-11-02.
+57. **On macOS, `si_code` does not tell a sent SIGSEGV or SIGBUS from a fault.** The Linux handler
+    treats `si_code <= 0` as "sent by `kill`/`raise`": never ours, and re-sent with `raise` after
+    SIG_DFL is put back (LESSONS 46). xnu's `sendsig` fills `si_code` by signal number, not by
+    origin (`bsd/dev/arm/unix_signal.c`, `bsd/dev/i386/unix_signal.c`): on arm64 every SIGBUS gets
+    `BUS_ADRALN` and every SIGSEGV `SEGV_ACCERR`; on x86-64 every SIGBUS gets `BUS_ADRERR`, and
+    SIGSEGV gets a code from the thread's last exception, which `kill` does not reset. `si_addr` is
+    the thread's last page-fault address, routinely inside a reservation for a thread running
+    wasm. `SI_USER` (0x10001) never reaches a SIGSEGV or SIGBUS handler. Rule: on Darwin, "ours"
+    rests on the PC and the address only (a sent signal at a fault point is then taken as a trap,
+    accepted as in Wasmtime), and a restored SIG_DFL/SIG_IGN is always followed by `raise`. Under
+    SIG_DFL a real fault then ends from the pending signal before the instruction runs again;
+    under SIG_IGN xnu's `threadsignal` drops it and the fault repeats forever, as without us
+    (Linux force-unignores). Check what a kernel puts in each
+    `siginfo` field from its source before relying on POSIX's description. Found: S0006 step 3, by
+    reading xnu (no macOS machine here), 2026-11-03.
