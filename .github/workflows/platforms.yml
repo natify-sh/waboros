@@ -32,7 +32,7 @@ jobs:
         # the Pythons, the bounds modes and the tests per platform are in ci/harness/pyproject.toml
         include:
           # one job per runner; the architectures of a platform go through CIBW_ARCHS below (the same as CIBW_ARCHS_<PLATFORM>, since a job has one platform)
-          - { name: Linux x86 (x86_64, i686), os: ubuntu-latest, platform: linux, archs: "x86_64 i686" }  # proven: wabt-package
+          - { name: "Linux x86 (x86_64, i686)", os: ubuntu-latest, platform: linux, archs: "x86_64 i686" }  # proven: wabt-package
           - { name: Linux arm (aarch64), os: ubuntu-24.04-arm, platform: linux, archs: aarch64 }  # proven
           - { name: macOS arm64, os: macos-26, platform: macos, archs: arm64 }  # proven: wabt-package
           # a real Intel runner: under Rosetta jit-x86_64 and its fault handler would run translated
@@ -41,7 +41,7 @@ jobs:
           - { name: Windows ARM64, os: windows-11-arm, platform: windows, archs: ARM64 }  # tests need native
           # tests on x86_64 (the emulator has the runner's architecture), arm64_v8a is built only
           # (test-skip in the config); proven: py-wasmext
-          - { name: Android (x86_64, arm64_v8a), os: ubuntu-latest, platform: android, archs: "x86_64 arm64_v8a" }
+          - { name: "Android (x86_64, arm64_v8a)", os: ubuntu-latest, platform: android, archs: "x86_64 arm64_v8a" }
           # pyc only; the build is proven by py-wasmext. armv7l, ppc64le, riscv64, s390x and iOS are off
           # (maintainer, 2026-11-03): the same pyc as elsewhere, and no micro-compiler for them yet
           - { name: Pyodide, os: ubuntu-latest, platform: pyodide, archs: wasm32 }
