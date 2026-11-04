@@ -231,8 +231,8 @@ Unbounded smith modules got the process OOM-killed. Every export is called three
 deterministic arguments from the seed; a mismatch saves `bad_<seed>.wasm`. It compares two `pyc`
 configurations in one process: default against `BRRULES = 0`, or (step 0, before the knob exists)
 `pyc` against `pyc` + `bropt.py`. It is used for this spec's acceptance. Comparing a JIT or Wasmtime
-with it, and fuzzing for hours as a project-wide campaign, stay in phase 6 unless the maintainer
-says otherwise. Random modules rarely nest deeply (in the experiment 15 % were touched), so the
+with it is a small step right after step 0 (the nightly non-blocking CI job, ROADMAP "Next",
+maintainer 2026-11-04); the project-wide campaign with WASI stays in phase 6. Random modules rarely nest deeply (in the experiment 15 % were touched), so the
 corpus stays the stronger test of control flow, and the unit tests below add deep nests by hand.
 
 ## Test plan
@@ -293,8 +293,8 @@ document to update"):
   * LESSONS.md: the experiment's lesson (a `pyc` control-flow rewrite needs the corpus and a
     differential fuzz, not only the spec suite; the chain-rule bug that only `inflate 8K` caught);
   * ROADMAP.md: a differential-fuzzing **tool** (`tools/fuzz.py`, `pyc` against `pyc`) exists before
-    phase 6; the project-wide campaign (every target and Wasmtime, fuzz hours as an exit criterion)
-    stays in phase 6. Phase 2's "frozen … correctness fixes only" gets a line that S0010 is the
+    phase 6, and a nightly non-blocking CI job (findings triaged, not fixed at once) follows step 0;
+    the project-wide campaign with WASI stays in phase 6. Phase 2's "frozen … correctness fixes only" gets a line that S0010 is the
     maintainer's exception for speed;
   * TESTING.md: the tool in the tools table, its bounds and what it compares;
   * CLAUDE.md "Commands": `uv run python tools/fuzz.py N SEED` (maintainer's file, proposed only);
@@ -358,3 +358,4 @@ document to update"):
   emission, with a planted defect (maintainer's review).
 * 2026-11-04: approved by the maintainer with the recommendations (Q1–Q5); S0010 is the
   maintainer's exception to the `pyc` freeze for speed. Implementation after memory64.
+* 2026-11-04: fuzzing as a nightly non-blocking CI job, findings triaged (maintainer); text aligned.
