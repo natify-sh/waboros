@@ -2,7 +2,7 @@
 title: Decisions
 kind: log
 status: current
-updated: 2026-11-03
+updated: 2026-11-04
 ---
 
 # Decisions
@@ -767,3 +767,26 @@ Consequences (for the hand-written JITs): there is no big-endian JIT host, so th
 byte-reversed loads and stores and SIMD lanes stay in host order on every JIT target; the JIT CI stays
 on native runners (x86-64, arm64) plus QEMU for riscv64 when it comes. The micro-compilers are
 `x64.wasm`, `arm64.wasm` and `riscv64.wasm`.
+
+### D49. Relaxed SIMD: the deterministic profile of Wasm 3.0 for 16 operators, madd/nmadd native per target as Wasmtime; each target lowers all 20 itself
+Status: accepted (maintainer, 2026-11-04) · Date: 2026-11-04 · Supersedes: — · Evidence: [S0008](specs/S0008-relaxed-simd-wide-arithmetic.md) (Semantics: Wasmtime 50.0.1 measured 2026-11-04, its deterministic switch fuses madd/nmadd on every host and equals the 3.0 profile on the other 16 operators; without the switch 23 928 of 60 000 calls differ from the profile)
+
+1. **16 operators** (swizzle, the four trunc, the four laneselect, min/max of f32x4 and f64x2, q15mulr,
+   the two dot products) give the deterministic profile's result (every relaxed parameter 0, alt 0) on
+   every target, whatever the host CPU. `pyc` stays a bit-exact oracle for them.
+2. **`f32x4`/`f64x2` `relaxed_madd` and `relaxed_nmadd`** follow Wasmtime's native choice per
+   architecture: fused on `jit-aarch64` (`fmla`/`fmls`), unfused on `jit-x86_64` (SSE2 has no FMA) and
+   on `pyc`. The result differs by target, never by host, so D35 holds. x86-64 FMA comes with
+   x86-64-v3 (D42).
+3. **No front-end aliasing.** The front end decodes all 20 relaxed opcodes as operations of their own;
+   every target (`pyc`, `jit-x86_64`, `jit-aarch64`) maps each of the 20 itself, to its lowering of the
+   equivalent operator or to one of 6 compositions. No shared default table. A target keeps the freedom
+   to lower a relaxed operator natively when ISA levels are extended.
+4. The oracle runs with `wasm_relaxed_simd_deterministic`; madd/nmadd are compared against the unfused
+   (or, on aarch64, the fused) reference, not bit for bit against the oracle on x86.
+
+Consequence: **revisit with ISA levels** ([ISA-LEVELS.md](ISA-LEVELS.md)): native results for the other
+16 operators (`cvttps2dq`, `minps`/`maxps`, `pshufb` from SSSE3, hardware dot products) and FMA on
+x86-64 arrive per target with a declared level, recorded per operator (D42); the front end needs no
+change for it. Rejected: aliases in the front end (they erase which instruction was relaxed); unfused
+madd everywhere (deviates from Wasmtime on aarch64); fused everywhere (a software FMA on SSE2).
