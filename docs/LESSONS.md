@@ -518,6 +518,11 @@ What went wrong or surprised us while building the PoC, so it is not found again
     control; aarch64 not measured). Rule: before a large new semantic surface (exceptions, GC) is
     written per backend, measure a two-level split (ROADMAP, "Next", item 3b). Found: maintainer
     review of the sljit PoC, 2026-11-04.
+    Result (reconnaissance, 2026-11-04): the bounds checks of loads, stores and SIMD memory
+    operators written once over about ten per-architecture operations give byte-identical CoreMark
+    code on x86-64 and aarch64 in both bounds modes (4 of 5 979 modules differ, `address64.0-3`),
+    compile time +3-4 % (BENCHMARKS.md, "JIT low layer"). The maintainer chose to unify:
+    [S0011](specs/S0011-jit-low-layer.md).
 77. **ctypes truncates an oversized `c_size_t` silently.** `2⁶⁴ + 2 GiB` reaches C as `2 GiB`
     (CPython 3.13). An i64 `memory.grow` by 2⁴⁸ − 2 from 1 page asks for a reservation of
     `2⁶⁴ − 2¹⁶ + 2 GiB + 32 MiB` bytes: unchecked, `mmap` maps about 2 GiB (a `Reservation` of that
@@ -581,3 +586,13 @@ What went wrong or surprised us while building the PoC, so it is not found again
     2b, 38 at 2b, 63 now; guard 82, 74, 98); closing it needs another design, not a reordering
     (D51).
     Found: CI platforms run, macOS x86_64, after S0009 step 2b, 2026-11-04.
+83. **A generic operation loses the preconditions a specialised branch carried.** The S0011
+    prototype replaced the i64 bounds check's `k <= lo and k < 1 << 31` fast path with a generic
+    `ll_add(rdx, limit, -k)` that accepted any k with -k in the disp32 range. For a memory other
+    than 0 the limit is a context word, so the op emits `mov rdx, [r15+...]; sub rdx, k`, and
+    `sub` takes +k as a sign-extended imm32: k = 2³¹ fits the disp32 test but not the
+    instruction. The encoder raised `ValueError` in `test_k_at_two_to_the_31_on_a_memory_other_than_0`
+    (guard mode); the spec suite and the D35 lists had passed. Rule: every low-layer op states its
+    immediate range per encoding as part of its contract (S0011), and the boundary values (2³¹ − 1,
+    2³¹, imm12 4095/4096) are tested for each form. Found: reconnaissance of ROADMAP 3b,
+    2026-11-04.

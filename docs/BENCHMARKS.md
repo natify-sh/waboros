@@ -2,7 +2,7 @@
 title: Benchmarks
 kind: log
 status: current
-updated: 2026-11-03
+updated: 2026-11-04
 ---
 
 # Benchmarks
@@ -889,3 +889,36 @@ unchanged) and +26 % (K) are placement; controlled, they are −0.2 % and −8 %
 2026-11-04): K kept, L reverted. The `lea` block is removed from `x86_64/backend.py`; with it, 21 x86-64
 spec modules change against HEAD in each bounds mode (the list equals the measured tree's), and aarch64 is
 unchanged.
+
+## JIT low layer: reconnaissance (ROADMAP "Next" 3b, 2026-11-04)
+
+The bounds checks of loads, stores and SIMD memory operators (i32 and i64, guard and explicit) written
+once in a shared module over a per-architecture low layer, in a scratch prototype behind
+`WABOROS_JIT_TWOLEVEL=1` (the design of [S0011](specs/S0011-jit-low-layer.md); `_end_check` and
+`_element` not included). Branch `phase5` after S0009 step 4, the dev VM: Intel Xeon @ 2.10 GHz,
+4 vCPU, CPython 3.13.17, load average 1-2 (spec suites ran before, not during, the timing).
+
+**Code identity (D35 lists).** `tools/jit_dump.py --target {jit-x86_64,jit-aarch64}` with
+`WABOROS_JIT_BOUNDS=guard` and `=explicit`, switch on against off, 5 979 modules (spec cache and
+CoreMark): in each of the four cells 4 lists differ, `memory64/address64.0-3` (i64 offsets beyond 2³¹,
+formed differently; S0011 "Identity"); **CoreMark identical on both architectures in both modes**, so
+its speed is unchanged by construction and no timed run was made (maintainer, 2026-11-04). Spec suite
+with the switch: `jit-x86_64` 63 231 pass, 0 fail, 93 xfail in both modes; the memory subset on
+`jit-aarch64` under QEMU 10 988 pass, 0 fail, 2 xfail in both modes; `tests/jit` 337 passed.
+
+**Compile time.** CoreMark and the three corpus modules (`hash`, `mono`, `zip`), `jit-x86_64`, median
+of 10 compiles per process (scratch `ctime.py`), `taskset -c 2`, 10 pairs alternated (order swapped
+each pair):
+
+| mode | runs | switch off (ms) | switch on (ms) | change |
+|---|---|---|---|---|
+| explicit | 10 pairs | 218.1 (208.0–235.8) | 227.8 (218.2–248.7) | +3.9 % paired median, slower in 8 of 10 |
+| guard | 10 pairs | 195.0 (185.5–220.9) | 210.4 (195.3–215.5) | +3.2 % paired median, slower in 9 of 10 |
+
+An earlier set of 6 pairs (explicit, not pinned, load average 1.7) gave `jit-x86_64` +8 % and `jit-aarch64`
+(compiled on this host) +2.4 % by medians; the pinned 10-pair set above is the one recorded. S0011 sets
+the bound at +5 %.
+
+Not measured (maintainer, 2026-11-04): the `thin` variant (the offset always added into the index; x86-64
+CoreMark code 34 023 → 35 151 bytes in guard mode, 43 020 → 43 848 explicit; aarch64 unchanged), which
+would need a placement-controlled run.
