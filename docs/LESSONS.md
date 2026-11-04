@@ -477,3 +477,9 @@ What went wrong or surprised us while building the PoC, so it is not found again
     module failed to load with `AssertionError: SIMD opcode 0xfd109`. Rule: a new operator that reuses
     an inline path is mapped by opcode (`INLINE` in each backend's `simd.py`), not by matching the
     kind its name parses to. Found: S0008 step 2, 2026-11-04.
+72. **A test module that imports an optional dev tool at module level breaks collection where the
+    tool is missing.** `tests/jit/test_relaxed_simd.py` imported `tests.spec.wasmtime_engine` (which
+    imports wasmtime) at the top, so the platforms cells without a wasmtime wheel (i686, armv7l,
+    Android) failed at collection, not with a skip. Rule: import an optional tool inside the test, after
+    `pytest.importorskip`; check a new test file once with the tool blocked (`ModuleNotFoundError`).
+    Found: S0008 step 4, 2026-11-04.

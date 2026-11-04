@@ -22,7 +22,6 @@ from tests.jit import native, native_jit
 from tests.jit.test_compiler import build, wat
 from tests.jit.test_simd_abi import _pair, run
 from tests.jit.test_simd_x86 import F32, F64, _nan_class, _v
-from tests.spec.wasmtime_engine import CONFIG_SWITCHES
 from waboros.frontend import simd as fs
 
 OPS = {o.name: len(o.pops) for sub, o in fs.OPS.items() if sub >= 0x100}
@@ -167,6 +166,8 @@ def test_deterministic_operators_match_wasmtime(target: str) -> None:
     madd/nmadd: on `jit-aarch64` too (fused there and in Wasmtime's switch; CI's native arm64
     run); elsewhere covered per target by `test_relaxed_simd_differential`."""
     wasmtime = pytest.importorskip("wasmtime")
+    from tests.spec.wasmtime_engine import CONFIG_SWITCHES  # imports wasmtime: only here
+
     if target == "native":
         target = native_jit()
         native(target)
