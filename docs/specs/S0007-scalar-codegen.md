@@ -6,14 +6,15 @@ status: approved
 superseded_by:
 related: [D14, D25, D26, D35, D39, D44, S0003, S0004, S0006, R2, R3]
 owner: maintainer
-updated: 2026-11-03
+updated: 2026-11-04
 ---
 
 # S0007 Scalar code generation in both JITs (addressing, returns, temporaries)
 
 ## Summary
-**Status (2026-11-03): approved, in progress.** Steps 1, 2 and 3 are done, steps 1b, 5 and 7 were measured and dropped, the
-spec is paused while S0006 is closed (now implemented); steps 4, 6 and 8 are open.
+**Status (2026-11-04): approved, in progress.** Steps 1 and 3 are done; steps 1b, 5 and 7 were measured and
+dropped; step 2 (L) was reverted after a re-measurement under the placement control; steps 4 and 6 are not done
+(maintainer's decision); step 8 is open.
 
 `jit-x86_64` scalar code is 1.5–3.9× slower than Wasmtime on the scalar kernels and 38 % slower on
 CoreMark. A measured investigation (2026-11-02; Xeon 2.10 GHz, 4 vCPU, CPython 3.13.17, wasmtime-py
@@ -22,8 +23,8 @@ countable instructions and tested each fix as a throw-away patch. This spec make
 contracts, for both JITs:
 
 1. **Addressing (K, L, Z).** `local + const` stays deferred and becomes one `lea`/`add` into the
-   address register; add/sub-immediate into `tos` is one `lea`; a register index needs no 32-bit
-   copy in explicit mode. Measured together: CoreMark +6.2 % (14 044 → 14 909 it/s), `addsat`
+   address register; add/sub-immediate into `tos` is one `lea` (L: reverted 2026-11-04, Changes); a
+   register index needs no 32-bit copy in explicit mode. Measured together: CoreMark +6.2 % (14 044 → 14 909 it/s), `addsat`
    −27 % (7.55 → 5.51 µs), `scan` −18 % (3.08 → 2.52), `nearest` −19 % (1.77 → 1.44).
 2. **Calls.** A result goes straight to slot 0; a parameter read once is not pinned; call-free
    functions drop the checks they do not need. Measured: dropping the value-stack check and entry
@@ -91,10 +92,11 @@ entry poll and, for a frame of at most H slots, both stack checks; `func_end` th
 **F. Byte identity.** D39's "x86-64 code byte-identical unless the amendment says otherwise": this
 amendment says otherwise for every step below.
 
-Backend-internal, no interface change: **L** (x86-64 `binop` "add"/"sub" with `x` a register other
-than `dst` and `y` an immediate that fits a signed disp32 at the operand's width, or `add` of two
-registers, emits one `lea`; aarch64 already emits one three-operand `add`/`sub`), and **Z** (x86-64
-explicit mode: a `Reg` address is used as the index directly; see Semantics).
+Backend-internal, no interface change: **L** (reverted 2026-11-04, Changes; it was: x86-64 `binop`
+"add"/"sub" with `x` a register other than `dst` and `y` an immediate that fits a signed disp32 at the
+operand's width, or `add` of two registers, emits one `lea`; aarch64 already emits one three-operand
+`add`/`sub`), and **Z** (x86-64 explicit mode: a `Reg` address is used as the index directly; see
+Semantics).
 
 ### Core (`common/compiler.py`)
 * **Entry kind `ADDK`** `(ADDK, (j, k))`: local *j* (an i32 pinned local) plus `k` mod 2³². Formed by
@@ -162,7 +164,7 @@ store holds the same limit. A call-free function cannot recurse, so its native u
 | K | guard thresholds, fault points (S0006) | `offset` unchanged; the access instruction unchanged |
 | K | old value of a local (set after get) | `local.set` spills `ADDK (j, ·)` as it spills `LOCAL j` |
 | K | a popped operand may still be in `tos` (LESSONS 32) | `tos_taken`: a second popped `ADDK` goes to its slot |
-| L | flags (LESSONS 1) | `lea` writes no flags; emitted only inside `binop`, never between a compare and its consumer |
+| L (reverted) | flags (LESSONS 1) | `lea` writes no flags; emitted only inside `binop`, never between a compare and its consumer |
 | Z | memory safety without LESSONS 5 | explicit mode only: the check `lea rdx, [idx + off + size]; cmp rdx, r14` is 64-bit, so a dirty upper half traps or (wrapping past 2⁶⁴) addresses inside the memory; guard mode keeps the copy (S0006 Q9) |
 | R | callee-saved pool (LESSONS 2) | temporaries are in the save set; never live across a call or host call (flushed first), so the bridge is unchanged |
 | R | stack alignment (LESSONS 3) | the pad follows the save set's parity |
@@ -221,8 +223,8 @@ Each step is one commit, measured alone against the commit before it; numbers in
 investigation's.
 1. **Results straight to slot 0** (core). Acceptance: the common commands; calls benchmark leaf and
    `fib` faster than baseline; CoreMark not slower.
-2. **L** (x86-64 backend only). Acceptance: common commands; aarch64 lists unchanged; CoreMark and
-   kernels not slower, at least one faster.
+2. **L** (x86-64 backend only; done, then reverted 2026-11-04). Acceptance: common commands; aarch64
+   lists unchanged; CoreMark and kernels not slower, at least one faster.
 3. **K** (amendment A; core, both backends). Acceptance: common commands, fuzz, unit tests;
    `addsat`, `scan`, `nearest` faster; CoreMark faster [K+L+Z: +6.2 %]; `matmul` not slower (it was
    3.91 → 3.99 with K+L+Z: watch it).
@@ -354,3 +356,10 @@ investigation's.
   faster under that control (`swizzle`'s −27 % as built is placement); compile time +8 % (BENCHMARKS.md). Only 6 of
   CoreMark's 29 functions used temporaries on x86-64: the pins take most of the pool. The investigation's +9.4 %
   for K, L, Z and R together is not reproduced by R on top of K and L. The code is reverted.
+* 2026-11-04: step 2 (L) **reverted** (maintainer). Steps 2 and 3 were re-measured with every function at the
+  same offset in all trees (the step 7 placement control): with K in place L no longer changes `addsat` or
+  `swizzle` and gives no kernel gain beyond the spread; CoreMark +1.3 % controlled (within the spread) and
+  −1.1 % as built. K's gains hold (`addsat` −22 %, `scan` −9 %, `nearest` −11 %, `matmul` −4 %, in guard and
+  explicit mode; BENCHMARKS.md). The `lea` block is removed from `x86_64/backend.py`; D35: 21 x86-64 modules
+  change against HEAD in each bounds mode, the aarch64 lists are unchanged; spec parity on `jit-x86_64` in
+  both modes. Status: steps 4 and 6 are not done (maintainer's decision, 2026-11-03: step 4 skipped, S0007 closed without step 6); step 8 is open.

@@ -232,19 +232,6 @@ class Backend:
                 self.move(dst, x, w)
                 a.shift(SHIFTS[op], d, None, w=w)
             return
-        if op in ("add", "sub") and isinstance(x, Reg) and x.id != d:  # one lea (S0007 L)
-            m = None  # lea sets no flags (LESSONS 1); lea r32 wraps mod 2**32, zero-extends
-            if isinstance(y, Imm):
-                bits = 64 if w else 32
-                k = (y.value if op == "add" else -y.value) & ((1 << bits) - 1)
-                k -= (1 << bits) if k >> (bits - 1) else 0
-                if -(1 << 31) <= k < 1 << 31:  # disp32 is sign-extended to 64 bits
-                    m = Mem(x.id, k)
-            elif op == "add" and isinstance(y, Reg):  # rbp/r13 as base would need a disp8
-                m = Mem(y.id, 0, x.id) if x.id & 7 == RBP else Mem(x.id, 0, y.id)
-            if m is not None:
-                a.lea(d, m, w)
-                return
         if isinstance(y, Reg) and y.id == d and not (isinstance(x, Reg) and x.id == d):
             if op == "sub":
                 self.move(Reg(RCX), y, w)

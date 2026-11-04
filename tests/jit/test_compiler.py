@@ -155,8 +155,9 @@ def test_integer_operators_match_pyc(t: str, pins: None) -> None:
 
 @pytest.mark.parametrize("t", ["i32", "i64"])
 def test_add_sub_as_lea_match_pyc(t: str, pins: None) -> None:
-    """S0007 L: add/sub of a local and an immediate (fits disp32 or not) and add of two registers
-    become one lea; the i32 result must wrap mod 2**32 and stay zero-extended (LESSONS 5)."""
+    """add/sub of a local and an immediate (fits disp32 or not) and add of two registers: the i32
+    result must wrap mod 2**32 and stay zero-extended (LESSONS 5). Written for S0007 L (one lea,
+    reverted 2026-11-04); kept as edge-case coverage of the add/sub paths."""
     ks = [0, 1, -1, 0x7FFFFFFF, -0x80000000, 0x80000000, M32]
     if t == "i64":
         ks += [-0x80000001, 1 << 32, 0x123456789A, -(1 << 63), (1 << 63) - 1]

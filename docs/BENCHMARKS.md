@@ -671,6 +671,9 @@ sha256 4096B 42.6 → 41.1–41.9, deflate 8K 430.3–438.2 → 418.7–450.7).
 
 ### Step 2: add/sub as one `lea` (L) (2026-11-02)
 
+Reverted 2026-11-04: under the placement control L gave no gain once K was in ("Steps 2 (L) and 3 (K)
+re-measured under the placement control", below).
+
 The change (`jit-x86_64` only): `binop` add/sub of a register `x` other than the destination and an immediate
 that fits a sign-extended disp32 at the operand's width, or add of two registers, is one `lea` instead of
 `mov` + `add`/`sub` (for example `lea eax, [rbx-0x1]`). aarch64 code is unchanged (its `jit_dump` list is
@@ -852,3 +855,37 @@ pins a temporary costs a push and a pop per call in exchange for a store and a l
 changed functions that did not pay. Every CoreMark run "Correct operation validated". Spec parity held with
 the change (54 385 pass, 0 fail, 91 xfail on `jit-x86_64` in explicit and guard mode and on `jit-aarch64`
 under QEMU in both modes); `tests/jit` passed in both bounds modes, also under QEMU; the ISA gates were clean.
+
+### Steps 2 (L) and 3 (K) re-measured under the placement control (2026-11-03)
+
+Steps 1b, 5 and 7 lost their gains once every function sat at the same offset in both trees, so the two kept
+steps were measured again the same way. Trees: HEAD of 2026-11-03, HEAD without L (the `lea` block in
+`x86_64/backend.py` removed), HEAD without K (`fold_addk` returns False; its `jit_dump` list is identical to a
+full revert's). The placement control was the step 7 patch: each function starts at the sum of the largest of
+its three sizes, plus a pad of 0, 8, …, 56 bytes of `int3`. Starts were equal in all trees, and the sha256 of
+every unchanged function's range was equal. Conditions: 22:45–23:37 UTC, Intel Xeon @ 2.10 GHz, 4 vCPU VM,
+CPython 3.13.17, `jit-x86_64` in guard mode (explicit where marked), one process at a time, load average
+0.2–1.0. The three trees ran in alternated triples, the order rotating through all six. Kernels:
+`tools/run_simd_bench.py --targets jit-x86_64 --rounds 5`, scalar build. CoreMark:
+`tools/run_coremark_jit.py`. Every run validated.
+
+| benchmark | runs | without | with | change |
+|---|---|---|---|---|
+| L: scalar `addsat` (µs), as built / controlled | 32 / 64 | 4.12 / 4.03 | 4.12 / 4.03 | 0 % (18 of 32, 28 of 64) |
+| L: scalar `scan`, `nearest`, `matmul`, controlled | 64 | 2.13, 1.28, 3.46 | 2.12, 1.27, 3.46 | noise (30, 29, 24 of 64; 3–4 of 8 pads) |
+| L: CoreMark (it/s), as built | 8 | 16 937 (16 644–17 276) | 16 757 (16 472–17 069) | −1.1 %, faster in 2 of 8 |
+| L: CoreMark, controlled | 32 | 17 158 (16 319–17 865) | 17 383 (16 519–18 228) | +1.3 %, faster in 26 of 32 (within the spread) |
+| K: scalar `addsat`, as built / controlled | 32 / 64 | 5.11 / 5.15 | 4.12 / 4.03 | −19 % / −22 %, 29 of 32 / 61 of 64, 8 of 8 pads |
+| K: scalar `scan`, controlled | 64 | 2.34 | 2.12 | −9 %, 62 of 64, 8 of 8 pads |
+| K: scalar `nearest`, controlled | 64 | 1.43 | 1.27 | −11 %, 55 of 64, 7 of 8 pads |
+| K: scalar `matmul`, controlled | 64 | 3.59 | 3.46 | −4 %, 54 of 64, 8 of 8 pads |
+| K: `addsat`, `scan`, `nearest`, `matmul`, explicit, controlled | 32 | 6.65, 2.85, 1.67, 3.79 | 5.54, 2.52, 1.47, 3.65 | −17, −12, −12, −4 %, 8 of 8 pads each |
+| K: CoreMark, as built / controlled | 8 / 32 | 16 718 / 17 115 | 16 757 / 17 383 | +0.2 % (5 of 8) / +1.6 % (23 of 32), within the spread |
+
+K's kernel gains hold under the control. L's do not: with K in place, L no longer changes `addsat` or
+`swizzle`; in `scan` and `nearest` it replaces one `add` with one `lea`, and only `dot` and `matmul` lose a
+`mov`, so step 2's kernel gains were taken over by K or were placement. `swizzle`'s as-built +22 % (L, code
+unchanged) and +26 % (K) are placement; controlled, they are −0.2 % and −8 %. Decision (maintainer,
+2026-11-04): K kept, L reverted. The `lea` block is removed from `x86_64/backend.py`; with it, 21 x86-64
+spec modules change against HEAD in each bounds mode (the list equals the measured tree's), and aarch64 is
+unchanged.

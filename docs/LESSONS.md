@@ -458,3 +458,11 @@ What went wrong or surprised us while building the PoC, so it is not found again
     (segfault, exit 139) and in Pyodide (a ctypes fatal error). Rule: every path that executes JIT code
     checks `JitTarget.foreign()` first and raises; a test that runs JIT code calls `native()`. Found: the
     first platforms run with the WAT cache, 2026-11-03.
+69. **A step kept on an uncontrolled measurement can be subsumed by a later one.** S0007 step 2 (L, add/sub
+    as one `lea`) was kept on kernel gains measured with a padding sweep at the module start only. After
+    step 3 (K) folded `local + const` into its consumers, a re-measurement with every function at the same
+    offset in all trees showed L changing `addsat` and `swizzle` not at all and the other kernels within
+    noise: K had taken over its gains, or they had been placement. CoreMark's +1.3 % was within the spread
+    and −1.1 % as built. Rule: before a codegen spec is closed, re-measure each kept step against the tree
+    without it, under the placement control (LESSONS 51), on top of the later steps; revert what no longer
+    pays. Found: S0007 steps 2 and 3, re-measured 2026-11-03, L reverted 2026-11-04.
