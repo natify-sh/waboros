@@ -19,7 +19,7 @@ parity step (ROADMAP "Next"; exceptions and GC follow). The spec fixes the front
 `pyc` helpers, the JIT bounds checks for 64-bit addresses, one amendment of the backend interface
 (D39), the size limits, and the steps.
 
-Main choices (each one is an open question below; the recommendation is in **bold**):
+Main choices (decided by the maintainer on 2026-11-04 unless marked open, "Open questions"):
 * The front end records the address type in two new lists. Instruction tuples and limits tuples
   stay as they are, so i32 code on every target is unchanged **by construction**.
 * `pyc` needs only typing and four small helpers. Its addresses are already Python ints, and the
@@ -27,12 +27,14 @@ Main choices (each one is an open question below; the recommendation is in **bol
 * The JIT uses **explicit checks only** for i64 memories, in both bounds modes, written the way
   Wasmtime writes them: 3 instructions per access in the common case. The guard-page trick cannot
   cover a 64-bit index (see "Why guard pages cannot cover an i64 index"). The Wasmtime-style hybrid
-  (guard region plus one compare) is described as an option, **deferred until a measurement**.
-* An i64 memory gets **the same reservation as an i32 memory** (4 GiB + 32 MiB, never moved) and the
-  same 65 536-page limit on every target. This **deviates from Wasmtime**, which grows such a memory
-  beyond 4 GiB by moving it (measured below).
-* **Context ABI v1 is amended, not bumped**: no new word. The libcalls `memory.grow` and `table.grow`
-  return −1 at the address width.
+  (guard region plus one compare) is optional step 5, taken only after a measurement (Q2).
+* **Memory limits are Wasmtime's** (Q1 (b)). No 65 536-page cap for i64 memories: the JIT reserves
+  as Wasmtime 50.0.1 does (measured, "Runtime") and grows an i64 memory past its reservation by
+  **moving** it; `pyc` grows its `bytearray` until allocation fails. An i32 memory never moves, and
+  its code bytes do not change (D35). Tables keep the D27 cap.
+* **Context ABI v1 is amended, not bumped** (Q4): no new word. The libcalls `memory.grow` and
+  `table.grow` return −1 at the address width, and the base of an i64 memory may change in a host
+  call.
 
 **Status before this step** (measured 2026-11-04, `uv run python -m tests.spec.run --engine pyc
 memory64`; `jit-x86_64` gives the same numbers): 8 719 commands, **6 739 pass / 1 921 fail / 59
@@ -57,10 +59,11 @@ reports out-of-memory instead of returning −1, "Limits").
   expected failures are the 2 GC commands, plus `table64.wast:13` until Q5 is done. For i32-only
   modules, the generated `pyc` source and the D35 lists of both JITs (guard and explicit, CoreMark
   included) stay byte-identical. Baseline ISA only (D24). No per-OS code (D47: no rows touched).
-* Non-goals: guard pages for i64 memories (the hybrid is optional, Q2); memories above 65 536 pages
-  or moving memories (Q1); shared memories and limits flags 2, 3, 6 and 7 (threads; they stay
-  `NotImplementedError`); custom page sizes; `memory.discard`; `mpy`; the public API (`Config`,
-  store limits: phase 6); a speed claim (none is made).
+* Non-goals: guard pages for i64 memories (the hybrid is optional, Q2); moving an i32 memory; an
+  OS-specific move (`mremap`, D47); shared memories and limits flags 2, 3, 6 and 7 (threads; they
+  stay `NotImplementedError`; a shared memory never moves); custom page sizes; `memory.discard`;
+  `mpy`; the public API (`Config.memory_reservation`, store limits, `data_ptr`: phase 6); a speed
+  claim (none is made).
 
 ## Interface
 
@@ -93,7 +96,7 @@ reports out-of-memory instead of returning −1, "Limits").
 * **Linking** (`runtime/link.py`, shared): an imported memory or table must have the **same**
   address type as the export (`memory64-imports.wast`); limits are matched as today.
 * **JIT until it is ready** (`common/compiler.py` `unsupported`): a module with an i64 memory
-  reports `"memory64"`, one with an i64 table reports `"table64"`. Steps 2 and 3 remove these.
+  reports `"memory64"`, one with an i64 table reports `"table64"`. Steps 2a and 3 remove these.
 
 ### `pyc` (`targets/pyc/codegen.py`, `runtime.py`, `__init__.py`)
 **Nothing changes for an i32 memory or table.** Every new branch tests `maddr`/`taddr`, and the i64
@@ -107,16 +110,28 @@ plan checks its sha256).
   for i32 today ([PYC-PLATFORMS.md](../PYC-PLATFORMS.md)). The SIMD helpers `_rd`/`_wr` compare `a + n`
   with `len(M)` first.
 * `memory.size`: the same text `(len(M)>>16)`, typed `I64` with bound 2⁴⁸. `table.size` likewise.
-* `memory.grow` on an i64 memory: `_grow64(M, maxpages, n)` returns `0xFFFFFFFFFFFFFFFF` on failure,
-  and also when `bytes(n << 16)`/`extend` raises `MemoryError` or `OverflowError`. `maxpages` is
-  `min(max, 65536)` ("Limits"). `table.grow`: `_tgrow64`, the same cap of 10 000 000 elements as
-  D27, −1 as `M64`.
+* `memory.grow` on an i64 memory: `_grow64(M, maxpages, n)` returns `0xFFFFFFFFFFFFFFFF` when
+  `old + n > maxpages`, and also when `bytes(n << 16)`/`extend` raises `MemoryError` or
+  `OverflowError`. `maxpages` is `min(max, 2⁴⁸ − 1)`: the byte size of an i64 memory must fit 64
+  bits, as in Wasmtime ("Limits"); there is **no other cap**. `table.grow`: `_tgrow64`, the same cap
+  of 10 000 000 elements as D27, −1 as `M64`.
 * Active segments: `_dseg64`/`_eseg64` take the 64-bit offset without the `& 0xFFFFFFFF` of
   `_dseg`/`_eseg`. `memory.copy`, `memory.fill`, `memory.init` and the table helpers compare with
   Python ints and need no change.
-* Memory creation: an i64 memory whose min is above 65 536 pages fails **at instantiation** with
-  the "Limits" error. The generated line for an i64 memory checks before it allocates; module
-  definitions do not allocate, so `memory64.wast:8` (a definition with min 2⁴⁸) passes.
+* Memory creation: the generated line for an i64 memory checks before it allocates. A min of 2⁴⁸
+  pages or more raises `MemoryError` with Wasmtime's message (Q6, "Limits"); a `MemoryError` or
+  `OverflowError` from the allocation itself becomes `MemoryError("failed to allocate N bytes for
+  a memory of P pages")`, both **at instantiation**. Module definitions do not allocate, so
+  `memory64.wast:8` (a definition with min 2⁴⁸) passes.
+* **`pyc` memory is resident**: `bytearray(n)` writes its zeros and `extend` copies them (the
+  JIT commits lazily). On the dev VM (CPython 3.13.17, 15 GiB, no swap, `overcommit_memory` 0,
+  2026-11-04) `bytearray(2³⁶)`, `bytearray(2⁴⁸)` and `extend(bytes(2³⁶))` raise `MemoryError`. So
+  pyc follows Wasmtime's rule with the host's RAM as the bound: a 64 GiB min fails there where
+  Wasmtime instantiates. A grow the kernel admits but cannot back ends in the OOM killer, as for any
+  Python program; no spec command comes near it. On a 32-bit host, `bytearray` past 2³¹ raises
+  `OverflowError` or `MemoryError`: −1.
+* A live `memoryview` of the memory blocks `extend` (`BufferError`, ARCHITECTURE.md). That is the
+  existing host rule for i32 memories and is not caught.
 * **Speed of the i32 path: zero change**, since its source is identical. No measurement is needed
   (as in S0008).
 
@@ -146,7 +161,7 @@ Wasmtime 50.0.1 with `signals_based_traps = False` emits this same shape (disass
   add rdx, k` (or `mov rdx, imm64; add rdx, idx`) `; jc oob; cmp rdx, L; ja oob`; aarch64: `adds
   x10, x9, k; b.cs oob; cmp x10, L; b.hi oob`. Flags are consumed by the next instruction (LESSONS
   1). If the declared maximum makes the access impossible (`k > max·65536`), the backend emits
-  `jmp oob`. That decision uses **only the module's declared limits, never the runtime's cap**, so
+  `jmp oob`. That decision uses **only the module's declared limits, never the runtime's limits**, so
   an artifact stays correct for a host with a larger limit (D36).
 * **Constant address** (`Imm`): `ea = value + offset` without the `& M32` of the i32 path (that mask
   would be a silent wrong-address bug). `ea + size > 2⁶⁴` gives `jmp oob`; otherwise it compares with
@@ -175,8 +190,9 @@ Wasmtime 50.0.1 with `signals_based_traps = False` emits this same shape (disass
 **Multi-memory with mixed types (D37)**: the bounds mode belongs to the module (D29), but the check
 is chosen per access. In a guard-mode module, accesses to i32 memories are unchecked fault points as
 today, and accesses to i64 memories take the explicit path above and are not fault points. The
-fault map lists i32 accesses only. Every memory keeps its reservation, which a guard module already
-registers (`guard.add_reservation`), so nothing changes in the handler or its rows (D47).
+fault map lists i32 accesses only. A guard module registers the reservations of its i32 memories
+as today (`instance.py:605-608`); its i64 memories are not registered ("Runtime"). Nothing changes
+in the handler or its rows (D47).
 
 ### JIT option: the hybrid check (Wasmtime-style; Q2)
 On a verified guard row only, for an i64 memory with `k ≤ GUARD` (32 MiB): `cmp idx, L; ja oob`,
@@ -195,12 +211,14 @@ mov eax,[r8]`, that is, a branch-free Spectre mask to address 0 instead of `ja`;
 * **Cost**: fault points and fault-map entries for i64 accesses, a second code path in `_bounds`
   on both backends, and a host obligation for guard artifacts with an i64 memory ("GUARD
   inaccessible bytes behind `size_bytes`, at every size"). Our reservation already meets that
-  obligation. **No reservation cost**: the i64 memory has the same 4 GiB + GUARD reservation as an
-  i32 one (Q1 (a)). With a moving base (Q1 (b)) the registry entry would be replaced at each move
-  (`add_reservation` and `_forget` exist). The code itself is unaffected, because it rereads the
+  obligation: every i64 reservation keeps a GUARD tail behind its capacity ("Runtime"). The hybrid
+  also needs i64 reservations **in the registry**, which this spec leaves out ("Runtime"). A move
+  would then register the new reservation (`guard.add_reservation`) before it publishes the new
+  base. The old entry goes through the old reservation's `on_free` hook (`guard.py:561`,
+  `_forget` at `:564`) before the unmap. The code itself is unaffected, because it rereads the
   base after every call (below).
-* **Recommendation (Q2)**: explicit only in this spec. The hybrid is an optional later step, taken
-  only if a wasm64 CoreMark run on a guard row shows a gain worth the second path.
+* **Decided (Q2, 2026-11-04)**: explicit only in this spec. The hybrid is an optional later step,
+  taken only if a wasm64 CoreMark run on a guard row shows a gain worth the second path.
 
 ### Backend interface: D39 amendment B (both backends, one step, reviewer)
 ```python
@@ -224,27 +242,119 @@ x86-64 byte identity for every module without an i64 memory or table, and a `rev
 end check. `call_indirect` and `tail_indirect` take the table record through `_element`. The
 `table.grow` and `table.init` libcalls receive 64-bit slots already.
 
-### Runtime (`jit/common/instance.py`) and the context ABI
-* **Reservation (Q1 (a))**: an i64 memory is a `Memory` like any other: 4 GiB + GUARD reserved,
-  committed on grow, **never moved**, `max = min(declared, 65 536)` (`MAX_PAGES`). If its min is
-  above 65 536 pages, instantiation fails with the "Limits" error before anything is reserved.
-* **Moving bases**: the code already tolerates them. Memory 0's registers (r13/r14, x26/x25) are
-  reloaded after every call and every `memory.grow`, and any other memory is reread from its words
-  at each access (ARTIFACT.md part 3). What a move would change is runtime and contract: copying the
-  committed bytes, rewriting `base` in every bound context (`users`), re-registering for the
-  handler, and the ARTIFACT.md sentence "the base never moves". That is Q1 (b), not this spec.
+### Runtime (`jit/common/instance.py`, `execmem.py`) and the context ABI
+**An i32 memory does not change**: 4 GiB + GUARD reserved, committed on grow, never moved, at most
+65 536 pages. Its `Memory` takes the same path as today, and no code byte changes.
+
+**Reservation of an i64 memory** (Q1 (b)). The sizes are Wasmtime 50.0.1's on a 64-bit Linux host,
+measured 2026-11-04 from `/proc/self/maps` around `Memory.data_ptr` (wasmtime-py, default `Config`).
+The measured values are those of `memory_reservation` = 4 GiB, `memory_reservation_for_growth` =
+2 GiB and `memory_guard_size` = 32 MiB:
+
+| min bytes `m` | Wasmtime 50.0.1 (measured) | ours |
+|---|---|---|
+| `m ≤ 4 GiB` (mins 1, 49 152, 65 535, 65 536 pages) | 4 GiB + 32 MiB after the base | `RESERVATION64 + TAIL64`: the same |
+| `m > 4 GiB` (65 537 pages) | `m` + 2 GiB + 32 MiB | the same |
+| grow to `n` bytes, `n ≤` reservation − 32 MiB | in place (65 537 → 98 305 pages, no move) | commit in place |
+| grow to `n` bytes beyond that | **moves**: new reservation `n` + 2 GiB + 32 MiB (98 306 pages: moved) | the same |
+
+Wasmtime's extra 32 MiB guard *before* the base is left out (S0006 has none; explicit checks need
+none); no "Limits" row changes. The 32 MiB tail is kept: the same arithmetic as Wasmtime, and the
+hybrid (Q2) needs it. The 2 GiB growth reserve makes a page-by-page grower past 4 GiB move once per
+2 GiB. Constants next to `MEMORY_RESERVATION`, read by i64 memories only: `RESERVATION64` = 4 GiB,
+`GROWTH64` = 2 GiB, `TAIL64` = `GUARD`; the tests lower them (Test plan).
+
+**`Memory.grow` of an i64 memory** (`instance.py:259-271` today):
+1. `new = old + delta`. If it is above `max` (the declared maximum, or 2⁴⁸ − 1 pages: the byte size
+   must fit the 64-bit `size_bytes` word, as in Wasmtime), return −1.
+2. If `new << 16 ≤ res.size − TAIL64`: commit in place and publish the size, as today.
+3. Otherwise **move**. (a) Reserve `(new << 16) + GROWTH64 + TAIL64` and commit `new << 16` in it. A
+   failure returns −1, and nothing has changed. (b) Copy the old contents, **one 64 KiB page at a
+   time, skipping pages that are all zero**: the new pages already read as zero. (c) Rewrite `base`
+   and `size_bytes` in every bound context (`users`). (d) Free the old reservation.
+4. Return `old`.
+
+**Size check before any mapping call (a memory-safety rule).** ctypes converts an oversized int
+for a `c_size_t` argument by silent truncation: `2⁶⁴ + 2 GiB` reaches C as `2 GiB` (measured
+2026-11-04, CPython 3.13.17). `memory.grow` by 2⁴⁸ − 2 from 1 page asks for `2⁶⁴ − 2¹⁶ + GROWTH64 +
+TAIL64` bytes. Unchecked, that becomes a 2 GiB mapping under a 2⁶⁴ − 2¹⁶ `size_bytes`, and every
+bounds check passes. So `Reservation` refuses any size ≥ 2⁶³ with `OSError(ENOMEM)` before it calls
+`mmap`/`VirtualAlloc` (`commit` is bounded by that size). Step 2b adds it, a test and a LESSONS
+entry.
+
+**Why the copy skips zero pages** (measured 2026-11-04 on the dev VM: 4 GiB + 64 KiB committed,
+three bytes written, copied into a fresh `Reservation` with `ctypes.string_at` compares). Skip-zero
+per 64 KiB page: 1.36 s, RSS +1 MiB (1 MiB chunks: 1.28 s, +3 MiB; 16 MiB: +47 MiB). One
+`ctypes.memmove` of the range: 23.3 s, +4 GiB. Wasmtime copies everything: its move of a 1-page
+memory grown to 65 537 pages took 24.3 s, RSS 27 MiB → 4.1 GiB. Never-written private pages read
+as the shared zero page, so a move costs time linear in the size and RSS linear in the written
+pages (peak: twice those). Skipping a page that was written and later zeroed is still correct.
+
+**No stale base after a move** (checked in the code, 2026-11-04). A move happens only inside
+`Memory.grow`, which runs in a libcall or in host code. Wasm code reaches both only through the
+bridge, so every JIT frame is suspended at a call site. When control comes back:
+* memory 0's registers are reloaded from the context after every libcall (x86-64 `call_host`,
+  `backend.py:1218-1219`; aarch64 `backend.py:233`). They are also reloaded after every import
+  thunk (`backend.py:1201-1202`; aarch64 `abi.py:133`), after every call through a record
+  (`_call_record`, `backend.py:1106-1107`; aarch64 `backend.py:253, 257`) and in the tail switch
+  (x86-64 `abi.py:124-135`; aarch64 `abi.py:107-116`);
+* a direct call inside one instance does not reload (`call_direct`, `backend.py:1058-1068`). It
+  needs no reload: r13/r14 always equal the current context's words, because every site that could
+  change those words reloads before it returns;
+* any other memory is read from its context words at each access (`_mem`, `backend.py:720-726`;
+  aarch64 `backend.py:483-493`). The bulk operations hold the base in a register only inside
+  their own inline loop, which calls nothing (`memory_copy`/`memory_fill`, from `backend.py:977`);
+* the runtime reads `mem.res.addr` at use (`_memory_init`, `instance.py:710`; data segments,
+  `:669`).
+
+So the old reservation can be freed at the end of the grow. If an asynchronous exception
+(`KeyboardInterrupt`) lands during (c), the old reservation is kept on the `Memory` instead of
+being freed. That leaks it, but no context ever names unmapped memory.
+
+**Registry.** An i64 memory is **not registered** with the guard registry. No fault point targets it
+(its accesses are explicit, and bulk operations are explicit in every mode, S0006). So the handler's
+condition 3 never needs it, and a move has no registry entry to replace. The loop at
+`instance.py:607-608` skips i64 memories. With the hybrid (Q2) this changes, see above.
+
+**Instantiation.** A min of 2⁴⁸ pages or more raises `MemoryError` with Wasmtime's message before
+anything is reserved (Q6). A failed reservation or commit of the min raises `MemoryError("failed
+to reserve N bytes")`. Wasmtime's own text names its `mmap` size, which includes its pre-guard.
+
+**Consumers of `size_bytes` above 2³²** (checked): the word is 64-bit and holds at most
+2⁶⁴ − 2¹⁶ (grow rule 1). `memory_size` shifts it in 64 bits (`backend.py:728-730`; aarch64
+`:495-496`). The i32 bounds and bulk paths, `_end_check` included, never see an i64 memory
+(validation types them). The i64 paths above compare in 64 bits with the carry. `_memory_init`
+and the data-segment check compare Python ints.
+
+**Host-visible consequence.** A raw address or ctypes view of an i64 memory that host code took
+(`Memory.res.addr`) is invalid after any grow: the old mapping is unmapped, and using it would
+crash. Wasmtime's `data_ptr` has the same rule ("valid until the next grow"). Phase 6 documents it
+on the API; no API work now. An i32 memory's address stays valid.
+
+**Threads.** One thread per store (ARCHITECTURE.md). A host thread that grows a memory while
+another thread runs that store's code already breaks this rule today, with a stale size. With a
+move the result is a use after unmap. The rule is not enforced (open risk, "Alternatives").
+
 * **Libcall widths**: the `memory.grow` service masks its result with `M64` for an i64 memory, so a
   failure is −1 as an i64, and with `M32` for an i32 memory as today. The same applies to
   `table.grow` per table. The delta already arrives as a zero-extended 64-bit slot. Active element
   offsets are masked by the table's width (`& M32` only for i32); data offsets are not masked.
 * **Context ABI**: no new word, no moved word. `size_bytes` (memories) and `size` (tables) are
-  already 64-bit words. With the 65 536-page cap, `size_bytes ≤ 2³²`, so a 2⁶⁴-byte memory (which
-  would not fit the word) cannot occur. The amendments to ARTIFACT.md part 3 are text only: the
-  operand and result width of the `memory.grow`/`table.grow`/`memory.init`/`table.init` libcalls
-  for an i64 memory or table, and "i64 memories follow the same reservation rule". Part 2's
-  `TABLES` gains the address type (`MEMORIES` already has "64-bit"). **No version bump (Q4)**, as
-  D37, D38 and the S0005 v128 amendment: the format and ABI v1 are not serialized yet. The step
-  records the amendment in DECISIONS.md and S0003 Changes.
+  already 64-bit words, and the 2⁴⁸ − 1-page bound keeps `size_bytes ≤ 2⁶⁴ − 2¹⁶`. The amendments
+  to ARTIFACT.md part 3 are text only:
+  * the operand and result widths of the `memory.grow`/`table.grow`/`memory.init`/`table.init`
+    libcalls for an i64 memory or table;
+  * the memory row's "the base never moves" becomes: an i32 memory's base never moves (4 GiB +
+    32 MiB). An i64 memory's base and `size_bytes` may both change during any host call or libcall
+    (a `memory.grow` that moves it). Code keeps neither across a call: registers are reloaded
+    after it, other memories are read at each access. That obligation already holds for every
+    memory today.
+
+  Part 2's `TABLES` gains the address type (`MEMORIES` already has "64-bit"). **No version bump
+  (Q4, decided)**, as D37, D38 and the S0005 v128 amendment: the format and ABI v1 are not
+  serialized yet, and the code obligation is unchanged. Steps 2a/2b record the amendment in
+  DECISIONS.md, S0003 Changes (S0003 says "memory never moves under running code"; it still does
+  not *under running code*) and S0006 Changes (its "never moves the base" is for 32-bit memories).
 * **ISA, artifact flags**: baseline only (`lea`, `add`, `jc`, `cmp`, `ja`; `adds`, `subs`, `sub`,
   `cmp`, `b.cs`, `b.hi`); probably no new encoder form, and any new one is checked against
   `llvm-mc`. `BOUNDS_GUARD`/`GUARD_LOG2` keep their meaning: a guard module with an i64 memory has
@@ -262,28 +372,32 @@ error, a Python exception or a crash, on every target and host. On 32-bit `pyc` 
 `OverflowError` mapping covers it.
 
 ### Limits (oracle: Wasmtime 50.0.1, wasmtime-py, measured 2026-11-04 on the dev VM: 15 GiB RAM, 4 vCPU)
-| case | Wasmtime 50.0.1 | this spec, all three targets |
-|---|---|---|
-| `(memory i64 0 0x1_0000_0000_0000)` | instantiates | instantiates (max capped at 65 536 pages internally) |
-| min 2⁴⁸ pages | instantiation error "memory minimum size of 281474976710656 pages exceeds memory limits" | instantiation error (same message) |
-| min 2³² pages | instantiation error "mmap failed to reserve 0x1000084000000 bytes" (min + 2 GiB growth + 2 × 32 MiB guard) | instantiation error |
-| min 65 537 pages; min 2²⁰ pages (64 GiB) | instantiate | **instantiation error (deviation)** |
-| `memory.grow` from 1 page by 65 536; then by 2²⁰ | 1; then 65 537 (size 1 114 113 pages, 68 GiB, by moving) | 1; then **−1 (deviation)** |
-| grow by 2³², 2⁴⁸−2, 2⁴⁸, 2⁶³ | −1 each | −1 each |
-| `table.grow` (i64) by 10⁷ | 1 | 1 |
-| `table.grow` (i64) by 10⁸; by 2⁴⁰ | **error** "out of memory (failed to allocate …)" (not −1) | −1 (D27 cap; the spec allows it) |
-| table64 min 2³² elements | instantiation error (out of memory) | instantiation error (D27 cap) |
-| an access with offset `0xFFFF_FFFF_FFFF_FFFF` | trap | trap |
+| case | Wasmtime 50.0.1 | JIT (both) | `pyc` |
+|---|---|---|---|
+| `(memory i64 0 0x1_0000_0000_0000)` | instantiates | instantiates | instantiates |
+| min 2⁴⁸ pages | instantiation error "memory minimum size of 281474976710656 pages exceeds memory limits" | the same error and message (`MemoryError`, Q6) | the same |
+| min 2³² pages | instantiation error "mmap failed to reserve 0x1000084000000 bytes" (min + 2 GiB growth + 2 × 32 MiB guard) | instantiation error (the 2⁴⁸ + 2 GiB + 32 MiB reservation fails on a 47-bit host) | instantiation error (`MemoryError`) |
+| min 65 537 pages; min 2²⁰ pages (64 GiB) | instantiate | instantiate (address space only) | instantiates if the host can allocate it (resident); 2²⁰ pages: error on the dev VM |
+| `memory.grow` from 1 page by 65 536; then by 2²⁰ | 1; then 65 537 (size 1 114 113 pages, 68 GiB, both by moving) | 1; then 65 537, both by moving | 1 (4 GiB resident); then −1 on the dev VM |
+| grow by 2³², 2⁴⁸−2, 2⁴⁸, 2⁶³ | −1 each | −1 each (2⁴⁸−2: by the size check, "Runtime") | −1 each |
+| `table.grow` (i64) by 10⁷ | 1 | 1 | 1 |
+| `table.grow` (i64) by 10⁸; by 2⁴⁰ | **error** "out of memory (failed to allocate …)" (not −1) | −1 (D27 cap; the spec allows it) | the same |
+| table64 min 2³² elements | instantiation error (out of memory) | instantiation error (D27 cap) | the same |
+| an access with offset `0xFFFF_FFFF_FFFF_FFFF` | trap | trap | trap |
 
-**Deviation, recorded as a new decision with this spec**: i64 memories are limited to 65 536 pages
-(4 GiB), like i32 memories, on every target (D25). The reasons: `pyc` allocates a `bytearray` (a
-4 GiB grow already touches about 8 GiB), and the JIT's memory never moves (LESSONS 7). Wasmtime grows
-past 4 GiB by moving the memory (`memory_may_move`, `memory_reservation_for_growth`). The spec
-suite does not see the difference: every grow in `memory_grow64.wast` either fits in a few pages or
-fails in Wasmtime too. The limit becomes a store limit in phase 6, as D27 does for tables.
-**Instantiation errors vs traps**: a min above the cap is an instantiation error, raised before
-anything is allocated, with Wasmtime's message; its exception type is Q6. A failed grow is −1,
-never an error.
+**Memories follow Wasmtime** (Q1 (b)). The rule is the same on every target: no cap beyond 2⁴⁸ − 1
+pages, and a grow fails only when the host cannot provide the memory. The JIT matches Wasmtime's
+outcomes on a 64-bit host with 47-bit user space, because it reserves the same sizes. `pyc` differs
+only where its memory must be resident ("`pyc`"), so a host without the RAM fails where Wasmtime
+succeeds. The spec suite does not reach either case: every grow in `memory_grow64.wast` fits in a
+few pages or fails in Wasmtime too. Step 2 records the moving rule as a decision. It is not a
+deviation.
+
+**Deviation, tables only**: an i64 table keeps the D27 cap of 10 000 000 elements. A grow beyond
+it is −1 where Wasmtime raises out-of-memory (`table_grow64.wast:46` is a Wasmtime xfail for that
+reason). This is recorded in step 1 as D27 applied to i64 tables.
+**Instantiation errors vs traps**: a min that cannot be provided is an instantiation error
+(`MemoryError`, Q6), raised before the module's code runs. A failed grow is −1, never an error.
 
 ## Test plan
 * **Every step**: `uv run pytest -q`; `python3 tools/check_docs.py`; `python3 tools/features.py
@@ -317,18 +431,41 @@ never an error.
   * table64: `table.get`, `set`, `fill` and `copy` and `call_indirect` at `2⁶⁴ − 1`.
 
   A planted `lea`-for-`add` (dropping the carry test) must fail one case.
-* **`pyc`**: i64 grow failure −1, also when `MemoryError` is injected; min above the cap gives the
-  instantiation error and allocates nothing; the 32-bit-host behaviour is covered by the existing
-  i686/armv7 platform cells (`memory64` in their run once `pyc` claims it).
+* **Moving, JIT** (`tests/jit/test_memory64.py`, both backends, guard and explicit): marked bytes
+  written before a grow are checked, with the zeros around them, after it (wasm and host), and
+  compared with `pyc` and Wasmtime:
+  * **mechanics, cheap** (every row, also under QEMU): `monkeypatch` sets `RESERVATION64`,
+    `GROWTH64`, `TAIL64` to 1 MiB, 1 MiB, 64 KiB, so a 1-page memory moves at its 17th and 34th
+    page (i32 memories keep their real reservation). Cases: a move from wasm `memory.grow` of
+    memory 0 and of memory 1; a memory exported to a second instance (both contexts rewritten); a
+    move in a nested entry (wasm → host → wasm grows), after which the outer frame accesses the
+    memory directly and through a same-instance direct call; a host import that grows through
+    `Memory`; a guard module with memory 0 i32 and memory 1 i64 (only the i32 reservation is
+    registered); an injected reservation failure (−1, nothing changed); the old reservation
+    unmapped afterwards;
+  * **past 4 GiB, real sizes**: the "Limits" sequence (1 page; grow by 65 536, no move; by 1, a
+    move to 4 GiB + 64 KiB; by 2²⁰, a move to 68 GiB of address space), then a store and load at
+    `size − 8`. CI can run it because pages commit lazily and the copy skips zero pages: about 3 s
+    and a few MiB of RSS on the dev VM. The test asserts RSS grew by less than 64 MiB (where
+    `/proc/self/status` exists). Native rows only; under QEMU the cheap variant stands in. On
+    Windows a commit is charged to the commit limit, so −1 is accepted with nothing changed;
+  * **the size check**: grow by 2⁴⁸ − 2 from 1 page returns −1, and `Reservation(2⁶³)` raises
+    `OSError` without mapping; a planted removal of the check must fail.
+* **`pyc`**: i64 grow failure −1, also when `MemoryError` is injected; min 2⁴⁸ gives Wasmtime's
+  instantiation error and allocates nothing; an injected allocation failure at instantiation gives
+  `MemoryError`; a grow from 1 page by 2 pages and a check of the zeros. Nothing in pyc's tests
+  allocates more than a few MiB. The 32-bit-host behaviour is covered by the existing i686/armv7
+  platform cells (`memory64` in their run once `pyc` claims it).
 
 ## Plan of steps
 | step | content | agent | acceptance | size (lines) |
 |---|---|---|---|---|
-| 1 | front end (`limits`, `maddr`/`taddr`, validator rules, `simd.validate` address type), `link.py` address-type check, `pyc` (typing, 4 helpers, min check), JIT `unsupported` → `"memory64"`/`"table64"`, the limits decision in DECISIONS.md; `pyc` claims `memory64` | implementer | `--engine pyc memory64`: 8 657 pass / 0 fail / 3 xfail (`table64.wast:13`, `table_init64.wast:2457` and `:2471`) / 59 skip; rejection test (0 `NotImplementedError`); `pyc` source identity; JIT D35 lists identical (i64 modules `unsupported`) | front end ~60, `pyc` ~40, link ~8, tests ~150 |
-| 2 | JIT memories: D39 amendment B (`index64`), the i64 `_bounds` paths and bulk memory in both backends, the core sets `index64`, runtime (min check, grow mask); i64 tables still `unsupported` | jit-engineer, plan approved first | the `memory64/` files without an i64 table pass on both JITs, guard and explicit, aarch64 under QEMU; `spec_diff` empty on them; D35: only `json/memory64/` lines; ISA gates; `test_memory64.py` (memory part) | core ~15, each backend ~70, runtime ~15, tests ~180 |
+| 1 | front end (`limits`, `maddr`/`taddr`, validator rules, `simd.validate` address type), `link.py` address-type check, `pyc` (typing, 4 helpers, min check), JIT `unsupported` → `"memory64"`/`"table64"`, D27 applied to i64 tables in DECISIONS.md; `pyc` claims `memory64` (no memory cap) | implementer | `--engine pyc memory64`: 8 657 pass / 0 fail / 3 xfail (`table64.wast:13`, `table_init64.wast:2457` and `:2471`) / 59 skip; rejection test (0 `NotImplementedError`); `pyc` source identity; JIT D35 lists identical (i64 modules `unsupported`) | front end ~60, `pyc` ~40, link ~8, tests ~150 |
+| 2a | JIT memories: D39 amendment B (`index64`), the i64 `_bounds` paths and bulk memory in both backends, the core sets `index64`, runtime (min check, grow mask; i64 reservation as an i32 one, a grow past it −1 until 2b); i64 tables still `unsupported` | jit-engineer, plan approved first | the `memory64/` files without an i64 table pass on both JITs, guard and explicit, aarch64 under QEMU; `spec_diff` empty on them; D35: only `json/memory64/` lines; ISA gates; `test_memory64.py` (bounds part) | core ~15, each backend ~70, runtime ~15, tests ~180 |
+| 2b | JIT runtime: the i64 reservation rule, the move (skip-zero copy, publish, free), the `Reservation` size check, no registry entry for i64 memories; the moving rule as a decision in DECISIONS.md, the ABI text amendment (ARTIFACT.md part 3) | jit-engineer, plan approved first; reviewer | "Moving, JIT" tests on both JITs (cheap variant also under QEMU); the "Limits" memory rows equal Wasmtime's on the dev VM; D35 lists unchanged against 2a (Python only); `memory64` numbers unchanged | runtime ~60, execmem ~5, tests ~120 |
 | 3 | JIT table64: `_element`, table bulk ops, `call_indirect`/`tail_indirect`, elem offsets, `table.grow` mask; both JITs claim `memory64` | jit-engineer, plan approved first | `memory64` on both JITs: 8 657 pass / 3 xfail, guard and explicit, QEMU; `spec_diff` empty; D35 as above; table tests | each backend ~40, runtime ~5, tests ~80 |
-| 4 | `spectest` gains `table64` (Q5): the `table64.wast:13` entries leave all four xfail files; review of steps 2–3 by a `reviewer` without the implementers' reasoning; docs; this spec `implemented` | reviewer, then orchestrator | 8 658 / 2 xfail (GC) on each target; core runs unchanged on all engines; findings closed | ~5 + docs |
-| (5) | optional, only if Q2 is approved: the hybrid check, after a wasm64 CoreMark measurement on a guard row | jit-engineer | BENCHMARKS.md row; identity of i32 code; fault tests for i64 accesses | ~40 per backend |
+| 4 | `spectest` gains `table64` (Q5): the `table64.wast:13` entries leave all four xfail files; review of steps 2a and 3 by a `reviewer` (2b has its own) without the implementers' reasoning; docs; this spec `implemented` | reviewer, then orchestrator | 8 658 / 2 xfail (GC) on each target; core runs unchanged on all engines; findings closed | ~5 + docs |
+| (5) | optional (Q2): the hybrid check, after a wasm64 CoreMark measurement on a guard row | jit-engineer | BENCHMARKS.md row; identity of i32 code; fault tests for i64 accesses | ~40 per backend |
 
 A step that needs more than its size stops and reports. **Docs per step** (STANDARDS.md, "Which
 document to update"):
@@ -336,12 +473,17 @@ document to update"):
 * WASM-PROPOSALS.md (memory64 row → yes on all three);
 * TARGETS.md (the "not done" list);
 * ROADMAP.md ("Next");
-* ARCHITECTURE.md (its two memory64 mentions: memory properties and the explicit-mode list);
-* ARTIFACT.md, parts 2 and 3 (step 2: the address type in `TABLES` and the libcall widths);
-* S0003 Changes; S0006 Changes (i64 accesses stay explicit in guard modules);
-* DECISIONS.md (the limits deviation in step 1, D39 amendment B in step 2, the ABI text amendment);
+* ARCHITECTURE.md (its two memory64 mentions: memory properties and the explicit-mode list; in
+  2b, its JIT memory paragraph, "never moves the base", for i32 memories only);
+* ARTIFACT.md, parts 2 and 3 (2a: the address type in `TABLES` and the libcall widths; 2b: the
+  memory row, "the base never moves");
+* S0003 Changes; S0006 Changes (i64 accesses stay explicit in guard modules; i64 reservations are
+  not registered; "never moves the base" is for 32-bit memories);
+* DECISIONS.md (D27 for i64 tables in step 1, D39 amendment B in 2a, the moving rule and the ABI
+  text amendment in 2b);
 * TESTING.md (xfail entries);
-* LESSONS.md (Q7's trap, in step 1).
+* LESSONS.md (Q7's trap, in step 1; in 2b, ctypes truncating an oversized `c_size_t`, and item 7
+  refined: memory moves only inside a host call, never under running code).
 
 ## Alternatives considered
 * **Address type inside the limits tuples** (`(min, max, at)` everywhere): one list fewer, but every
@@ -355,42 +497,54 @@ document to update"):
 * **Guard pages for i64 by masking the index** to the reservation: a masked out-of-bounds index
   would read inside the memory instead of trapping, which is wrong semantics (S0006 already rejected
   masking for i32).
+* **A 65 536-page cap for i64 memories, never moved** (the draft's Q1 (a)). It is the smallest
+  change, but it deviates from Wasmtime: a program that needs more than 4 GiB would fail on every
+  target, and a later store limit would have to undo it. The code already tolerates a moving base,
+  so moving costs only runtime code. Rejected by the maintainer, 2026-11-04.
 * **A huge fixed reservation per i64 memory** (64 GiB to 1 TiB): growth beyond 4 GiB with no move,
   but address-space exhaustion with many live instances (PyPy frees late, LESSONS 49), `RLIMIT_AS`
-  failures, and `pyc` cannot follow (RAM). Q1 (c).
-* **Moving on grow, as Wasmtime**: the code tolerates it already, but it is a runtime and contract
-  change, with copying and re-registration. It is not needed by the spec suite. Q1 (b), later.
+  failures, and `pyc` cannot follow (RAM). Q1 (c), rejected.
+* **Copy every committed byte on a move, as Wasmtime**: simplest, but it took 23.3 s and +4 GiB RSS
+  for a 4 GiB memory with three bytes written ("Runtime"), against 1.4 s and +1 MiB for the
+  skip-zero copy. It would make the past-4-GiB test infeasible on CI. Rejected.
+* **`mremap(MREMAP_MAYMOVE)` on Linux** (moves the page tables, no copy, no read): fastest, but
+  code for one OS (D47). macOS and Windows would still need the copy, and the skip-zero copy is
+  already cheap enough. Not now; a row exception with a measurement could add it later.
+* **Free the old reservation only when the store has no JIT entry active** (`active == 0`): that
+  would turn a host thread breaking the one-thread-per-store rule into a stale read instead of a
+  use after unmap. But it keeps two reservations alive during long calls (the old one with its
+  written pages), and it protects only a rule violation. Not taken; an open risk (R6 class:
+  memory safety rests on a host rule).
 * **Reading every bulk/table operand as 64-bit on every module** (zero-extension makes it correct):
   less code, but it changes the bytes of every i32 module (D35) for no gain. Rejected.
 
 ## Open questions
-* **Q1 Limit and reservation of an i64 memory.** (a) The i32 reservation and a cap of 65 536 pages
-  on all targets; never moved; a new decision records the deviation from Wasmtime. (b) Move the
-  memory when a grow exceeds its reservation, as Wasmtime (`memory_may_move`): runtime only (copy,
-  rewrite `base` in every bound context, re-register), plus the ARTIFACT.md text "the base never
-  moves" changed for i64 memories (a contract change: Q4 applies again); `pyc` would still need its
-  own cap. (c) Reserve min(declared max, 64 GiB or more). **Recommendation: (a) now; (b) when a
-  real program needs more than 4 GiB, with its own measurement.**
-* **Q2 The hybrid check.** **Recommendation: explicit only now** (3 instructions per access in the
-  common case, the same count as i32 explicit). The hybrid becomes optional step 5, taken only if a
-  wasm64 CoreMark on a guard row shows a gain. It saves 1 instruction per access (`lea`), more only
-  with large offsets.
-* **Q3 How a backend learns the address width.** (a) The `index64` attribute (D39 amendment B, no
+* **Q1 Limit and reservation of an i64 memory. Decided 2026-11-04: (b), "as in Wasmtime".** No
+  65 536-page cap. The JIT reserves as Wasmtime and moves an i64 memory when a grow exceeds its
+  reservation; `pyc` grows its `bytearray` until allocation fails. The memory rows of "Limits"
+  match Wasmtime 50.0.1, and tables keep D27. (a), the cap, and (c), a huge fixed reservation, are
+  in "Alternatives". Step 2b records the moving rule as a decision.
+* **Q2 The hybrid check. Decided 2026-11-04: explicit checks only.** The hybrid stays optional
+  step 5, taken only if a wasm64 CoreMark on a guard row shows a gain. It saves 1 instruction per
+  access (`lea`), more only with large offsets.
+* **Q3 How a backend learns the address width (open).** (a) The `index64` attribute (D39 amendment B, no
   signature change). (b) A parameter per method. **Recommendation: (a).**
-* **Q4 Context ABI version.** (a) An amendment of v1 without a bump, as D37, D38 and S0005 (no
-  artifact is serialized yet; ARTIFACT.md part 2 says no artifact is written before the phase-5
-  format spec). (b) Bump `ctx_abi_version` to 2. **Recommendation: (a).** The "old artifact" test that CLAUDE.md asks
+* **Q4 Context ABI version. Decided 2026-11-04: (a), amend v1 without a bump**, as D37, D38 and
+  S0005 (no artifact is serialized yet; ARTIFACT.md part 2 says no artifact is written before the
+  phase-5 format spec). The amendment also covers the ARTIFACT.md sentence "the base never moves",
+  which becomes i32-only (Runtime, "Context ABI"). It is recorded as a text amendment, the
+  rejected alternative being (b), `ctx_abi_version` 2. The "old artifact" test that CLAUDE.md asks
   for becomes: before step 2 no i64-memory code can exist (`unsupported` refuses it, a test in step 1),
   and after it every i32 artifact is byte-identical (D35 lists), so old artifacts still run.
 * **Q5 `spectest.table64`.** The reference interpreter's `spectest` exports `table64` (an i64
   table of 10 to 20 funcrefs, used by `table64.wast:13`). Wasmtime's harness lacks it, which is
   where its xfail comes from. Adding it to `tests/spec/spectest.wat` makes every engine need
   table64 to create `spectest` at all, so it can only land when all three targets have table64.
-  **Recommendation: add it in step 4**; until then the command is an xfail on every engine.
-* **Q6 The exception for "min above the cap".** (a) `MemoryError` with Wasmtime's message, raised by
-  both targets at instantiation. (b) A new waboros exception before the phase-6 API. **Recommendation:
-  (a)**; phase 6 maps it to the API's error, as for every other instantiation failure.
-* **Q7 `NotImplementedError` counts as a passing `assert_invalid`.** `run.py` accepts a
+  **Decided 2026-11-04: add it in step 4**; until then the command is an xfail on every engine.
+* **Q6 The exception for a min that cannot be provided. Decided 2026-11-04: `MemoryError`** with
+  Wasmtime's message (for min ≥ 2⁴⁸) at instantiation, on every target; phase 6 maps it to the
+  API's error, as for every other instantiation failure. A new waboros exception is rejected.
+* **Q7 `NotImplementedError` counts as a passing `assert_invalid` (open).** `run.py` accepts a
   `LoadError` of kind `None` for `assert_invalid`/`assert_malformed`. In `memory64/` this hides 286
   wrong-reason passes (Summary). It matters only for a directory a target claims while part of it is
   unimplemented. **Recommendation:** step 1's rejection test closes it for `memory64`; a LESSONS
@@ -399,3 +553,9 @@ document to update"):
 
 ## Changes
 * 2026-11-04: created (draft).
+* 2026-11-04: revised to the maintainer's answers (still draft). Q1 (b): memories follow Wasmtime,
+  with no 65 536-page cap. The JIT reserves as Wasmtime (measured) and moves an i64 memory past its
+  reservation, with a skip-zero copy (measured). i64 memories are not registered with the guard
+  registry. `Reservation` refuses sizes ≥ 2⁶³ (ctypes truncation). The step plan splits step 2
+  into 2a/2b. Q2, Q4 (including "the base never moves"), Q5 and Q6 are decided; Q3 and Q7 stay
+  open.
