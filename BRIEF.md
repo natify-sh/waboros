@@ -102,8 +102,8 @@ State of `main` (phases 0–4 and SIMD merged on 2026-11-02, published as 0.0.0)
   D41) and the rename to `waboros` is done (D40). Guard pages are complete (S0006, D44): `auto` gives them on
   Linux glibc and musl x86-64, Linux glibc aarch64, macOS, Windows and Android x86-64, explicit checks
   elsewhere. Platform tests run through cibuildwheel (`platforms.yml`), and `pyc` has a bits mode for
-  32-bit x86 (D46). Scalar code generation (S0007) is implemented (steps 1 and 3). Relaxed SIMD and wide arithmetic (S0008) are implemented on all three targets. **Next:**
-  memory64, exceptions and GC, then threads
+  32-bit x86 (D46). Scalar code generation (S0007) is implemented (steps 1 and 3). Relaxed SIMD and wide arithmetic (S0008) and memory64 with table64 (S0009) are implemented on all three targets. **Next:**
+  a reconnaissance of a two-level JIT backend (ROADMAP, "Next" 3b), exceptions and GC, then threads
   (`docs/WASM-PROPOSALS.md`), and the artifact format; the public API only in phase 6.
   Native JIT targets are x86-64, aarch64 and riscv64 (planned); every other architecture runs `pyc` (D48).
 

@@ -336,5 +336,4 @@ gc/type-subtyping.wast:341  unknown trap text: cast failure
 gc/type-subtyping.wast:342  unknown trap text: cast failure
 gc/type-subtyping.wast:370  unknown trap text: cast failure
 gc/type-subtyping.wast:371  unknown trap text: cast failure
-memory64/table64.wast:13  LinkError: unknown import spectest.table64
 memory64/table_grow64.wast:46  WasmtimeError: out of memory (failed to allocate 9223372036854775807 bytes)

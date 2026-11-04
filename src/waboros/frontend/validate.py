@@ -410,10 +410,6 @@ def _body(c: _Ctx, lt: list, nparams: int, results: list, insns: list[tuple]) ->
             raise Invalid("unknown memory")
         return c.maddr[mi]
 
-    def tat(ti: int) -> int:  # the address type of table `ti`
-        table(ti)
-        return c.taddr[ti]
-
     for at, ins in enumerate(insns):
         op = ins[0]
         sig = OPSIG.get(op)

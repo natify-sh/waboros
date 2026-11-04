@@ -34,7 +34,7 @@
         "jspi": null,
         "memory64": [
           "partial",
-          "8716/8719 over memory64/; xfail 3 (memory64/table64 1, memory64/table_init64 2); mostly: LinkError: unknown import spectest.table64"
+          "8717/8719 over memory64/; xfail 2 (memory64/table_init64 2); mostly: LoadError: NotImplementedError: rec / sub / struct / array types"
         ],
         "memoryControl": null,
         "moreArrayConstructors": null,
@@ -103,7 +103,7 @@
         "jspi": null,
         "memory64": [
           "partial",
-          "8716/8719 over memory64/; xfail 3 (memory64/table64 1, memory64/table_init64 2); mostly: LinkError: unknown import spectest.table64"
+          "8717/8719 over memory64/; xfail 2 (memory64/table_init64 2); mostly: LoadError: NotImplementedError: rec / sub / struct / array types"
         ],
         "memoryControl": null,
         "moreArrayConstructors": null,
@@ -172,7 +172,7 @@
         "jspi": null,
         "memory64": [
           "partial",
-          "8716/8719 over memory64/; xfail 3 (memory64/table64 1, memory64/table_init64 2); mostly: LinkError: unknown import spectest.table64"
+          "8717/8719 over memory64/; xfail 2 (memory64/table_init64 2); mostly: LoadError: NotImplementedError: rec / sub / struct / array types"
         ],
         "memoryControl": null,
         "moreArrayConstructors": null,

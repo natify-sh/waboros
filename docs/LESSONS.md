@@ -498,8 +498,9 @@ What went wrong or surprised us while building the PoC, so it is not found again
     turns only `OSError` into −1, which was enough while every memory's maximum (65 536 pages) fit its
     4 GiB reservation. An i64 memory has no such maximum: a grow past the reservation would have
     escaped as a host error instead of −1, and a min above it as a `ValueError` at instantiation.
-    Rule: bound the size by the reservation before `commit` (step 2a caps i64 memories at 65 536 pages;
-    `test_grow_results_and_the_step_2a_cap`). Found: S0009 step 2a planning, 2026-11-04.
+    Rule: bound the size by the reservation before `commit` (step 2a capped i64 memories at 65 536 pages;
+    since step 2b a grow commits in place only within the reservation and otherwise moves the memory,
+    `test_grow_results`). Found: S0009 step 2a planning, 2026-11-04.
 75. **A static `offset + size` can exceed 64 bits.** With i64 memories the memarg offset goes up to
     2⁶⁴ − 1, so `k = offset + size` does not fit a register: the x86-64 encoder refused the
     immediate, and aarch64's `mov_imm` masks to 64 bits, so `adds x10, idx, k` would have checked
@@ -549,3 +550,9 @@ What went wrong or surprised us while building the PoC, so it is not found again
     caught only by the result comparison. Rule: mutation checks of memory-safety code run in a
     subprocess, and a crash counts as "caught"; a test suite that passes after such a mutation is
     not evidence that the check is unneeded. Found: S0009 step 3, 2026-11-04.
+81. **`tests/spec/fetch.py` does not rebuild `spectest.wasm` when `spectest.wat` changes.** Its
+    manifest keys only the spec commit, the wasm-tools version and the proposal list, so "up to
+    date" leaves the old `.cache/spec/<commit>/spectest.wasm`: a new export is missing and the
+    runner still says `unknown import`. Rule: after editing `spectest.wat`, run
+    `uv run wasm-tools parse tests/spec/spectest.wat -o .cache/spec/<commit>/spectest.wasm` (CI starts
+    from an empty cache and is not affected). Found: S0009 step 4, 2026-11-04.

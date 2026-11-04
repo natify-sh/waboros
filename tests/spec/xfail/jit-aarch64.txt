@@ -24,7 +24,6 @@ instance.wast:56  no current module
 instance.wast:57  no current module
 instance.wast:62  LoadError: NotImplementedError: tag import
 linking.wast:112  LinkError: incompatible import type Mref_ex.g-const-func
-memory64/table64.wast:13  LinkError: unknown import spectest.table64
 memory64/table_init64.wast:2457  LoadError: NotImplementedError: rec / sub / struct / array types
 memory64/table_init64.wast:2471  LookupError: no exported function run
 ref_null.wast:1  LoadError: NotImplementedError: value type 0x6e

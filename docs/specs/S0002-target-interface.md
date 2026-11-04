@@ -122,8 +122,8 @@ expected failures equal `pyc`'s in the claimed groups (until then a readiness gu
 
 **Threads and depth.** One thread per store: `StoreState` records the owner on first entry (the
 first claim is atomic: of two threads entering a fresh store, one wins and the other gets
-`RuntimeError`) and raises `RuntimeError` on entry from another thread, before it reads or changes
-any of the store's state; nesting (wasm → host → wasm) on the owner thread is allowed. JIT
+`RuntimeError`) and raises `RuntimeError` on entry from another thread, before it changes any of the
+store's state (counters read before the check are written back only by the owner thread); nesting (wasm → host → wasm) on the owner thread is allowed. JIT
 `Memory.grow`, `Table.grow` and instantiation also refuse a thread other than the owner; on a store
 with no owner yet they hold a claim only while they run, so a store built on one thread can run on
 another (S0009 step 2b). Depth is bounded by each target (D10): `pyc` as ARCHITECTURE.md describes; JIT S0003.
@@ -260,8 +260,10 @@ weights itself until then.
 * 2026-11-02 (S0005, 5c1): the backend interface gained `simd(f, op, dst, args, imm)` (D39 amendment, D41); `supported` also lists the `0xFD000 + sub` codes a backend compiles. `abi.assemble()` of each architecture returns bytes and `instance.load_trampolines` seals them, so the compiler side imports nothing of the host side.
 * 2026-11-02 (S0005, after 5e2): the backend interface gained `move_v128(dst, src)` (second D39 amendment): the core moves v128 pairs whole (locals, constants, `select`).
 * 2026-11-02 (S0007 step 3): a fourth operand kind, `AddK` (a pinned i32 plus a constant mod 2³²), accepted only by `move` and as the `load`/`store` address (D39 amendment A).
+* 2026-11-04 (S0009 step 2a): required keyword-only `a64` on the eleven memory and table methods and
+  `lo` (the declared minimum in bytes) on `load`, `store` and `simd` (D39 amendment B).
 * 2026-11-04 (S0009 step 2b): the first claim of the owner is atomic (`StoreState.claim`, under a
-  lock); the JIT checks the thread before it saves any counter (a refused entry used to write back
+  lock); the JIT restores the counters only on the owner thread (a refused entry used to write back
   counters it read before the check, LESSONS 78); JIT `Memory.grow`, `Table.grow` and instantiation
   check it too, with a claim that an entry alone makes permanent (`release`). `pyc` behaviour is
   unchanged apart from the atomic first claim.

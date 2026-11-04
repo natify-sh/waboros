@@ -2,7 +2,7 @@
 title: memory64 and table64 (Wasm 3.0) on pyc, jit-x86_64 and jit-aarch64
 kind: spec
 id: S0009
-status: approved
+status: implemented
 superseded_by:
 related: [D23, D24, D25, D27, D29, D35, D36, D37, D39, D44, D45, D47, D48, S0001, S0003, S0006, S0007, R3, R6]
 owner: maintainer
@@ -365,8 +365,8 @@ memory or a table while the owner ran that store's code (a stale size; with a mo
 unmap). Step 2b (maintainer's option (b)):
 * the first claim of the owner is atomic (`StoreState.claim`, under a lock): of two threads that
   find a fresh store unowned, one wins and the other gets `RuntimeError`;
-* `Instance.call` checks the thread before it saves any counter (a refused entry used to write back
-  counters it had read before the check, LESSONS 78);
+* `Instance.call` reads the counters, then enters, and restores them only on the owner thread (a
+  refused entry used to write back counters it had read before the check, LESSONS 78);
 * JIT `Memory.grow`, `Table.grow` and instantiation (`JitTarget.instantiate`, which binds to the
   store's memories) refuse a thread other than the owner with `RuntimeError` before anything changes.
   On a store with no owner yet they hold a claim only while they run (`release`; only an entry makes
@@ -590,7 +590,7 @@ document to update"):
   table of 10 to 20 funcrefs, used by `table64.wast:13`). Wasmtime's harness lacks it, which is
   where its xfail comes from. Adding it to `tests/spec/spectest.wat` makes every engine need
   table64 to create `spectest` at all, so it can only land when all three targets have table64.
-  **Decided 2026-11-04: add it in step 4**; until then the command is an xfail on every engine.
+  **Decided 2026-11-04: add it in step 4**; done in step 4.
 * **Q6 The exception for a min that cannot be provided. Decided 2026-11-04: `MemoryError`** with
   Wasmtime's message (for min ≥ 2⁴⁸) at instantiation, on every target; phase 6 maps it to the
   API's error, as for every other instantiation failure. A new waboros exception is rejected.
@@ -666,3 +666,14 @@ document to update"):
 * 2026-11-04: step 3 review: the huge-minimum test keeps only sizes no host can provide (an i32 min
   of 2³²−1 is allocated eagerly and could succeed with 32 GiB resident); D27 notes the eager
   allocation and that a table above the cap cannot grow (grow of 0 is −1; Wasmtime returns the size).
+* 2026-11-04: step 4 implemented (Q5): `tests/spec/spectest.wat` exports `table64`, an i64 table of
+  10 to 20 funcrefs as the reference interpreter's spectest module (`interpreter/host/spectest.ml`;
+  `TableT (I64AT, {min = 10L; max = Some 20L}, …)`, checked against the spec repository's `main`). The file is shared by every engine, so the
+  `table64.wast:13` entry left all four xfail files, Wasmtime's too (Wasmtime provides the table).
+  `memory64` on `pyc`, `jit-x86_64` (guard and explicit) and `jit-aarch64` (QEMU): 8 658 pass / 0
+  fail / 2 xfail (the GC commands of `table_init64.wast`) / 59 skip; on Wasmtime 8 659 / 1 xfail
+  (`table_grow64.wast:46`). Core and the claimed totals are unchanged. This spec is `implemented`;
+  the independent review is run separately by the orchestrator.
+* 2026-11-04: final review of steps 1–4: no correctness defect (moves across instances, mixed guard
+  modules, thread claim, 32-bit assumptions, validator and `pyc` corners checked against `pyc` and
+  Wasmtime); stale docs and one dead helper fixed.
