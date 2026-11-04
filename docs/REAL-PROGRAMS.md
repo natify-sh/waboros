@@ -2,7 +2,7 @@
 title: Real programs beyond CoreMark - a corpus, the scalar gap, and work that can run beside phase 5
 kind: reference
 status: draft
-updated: 2026-11-03
+updated: 2026-11-04
 ---
 
 # Real programs beyond CoreMark: a corpus, the scalar gap, and parallel work
@@ -18,7 +18,7 @@ backends, the artifact format).
 |---|---|
 | differential fuzzing with `wasm-smith` against Wasmtime | yes, as a plan: ROADMAP phase 5 ("from the first widened stage on") and its exit criteria, TESTING, RISKS. No infrastructure yet |
 | a corpus of real programs with a check that needs no Wasmtime | no. TESTING says "real programs" in general only |
-| why scalar code on `jit-x86_64` is 1.5-3.9x behind Wasmtime | a measured fact (BENCHMARKS, SIMD benchmark: "The scalar builds on `jit-x86_64` are 1.5-3.9x behind Wasmtime's scalar builds"); its work is [S0007](specs/S0007-scalar-codegen.md) (scalar code generation): steps 1-3 done, 1b measured and dropped, steps 4-8 open (resumed after S0006) |
+| why scalar code on `jit-x86_64` is 1.5-3.9x behind Wasmtime | a measured fact (BENCHMARKS, SIMD benchmark: "The scalar builds on `jit-x86_64` are 1.5-3.9x behind Wasmtime's scalar builds"); its work is [S0007](specs/S0007-scalar-codegen.md) (scalar code generation): implemented: steps 1 and 3 landed; step 2 reverted; steps 1b, 5 and 7 measured and dropped; steps 4 and 6 not done |
 
 What runs today besides the spec suite: CoreMark, meld-core without WASI (`poc/bench/meld`), the
 SIMD kernels (`poc/bench/simd`), `vm.wasm` (`poc/bench/switch`). Nothing with WASI.

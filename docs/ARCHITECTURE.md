@@ -2,7 +2,7 @@
 title: Architecture
 kind: reference
 status: current
-updated: 2026-11-03
+updated: 2026-11-04
 ---
 
 # Architecture
@@ -111,8 +111,8 @@ a thin IR of our own, and shared by all targets.
 
 **The lazy operand stack is the JIT core's HIR-lite.** The shared JIT core builds no HIR trees; it
 keeps a lazy operand stack (`common/compiler.py`) whose entries are at most one node deep: a constant,
-a local, `tos`, a slot, one pending compare of such operands, or `local + const` (S0007 step 3; S0007
-also plans a temporary register). A new entry kind is added only with a measurement that it pays, so any drift
+a local, `tos`, a slot, one pending compare of such operands, or `local + const` (S0007 step 3; a temporary
+register was measured and dropped, BENCHMARKS.md). A new entry kind is added only with a measurement that it pays, so any drift
 towards trees is a recorded decision, not an accident. Stack resolution exists twice today: `pyc`'s tree
 builder (`targets/pyc/codegen.py`) and the JIT core's lazy stack. A real HIR, if a measurement ever
 calls for one, replaces both rather than becoming a third.

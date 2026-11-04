@@ -2,7 +2,7 @@
 title: Scalar code generation in both JITs (addressing, returns, temporaries)
 kind: spec
 id: S0007
-status: approved
+status: implemented
 superseded_by:
 related: [D14, D25, D26, D35, D39, D44, S0003, S0004, S0006, R2, R3]
 owner: maintainer
@@ -12,9 +12,10 @@ updated: 2026-11-04
 # S0007 Scalar code generation in both JITs (addressing, returns, temporaries)
 
 ## Summary
-**Status (2026-11-04): approved, in progress.** Steps 1 and 3 are done; steps 1b, 5 and 7 were measured and
-dropped; step 2 (L) was reverted after a re-measurement under the placement control; steps 4 and 6 are not done
-(maintainer's decision); step 8 is open.
+**Status (2026-11-04): implemented.** Steps 1 and 3 landed and the final review (step 8) found no defect;
+step 2 (L) was reverted after a re-measurement under the placement control; steps 1b, 5 and 7 were measured
+and dropped; steps 4 and 6 were not done (maintainer's decision). Text below that describes what was not
+built is tagged and kept as history.
 
 `jit-x86_64` scalar code is 1.5–3.9× slower than Wasmtime on the scalar kernels and 38 % slower on
 CoreMark. A measured investigation (2026-11-02; Xeon 2.10 GHz, 4 vCPU, CPython 3.13.17, wasmtime-py
@@ -22,21 +23,22 @@ CoreMark. A measured investigation (2026-11-02; Xeon 2.10 GHz, 4 vCPU, CPython 3
 countable instructions and tested each fix as a throw-away patch. This spec makes three of them
 contracts, for both JITs:
 
-1. **Addressing (K, L, Z).** `local + const` stays deferred and becomes one `lea`/`add` into the
+1. **Addressing (K, L, Z)** (K landed; L reverted, Z not done). `local + const` stays deferred and becomes one `lea`/`add` into the
    address register; add/sub-immediate into `tos` is one `lea` (L: reverted 2026-11-04, Changes); a
    register index needs no 32-bit copy in explicit mode. Measured together: CoreMark +6.2 % (14 044 → 14 909 it/s), `addsat`
    −27 % (7.55 → 5.51 µs), `scan` −18 % (3.08 → 2.52), `nearest` −19 % (1.77 → 1.44).
-2. **Calls.** A result goes straight to slot 0; a parameter read once is not pinned; call-free
+2. **Calls** (the result-to-slot-0 part landed, step 1; the once-used parameter was dropped, step 5; call-free
+   functions not done: maintainer, 2026-11-03). A result goes straight to slot 0; a parameter read once is not pinned; call-free
    functions drop the checks they do not need. Measured: dropping the value-stack check and entry
    poll (experiment C) gives −0.35 ns per leaf call (2.24 → 1.89) and −0.6 ns per `fib(27)` call
    (3.08 → 2.45); Wasmtime takes 1.43 / 2.59.
-3. **Temporaries in free registers (R).** When `tos` spills, the value goes to a pool register no
+3. **Temporaries in free registers (R)** (dropped: Changes, 2026-11-03). When `tos` spills, the value goes to a pool register no
    local is pinned to, not to a slot; a function saves only the registers it writes. Measured with
    K, L and Z: CoreMark +9.4 % (15 367); `scan` 2.48 µs (Wasmtime 2.14; 2.02 with guard pages and
    no loop polls as well). R alone, saving all 8 pool registers in every prologue, lost 4.6 %.
 
 Item 1 and item 3 change the frozen backend interface (D39); item 2's checks change S0003 and the
-context ABI. All three change the code of nearly every module, so byte identity is not the check:
+context ABI (as built: only amendment A of item 1 changed D39; the ABI did not change). All three change the code of nearly every module, so byte identity is not the check:
 spec parity, D35 cross-host identity, the ISA gates and the benchmarks are.
 
 ## Goals / Non-goals
@@ -74,28 +76,28 @@ It is accepted in exactly three places; the core never passes it anywhere else:
   address in 32 bits before adding the offset. The memory-touching instruction is unchanged, so a
   fault point is still one instruction with no push outstanding (S0006).
 
-**B. `Reg` may be a temporary.** The contract sentence "`Reg` (`tos` or a pinned pool register)"
+**B. `Reg` may be a temporary.** *(Not built: R was dropped, Changes.)* The contract sentence "`Reg` (`tos` or a pinned pool register)"
 becomes "`Reg` (`tos` or a pool register holding a pinned local or a temporary)". Backends already
 treat every pool register alike; no method changes.
 
-**C. `func_begin(label, saved, far)`**: the second argument is the *save set* — every pool register
+**C. `func_begin(label, saved, far)`** *(not built: R was dropped, Changes)*: the second argument is the *save set* — every pool register
 the function writes (pinned locals and temporaries), in a fixed order — not only the pins. The
 prologue saves exactly these and keeps the 16-byte alignment (LESSONS 3); the epilogue restores them.
 
-**D. `rewind(pos)` on x86-64.** Today it asserts (x86-64 never asks for far mode). It becomes the
+**D. `rewind(pos)` on x86-64.** *(Not built: it served R; Changes.)* Today it asserts (x86-64 never asks for far mode). It becomes the
 truncation aarch64 already has (code, labels bound after `pos`, pending fixups, fault-map entries,
 jump tables), used by the recompile of item 3.
 
-**E. `func_begin(..., leaf: bool = False)`** (only with Q3 as recommended): `leaf=True` omits the
+**E. `func_begin(..., leaf: bool = False)`** *(not done: maintainer, 2026-11-03)* (only with Q3 as recommended): `leaf=True` omits the
 entry poll and, for a frame of at most H slots, both stack checks; `func_end` then patches nothing.
 
-**F. Byte identity.** D39's "x86-64 code byte-identical unless the amendment says otherwise": this
+**F. Byte identity** (applies to steps 1 and 3 as landed). D39's "x86-64 code byte-identical unless the amendment says otherwise": this
 amendment says otherwise for every step below.
 
 Backend-internal, no interface change: **L** (reverted 2026-11-04, Changes; it was: x86-64 `binop`
 "add"/"sub" with `x` a register other than `dst` and `y` an immediate that fits a signed disp32 at the
 operand's width, or `add` of two registers, emits one `lea`; aarch64 already emits one three-operand
-`add`/`sub`), and **Z** (x86-64 explicit mode: a `Reg` address is used as the index directly; see
+`add`/`sub`), and **Z** (not done: maintainer, 2026-11-03; x86-64 explicit mode: a `Reg` address is used as the index directly; see
 Semantics).
 
 ### Core (`common/compiler.py`)
@@ -111,12 +113,12 @@ Semantics).
   slot. The flag makes LESSONS 32 explicit instead of relying on pop order.
 * **`local.set`/`local.tee` of *j*** spills every entry that reads the old *j* — `LOCAL j` as today
   and now `ADDK (j, ·)` — before the write.
-* **Entry kind `REG`** `(REG, r)`: a temporary in pool register *r*. `spill_tos` moves `tos` into the
+* **Entry kind `REG`** *(not built: R dropped, Changes)* `(REG, r)`: a temporary in pool register *r*. `spill_tos` moves `tos` into the
   first free temporary (64-bit `move`) and falls back to the slot when none is free. The free list
   starts as `pool − pins`; a popped `REG` returns to it at the start of the next instruction, and not
   while a pending compare on the stack names it. `flush` moves `REG` entries to their slots and frees
   them, so at every edge and call the operand stack is in slots and only pins are live (unchanged).
-* **Save set and the second pass.** A function is compiled with `saved = pins`; if it used
+* **Save set and the second pass** *(not built: R dropped, Changes)*. A function is compiled with `saved = pins`; if it used
   temporaries, it is rewound and compiled once more with `saved = pins ∪ used` (in pool order). The
   allocation does not depend on the save set, so the second pass uses the same registers and needs
   no third. Far mode (aarch64) composes: at most four passes.
@@ -126,13 +128,13 @@ Semantics).
   results are not flushed (they hold computed values; nothing can trap, LESSONS 28). With several
   results, if a source is a slot in `0..m` other than its own destination, the step falls back to
   today's `flush` + `moves`. `br_if` and `br_table` are unchanged.
-* **Pins.** `choose_pins` skips a parameter whose weight is 1 (one access, outside every loop): it
+* **Pins** *(not built: step 5 dropped, Changes)*. `choose_pins` skips a parameter whose weight is 1 (one access, outside every loop): it
   is read from its slot, saving the prologue load and the save/restore of a register.
-* **Call-free functions** (no `call`, `call_indirect`, `call_ref`, `return_call*` and no libcall
+* **Call-free functions** *(not done: maintainer, 2026-11-03)* (no `call`, `call_indirect`, `call_ref`, `return_call*` and no libcall
   service): no entry poll; and, if `frame_slots ≤ H` (H = 256), no value-stack check and no native
   stack check. The core tells the backend through amendment E.
 
-### Context ABI (only with Q3 as recommended; S0003 and ARTIFACT.md part 3)
+### Context ABI (not done: maintainer, 2026-11-03; the ABI is unchanged. Only with Q3 as recommended; S0003 and ARTIFACT.md part 3)
 * `VSTACK_LIMIT` (word 5): "the highest frame base allowed; at least `8·H` = 2 KiB of the value
   stack stay mapped above it". The runtime writes `vtop − 8·H` and checks entries against that.
 * `NSTACK_LIMIT` (word 6): "at least 128 bytes of native stack are usable below it" (a call-free
@@ -148,7 +150,7 @@ Semantics).
 `r12 + 8·frame_slots ≤ ctx[VSTACK_LIMIT]` and polls word 2 at entry (x86-64: 7 instructions; aarch64:
 11); results go to `frame[0..m)`; pinned locals are callee-saved, a function pushes those it uses.
 
-**Why a call-free function may skip its checks.** Every frame base is at most the caller's
+**Why a call-free function may skip its checks** *(not done: maintainer, 2026-11-03)*. Every frame base is at most the caller's
 `r12 + 8·frame_slots(caller)`, which the caller checked against `VSTACK_LIMIT`; with `H` slots mapped
 above the limit, a callee of at most `H` slots stays inside the map. The runtime's entry check and a
 tail call (whose callee frame starts at the caller's base) keep the same bound; every context of a
@@ -165,13 +167,13 @@ store holds the same limit. A call-free function cannot recurse, so its native u
 | K | old value of a local (set after get) | `local.set` spills `ADDK (j, ·)` as it spills `LOCAL j` |
 | K | a popped operand may still be in `tos` (LESSONS 32) | `tos_taken`: a second popped `ADDK` goes to its slot |
 | L (reverted) | flags (LESSONS 1) | `lea` writes no flags; emitted only inside `binop`, never between a compare and its consumer |
-| Z | memory safety without LESSONS 5 | explicit mode only: the check `lea rdx, [idx + off + size]; cmp rdx, r14` is 64-bit, so a dirty upper half traps or (wrapping past 2⁶⁴) addresses inside the memory; guard mode keeps the copy (S0006 Q9) |
-| R | callee-saved pool (LESSONS 2) | temporaries are in the save set; never live across a call or host call (flushed first), so the bridge is unchanged |
-| R | stack alignment (LESSONS 3) | the pad follows the save set's parity |
-| R | fault points (S0006) | temporaries are registers: no push in the body |
-| R | store forwarding (LESSONS 44) | slots are still written 64-bit; R removes slot round trips, adds none |
+| Z (not done) | memory safety without LESSONS 5 | explicit mode only: the check `lea rdx, [idx + off + size]; cmp rdx, r14` is 64-bit, so a dirty upper half traps or (wrapping past 2⁶⁴) addresses inside the memory; guard mode keeps the copy (S0006 Q9) |
+| R (dropped) | callee-saved pool (LESSONS 2) | temporaries are in the save set; never live across a call or host call (flushed first), so the bridge is unchanged |
+| R (dropped) | stack alignment (LESSONS 3) | the pad follows the save set's parity |
+| R (dropped) | fault points (S0006) | temporaries are registers: no push in the body |
+| R (dropped) | store forwarding (LESSONS 44) | slots are still written 64-bit; R removes slot round trips, adds none |
 | returns | trap order (LESSONS 28, 30) | only computed entries are skipped; multi-value overlap falls back |
-| checks | D10, never crash | the H and 128-byte obligations above; recursion needs a call, which keeps every check |
+| checks (not done) | D10, never crash | the H and 128-byte obligations above; recursion needs a call, which keeps every check |
 
 **Portability.** Nothing here uses a Python-specific feature: one entry kind, one flag, a free list
 and a recompile flag; a micro-compiler (MICRO-COMPILERS.md) ports it as written. The IR stays as
@@ -209,9 +211,9 @@ uv run python tools/run_corpus.py --targets pyc,jit-x86_64          # results eq
   also runs with `WABOROS_JIT_BOUNDS=guard` where guard mode exists.
 * **Unit tests** (`tests/jit/test_compiler.py`): an `AddK` load at `k = 2³² − 4` from a pinned local
   holding 0 wraps to `2³² − 4` and traps with offset 0 and with offset 4 (the sum is 2³², not 0); from
-  a local holding 4 it reads address 0 with offset 0; a call-free function with
+  a local holding 4 it reads address 0 with offset 0. *(Not done, with step 6: a call-free function with
   `H + 1` slots keeps its checks; a leaf call at the value-stack limit traps `STACK_OVERFLOW`, not a
-  fault; interrupts still stop a `loop` in a call-free function and a loop-free recursion.
+  fault; interrupts still stop a `loop` in a call-free function and a loop-free recursion.)*
 * **Calls benchmark** `poc/bench/calls/` + `tools/run_calls_bench.py` (new, ~60 lines): the
   investigation's 2-argument leaf in a loop and `fib(27)`, ns per call, alternated with Wasmtime.
 * **BENCHMARKS.md**: one row per step (CoreMark, the six kernels, the calls benchmark, corpus),
@@ -228,15 +230,15 @@ investigation's.
 3. **K** (amendment A; core, both backends). Acceptance: common commands, fuzz, unit tests;
    `addsat`, `scan`, `nearest` faster; CoreMark faster [K+L+Z: +6.2 %]; `matmul` not slower (it was
    3.91 → 3.99 with K+L+Z: watch it).
-4. **Z** (x86-64 explicit mode only). Acceptance: common commands; kept only if CoreMark or a kernel
+4. **Z** (not done: maintainer, 2026-11-03) (x86-64 explicit mode only). Acceptance: common commands; kept only if CoreMark or a kernel
    gains beyond the spread in explicit mode (S0006 Q9 measured no gain in guard mode).
-5. **Once-used parameters** (core). Acceptance: common commands; calls benchmark leaf faster.
-6. **Call-free functions** (amendment E; core, both backends; S0003, ARTIFACT.md part 3, DECISIONS;
+5. **Once-used parameters** (dropped: Changes) (core). Acceptance: common commands; calls benchmark leaf faster.
+6. **Call-free functions** (not done: maintainer, 2026-11-03) (amendment E; core, both backends; S0003, ARTIFACT.md part 3, DECISIONS;
    needs Q3 and Q4 answered). Acceptance: common commands, unit tests; leaf faster [C: −0.35 ns].
-7. **R** (amendments B, C, D; core, both backends). Acceptance: common commands, fuzz; compile time
+7. **R** (dropped: Changes) (amendments B, C, D; core, both backends). Acceptance: common commands, fuzz; compile time
    of `run_corpus.py` modules and CoreMark within +10 % of step 6; CoreMark faster [K+L+Z+R: +9.4 %];
    `scan`, `swizzle` faster [2.48, 3.84 µs].
-8. **Review** by a `reviewer` (D39) of steps 3, 6 and 7; S0004 and S0003 Changes lines; status
+8. **Review** (done 2026-11-04, no defect) by a `reviewer` (D39) of the code that landed (steps 1 and 3); S0004 and S0003 Changes lines; status
    `implemented`.
 
 ## Alternatives considered
@@ -363,3 +365,4 @@ investigation's.
   explicit mode; BENCHMARKS.md). The `lea` block is removed from `x86_64/backend.py`; D35: 21 x86-64 modules
   change against HEAD in each bounds mode, the aarch64 lists are unchanged; spec parity on `jit-x86_64` in
   both modes. Status: steps 4 and 6 are not done (maintainer's decision, 2026-11-03: step 4 skipped, S0007 closed without step 6); step 8 is open.
+* 2026-11-04: implemented: steps 1 and 3 landed, the final review (step 8) found no defect; step 2 reverted, steps 1b, 5, 7 measured and dropped, steps 4 and 6 not done. The context ABI did not change (S0003 needs no Changes line); the D39 amendment that landed is A only (S0004 Changes has the aarch64 line); B-E are not built.

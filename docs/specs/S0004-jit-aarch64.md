@@ -6,7 +6,7 @@ status: implemented
 superseded_by:
 related: [D10, D14, D23, D24, D25, D26, D29, D30, D31, D32, D34, D35, D36, D37, R2, R3, R6, S0002, S0003]
 owner: maintainer
-updated: 2026-11-03
+updated: 2026-11-04
 ---
 
 # S0004 jit-aarch64, the second architecture (phase 4, integer core)
@@ -464,9 +464,10 @@ Resolved by the maintainer on 2026-11-01 (see Changes); none open.
 * 2026-11-01: answered — the python.org 3.13.17 macOS CPython (hardened runtime) runs `jit-aarch64`: it carries `disable-executable-page-protection`; probe None, `auto` → `jit-aarch64`, ABI tests pass (RISKS R2). Phase 4 complete.
 * 2026-11-02: the D31 message for an incomplete JIT says "its expected failures differ from pyc's"
   instead of "integer core only" (no longer true once floats and the rest landed).
-* 2026-11-02: status implemented (phase 4 done: steps 4a-4e, the review, the macOS follow-ups; ROADMAP). The frozen interface of D39 was amended twice, by S0005: the `simd` method and the v128 operand meaning (step 5c1, both backends), then `move_v128` (after the SIMD benchmark investigation; DECISIONS D39).
+* 2026-11-02: status implemented (phase 4 done: steps 4a-4e, the review, the macOS follow-ups; ROADMAP). The frozen interface of D39 was amended three times: twice by S0005 (the `simd` method and the v128 operand meaning, step 5c1, both backends; then `move_v128`, after the SIMD benchmark investigation) and once by S0007 (amendment A, step 3; see the 2026-11-04 line below); DECISIONS D39.
 * 2026-11-02: measured for S0006's musl step: the stock `python:3.13-alpine` arm64 image (Alpine
   3.24.3, musl 1.2.6) has no libgcc, so `__clear_cache` is missing: the probe fails ("no
   instruction-cache flush function") and `auto` gives `pyc` with the D31 warning. After `apk add
   libgcc` the JIT runs (spec suite under QEMU 8.2.2: 54 385 pass, 91 expected failures). The
   "own I-cache routine" alternative above is the open way to musl without libgcc.
+* 2026-11-04: D39 amendment A (S0007 step 3): the operand kind `AddK` (a pinned i32 plus a constant mod 2³²) is accepted by the aarch64 `move` and as the `load`/`store` address (one `add`/`sub` into the index scratch `w9`, or into the destination); nothing else of this spec changed.

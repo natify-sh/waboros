@@ -2,7 +2,7 @@
 title: Briefing: read this first
 kind: guide
 status: current
-updated: 2026-11-03
+updated: 2026-11-04
 ---
 
 # Read this first
@@ -102,8 +102,8 @@ State of `main` (phases 0–4 and SIMD merged on 2026-11-02, published as 0.0.0)
   D41) and the rename to `waboros` is done (D40). Guard pages are complete (S0006, D44): `auto` gives them on
   Linux glibc and musl x86-64, Linux glibc aarch64, macOS, Windows and Android x86-64, explicit checks
   elsewhere. Platform tests run through cibuildwheel (`platforms.yml`), and `pyc` has a bits mode for
-  32-bit x86 (D46). Scalar code generation (S0007) has steps 1-3 done. **Next:** S0007 steps 4-8, then
-  relaxed SIMD, memory64, exceptions and GC, then wide arithmetic and threads
+  32-bit x86 (D46). Scalar code generation (S0007) is implemented (steps 1 and 3). **Next:** relaxed SIMD and
+  wide arithmetic, memory64, exceptions and GC, then threads
   (`docs/WASM-PROPOSALS.md`), and the artifact format; the public API only in phase 6.
   Native JIT targets are x86-64, aarch64 and riscv64 (planned); every other architecture runs `pyc` (D48).
 
