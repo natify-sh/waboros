@@ -6,7 +6,7 @@ status: implemented
 superseded_by:
 related: [D10, D23, D25, D29, D31, D33, D35, D36, D37, D39, D42, R2, R3, R6, S0003, S0004, S0005]
 owner: maintainer
-updated: 2026-11-03
+updated: 2026-11-04
 ---
 
 # S0006 Guard pages instead of explicit bounds checks on jit-x86_64 and jit-aarch64
@@ -859,3 +859,6 @@ reservation is a crash, not a trap: the explicit-mode tests and differential run
   check is chosen per access: in a guard module, accesses to i32 memories stay unchecked fault
   points, accesses to i64 memories are always checked explicitly and are not in the fault map
   (no guard can cover a 64-bit index, S0009). Nothing changes in the handler or its rows.
+* 2026-11-04 (S0009 step 2b): i64 memories are no longer registered with the guard registry (no
+  fault point targets them, and they may move, D50); "never moves the base" holds for 32-bit
+  memories, which keep their reservation and registration.

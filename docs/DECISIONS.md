@@ -797,3 +797,36 @@ Consequence: **revisit with ISA levels** ([ISA-LEVELS.md](ISA-LEVELS.md)): nativ
 x86-64 arrive per target with a declared level, recorded per operator (D42); the front end needs no
 change for it. Rejected: aliases in the front end (they erase which instruction was relaxed); unfused
 madd everywhere (deviates from Wasmtime on aarch64); fused everywhere (a software FMA on SSE2).
+
+### D50. An i64 memory moves when a grow exceeds its reservation; an i32 memory never moves; context ABI v1 amended in text only
+Status: accepted (maintainer, 2026-11-04) · Date: 2026-11-04 · Supersedes: — · Evidence: [S0009](specs/S0009-memory64.md) ("Runtime"; Wasmtime 50.0.1 reservations measured from `/proc/self/maps`; the zero-skipping copy measured: 4 GiB + 64 KiB with 3 written pages, 1.46 s and +1 MiB RSS on the dev VM)
+
+1. **Reservation as Wasmtime 50.0.1** (S0009 Q1 (b)): an i64 memory with a min of at most 4 GiB
+   reserves `RESERVATION64` (4 GiB) + `TAIL64` (the 32 MiB guard); a larger min reserves min +
+   `GROWTH64` (2 GiB) + `TAIL64`. A grow that fits in the reservation minus the tail commits in place.
+   No cap beyond 2⁴⁸ − 1 pages (or the declared maximum).
+2. **A grow beyond it moves the memory** (`Memory._move`): a new reservation of the new size +
+   `GROWTH64` + `TAIL64` (a failure is −1 with nothing changed); the old contents copied 64 KiB at a
+   time, skipping pages that read as zero (the new pages already do); the base and then the size
+   rewritten in every bound context (`users`); then the old reservation freed. The rewrite is all or
+   nothing: an asynchronous exception (`KeyboardInterrupt`) during it puts every context back on
+   (old base, old size), size first, and the `Memory` back on the old reservation, then re-raises: the
+   grow did not happen. Both reservations stay mapped while contexts are rewritten (`retired`); only a
+   second interruption during the rollback leaves them there (a leak, never an unmap). Every write of
+   a context puts the base before the size, and an in-place grow rewrites the base too, so no context
+   is ever paired with a size larger than its base's commit (LESSONS 79).
+3. **Why it is safe**: a move happens only inside `Memory.grow`, reached from wasm only through the
+   host bridge; every bridge call site reloads memory 0's registers and every other memory is read
+   from its context words at each access (S0009, "No stale base after a move"). A host thread is
+   kept out by the one-thread-per-store rule (S0002, enforced at entry, grow and instantiation).
+4. **An i32 memory never moves** (4 GiB + 32 MiB, as S0006), and its code bytes do not change (D35).
+5. **Context ABI v1, text amendment without a bump** (S0009 Q4): an i64 memory's `base` and
+   `size_bytes` may change during any host call or libcall; code keeps neither across a call. No
+   word is added or moved; no artifact is serialized yet.
+6. `Reservation` refuses a size ≥ 2⁶³ with `OSError(ENOMEM)` before any mapping call (ctypes
+   truncates an oversized `c_size_t`, LESSONS 77).
+
+Rejected (S0009, "Alternatives"): a 65 536-page cap (deviates from Wasmtime); a huge fixed
+reservation (address-space exhaustion); copying every byte as Wasmtime does (23.3 s and +4 GiB RSS
+for a 4 GiB memory); `mremap` (per-OS code, D47); freeing the old reservation only when the store is
+idle (keeps two reservations alive; the thread rule is enforced instead).

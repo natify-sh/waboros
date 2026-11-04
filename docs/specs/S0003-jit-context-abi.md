@@ -6,7 +6,7 @@ status: implemented
 superseded_by:
 related: [D10, D14, D15, D18, D23, D24, R2, R3, R6, S0002]
 owner: maintainer
-updated: 2026-11-02
+updated: 2026-11-04
 ---
 
 # S0003 JIT context ABI and entry (phase 3, x86-64)
@@ -148,7 +148,9 @@ callbacks (ARCHITECTURE.md, "Long calls and the GIL").
 with its own word after the imports; the helper set is shared by all architectures
 (`jit/common/libcalls.py`); `memory.grow` is one (the runtime commits pages and rewrites the memory
 words; the reload after every bridge call picks them up). Memory never moves under running code
-(LESSONS 7): the runtime reserves the maximum up front.
+(LESSONS 7): the runtime reserves the maximum up front. An i64 memory (S0009) may move inside a
+`memory.grow`, never under running code: every frame is suspended at a bridge call site, which
+reloads the words (D50).
 
 **Interrupt polling** (D14, LESSONS 8; on by default, maintainer 2026-10-30 — timeouts are a runtime
 timer setting this word; fuel is a separate opt-in, later). At every function entry and loop header:
@@ -366,3 +368,7 @@ uv run pytest tests/jit -k "entry or trap or reentry or host or interrupt or sta
   maintenance) is a table in ARTIFACT.md part 3. The aarch64 register roles and trampolines are
   in S0004; the x86-64 ones above are unchanged (code byte-identical).
 * 2026-11-02 (S0005, 5c1): v128 slots are done: a v128 takes two slots (bytes 0-7 in the first) as a parameter, result or local and two context words as a defined global (an imported one keeps one word, the pointer); `Layout` takes the widths (`wide`). An amendment of version 1 without a bump, as D37 and D38 (no artifact is saved before phase 5).
+* 2026-11-04 (S0009 step 2b, D50): an i64 memory moves when a grow exceeds its reservation; its
+  `base` and `size_bytes` may change during any host call or libcall (ARTIFACT.md part 3, a text
+  amendment of version 1 without a bump). The code obligation is unchanged: memory 0's registers are
+  reloaded after every bridge call, every other memory is read at each access.

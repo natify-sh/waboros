@@ -125,4 +125,10 @@ class JitTarget:
             raise RuntimeError(f"{self.name} cannot run here: {why}")
         if cast(Compiled, compiled).flags & guard.BOUNDS_GUARD:
             guard.install(self)  # before anything of the instance exists; raises where none
-        return JitInstance(store, self.trampolines(), cast(Compiled, compiled), imports, self.name)
+        took = store.claim()  # binds to memories no other thread may grow meanwhile (S0009)
+        try:
+            return JitInstance(
+                store, self.trampolines(), cast(Compiled, compiled), imports, self.name
+            )
+        finally:
+            store.release(took)

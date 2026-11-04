@@ -1,6 +1,7 @@
 """The runtime side of the JIT ABI (docs/specs/S0003), shared by every architecture: the context,
 the value stack, both stack limits, the entry call with status -> `Trap`, host callbacks that never
-raise, nested entries, interrupt, linear memories (reserved, committed on grow, never moved).
+raise, nested entries, interrupt, linear memories (reserved, committed on grow; an i32 one never
+moves, an i64 one moves only inside a grow past its reservation, S0009).
 
 An `Instance` runs code assembled elsewhere (hand-built in the ABI tests); a `JitInstance` runs a
 compiled module (common/compiler.py)."""
@@ -49,6 +50,12 @@ VSTACK_BYTES = 1 << 20  # per store
 MEMORY_RESERVATION = guard.RESERVATION
 MAX_PAGES = 1 << 16
 MAX_PAGES64 = (1 << 48) - 1  # an i64 memory's byte size fits the 64-bit size word (S0009)
+# an i64 memory (S0009), as Wasmtime 50.0.1 reserves one (measured): `memory_reservation`,
+# `memory_reservation_for_growth`, and the guard as a tail; read at each use (the tests lower them)
+RESERVATION64 = 1 << 32
+GROWTH64 = 2 << 30
+TAIL64 = guard.GUARD
+PAGE = 1 << 16
 DEFAULT_BUDGET = 512 << 10  # Wasmtime's default `max_wasm_stack` (D6)
 UNKNOWN_STACK_BUDGET = 128 << 10  # when the thread's stack bounds cannot be read or are implausible
 PLAUSIBLE_STACK = 1 << 30  # more stack than this below the entry: the bounds are not trusted
@@ -243,40 +250,91 @@ def native_budget(sp: int, low: int | None, budget: int) -> int:
 
 
 class Memory:
-    """A linear memory: 4 GiB + GUARD of address space reserved (S0006), pages committed on
-    grow; the base never changes. `grow` rewrites the size word of every context bound to it.
-    An i64 memory (`a64`, S0009) has the same reservation for now, so it is capped at MAX_PAGES
-    too (step 2a; step 2b moves it past its reservation instead)."""
+    """A linear memory, pages committed on grow; `grow` rewrites the words of every context bound
+    to it (`users`). An i32 memory has 4 GiB + GUARD of address space (S0006) and its base never
+    changes. An i64 memory (`a64`, S0009) reserves RESERVATION64 + TAIL64 (a min above
+    RESERVATION64: min + GROWTH64 + TAIL64) and moves when a grow does not fit: wasm code reaches a
+    grow only through the bridge, and reloads (memory 0) or rereads (others) the words after it."""
 
     def __init__(self, pages: int, maximum: int | None, *, a64: bool = False) -> None:
-        if a64 and pages > MAX_PAGES64:
-            raise MemoryError(f"memory minimum size of {pages} pages exceeds memory limits")
-        if pages > MAX_PAGES:  # only an i64 memory gets here (validation): step 2a's cap
-            raise MemoryError(f"failed to reserve {pages << 16} bytes")
-        self.res = Reservation(MEMORY_RESERVATION, pages << 16)
+        self.a64 = a64
+        if not a64:
+            self.res = Reservation(MEMORY_RESERVATION, pages << 16)
+            self.max = MAX_PAGES if maximum is None else min(maximum, MAX_PAGES)
+        else:
+            if pages > MAX_PAGES64:
+                raise MemoryError(f"memory minimum size of {pages} pages exceeds memory limits")
+            m = pages << 16
+            size = (RESERVATION64 if m <= RESERVATION64 else m + GROWTH64) + TAIL64
+            try:
+                self.res = Reservation(size, m)
+            except OSError:
+                raise MemoryError(f"failed to reserve {size} bytes") from None
+            self.max = MAX_PAGES64 if maximum is None else min(maximum, MAX_PAGES64)
         self.pages = pages
-        self.max = MAX_PAGES if maximum is None else min(maximum, MAX_PAGES)
         self.mask = M64 if a64 else M32  # of memory.grow's result (-1 at the address width)
         self.declared = maximum  # the type's maximum, for import checks
-        self.store: object = None  # the owning StoreState (set by JitInstance)
+        self.store: StoreState | None = None  # the owning store (set by JitInstance)
         self.users: list[tuple[ctypes.Array[ctypes.c_uint64], int]] = []
+        self.retired: list[Reservation] = []  # held while a move rewrites the contexts
 
     def bind(self, ctx: "ctypes.Array[ctypes.c_uint64]", word: int) -> None:
-        ctx[word], ctx[word + 1] = self.res.addr, self.pages << 16
+        ctx[word] = self.res.addr  # base before size, as everywhere (S0009)
+        ctx[word + 1] = self.pages << 16
         self.users.append((ctx, word))
 
     def grow(self, delta: int) -> int:
-        """memory.grow: the old size in pages, or -1."""
-        old = self.pages
-        if delta > self.max - old:
-            return -1
+        """memory.grow: the old size in pages, or -1. Another thread than the store's raises
+        RuntimeError before anything changes (one thread per store, S0002)."""
+        took = self.store.claim() if self.store is not None else False
         try:
-            self.res.commit((old + delta) << 16)
+            old = self.pages
+            if delta > self.max - old:
+                return -1
+            if not self.a64 or (old + delta) << 16 <= self.res.size - TAIL64:
+                try:
+                    self.res.commit((old + delta) << 16)
+                except OSError:
+                    return -1
+                self.pages = old + delta
+                for ctx, word in self.users:  # the base too, first: no context keeps a stale
+                    ctx[word] = self.res.addr  # base under a larger size
+                    ctx[word + 1] = self.pages << 16
+                return old
+            return self._move(old, old + delta)
+        finally:
+            if self.store is not None:
+                self.store.release(took)
+
+    def _move(self, old: int, new: int) -> int:
+        """Grow an i64 memory past its reservation (S0009): a new one, the written pages copied,
+        every context rewritten, the old one freed. A failure changes nothing, and so does an
+        asynchronous exception (KeyboardInterrupt): the rewrite is all or nothing."""
+        try:
+            res = Reservation((new << 16) + GROWTH64 + TAIL64, new << 16)
         except OSError:
             return -1
-        self.pages = old + delta
-        for ctx, word in self.users:
-            ctx[word + 1] = self.pages << 16
+        zero = bytes(PAGE)
+        for p in range(self.res.addr, self.res.addr + (old << 16), PAGE):
+            page = ctypes.string_at(p, PAGE)
+            if page != zero:  # new pages read as zero; a never-written one costs no RSS here
+                ctypes.memmove(res.addr + p - self.res.addr, page, PAGE)
+        prev = self.res
+        self.retired += [prev, res]  # both stay mapped until every context names one of them
+        try:
+            self.res, self.pages = res, new
+            for ctx, word in self.users:
+                ctx[word] = res.addr  # base first: (new base, old size) is safe
+                ctx[word + 1] = new << 16
+        except BaseException:  # every context back to (old base, old size)
+            for ctx, word in self.users:
+                ctx[word + 1] = old << 16  # size first: never (old base, new size)
+                ctx[word] = prev.addr
+            self.res, self.pages = prev, old
+            del self.retired[-2:]  # a second interruption leaves both here: a leak, no unmap
+            raise
+        del self.retired[-2:]
+        prev.free()
         return old
 
 
@@ -298,7 +356,17 @@ class Table:
         self.users.append((ctx, word))
 
     def grow(self, delta: int, init: int) -> int:
-        """table.grow: the old size, or -1 (as u32)."""
+        """table.grow: the old size, or -1 (as u32). Another thread than the store's raises
+        RuntimeError before anything changes."""
+        st = cast(StoreState | None, self.store)
+        took = st.claim() if st is not None else False
+        try:
+            return self._grow(delta, init)
+        finally:
+            if st is not None:
+                st.release(took)
+
+    def _grow(self, delta: int, init: int) -> int:
         old = self.size
         if delta > self.max - old:
             return M32
@@ -398,11 +466,11 @@ class Instance:
     def call(self, func_index: int, args: Sequence[Raw]) -> list[Raw]:
         offset, nres = self.funcs[func_index - self.nimports]
         store, st, ctx = self.store, _stacks(self.store), self.ctx
-        depth, active = store.depth, st.active  # restored as they were, whatever interrupts us
-        try:
+        depth, active = store.depth, st.active  # restored as they were, whatever interrupts us,
+        try:  # but only by the owner: a thread that enter() refuses writes nothing (LESSONS 78)
+            store.enter()
             if st.guard:  # records cross within a store: any entry may reach guard code
                 guard.check()
-            store.enter()
             st.active += 1
             if st.active == 1:  # no JIT frame below, whatever the store's depth
                 st.vsp = st.vstack.addr
@@ -422,7 +490,8 @@ class Instance:
                 raise self._error(status)
             return list(slots[:nres])
         finally:
-            st.active, store.depth = active, depth
+            if store.owner == threading.get_ident():
+                st.active, store.depth = active, depth
 
     def _nstack_limit(self, frame: int) -> int:
         """At the first JIT entry on the stack: the stack pointer as wasm code sees it (the
@@ -618,8 +687,9 @@ class JitInstance(Instance):
         lay, ctx = self.layout, self.ctx
         if c.flags & guard.BOUNDS_GUARD:  # before any of its code can run (S0006)
             guard.add_code(self.code, c.faults)
-            for m in memories:
-                guard.add_reservation(m.res)
+            for m in memories:  # an i64 memory has no fault point and may move (S0009)
+                if not m.a64:
+                    guard.add_reservation(m.res)
             st.guard = True
         base = ctypes.addressof(ctx)
         self.records = {f: base + 8 * lay.record(r) for r, f in enumerate(c.records)}
@@ -739,7 +809,8 @@ class JitInstance(Instance):
                     raise e.exc from None
                 raise
             finally:
-                self.store.depth = depth
+                if self.store.owner == threading.get_ident():  # as in Instance.call
+                    self.store.depth = depth
         ps, rs = self.module["types"][self.ftypes[func_index]]
         if not any(isref(t) or t == simd.V128 for t in (*ps, *rs)):
             return super().call(func_index, args)

@@ -201,7 +201,8 @@ memory without knowing the target.
 * JIT: a raw mapping whose address the code holds in a register (r13). At HEAD it is a 4 GiB + 32 MiB
   reservation per 32-bit memory in either bounds mode (`MEMORY_RESERVATION`, Wasmtime's 64-bit
   `memory_reservation` plus its guard, S0006) committed on `memory.grow`,
-  which never moves the base; `memory.grow` is a libcall through the host bridge (S0003). Growth must not
+  which never moves the base of a 32-bit memory; an i64 memory reserves as Wasmtime and moves, inside
+  `memory.grow` only, when a grow exceeds its reservation (D50, S0009); `memory.grow` is a libcall through the host bridge (S0003). Growth must not
   move it while code runs: reserve the maximum address range up front (wasm32: 4 GiB + slack on a
   64-bit host; less, with explicit checks, on 32-bit hosts) and commit pages on `memory.grow`
   (`mprotect` / `VirtualAlloc(MEM_COMMIT)` through ctypes). The Python `mmap` module cannot reserve
@@ -301,7 +302,9 @@ stop it — the call returned normally after 20.6 s. Consequences:
   in a loop it can be interrupted in, and on `KeyboardInterrupt` sets the word.
 * **A store is used by one thread at a time** (Wasmtime's rule too): with the GIL released, another
   Python thread could otherwise touch the same memory or store mid-call. The runtime guards it (owner
-  thread per store; re-entry from a host callback on the same thread is allowed).
+  thread per store, claimed atomically at the first entry; re-entry from a host callback on the same
+  thread is allowed; a JIT `Memory.grow`/`Table.grow` or instantiation from a thread other than the
+  owner raises too, S0002, S0009).
 
 **`pyc` (and `mpy`): the guest is Python bytecode and holds the GIL while it runs.** CPython switches
 threads every `sys.getswitchinterval()` (5 ms), so other threads are not frozen, but they compete for

@@ -280,7 +280,7 @@ hybrid (Q2) needs it. The 2 GiB growth reserve makes a page-by-page grower past 
 2 GiB. Constants next to `MEMORY_RESERVATION`, read by i64 memories only: `RESERVATION64` = 4 GiB,
 `GROWTH64` = 2 GiB, `TAIL64` = `GUARD`; the tests lower them (Test plan).
 
-**`Memory.grow` of an i64 memory** (`instance.py:259-271` today):
+**`Memory.grow` of an i64 memory** (`Memory.grow`/`Memory._move` in `instance.py`):
 1. `new = old + delta`. If it is above `max` (the declared maximum, or 2⁴⁸ − 1 pages: the byte size
    must fit the 64-bit `size_bytes` word, as in Wasmtime), return −1.
 2. If `new << 16 ≤ res.size − TAIL64`: commit in place and publish the size, as today.
@@ -310,31 +310,40 @@ pages (peak: twice those). Skipping a page that was written and later zeroed is 
 `Memory.grow`, which runs in a libcall or in host code. Wasm code reaches both only through the
 bridge, so every JIT frame is suspended at a call site. When control comes back:
 * memory 0's registers are reloaded from the context after every libcall (x86-64 `call_host`,
-  `backend.py:1218-1219`; aarch64 `backend.py:233`). They are also reloaded after every import
-  thunk (`backend.py:1201-1202`; aarch64 `abi.py:133`), after every call through a record
-  (`_call_record`, `backend.py:1106-1107`; aarch64 `backend.py:253, 257`) and in the tail switch
-  (x86-64 `abi.py:124-135`; aarch64 `abi.py:107-116`);
-* a direct call inside one instance does not reload (`call_direct`, `backend.py:1058-1068`). It
+  `backend.py:1304-1305`; aarch64 `backend.py:233`). They are also reloaded after every import
+  thunk (`backend.py:1287-1288`; aarch64 `abi.py:133`), after every call through a record
+  (`_call_record`, `backend.py:1190-1191`; aarch64 `_enter_record`, `backend.py:253, 256`) and in
+  the tail switch (x86-64 `abi.py:124-135`; aarch64 `abi.py:107-116`). These are the only two
+  bridge call sites per architecture (line numbers rechecked in step 2b, after step 2a);
+* a direct call inside one instance does not reload (`call_direct`, `backend.py:1142-1152`). It
   needs no reload: r13/r14 always equal the current context's words, because every site that could
   change those words reloads before it returns;
 * any other memory is read from its context words at each access (`_mem`, `backend.py:720-726`;
   aarch64 `backend.py:483-493`). The bulk operations hold the base in a register only inside
-  their own inline loop, which calls nothing (`memory_copy`/`memory_fill`, from `backend.py:977`);
-* the runtime reads `mem.res.addr` at use (`_memory_init`, `instance.py:710`; data segments,
-  `:669`).
+  their own inline loop, which calls nothing (`memory_copy`/`memory_fill`, from `backend.py:1052`);
+* the runtime reads `mem.res.addr` at use (`_memory_init` and the data segments in
+  `instance.py`).
 
-So the old reservation can be freed at the end of the grow. If an asynchronous exception
-(`KeyboardInterrupt`) lands during (c), the old reservation is kept on the `Memory` instead of
-being freed. That leaks it, but no context ever names unmapped memory.
+So the old reservation can be freed at the end of the grow. Step (c) is all or nothing: if an
+asynchronous exception (`KeyboardInterrupt`) lands during it, every context is put back on (old
+base, old size), size first, the `Memory` back on the old reservation, the new one is dropped, and
+the exception is re-raised: the grow did not happen, and wasm, host and every instance keep seeing
+the same bytes. Both reservations stay mapped (`Memory.retired`) until the rewrite or the rollback is
+complete; only a second interruption during the rollback leaves them there (a leak, never an unmap).
+Each context gets its base before its size, so an interruption between the two leaves the new base
+with the old (smaller) size, never the old base with the new size; and an in-place grow writes the
+base as well as the size of every context, so a context left stale could never be paired with a
+larger size (LESSONS 79).
 
 **Registry.** An i64 memory is **not registered** with the guard registry. No fault point targets it
 (its accesses are explicit, and bulk operations are explicit in every mode, S0006). So the handler's
-condition 3 never needs it, and a move has no registry entry to replace. The loop at
-`instance.py:607-608` skips i64 memories. With the hybrid (Q2) this changes, see above.
+condition 3 never needs it, and a move has no registry entry to replace. The registration loop
+in `JitInstance.__init__` skips i64 memories. With the hybrid (Q2) this changes, see above.
 
 **Instantiation.** A min of 2⁴⁸ pages or more raises `MemoryError` with Wasmtime's message before
 anything is reserved (Q6). A failed reservation or commit of the min raises `MemoryError("failed
-to reserve N bytes")`. Wasmtime's own text names its `mmap` size, which includes its pre-guard.
+to reserve N bytes")`, N the size of the reservation (min + `GROWTH64` + `TAIL64`, or
+`RESERVATION64` + `TAIL64`). Wasmtime's own text names its `mmap` size, which includes its pre-guard.
 
 **Consumers of `size_bytes` above 2³²** (checked): the word is 64-bit and holds at most
 2⁶⁴ − 2¹⁶ (grow rule 1). `memory_size` shifts it in 64 bits (`backend.py:728-730`; aarch64
@@ -349,17 +358,25 @@ on the API (maintainer, 2026-11-04): host access goes through `read`/`write` met
 current base at each call, as wasmtime-py's `Memory.read`/`write`; a raw pointer is documented as
 valid until the next grow. No API work now. An i32 memory's address stays valid.
 
-**Threads: the one-thread-per-store rule is enforced (maintainer, 2026-11-04).** One thread per
-store (ARCHITECTURE.md). Unenforced, a host thread that grows a memory while another thread runs
-that store's code gets a stale size today, and with a move a use after unmap. So the JIT store's
-`_Stacks` records the owning thread when `active` goes from 0 to 1 (`instance.py`, the entry
-path) and clears it when `active` returns to 0. While `active > 0`: an entry into that store's code
-from another thread, and a `Memory.grow` or `Table.grow` called from another thread, raise
-`RuntimeError` before anything changes, never a crash. A grow from the owning thread (from wasm or
-from a host import it called) is allowed. The cost is one thread-identity compare per entry, none
-per access. It covers i32 memories too (their stale size). `pyc` needs no check: its code reaches
-memory through the `bytearray` object, never a raw address. Step 2b adds it with a test (a second
-thread entering or growing while the first is inside a host import gets `RuntimeError`).
+**Threads: the one-thread-per-store rule (maintainer, 2026-11-04).** One thread per store
+(ARCHITECTURE.md). Entries already enforce it: `StoreState` (S0002) records the owner at the first
+entry, for good, and refuses every other thread. Before step 2b a host thread could still grow a
+memory or a table while the owner ran that store's code (a stale size; with a move, a use after
+unmap). Step 2b (maintainer's option (b)):
+* the first claim of the owner is atomic (`StoreState.claim`, under a lock): of two threads that
+  find a fresh store unowned, one wins and the other gets `RuntimeError`;
+* `Instance.call` checks the thread before it saves any counter (a refused entry used to write back
+  counters it had read before the check, LESSONS 78);
+* JIT `Memory.grow`, `Table.grow` and instantiation (`JitTarget.instantiate`, which binds to the
+  store's memories) refuse a thread other than the owner with `RuntimeError` before anything changes.
+  On a store with no owner yet they hold a claim only while they run (`release`; only an entry makes
+  it permanent), so a grow on another thread cannot overlap the first entry, and a store built on one
+  thread can still run on another.
+
+A grow from the owning thread (from wasm or from a host import it called) is allowed. The cost is one
+thread-identity compare per entry, none per access. It covers i32 memories too (their stale size).
+`pyc` needs no grow check: its code reaches memory through the `bytearray` object, never a raw
+address; it shares only the atomic first claim.
 
 * **Libcall widths**: the `memory.grow` service masks its result with `M64` for an i64 memory, so a
   failure is −1 as an i64, and with `M32` for an i32 memory as today. The same applies to
@@ -469,8 +486,9 @@ reason). This is recorded in step 1 as D27 applied to i64 tables.
     `Memory`; a guard module with memory 0 i32 and memory 1 i64 (only the i32 reservation is
     registered); an injected reservation failure (−1, nothing changed); the old reservation
     unmapped afterwards;
-  * **past 4 GiB, real sizes**: the "Limits" sequence (1 page; grow by 65 536, no move; by 1, a
-    move to 4 GiB + 64 KiB; by 2²⁰, a move to 68 GiB of address space), then a store and load at
+  * **past 4 GiB, real sizes**: the sequence 1 page; grow by 65 535, no move; by 1, a move to
+    4 GiB + 64 KiB; by 2²⁰, a move to 68 GiB of address space; and the "Limits" row (by 65 536 → 1,
+    then by 2²⁰ → 65 537, both moving); after each a store and load at
     `size − 8`. CI can run it because pages commit lazily and the copy skips zero pages: about 3 s
     and a few MiB of RSS on the dev VM. The test asserts RSS grew by less than 64 MiB (where
     `/proc/self/status` exists). Native rows only; under QEMU the cheap variant stands in. On
@@ -609,3 +627,18 @@ document to update"):
 * 2026-11-04: step 2a review: the x86-64 `k ≤ min` path is bounded by `k < 2³¹`; at `k = 2³¹` the
   `sub rdx, k` of a memory other than memory 0 did not encode (internal `ValueError` on a valid
   module); a compile test pins it.
+* 2026-11-04: step 2b implemented (D50): the i64 reservation rule (`RESERVATION64`, `GROWTH64`,
+  `TAIL64` in `instance.py`), commit in place, the move (`Memory._move`: a new reservation, the
+  zero-skipping copy, base then size in every context, the old one freed); the 2a cap lifted (max = declared or 2⁴⁸ − 1 pages); `Reservation` refuses ≥ 2⁶³
+  (LESSONS 77); i64 memories are not registered with the guard registry. Threads: the rule already
+  existed in S0002 (this spec's draft wrongly called it unenforced); the first claim is now atomic,
+  the check precedes every counter snapshot (LESSONS 78), and JIT grow and instantiation check it
+  too. Corrected here: the stale-base line citations (after 2a), the past-4-GiB sequence (65 535,
+  not 65 536, for the in-place step), the size in the instantiation message. The stale-base
+  argument was rechecked against the 2a code: it holds; `call_direct` needs no reload.
+* 2026-11-04: step 2b review: an interruption in the middle of the context rewrite left some
+  contexts on the old reservation while the `Memory` named the new one, and the next in-place grow
+  then paired the old base with the new size (a crash, reproduced). The rewrite now rolls back to
+  the old reservation on any exception, and every context write (bind, in-place grow, move) puts
+  the base before the size. The entry counters are restored also when an exception lands right
+  after `enter()`, still only by the owner thread (LESSONS 78, 79).

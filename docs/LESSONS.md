@@ -30,7 +30,10 @@ What went wrong or surprised us while building the PoC, so it is not found again
 6. **Hand-computed jump offsets are a trap**: the first feasibility test crashed on a wrong `rel8`.
    Always assemble through labels and fixups.
 7. **Memory cannot move under running code**: reserve the address range up front and commit on grow
-   (ARCHITECTURE.md). The PoC uses a fixed-size memory and has no `memory.grow`.
+   (ARCHITECTURE.md). The PoC uses a fixed-size memory and has no `memory.grow`. Refined by S0009
+   (D50): an i64 memory may move, but only inside a `memory.grow`, which wasm code reaches only
+   through the host bridge; every bridge call site reloads the memory words, so no running frame
+   keeps an old base.
 8. **A ctypes `CFUNCTYPE` call releases the GIL but cannot be interrupted**: other threads ran during a
    19.6 s guest call; a SIGINT sent 3 s in did not stop it (it returned normally at 20.6 s). Interrupts
    must be polled by the generated code.
@@ -514,3 +517,28 @@ What went wrong or surprised us while building the PoC, so it is not found again
     control; aarch64 not measured). Rule: before a large new semantic surface (exceptions, GC) is
     written per backend, measure a two-level split (ROADMAP, "Next", item 3b). Found: maintainer
     review of the sljit PoC, 2026-11-04.
+77. **ctypes truncates an oversized `c_size_t` silently.** `2⁶⁴ + 2 GiB` reaches C as `2 GiB`
+    (CPython 3.13). An i64 `memory.grow` by 2⁴⁸ − 2 from 1 page asks for a reservation of
+    `2⁶⁴ − 2¹⁶ + 2 GiB + 32 MiB` bytes: unchecked, `mmap` maps about 2 GiB (a `Reservation` of that
+    size succeeded before the check, measured) under a `size_bytes` of `2⁶⁴ − 2¹⁶`, and every bounds
+    check would pass. Rule: check a size against what the C type can hold before it crosses ctypes
+    (`Reservation` refuses ≥ 2⁶³ with ENOMEM, `test_reservation_size_check`). Found: S0009 step 2b
+    planning, 2026-11-04.
+78. **A failed entry must not restore counters it read before the check.** `Instance.call` saved
+    `store.depth` and the value-stack `active` count, then called `store.enter()` inside the `try`
+    whose `finally` writes them back. A second thread refused by `enter()` wrote back the owner's
+    values from before, so the owner's next nested entry could see `active` go from 0 to 1, reset
+    the value stack under its outer frames and recompute the native stack limit. Moving `enter()`
+    before the `try` fixed that but let an exception landing right after it keep the depth raised
+    for good (review). Rule: only the thread that owns the store writes its counters back
+    (`finally` checks the owner); a test makes two threads race for a fresh store
+    (`test_first_claim_is_atomic`) and one interrupts an entry right after `enter()`. Found: S0009
+    step 2b, 2026-11-04.
+79. **A multi-word publish interrupted halfway is a state no later step expects.** The move of an
+    i64 memory rewrote base and size context by context; a `KeyboardInterrupt` in the middle left
+    some contexts on the old reservation while the `Memory` named the new one, and the next in-place
+    grow, which wrote only the size word, paired the old base with a size past the old commit: a
+    crash (reviewer's reproduction, SIGSEGV). Rule: a publish of several words is all or nothing
+    (roll back on any exception, in an order that never makes an unsafe pair), and every writer
+    writes all the words it depends on, base before size (`test_an_interrupted_move_changes_nothing`).
+    Found: S0009 step 2b review, 2026-11-04.

@@ -12,6 +12,7 @@ Linux maps it `PROT_BTI` where the CPU reports BTI (landing pads enforced). macO
 entitlement refuses the mapping. x86-64 needs none of this."""
 
 import ctypes
+import errno
 import mmap
 import os
 import platform
@@ -61,10 +62,12 @@ class ExecMem:
 
 class Reservation:
     """Address space reserved up front (no access), committed read-write from its start on demand;
-    it never moves (LESSONS 7). Linear memories (4 GiB + 32 MiB each, Wasmtime's 64-bit defaults)
-    and value stacks."""
+    it never moves (LESSONS 7: an i64 memory that outgrows it gets a new one, S0009). Linear
+    memories (4 GiB + 32 MiB for an i32 one, Wasmtime's 64-bit defaults) and value stacks."""
 
     def __init__(self, size: int, commit: int = 0) -> None:
+        if not 0 <= size < 1 << 63:  # ctypes would truncate it for c_size_t silently (LESSONS 77)
+            raise OSError(errno.ENOMEM, f"reservation of {size} bytes")
         self.size = size
         self.committed = 0
         self.addr = _reserve(size)

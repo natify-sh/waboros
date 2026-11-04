@@ -5,14 +5,18 @@ addresses near 2**64, bulk memory at the 64-bit wrap, mixed i32/i64 copies; resu
 compared with `pyc` and Wasmtime. The D39 amendment B contract (`a64`, `lo` required) and the
 fault map of a guard module with mixed memories are checked without running (both targets)."""
 
+import errno
 import importlib.util
 import inspect
+import os
+import sys
+import threading
 from typing import Any, cast
 
 import pytest
 
 from tests.jit import native, need, test_compiler
-from tests.jit.test_compiler import JIT, build, outcome, trap_of, wat
+from tests.jit.test_compiler import JIT, Inst, build, outcome, trap_of, wat
 from tests.jit.test_float import Oracle
 from tests.jit.test_tables import provider
 from waboros.frontend.binary import parse
@@ -22,8 +26,9 @@ from waboros.runtime.store import StoreState
 from waboros.targets import base
 from waboros.targets.base import TrapCode
 from waboros.targets.jit.aarch64.backend import Backend as A64Backend
-from waboros.targets.jit.common import guard
+from waboros.targets.jit.common import execmem, guard, instance
 from waboros.targets.jit.common.backend import Backend as Protocol
+from waboros.targets.jit.common.execmem import Reservation
 from waboros.targets.jit.common.instance import Memory
 from waboros.targets.jit.x86_64.backend import Backend as X86Backend
 
@@ -232,19 +237,12 @@ def test_bulk_memory_wraps_and_mixed_copies(mode: str) -> None:
             e.sums()
 
 
-def test_grow_results_and_the_step_2a_cap() -> None:
-    """memory.grow of an i64 memory returns -1 as an i64; past 65 536 pages (the reservation of
-    step 2a, lifted in step 2b) too; a min of 2**48 pages or more, or above that cap, is a
-    MemoryError at instantiation."""
+def test_grow_results() -> None:
+    """memory.grow of an i64 memory returns -1 as an i64 (an i32 one as an i32)."""
     jit = build(wat(TEXT))
     assert jit("grow$m", 3) == [1] and jit("grow$m", 1) == [M64] and jit("size$m") == [4]
     assert jit("grow$m", M64) == [M64] and jit("grow$m", 1 << 48) == [M64]
-    assert jit("grow$w", 65534) == [2] and jit("grow$w", 1) == [M64]  # step 2a: the cap
     assert jit("grow$n", 1) == [1] and jit("grow$n", 1) == [0xFFFFFFFF]
-    with pytest.raises(MemoryError, match="memory minimum size of 281474976710656 pages exceeds"):
-        build(wat("(module (memory i64 0x1_0000_0000_0000))"))
-    with pytest.raises(MemoryError, match=f"failed to reserve {65537 << 16} bytes"):
-        build(wat("(module (memory i64 65537))"))
     assert Memory(1, None, a64=True).mask == M64 and Memory(1, None).mask == 0xFFFFFFFF
 
 
@@ -337,3 +335,336 @@ def test_address_type_parameters_are_required(cls: type) -> None:
     b = X86Backend() if cls is not A64Backend else A64Backend()
     with pytest.raises(TypeError, match="a64"):
         cast(Any, b).load(None, 4, False, False, None, None, 0, 16)
+
+
+# ------------------------------------------------------------------ moving (S0009 step 2b)
+QEMU = "QEMU_LD_PREFIX" in os.environ  # set by tools/run_arm64.py
+MOVE = """(module (import "h" "f" (func $h)) (memory $a (export "a") i64 1) (memory $b i64 1)
+  (func $get (param i64) (result i64) (i64.load (local.get 0)))
+  (func (export "grow0") (param i64) (result i64) (memory.grow $a (local.get 0)))
+  (func (export "grow1") (param i64) (result i64) (memory.grow $b (local.get 0)))
+  (func (export "put0") (param i64 i64) (i64.store $a (local.get 0) (local.get 1)))
+  (func (export "get0") (param i64) (result i64) (i64.load $a (local.get 0)))
+  (func (export "put1") (param i64 i64) (i64.store $b (local.get 0) (local.get 1)))
+  (func (export "get1") (param i64) (result i64) (i64.load $b (local.get 0)))
+  (func (export "outer") (result i64 i64 i64 i64)
+    (i64.store (i64.const 8) (i64.const 77)) (i64.store $b (i64.const 8) (i64.const 78))
+    (call $h)
+    (i64.load (i64.const 8)) (call $get (i64.const 8)) (i64.load $b (i64.const 8))
+    (i64.store (i64.sub (i64.shl (memory.size) (i64.const 16)) (i64.const 8)) (i64.const 79))
+    (call $get (i64.sub (i64.shl (memory.size) (i64.const 16)) (i64.const 8)))))"""
+NOHOST = MOVE.replace('(import "h" "f" (func $h))', "").replace("(call $h)", "")
+IMPORT_A = """(module (import "m" "a" (memory i64 1))
+  (func (export "get") (param i64) (result i64) (i64.load (local.get 0)))
+  (func (export "grow") (param i64) (result i64) (memory.grow (local.get 0))))"""
+
+
+@pytest.fixture
+def small(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An i64 memory of 1 page moves at its 17th and 34th page; i32 memories are unchanged."""
+    monkeypatch.setattr(instance, "RESERVATION64", 1 << 20)
+    monkeypatch.setattr(instance, "GROWTH64", 1 << 20)
+    monkeypatch.setattr(instance, "TAIL64", 1 << 16)
+
+
+def _mems(i: Inst) -> list[Memory]:
+    return cast(Any, i.inst).memories
+
+
+def _unmapped(res: Reservation, addr: int) -> bool:
+    if sys.platform.startswith("linux"):
+        with open("/proc/self/maps") as f:
+            assert not any(line.startswith(f"{addr:x}-") for line in f), "old reservation mapped"
+    return not res._release.alive  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.usefixtures("small")
+def test_move_from_wasm(mode: str) -> None:
+    """Marks and the zeros around them survive both moves of both memories, the new end is
+    usable and the next byte traps (JIT, pyc and Wasmtime agree); the old reservation is gone."""
+    e = Three(wat(NOHOST))
+    marks = [0, 8, 65528, 4 * 65536 + 8]
+    for m in "01":
+        e(f"put{m}", 0, 0x1111)
+        e(f"put{m}", 65528, 0x2222)
+        assert e(f"grow{m}", 4) == [1]
+        e(f"put{m}", 4 * 65536 + 8, 0x3333)
+        mem = _mems(e.jit)[int(m)]
+        for delta, pages in ((12, 17), (17, 34)):
+            res, addr = mem.res, mem.res.addr
+            assert e(f"grow{m}", delta) == [pages - delta] and mem.res.addr != addr
+            assert _unmapped(res, addr) and mem.retired == []
+            for at in (*marks, *(k + 8 for k in marks), pages * 65536 - 8, pages * 65536 - 7):
+                e(f"get{m}", at)
+            e(f"put{m}", pages * 65536 - 8, pages)
+            e(f"get{m}", pages * 65536 - 8)
+        res, addr = mem.res, mem.res.addr
+        assert e(f"grow{m}", 1) == [34] and mem.res is res  # within the growth reserve
+
+
+@pytest.mark.usefixtures("small")
+@pytest.mark.parametrize("how", ["wasm", "host"])
+def test_move_in_a_nested_entry(mode: str, how: str) -> None:
+    """wasm -> host -> (wasm memory.grow | Memory.grow) moves both memories under a suspended
+    frame, which then uses memory 0 directly (pinned base and size), through a direct call, and
+    memory 1; a second instance importing memory 0 sees the move too."""
+    store, box = StoreState(), {}
+
+    def f(args: Any) -> list[int]:
+        i = box["i"]
+        if how == "wasm":
+            assert i("grow0", 20) == [1] and i("grow1", 20) == [1]
+        else:
+            assert [m.grow(20) for m in _mems(i)] == [1, 1]
+        return []
+
+    i = box["i"] = build(wat(MOVE), imports={"h": {"f": f}}, store=store)
+    j = build(wat(IMPORT_A), imports={"m": provider(i)}, store=store)
+    assert i("outer") == [77, 77, 78, 79]
+    assert j("get", 8) == [77] and j("get", 21 * 65536 - 8) == [79]
+    assert trap_of(j, "get", 21 * 65536 - 7) is TrapCode.MEMORY_OUT_OF_BOUNDS
+    addr = _mems(i)[0].res.addr
+    assert j("grow", 30) == [21] and _mems(i)[0].res.addr != addr  # moved by the importer
+    assert i("get0", 8) == [77] and i("get0", 51 * 65536 - 8) == [0]
+
+
+@pytest.mark.usefixtures("small")
+def test_guard_registry_and_a_failed_move(mode: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Only the i32 memory is registered (guard mode); a reservation that fails gives -1 and
+    changes nothing."""
+    jit = build(wat(MIXED.format("i32", "i64", "i32", "i64")))
+    a, b = _mems(jit)
+    if mode == "guard":
+        assert a.res.addr in guard._registry.reservations  # pyright: ignore[reportPrivateUsage]
+    assert b.res.addr not in guard._registry.reservations  # pyright: ignore[reportPrivateUsage]
+    ctx, word = b.users[0]
+    b.grow(20)
+    assert jit("b", 21 * 65536 - 12) == [0] and jit("a", 65524) == [0]
+    assert trap_of(jit, "a", 65525) is TrapCode.MEMORY_OUT_OF_BOUNDS
+    assert b.res.addr not in guard._registry.reservations  # pyright: ignore[reportPrivateUsage]
+
+    def fail(*_: Any) -> Any:
+        raise OSError(errno.ENOMEM, "injected")
+
+    monkeypatch.setattr(instance, "Reservation", fail)
+    before = (b.res, b.pages, ctx[word], ctx[word + 1])
+    assert b.grow(100) == -1 and before == (b.res, b.pages, ctx[word], ctx[word + 1])
+    assert jit("b", 21 * 65536 - 12) == [0]
+
+
+class Interrupted(list[Any]):
+    """`users` whose iteration raises KeyboardInterrupt before item `at`, once."""
+
+    def __init__(self, items: list[Any], at: int) -> None:
+        super().__init__(items)
+        self.at = at
+
+    def __iter__(self) -> Any:
+        for n, x in enumerate(list.__iter__(self)):
+            if n == self.at:
+                self.at = -1
+                raise KeyboardInterrupt
+            yield x
+
+
+@pytest.mark.usefixtures("small")
+@pytest.mark.parametrize("at", [0, 1])
+def test_an_interrupted_move_changes_nothing(at: int) -> None:
+    """A KeyboardInterrupt in the middle of rewriting the contexts puts every one back on the
+    old reservation; the next in-place grow and a later move work, and the host and all three
+    instances see the same bytes."""
+    import ctypes
+
+    store = StoreState()
+    i = build(wat(NOHOST), store=store)
+    js = [build(wat(IMPORT_A), imports={"m": provider(i)}, store=store) for _ in range(2)]
+    mem = _mems(i)[0]
+    mem.users = Interrupted(mem.users, at)
+    i("put0", 8, 42)
+    with pytest.raises(KeyboardInterrupt):
+        mem.grow(20)
+    assert mem.pages == 1 and mem.retired == []
+    assert all((c[w], c[w + 1]) == (mem.res.addr, 1 << 16) for c, w in mem.users)
+    assert js[0]("grow", 5) == [1]  # in place
+    for j in js:
+        assert j("get", 8) == [42] and j("get", 6 * 65536 - 8) == [0]
+    i("put0", 6 * 65536 - 8, 7)
+    assert [j("get", 6 * 65536 - 8) for j in js] == [[7], [7]]
+    assert ctypes.c_uint64.from_address(mem.res.addr + 6 * 65536 - 8).value == 7
+    assert js[1]("grow", 20) == [6] and js[0]("get", 8) == [42]  # a move now completes
+    assert all((c[w], c[w + 1]) == (mem.res.addr, 26 << 16) for c, w in mem.users)
+
+
+def test_an_interrupted_entry_restores_the_counters(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An asynchronous exception right after `enter()` has counted the entry leaves the store's
+    depth and the active count as they were."""
+    i = build(wat(NOHOST))
+    store = cast(Any, i.inst).store
+    enter = StoreState.enter
+
+    def interrupted(self: StoreState) -> None:
+        enter(self)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(StoreState, "enter", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        i("get0", 8)
+    monkeypatch.undo()
+    st = instance._stacks(store)  # pyright: ignore[reportPrivateUsage]
+    assert (store.depth, st.active) == (0, 0) and i("get0", 8) == [0]
+
+
+def _rss() -> int | None:
+    try:
+        with open("/proc/self/status") as f:
+            return next(int(x.split()[1]) << 10 for x in f if x.startswith("VmRSS"))
+    except OSError:
+        return None
+
+
+@pytest.mark.skipif(QEMU, reason="the cheap variant stands in under QEMU")
+def test_move_past_4_gib() -> None:
+    """Real sizes: 1 page, +65 535 in place, +1 a move to 4 GiB + 64 KiB, +2**20 a move to
+    68 GiB of address space; Wasmtime's row (+65 536 -> 1, then +2**20 -> 65 537). The copy skips
+    zero pages: RSS stays small. Windows charges a commit to its limit: -1 is accepted there."""
+    rss = _rss()
+    jit = build(wat(NOHOST))
+    mem = _mems(jit)[0]
+    jit("put0", 8, 0x5EED)
+    steps = [(65535, 1, False), (1, 65536, True), (1 << 20, 65537, True)]
+    for delta, want, moves in steps:
+        addr, got = mem.res.addr, jit("grow0", delta)
+        if got == [M64] and sys.platform == "win32":
+            assert mem.res.addr == addr and jit("get0", 8) == [0x5EED]
+            return
+        end = (want + delta) << 16
+        assert got == [want] and (mem.res.addr != addr) == moves
+        jit("put0", end - 8, want)
+        assert jit("get0", end - 8) == [want] and jit("get0", 8) == [0x5EED]
+        assert trap_of(jit, "get0", end - 7) is TrapCode.MEMORY_OUT_OF_BOUNDS
+    other = build(wat(NOHOST))
+    assert other("grow0", 65536) == [1] and other("grow0", 1 << 20) == [65537]
+    if rss is not None:
+        assert cast(int, _rss()) - rss < 64 << 20
+
+
+def test_limits_rows() -> None:
+    """S0009 "Limits", memory rows (Wasmtime 50.0.1 on a 47-bit host)."""
+    build(wat("(module (memory i64 0 0x1_0000_0000_0000))"))
+    for pages in (65537, 1 << 20):
+        assert build(wat(f"(module (memory i64 {pages}))"))
+    with pytest.raises(
+        MemoryError, match=f"failed to reserve {(1 << 48) + (2 << 30) + (32 << 20)}"
+    ):
+        build(wat("(module (memory i64 0x1_0000_0000))"))
+    with pytest.raises(MemoryError, match="memory minimum size of 281474976710656 pages exceeds"):
+        build(wat("(module (memory i64 0x1_0000_0000_0000))"))
+    jit = build(wat(NOHOST))
+    for delta in (1 << 32, (1 << 48) - 2, 1 << 48, 1 << 63):
+        assert jit("grow0", delta) == [M64]  # (1 << 48) - 2: by the size check
+    assert jit("grow0", 0) == [1]
+
+
+def test_reservation_size_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A size ctypes would truncate is refused before any mapping call (LESSONS 77)."""
+
+    def never(size: int) -> int:
+        raise AssertionError(f"mapping call for {size} bytes")
+
+    monkeypatch.setattr(execmem, "_reserve", never)
+    for size in (1 << 63, (1 << 64) - (1 << 16) + (2 << 30) + (32 << 20), -1):
+        with pytest.raises(OSError) as e:
+            Reservation(size)
+        assert e.value.errno == errno.ENOMEM
+
+
+# ------------------------------------------------------------------ one thread per store
+THREADS = """(module (import "h" "f" (func $h)) (memory (export "a") i64 1)
+  (table (export "t") 1 funcref)
+  (func (export "outer") (result i64) (call $h) (memory.size))
+  (func (export "nop")))"""
+
+
+def _in_thread(f: Any) -> BaseException | None:
+    out: list[BaseException | None] = [None]
+
+    def run() -> None:
+        try:
+            f()
+        except BaseException as e:
+            out[0] = e
+
+    t = threading.Thread(target=run)
+    t.start()
+    t.join()
+    return out[0]
+
+
+def test_another_thread_is_refused_while_a_host_import_runs() -> None:
+    """Entry, Memory.grow, Table.grow and instantiation from another thread raise RuntimeError
+    before anything changes; the owner thread may grow; the owner stays after the call (S0002)."""
+    store, box = StoreState(), cast(dict[str, Any], {})
+    st = instance._stacks(store)  # pyright: ignore[reportPrivateUsage]
+
+    def f(args: Any) -> list[int]:
+        i, mem, tab = box["i"], _mems(box["i"])[0], box["i"].inst.tables[0]
+        tries = [lambda: i("nop"), lambda: mem.grow(1), lambda: tab.grow(1, 0),
+                 lambda: build(wat(IMPORT_A), imports={"m": provider(i)}, store=store)]  # fmt: skip
+        for t in tries:
+            assert isinstance(_in_thread(t), RuntimeError)
+        assert (store.depth, st.active, mem.pages, tab.size) == (1, 1, 1, 1)
+        assert mem.grow(1) == 1
+        return []
+
+    i = box["i"] = build(wat(THREADS), imports={"h": {"f": f}}, store=store)
+    assert store.owner is None  # instantiation does not keep the store
+    assert i("outer") == [2] and (store.depth, st.active) == (0, 0)
+    assert isinstance(_in_thread(lambda: _mems(i)[0].grow(1)), RuntimeError)
+
+
+def test_first_claim_is_atomic(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two threads that both find a fresh store unowned: exactly one enters, the other gets
+    RuntimeError and leaves the winner's counters alone."""
+    from waboros.runtime import store as store_mod
+
+    both, lost, inside = threading.Barrier(2, timeout=10), threading.Event(), []
+
+    class Racing:
+        """The claim lock, entered only after both threads have passed the unlocked check."""
+
+        lock = threading.Lock()
+
+        def __enter__(self) -> None:
+            both.wait()
+            self.lock.acquire()
+
+        def __exit__(self, *_: object) -> None:
+            self.lock.release()
+
+    store = StoreState()
+    st = instance._stacks(store)  # pyright: ignore[reportPrivateUsage]
+
+    def f(args: Any) -> list[int]:
+        assert lost.wait(10)
+        inside.append((store.depth, st.active))
+        return []
+
+    i = build(wat(THREADS), imports={"h": {"f": f}}, store=store)
+    monkeypatch.setattr(store_mod, "_CLAIM", Racing())
+    errors: list[BaseException | None] = []
+
+    def run() -> None:
+        try:
+            assert i("outer") == [1]
+            errors.append(None)
+        except RuntimeError as e:
+            errors.append(e)
+            lost.set()
+
+    threads = [threading.Thread(target=run) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sorted(map(type, errors), key=str) == sorted([type(None), RuntimeError], key=str)
+    assert inside == [(1, 1)] and (store.depth, st.active) == (0, 0)

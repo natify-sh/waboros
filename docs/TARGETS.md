@@ -105,7 +105,7 @@ A feature of a later stage is `unsupported` on that architecture until written; 
 on `pyc` (D25). `jit-x86_64` and `jit-aarch64` have stages 1 and 2 as far as the core group needs them
 (multi-memory included, D37), tail calls and typed function references of stage 3; SIMD (S0005):
 `jit-x86_64` compiles every operator with SSE2 only and claims `simd/` (step 5d3); `jit-aarch64`
-compiles every operator in ARMv8.0-A NEON and claims `simd/` (step 5e2); memory64 is done on `pyc` (S0009 step 1); the JITs compile i64 memories (step 2a: explicit checks in every mode, capped at 65 536 pages until step 2b) and refuse an i64 table as `unsupported` until step 3, exceptions and GC are not done; relaxed SIMD and wide arithmetic are done on all three targets (S0008 steps 1-3).
+compiles every operator in ARMv8.0-A NEON and claims `simd/` (step 5e2); memory64 is done on `pyc` (S0009 step 1); the JITs compile i64 memories (step 2a: explicit checks in every mode; step 2b: reserved as Wasmtime, moved by a grow past the reservation, D50) and refuse an i64 table as `unsupported` until step 3, exceptions and GC are not done; relaxed SIMD and wide arithmetic are done on all three targets (S0008 steps 1-3).
 
 **An alternative to evaluate for later architectures: copy-and-patch.** Each wasm operation becomes a
 small C "stencil" compiled by clang for every target triple on *our* CI and shipped as bytes in the
