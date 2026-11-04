@@ -1,0 +1,335 @@
+---
+title: Relaxed SIMD (deterministic profile) and wide arithmetic on pyc, jit-x86_64 and jit-aarch64
+kind: spec
+id: S0008
+status: draft
+superseded_by:
+related: [D19, D22, D24, D25, D35, D39, D41, D42, D47, D48, S0001, S0005, R3]
+owner: maintainer
+updated: 2026-11-04
+---
+
+# S0008 Relaxed SIMD (deterministic profile) and wide arithmetic on pyc, jit-x86_64 and jit-aarch64
+
+## Summary
+Two small proposals that Wasmtime 50 enables by default ([WASM-PROPOSALS.md](../WASM-PROPOSALS.md)),
+done as one parity step on the three targets (ROADMAP "Next" item 2; memory64, exceptions and GC follow):
+
+1. **Relaxed SIMD** (Wasm 3.0; 20 operators, `0xFD` sub-opcodes 256–275; `relaxed-simd/`, 79
+   commands). **Decided (maintainer, 2026-11-04): the deterministic profile of Wasm 3.0 on every
+   target** ([ISA-LEVELS.md](../ISA-LEVELS.md), last bullet). The profile fixes every relaxed
+   parameter to 0 (spec, exec/numerics, "Relaxed Operations": "In the deterministic profile, every
+   parameter is prescribed to be 0"; `relaxed(R)[A0, …, An] = A0`). Then 14 operators *are* existing
+   S0005 operators and 6 are short compositions of existing ones. No new ISA, no level above the
+   baseline, no host-dependent result.
+2. **Wide arithmetic** (phase-4 proposal, not in 3.0; `i64.add128`, `i64.sub128`, `i64.mul_wide_s`,
+   `i64.mul_wide_u`, `0xFC` 19–22; two `i64` results each). On the JITs it needs one new backend
+   method, `wide`, that only these four opcodes reach.
+
+This spec fixes the operator mapping, the front-end encoding, the `wide` method, how the tests are
+pinned and claimed, and the steps. Status before this step (measured 2026-11-04): explicit
+`relaxed-simd` run 0 pass / 79 fail on `pyc` and `jit-x86_64` (every module refused); a
+wide-arithmetic module is refused as **malformed** (`binary.py` rejects `0xFC` sub ≥ 18), the
+wrong kind, because Wasmtime accepts it.
+
+## Goals / Non-goals
+* Goals: `relaxed-simd/` (79 commands) and the pinned wide-arithmetic file (109 commands) pass on
+  `pyc`, `jit-x86_64` and `jit-aarch64` and are claimed by each (D25: the same results as `pyc`);
+  JIT code stays at x86-64-v1 (SSE2) and ARMv8.0-A (D24); the D35 lists of every module without these
+  opcodes and CoreMark stay byte-identical on both JITs; the generated `pyc` source of every
+  module without them stays identical.
+* Non-goals: a "native" relaxed mode (FMA, `pshufb` swizzle semantics, hardware dot products), which
+  belongs to the ISA-level work ([ISA-LEVELS.md](../ISA-LEVELS.md), D42); a `Config` switch for it;
+  other phase-4 arithmetic ideas from the wide-arithmetic overview (`add_overflow`, `add_with_carry`);
+  `mpy` (tier 3, D22); the public API; any speed claim (none is made, so no measurement plan).
+
+## Interface
+
+### Front end (`frontend/binary.py`, `frontend/simd.py`, `frontend/validate.py`)
+**Relaxed SIMD.** `simd.decode` stops raising `NotImplementedError` for sub-opcodes 256–275:
+* the **14 aliases** (table below, "alias") decode to the tuple of the S0005 operator they equal in
+  the deterministic profile, e.g. `0xFD 256` → `(0xFD00E,)` (`i8x16.swizzle`). Validation and every
+  target then see an operator they already compile; the operand and result types are identical
+  (checked per row below);
+* the **6 compositions** become new entries of `OPS` (sub-opcode, name, `NONE`, types) and decode to
+  `(0xFD000 + sub,)`: `f32x4.relaxed_madd` 0x105, `f32x4.relaxed_nmadd` 0x106,
+  `f64x2.relaxed_madd` 0x107, `f64x2.relaxed_nmadd` 0x108 (`(V, V, V) → V`),
+  `i16x8.relaxed_dot_i8x16_i7x16_s` 0x112 (`(V, V) → V`), `i32x4.relaxed_dot_i8x16_i7x16_add_s`
+  0x113 (`(V, V, V) → V`).
+
+The aliasing is where the deterministic profile lives: one place, shared by all targets (D25 by
+construction). A later native mode would stop aliasing for the operators it changes (Q1).
+
+**Wide arithmetic.** `binary.py`, `0xFC` branch: sub 19–22 decode to `(0xFC13,)`, `(0xFC14,)`,
+`(0xFC15,)`, `(0xFC16,)` (no immediates; numbers from the proposal's Overview, "Binary Format":
+`0xFC 19:u32 ⇒ i64.add128`, 20 `sub128`, 21 `mul_wide_s`, 22 `mul_wide_u`). Sub 18 (reserved for
+`memory.discard`) and ≥ 23 stay `Malformed`. `validate.py`: `0xFC13`/`0xFC14` pop four `i64`,
+`0xFC15`/`0xFC16` pop two, each pushes `i64`, `i64` (a small table next to `OPSIG`, which holds one
+result per opcode). No other front-end change.
+
+### The relaxed operators (opcode → deterministic result → lowering on each target)
+Spec references are to the Wasm 3.0 spec, exec/numerics, section "Relaxed Operations" (read
+2026-11-04); "alt 0" is the first argument of `relaxed(R)[…]`.
+
+| sub | operator | alt 0 (spec text) | maps to | pyc | x86-64 (SSE2) | aarch64 (NEON) |
+|---|---|---|---|---|---|---|
+| 0x100 | `i8x16.relaxed_swizzle` | `ivrelaxed_swizzle_lane`: `j < 16` → `i[j]`; `signed(j) < 0` → 0; else `relaxed[0, i[j mod n]]` → 0; note: "behaves like regular ivswizzle" | alias `i8x16.swizzle` (0x0E) | existing | existing (byte gather, class L) | existing (`tbl`) |
+| 0x101–0x104 | `i32x4.relaxed_trunc_{f32x4_s,f32x4_u,f64x2_s_zero,f64x2_u_zero}` | `relaxed[trunc_sat_{s,u}(z), R]`; note: "behaves like regular trunc_sat" | alias 0xF8, 0xF9, 0xFC, 0xFD | existing | existing | existing |
+| 0x109–0x10C | `{i8x16,i16x8,i32x4,i64x2}.relaxed_laneselect` | `ibitselect(i1, i2, relaxed[i3, ext_s(i3 >> N−1)])` → mask `i3`; note: "behaves like ibitselect" | alias `v128.bitselect` (0x52), same operand order | existing | existing | existing |
+| 0x10D, 0x10E | `f32x4.relaxed_{min,max}` | `relaxed[fmin/fmax(z1, z2), …]`; note: "behaves like regular fmin/fmax" | alias 0xE8, 0xE9 | existing | existing | existing |
+| 0x10F, 0x110 | `f64x2.relaxed_{min,max}` | as above | alias 0xF4, 0xF5 | existing | existing | existing |
+| 0x111 | `i16x8.relaxed_q15mulr_s` | both `−2^(N−1)`: `relaxed[2^(N−1)−1, …]`; else `iq15mulrsat_s`; note: "behaves like regular iq15mulrsat_s" | alias 0x82 | existing | existing | existing (`sqrdmulh`) |
+| 0x105 | `f32x4.relaxed_madd` | `relaxed[fadd(fmul(z1, z2), z3), fma(z1, z2, z3)]`; note: "the unfused behaviour is used" | `f32x4.add(f32x4.mul(a, b), c)` | the two helpers composed | `mulps 0 1; addps 0 2` | `fmul.4s 0 0 1; fadd.4s 0 0 2` |
+| 0x106 | `f32x4.relaxed_nmadd` | `frelaxed_madd(−z1, z2, z3)` | `add(mul(neg a, b), c)` ≡ `c − a·b` (below) | composed | `mulps 0 1; subps 2 0` | `fmul.4s 0 0 1; fsub.4s 0 2 0` |
+| 0x107, 0x108 | `f64x2.relaxed_madd`, `_nmadd` | as f32x4 | as f32x4 | composed | `mulpd`, `addpd`/`subpd` | `.2d` forms |
+| 0x112 | `i16x8.relaxed_dot_i8x16_i7x16_s` | `vextbinop` row `relaxed_dot_s`: `sx2 = relaxed[s, u]` → s; `f = ivrelaxed_dot = relaxed[ivdot, ivdotsat]` → `ivdot_16` (wrapping) | Σ of products of sign-extended byte pairs, mod 2^16 | `i16x8.add(mul(ev a, ev b), mul(od a, od b))`, `ev`/`od` by `shl`/`shr_s` 8 | 11: `movaps 2 0; psrawi 2 8; movaps 3 1; psrawi 3 8; pmullw 2 3; psllwi 0 8; psrawi 0 8; psllwi 1 8; psrawi 1 8; pmullw 0 1; paddw 0 2` | `smull.8h 2 0 1; smull2.8h 3 0 1; addp.8h 0 2 3` |
+| 0x113 | `i32x4.relaxed_dot_i8x16_i7x16_add_s` | `vextternop`: `N = relaxed[2·N1, N2]` → 16: `ivrelaxed_dot_16`, extend_s to 32, `ivadd_pairwise_32`, `add c3` | `i32x4.add(i32x4.extadd_pairwise_i16x8_s(dot16(a, b)), c)` | composed | the dot above with temporaries in xmm3/xmm4 (xmm2 holds `c`), then `pcmpeqw 1 1; psrlwi 1 15; pmaddwd 0 1; paddd 0 2` (~15) | the dot, then `saddlp.4s 0 0; add.4s 0 0 2` |
+
+Notes on the table:
+* **nmadd**: `fmul(−a, b) = −fmul(a, b)` for non-NaN operands (round-to-nearest is sign-symmetric),
+  and `(−p) + c = c + (−p) = c − p` (IEEE 754 defines subtraction that way; addition is commutative,
+  signed zeros included). So `c − a·b` gives the same bits as the spec's form except for the sign
+  and payload of a NaN result, which the spec leaves open and our comparisons take by class (S0005,
+  "NaN and determinism"). Each target may use either form.
+* **Never a fused instruction.** The unfused result is two roundings. aarch64 `fmla`/`fmls` are
+  fused and must not appear; SSE2 has no FMA. `pyc` composes its per-lane helpers, which round the
+  product to the lane's precision before the add. Computing `a*b + c` in doubles and rounding once
+  to f32 would be wrong: `FLT_MAX · 2 − FLT_MAX` gives `FLT_MAX` (the fused answer) instead of
+  `+inf`. The pinned test accepts both answers, so only the Test plan's differential catches this.
+* **dot**: the products of two sign-extended bytes fit in 16 bits (from −16 256 to 16 384), so
+  `pmullw`/`smull` are exact; the pairwise add wraps (`paddw`, `addp`), as `ivdot` does (`−128·−128 ·
+  2 = 32 768` wraps to `−32 768`; a pinned command checks this lane).
+* New encodings: x86 none (every form is in `FORMS`/`SHIFTS` already, all SSE2); aarch64
+  `addp .8h` and `smull/smull2 .8h` if not yet in `FORMS`, each checked against `llvm-mc`.
+  `tools/isa_check.py` needs no new mnemonic.
+
+**Verified before writing (2026-11-04, scratch script, not committed):** the table's compositions, built
+from `pyc`'s existing helpers, pass all 71 `assert_return` of the pinned `relaxed-simd/` (the 8
+other commands are modules), and equal Wasmtime 50.0.1 with `wasm_relaxed_simd_deterministic`
+for every operator except madd/nmadd on 3 000 inputs each (random, special floats, byte
+patterns), NaN lanes by class. For madd/nmadd see "Semantics".
+
+### Wide arithmetic: one backend method (D39)
+```python
+def wide(self, op: str, dst: Slot, args: tuple[Operand, ...]) -> None: ...
+# op: "add128" | "sub128" (args a_lo, a_hi, b_lo, b_hi) | "mul_wide_s" | "mul_wide_u" (args x, y),
+# wasm order; the low 64 bits of the result into slot dst.k, the high 64 bits into dst.k + 1
+```
+Contract (in the style of D39): operands are `Imm` (unsigned 64-bit), `Reg` (`tos` or a pinned pool
+register) or `Slot`; `dst.k` is the stack position of the first operand, so the result slots may be
+operand slots, and an operand is read before its slot is written. The method may write `tos`
+(x86-64 `mul` needs `rax`): the core calls `need_tos()` first. It preserves the pool, frame, context
+and memory-0 registers, leaves no flags live, uses 64-bit forms only, and needs no trap, so it takes
+no frame `f`.
+
+Under D39's own rule ("a method only a new opcode reaches is not a change of the interface") this
+is **not an amendment**; it is still added to both backends in one step, recorded in the D39
+paragraph of DECISIONS.md like the earlier additions, and read by a `reviewer` (Q2). `supported`
+gains `0xFC13`–`0xFC16` on both backends.
+
+**Core (`jit/common/compiler.py`)**: one branch for the four opcodes, as `jit/common/simd.py`'s `op`
+does for a v128 result. It pops the operands with `fn.pop()` (an `AddK` entry is computed first,
+LESSONS 32), calls `need_tos()`, then `b.wide(op, Slot(fn.L + h), args)` (`h` = height after the
+pops), then pushes two `SLOTE` entries. The results take at most the operands' slots, so
+`frame_slots` does not grow. **Precedent**: a SIMD operator already writes two slots in one backend
+call (`_push2`); unlike a v128, the two entries are independent `i64` values afterwards, so no
+annotation and no slot-map change. Multi-value calls and blocks already move several results
+through slots.
+
+**`pyc` (`targets/pyc/codegen.py`, `runtime.py`)**: four runtime helpers returning `(lo, hi)`,
+emitted as `t1, t2 = _add128(a, b, c, d)` and pushed as two `i64` temporaries. That is the shape
+multi-value calls use today (`ts = [s.newtmp(ty) …]`, `s.emit("t1, t2 = …")`, `E(t, I64, M64,
+k=True)`). Before the statement, the entries below the operands that can trap are materialised
+(`flush` with the `x` predicate: LESSONS 28, 30). The helper has no memory or global effect, so
+`m`/`g` entries stay lazy.
+
+### Tests: pins, claims, oracle
+* **Relaxed SIMD** is in the pinned spec suite (`relaxed-simd/`, 7 files, 79 commands: 71
+  `assert_return`, 33 of them `either`, and 8 modules). `tests/spec/run.py` supports `either` already
+  (`matches`, `t == "either"`: any alternative, NaN patterns per lane; `test_runner.py::test_either`).
+  `i32x4_relaxed_trunc.wast` holds only its module at this pin (no assertion), so the trunc aliases
+  get unit and differential tests instead (Test plan).
+* **Wide arithmetic** is **not** in the pinned spec suite (`WebAssembly/spec` main, 2026-10-28: no
+  file). Source: the proposal repository, `WebAssembly/wide-arithmetic`,
+  `test/core/wide-arithmetic.wast` at commit `024d4ce1b28cee7fd006d9c5175e3b7ece52b429` (HEAD on
+  2026-11-04), sha256 `9a3353e12e1fb78e8a7e30b7c5b356bfc897c093b83cbfc6a544660b88adcdc1`.
+  wasm-tools 1.262.0 converts it: 109 commands (99 `assert_return`, 8 `assert_invalid`, 2
+  modules). Wasmtime keeps a near-copy (`tests/misc_testsuite/wide-arithmetic.wast`, 99
+  `assert_return`), but the proposal's file is the normative one. `fetch.py` gains a second pin
+  (`PROPOSAL_FILES`: directory, URL at the commit, sha256), downloads the one file by `urllib` into
+  `wast/wide-arithmetic/` before conversion, refuses a hash mismatch, and records it in the manifest
+  (Q3). `counts.json` gains `"wide-arithmetic/wide-arithmetic": 109`. When the proposal reaches the spec
+  repository, the pin moves there and this entry goes (S0001 Changes).
+* **Claims** (`tests/spec/claims.py`): `DIR_FEATURE["wide-arithmetic"] = "wideArithmetic"`;
+  `relaxedSimd` and `wideArithmetic` join `CLAIMS` of each target in the step where its explicit run
+  has 0 failures and its results equal `pyc`'s (`spec_diff` empty without `--allow-unsupported`).
+  Wasmtime claims `wideArithmetic` too. `tools/features.py`: `"wideArithmetic": ["wide-arithmetic/"]`.
+* **Oracle Config** (`wasmtime_engine.py`, S0001: "every switch the claimed directories need,
+  explicit"): add `wasm_wide_arithmetic` (on by default in 50.0.1, explicit by the rule) and
+  `wasm_relaxed_simd_deterministic` (Q4). Measured with both switches: the oracle passes all 71 + 99
+  `assert_return` and 8 `assert_invalid`.
+
+### Context ABI, artifact, ISA: unchanged
+No new context word, trap code, libcall, trampoline or frame rule; baseline instructions only
+(SSE2: `adc`, `sbb`, `mul`, `imul` are already in the x86-64-v1 allowlist; ARMv8.0-A: `adds`, `adc`,
+`subs`, `sbc`, `mul`, `umulh`, `smulh`). `ctx_abi_version`, the artifact format and `isa_level` do not
+change (docs/ARTIFACT.md needs nothing). No per-OS code (D47: no rows touched). riscv64 (D48) will
+implement `wide` without flags (`add`, `sltu` for the carry): one reason the method takes whole
+operations instead of exposing a carry.
+
+## Semantics
+
+### Relaxed SIMD: the deterministic profile, and where Wasmtime differs
+Every relaxed operator gives alt 0 on every target and in `pyc`, independent of the host CPU, so
+the D35 cross-host identity holds and `pyc` stays a bit-exact oracle (NaN payloads aside, as for
+all float operators, S0005).
+
+**Measured deviation from Wasmtime (2026-11-04, Wasmtime 50.0.1, Xeon 2.1 GHz with FMA).**
+* Wasmtime's `wasm_relaxed_simd_deterministic` **fuses** `relaxed_madd`/`relaxed_nmadd`:
+  `f64x2.relaxed_madd` equals `math.fma` lane by lane on 3 000 of 3 000 inputs. On the same inputs it
+  differs from the 3.0 profile's unfused result in 116 (f32x4 madd), 115 (f32x4 nmadd), 30 and 34
+  (f64x2) calls. On the other 16 operators it equals the 3.0 profile (0 differences).
+* Without the switch (the oracle's current Config), Wasmtime takes the host's native choices:
+  23 928 of 60 000 calls differ from the 3.0 profile (swizzle, trunc, laneselect, min/max, dot,
+  madd).
+
+So the maintainer's decision (the 3.0 profile) is a **deliberate deviation from Wasmtime** for
+madd/nmadd only. It is recorded in DECISIONS.md with this evidence (CLAUDE.md, "Wasmtime is the
+oracle"). The spec text is normative, the pinned tests accept both answers, and following Wasmtime
+would need FMA, which x86-64-v1 lacks: a software FMA per lane is a long exact-product sequence,
+D25 forbids a computation helper, and `pyc` would need `math.fma`, which exists only from Python
+3.13 (D19: minimum 3.11). Q5 asks the maintainer to confirm this with the data above.
+
+### Wide arithmetic
+From the proposal's Overview, "Execution": `add128`/`sub128` join `c1:c2` and `c3:c4` (low:high)
+into 128-bit values and push the low, then the high 64 bits of the sum or difference mod 2^128.
+`mul_wide_s` sign-extends both operands to 128 bits, `mul_wide_u` zero-extends them; each pushes the
+low, then the high 64 bits of the product. No traps.
+
+**pyc.** `_add128: t = (a | b << 64) + (c | d << 64)`; `_sub128` the same with `-` and `& M128`;
+`_mul_wide_u: t = a * b`; `_mul_wide_s` on `a − (a >> 63 << 64)` and the same for `b`, then
+`& M128`; each returns `t & M64, t >> 64 & M64`. Operands as `pyc` passes `i64` (`s.n(a)`,
+unsigned).
+
+**x86-64** (`rax` = `tos`; `rcx`, `rdx` scratch; the pool never holds rax/rcx/rdx):
+* `add128` / `sub128`: `mov rcx, a_lo`; `add|sub rcx, b_lo`; `mov [k], rcx`; `mov rcx, a_hi`;
+  `adc|sbb rcx, b_hi`; `mov [k+1], rcx`. Writing slot k early is safe: it holds only `a_lo`, already
+  read. `tos` is not written. An operand is a register, a slot or an imm32. A 64-bit immediate outside
+  imm32 goes into `rdx` by `mov rdx, imm64` just before its use.
+* **Flags (LESSONS 1)**: between `add`/`sub` and `adc`/`sbb` only `mov` is emitted. Constants are
+  loaded by an explicit `mov` (`mov ecx, 0` for zero), never through the backend's `move`, which may
+  emit `xor` for zero and clear CF.
+* `mul_wide_u` / `_s`: `move(rcx, y)`, then `move(rax, x)`. That is divrem's order: `y` may be in
+  `tos` = rax, so it is read first (LESSONS 32). Then `mul rcx` / `imul rcx` (`F7 /4`, `F7 /5`: the
+  one-operand forms write rdx:rax; the encoder's `UNARY` gains `imul`), `mov [k], rax`,
+  `mov [k+1], rdx`. `rax` is clobbered, which is why the core calls `need_tos()`.
+* **Zero-extension (LESSONS 5)**: 64-bit forms only (`w=True`); a 32-bit form would clear the upper
+  half of a result.
+
+**aarch64** (`x0` = `tos`; x9–x15 scratch): operands into registers first (`_r`, x9–x12; `ldr`,
+`movz`/`movk` leave the flags), then `adds x13, a_lo, b_lo; adc x14, a_hi, b_hi` or `subs`/`sbc`
+(after `subs`, C = NOT borrow, which `sbc` expects); `mul x13, x, y` plus `umulh` or `smulh x14, x, y`;
+then `str x13, [k]`, `str x14, [k+1]`. `tos` is not written. `adds`/`subs` join `cmp`/`cmn`/`ccmp`/`fcmp`
+as the only flag writers, each consumed by the next instruction (the backend docstring says so).
+New encoder forms: `adc`, `sbc`, `umulh`, `smulh`, each checked against `llvm-mc`.
+
+## Test plan
+* Every step: `uv run pytest -q`; `uv run python -m tests.spec.run --engine pyc` and
+  `--engine jit-x86_64`: core numbers unchanged (54 385 pass, 91 expected failures before this
+  step) plus the newly claimed directories; `python3 tools/check_docs.py`;
+  `python3 tools/features.py --check`.
+* **Identity**: `uv run python tools/jit_dump.py --target {jit-x86_64,jit-aarch64}` before and after.
+  Only lines of `json/relaxed-simd/` and `json/wide-arithmetic/` modules may change or appear.
+  CoreMark's line is unchanged. The sha256 of `pyc`'s generated source of every core spec module and
+  CoreMark is unchanged.
+* **Spec parity, both bounds modes**: for each JIT, `uv run python -m tests.spec.run --engine <jit>
+  relaxed-simd wide-arithmetic` with `WABOROS_JIT_BOUNDS=guard` and `=explicit`: 79 + 109 pass, 0 fail.
+  `uv run python tools/spec_diff.py pyc <jit> relaxed-simd wide-arithmetic` is empty (no
+  `--allow-unsupported` at the claim). `jit-aarch64` under QEMU:
+  `python3 tools/run_arm64.py -m tests.spec.run --engine jit-aarch64 --in-process relaxed-simd
+  wide-arithmetic`, in both modes. `jit-x86_64` `relaxed-simd` also under the SSE2-only `qemu64`
+  CPU with `WABOROS_JIT_BOUNDS=explicit`, as the CI `simd` step does.
+* **ISA**: `uv run python tools/isa_all.py` and `--target jit-aarch64` pass with the new modules
+  compiled.
+* **Encodings**: the new x86 form (`imul r/m64`, `F7 /5`) and aarch64 forms (`adc`, `sbc`, `umulh`,
+  `smulh`, `addp .8h`, any new `smull` form) equal `llvm-mc -show-encoding` (`test_encoder*.py`).
+* **Unit tests, wide** (`tests/jit/test_wide.py`, both backends; aarch64 under QEMU): every
+  operand kind in every position: `Imm` 0, a small imm, an imm above imm32, a pinned `Reg`, `tos`
+  (the last operand computed), a `Slot`, a local slot. Edge values: carry and borrow across 64 bits,
+  `2^64 − 1 + 1`, `0 − 1`, `INT64_MIN · INT64_MIN`, `−1 · −1` signed and unsigned. Each result is
+  compared with `pyc` and with Wasmtime. A planted `xor ecx, ecx` between `add` and `adc` must fail one
+  case (the flags test).
+* **Differential, relaxed** (a test, seeded, ~500 inputs per operator: random, special floats,
+  byte patterns as in the scratch check above): for each target, the 16 operators other than
+  madd/nmadd equal Wasmtime with `wasm_relaxed_simd_deterministic`. madd/nmadd equal `pyc`
+  bit for bit and **differ from fused** on the `FLT_MAX` case. All comparisons take NaN lanes by
+  class. This covers `relaxed_trunc`, which has no pinned assertion.
+* **Front end**: decode and validate of each relaxed sub-opcode (aliases yield the S0005 tuple;
+  composites their own); `0xFC` 18 and 23 stay `Malformed`; wrong operand types fail validation;
+  the wide `assert_invalid` commands pass on every target.
+
+## Plan of steps
+| step | content | agent | acceptance | size (lines) |
+|---|---|---|---|---|
+| 1 | front end (aliases, 6 `OPS` entries, `0xFC` 19–22, validator); `pyc` (6 SIMD helpers, 4 wide helpers, the 0xFC hook); `fetch.py` second pin, `counts.json`, `claims.py`, `features.py`, oracle switches; `pyc` claims `relaxedSimd` and `wideArithmetic` | implementer | `--engine pyc relaxed-simd wide-arithmetic`: 188 pass, 0 fail; `--engine wasmtime` the same; `pyc` source identity; JIT D35 lists identical (aliased modules compile already, the rest is `unsupported`); front-end and `pyc` tests | ~200 incl. tests |
+| 2 | the 6 relaxed compositions in `x86_64/simd.py` and `aarch64/simd.py` (`PROG` entries, any new NEON forms); both JITs claim `relaxedSimd` | jit-engineer, plan approved first | 79 pass on both JITs, guard and explicit, aarch64 under QEMU, x86 under `qemu64`; `spec_diff` empty; D35: only `json/relaxed-simd/` lines change; ISA gates; the differential test | ~60 + tests ~100 |
+| 3 | `wide`: core branch, both backends, encoder forms; both JITs claim `wideArithmetic` | jit-engineer, plan approved first | 109 pass on both JITs, guard and explicit, QEMU; `spec_diff` empty; `test_wide.py`; D35: only `json/wide-arithmetic/` lines appear; ISA gates; encodings vs `llvm-mc` | core ~20, each backend ~35, encoders ~15, tests ~120 |
+| 4 | review of steps 2–3 by a `reviewer` without the implementers' reasoning; docs; this spec `implemented` | reviewer, then orchestrator | findings closed; `check_docs`, `features.py --check` | docs |
+
+A step that needs more than its size stops and reports. Docs per step (STANDARDS.md, "Which
+document to update"): FEATURES.md through `python3 tools/features.py` plus its notes (relaxed SIMD:
+"deterministic profile of 3.0; madd unfused, unlike Wasmtime's deterministic switch"; wide
+arithmetic: done); WASM-PROPOSALS.md rows (relaxed SIMD, wide arithmetic → yes on all three);
+TARGETS.md (the "not done" list); ROADMAP.md ("Next" item 2 done); TESTING.md (the proposal pin as a
+test source); S0001 Changes (second pin, the two oracle switches); DECISIONS.md (the deterministic
+profile and the madd deviation, one new decision; the `wide` method in D39's paragraph);
+ISA-LEVELS.md (relaxed SIMD now done at the baseline; the native-mode bullet stays).
+
+## Alternatives considered
+* **Each target maps the relaxed opcodes itself** (20 entries in `pyc`, x86 and aarch64 tables, the
+  relaxed opcodes reach the backends): costs ~40 more lines in three places, and the deterministic
+  choice could drift between targets. Aliasing in the front end makes the 14 identities impossible
+  to get wrong. Its cost is that a native mode must undo it per operator (Q1).
+* **Composites expanded by the JIT core into several `simd` calls** (madd = `mul` then `add` in
+  place): works for madd/nmadd without temporaries, but the dot products need temporaries (scratch
+  slots that the operator's own scratch rule overlaps). Programs in the backends' tables are shorter and
+  follow S0005's pattern.
+* **Fused madd, as Wasmtime's deterministic switch does**: needs FMA, which the baseline lacks
+  (Semantics). Rejected by the maintainer's decision; Q5 confirms with the measured data.
+* **Wide arithmetic in the core with existing operations, no backend method**: `add128` is
+  `add`, `cmp_set lt_u` for the carry, two more `add`s through `tos` and a scratch slot (~6 backend
+  calls). `mul_wide` needs four 32×32 partial products, carries and, for `_s`, the correction
+  `hi −= (a < 0 ? b : 0) + (b < 0 ? a : 0)` (~20 calls, ~40 instructions against 4 to 6). Every
+  backend, including riscv64 and sljit later, would get it for free. It is more core code (~60 lines,
+  temporaries) and gives up the instructions the proposal exists for. Not chosen; Q2 (b).
+* **The high half in `tos`** (low to a slot, high to `tos`): saves a store when the next instruction
+  consumes the high half. That is an optimisation without a measurement; not now.
+* **Vendor `wide-arithmetic.wast`** into `tests/spec/` instead of fetching it: no network at fetch
+  time, but it is a second copy of upstream data in the repository, which S0001 avoids; the hash pin
+  gives the same reproducibility (Q3).
+
+## Open questions
+* **Q1 Where the deterministic choice lives.** (a) Front-end aliases for the 14 identities, 6 new
+  operators; (b) every target maps all 20. Recommended: (a). A native mode (ISA-LEVELS.md) makes
+  the aliasing conditional on its option.
+* **Q2 Wide arithmetic in the JIT.** (a) The `wide` method as specified, recorded as a D39 addition
+  that is not an amendment (D39: "a method only a new opcode reaches"), with a reviewer pass;
+  (b) the core alone, from existing operations (Alternatives); (c) (a) recorded as a formal D39
+  amendment. Recommended: (a). The method writes `tos`, a property D39's contract lists for
+  table/bulk operations and calls; recording it in D39's paragraph keeps that list true.
+* **Q3 How to pin the wide-arithmetic tests.** (a) `fetch.py` downloads the one file from the
+  proposal repository at commit `024d4ce1…` with its sha256; (b) the whole proposal repository's
+  tarball (a fork of the spec repository: every core file again, older); (c) vendor the `.wast`.
+  Recommended: (a); it moves to the spec pin when the proposal merges.
+* **Q4 The oracle's relaxed switch.** (a) Add `wasm_relaxed_simd_deterministic`, so the oracle does
+  not depend on the host CPU, and differential runs compare 16 of 20 operators exactly; (b) leave
+  the oracle native (host-dependent; the pinned tests pass either way). Recommended: (a); the oracle
+  passes all 79 with it (measured).
+* **Q5 madd/nmadd versus Wasmtime.** (a) The 3.0 profile, unfused, as decided, with a recorded
+  deviation from Wasmtime's deterministic switch (fused); (b) fused, as Wasmtime: software FMA on
+  SSE2, `fmla` on aarch64, `math.fma` or an exact emulation in `pyc` for 3.11–3.12. Recommended: (a).
+  The spec text is normative, and (b) breaks the baseline-only rule's spirit (D24) for two
+  operators.
+
+## Changes
+* 2026-11-04: created (draft).
