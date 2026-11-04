@@ -2,7 +2,7 @@
 title: JIT low layer - wasm memory semantics written once over per-architecture operations
 kind: spec
 id: S0011
-status: draft
+status: approved
 superseded_by:
 related: [D24, D26, D35, D39, D44, D45, D47, R3, S0004, S0006, S0007, S0009]
 owner: maintainer
@@ -277,18 +277,19 @@ A step that needs more than its size stops and reports. **Docs per step** (STAND
   group.
 
 ## Open questions
-* **Q1 The module's final name.** Recommendation: `jit/common/lower.py` at step 4, since it will hold
+* **Q1 The module's final name. Decided 2026-11-05 (maintainer): as recommended.** Recommendation: `jit/common/lower.py` at step 4, since it will hold
   GC semantics too. `twolevel.py` names the experiment.
-* **Q2 The end check as one fused op.** x86-64 has no free register in `memory_copy` (`rax`, `rdx`,
+* **Q2 The end check as one fused op. Decided 2026-11-05 (maintainer): as recommended.** x86-64 has no free register in `memory_copy` (`rax`, `rdx`,
   `rcx` hold operands), so it adds in place and subtracts afterwards. Composing `ll_add` and
   `ll_jcmp` would need a scratch that does not exist there. Recommendation: one fused
   `ll_check_sum(r, n, limit, L, wide)`, with the wasm rules (which operands are wide, when a carry
   traps, which trap code, both ranges before any write) in the shared layer. Alternative: an
   `ll_add_inplace` with an `ll_undo`, which is two ops for one meaning.
-* **Q3 The switch after step 4.** Recommendation: remove it. Unlike `WABOROS_PYC_BR`, the old code
+* **Q3 The switch after step 4. Decided 2026-11-05 (maintainer): as recommended.** Recommendation: remove it. Unlike `WABOROS_PYC_BR`, the old code
   is deleted, so there is nothing to mix, and the D35 lists keep the comparison.
 * **Q4 The `address64` differences.** Accepted (maintainer, 2026-11-04). Removing them would take an
   "end register" hint in `ll_fold` (~6 lines per architecture). Not planned.
 
 ## Changes
 * 2026-11-04: created (draft), from the reconnaissance of ROADMAP "Next" 3b.
+* 2026-11-05: approved by the maintainer with the recommendations (Q1-Q3).
