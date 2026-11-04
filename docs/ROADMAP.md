@@ -107,7 +107,7 @@ lacks a feature reports it through `Target.supports` and the module runs on anot
   weights, effect order, trap points, call graph); documented in code.
 
 ## Phase 2 — `pyc` target complete
-*Status: done for the core group (spec core: `pyc` 20509 pass, 89 expected failures, same as `jit-x86_64`; the `bulk-memory` directory 7482 of 7485 also passes on `pyc`); frozen for new features except the proposals that land on `pyc` and the JITs together (multi-memory, D37; SIMD, S0005), correctness fixes only.*
+*Status: done for the core group (spec core: `pyc` 20509 pass, 89 expected failures, same as `jit-x86_64`; the `bulk-memory` directory 7482 of 7485 also passes on `pyc`); frozen for new features except the proposals that land on `pyc` and the JITs together (multi-memory, D37; SIMD, S0005), correctness fixes only; one exception for speed: S0010, the `_br` ladders (maintainer, 2026-11-04).*
 
 * All core features of FEATURES.md, SIMD correct before fast (done in phase 5, step 5b, S0005); NaN rules settled against the oracle.
 * Trap conversion at the boundary; stack-depth counter and `STACK_OVERFLOW`; re-entrancy.

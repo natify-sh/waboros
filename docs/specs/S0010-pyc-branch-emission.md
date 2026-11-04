@@ -2,7 +2,7 @@
 title: pyc - leaving nested blocks without `_br` ladders
 kind: spec
 id: S0010
-status: draft
+status: approved
 superseded_by:
 related: [D9, D19, D25, D35, D46, S0002]
 owner: maintainer
@@ -326,27 +326,27 @@ document to update"):
   source per interpreter would multiply the test matrix and the future cache key. Rejected (Q5).
 
 ## Open questions
-* **Q1 The rule set.** Recommendation: simplify + chain + to_else (step 1) and sink (step 2); dse only
+* **Q1 The rule set. Decided 2026-11-04 (maintainer): as recommended.** simplify + chain + to_else (step 1) and sink (step 2); dse only
   if step 0 shows it adds more than the noise. The final cut follows step 0's per-rule table: a rule
   below the noise on both CoreMark and the switch VM is dropped and recorded as measured and
   rejected.
-* **Q2 Copying regions into several leaves.** Sink may copy a small case region into more than one
+* **Q2 Copying regions into several leaves. Decided 2026-11-04: as recommended.** Sink may copy a small case region into more than one
   leaf. bropt.py's limit was 80 AST nodes and was not tuned. Recommendation: the same limit,
   expressed in generated lines (about 10). It is measured in step 2 only if the source-size budget
   is hit.
-* **Q3 `pyc` source identity.** The repository has no stored `pyc` identity list. D46 and S0009 use
+* **Q3 `pyc` source identity. Decided 2026-11-04: as recommended.** The repository has no stored `pyc` identity list. D46 and S0009 use
   an ad-hoc check: sha256 of `generate()` for CoreMark and every spec module is unchanged. This spec
   breaks that by design for functions that use `_br`. Recommendation:
   * during steps 1–3, the identity check is `BRRULES = 0` (byte-identical to today) plus "functions
     without `_br` are byte-identical";
   * after step 4, later specs take the new default output as their baseline: the baseline is
     re-taken, and no list is created.
-* **Q4 Keep the `WABOROS_PYC_BR` knob after step 4?** Recommendation: keep it, like `WABOROS_BT`. It
+* **Q4 Keep the `WABOROS_PYC_BR` knob after step 4? Decided 2026-11-04: keep it.** Recommendation: keep it, like `WABOROS_BT`. It
   is the cheapest way to bisect a future control-flow bug by mixing the old and new emission
   (CLAUDE.md, "Debug by mixing a known-good and a new code generator"), and the fuzz tool's second
   configuration. The cost is that today's ladder code stays and is tested. Alternative: delete it in
   step 4 and keep only `bropt.py` in `poc/` as the oracle.
-* **Q5 CPython-version-specific emission.** Recommendation: no. One source for every interpreter
+* **Q5 CPython-version-specific emission. Decided 2026-11-04: no.** Recommendation: no. One source for every interpreter
   (3.11–3.15, PyPy, MicroPython flavour), as now.
 * **Decided (maintainer, 2026-11-04): the fuzz tool comes now.** `tools/fuzz.py` enters at step 0 as
   a dev tool for this spec's acceptance (bounded modules, `pyc` against `pyc`). The ROADMAP records
@@ -356,3 +356,5 @@ document to update"):
 * 2026-11-04: created (draft).
 * 2026-11-04: the sink precondition "same Python loop" stated as a correctness rule, asserted at
   emission, with a planted defect (maintainer's review).
+* 2026-11-04: approved by the maintainer with the recommendations (Q1–Q5); S0010 is the
+  maintainer's exception to the `pyc` freeze for speed. Implementation after memory64.
