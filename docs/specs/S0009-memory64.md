@@ -2,7 +2,7 @@
 title: memory64 and table64 (Wasm 3.0) on pyc, jit-x86_64 and jit-aarch64
 kind: spec
 id: S0009
-status: draft
+status: approved
 superseded_by:
 related: [D23, D24, D25, D27, D29, D35, D36, D37, D39, D44, D45, D47, D48, S0001, S0003, S0006, S0007, R3, R6]
 owner: maintainer
@@ -339,11 +339,21 @@ and the data-segment check compare Python ints.
 **Host-visible consequence.** A raw address or ctypes view of an i64 memory that host code took
 (`Memory.res.addr`) is invalid after any grow: the old mapping is unmapped, and using it would
 crash. Wasmtime's `data_ptr` has the same rule ("valid until the next grow"). Phase 6 documents it
-on the API; no API work now. An i32 memory's address stays valid.
+on the API (maintainer, 2026-11-04): host access goes through `read`/`write` methods that read the
+current base at each call, as wasmtime-py's `Memory.read`/`write`; a raw pointer is documented as
+valid until the next grow. No API work now. An i32 memory's address stays valid.
 
-**Threads.** One thread per store (ARCHITECTURE.md). A host thread that grows a memory while
-another thread runs that store's code already breaks this rule today, with a stale size. With a
-move the result is a use after unmap. The rule is not enforced (open risk, "Alternatives").
+**Threads: the one-thread-per-store rule is enforced (maintainer, 2026-11-04).** One thread per
+store (ARCHITECTURE.md). Unenforced, a host thread that grows a memory while another thread runs
+that store's code gets a stale size today, and with a move a use after unmap. So the JIT store's
+`_Stacks` records the owning thread when `active` goes from 0 to 1 (`instance.py`, the entry
+path) and clears it when `active` returns to 0. While `active > 0`: an entry into that store's code
+from another thread, and a `Memory.grow` or `Table.grow` called from another thread, raise
+`RuntimeError` before anything changes, never a crash. A grow from the owning thread (from wasm or
+from a host import it called) is allowed. The cost is one thread-identity compare per entry, none
+per access. It covers i32 memories too (their stale size). `pyc` needs no check: its code reaches
+memory through the `bytearray` object, never a raw address. Step 2b adds it with a test (a second
+thread entering or growing while the first is inside a host import gets `RuntimeError`).
 
 * **Libcall widths**: the `memory.grow` service masks its result with `M64` for an i64 memory, so a
   failure is −1 as an i64, and with `M32` for an i32 memory as today. The same applies to
@@ -472,7 +482,7 @@ reason). This is recorded in step 1 as D27 applied to i64 tables.
 |---|---|---|---|---|
 | 1 | front end (`limits`, `maddr`/`taddr`, validator rules, `simd.validate` address type), `link.py` address-type check, `pyc` (typing, 4 helpers, min check), JIT `unsupported` → `"memory64"`/`"table64"`, D27 applied to i64 tables in DECISIONS.md; `pyc` claims `memory64` (no memory cap) | implementer | `--engine pyc memory64`: 8 657 pass / 0 fail / 3 xfail (`table64.wast:13`, `table_init64.wast:2457` and `:2471`) / 59 skip; rejection test (0 `NotImplementedError`); `pyc` source identity; JIT D35 lists identical (i64 modules `unsupported`) | front end ~60, `pyc` ~40, link ~8, tests ~150 |
 | 2a | JIT memories: D39 amendment B (`a64` parameters), the i64 `_bounds` paths and bulk memory in both backends, the core passes `a64`, runtime (min check, grow mask; i64 reservation as an i32 one, a grow past it −1 until 2b); i64 tables still `unsupported` | jit-engineer, plan approved first | the `memory64/` files without an i64 table pass on both JITs, guard and explicit, aarch64 under QEMU; `spec_diff` empty on them; D35: only `json/memory64/` lines; ISA gates; `test_memory64.py` (bounds part) | core ~15, each backend ~70, runtime ~15, tests ~180 |
-| 2b | JIT runtime: the i64 reservation rule, the move (skip-zero copy, publish, free), the `Reservation` size check, no registry entry for i64 memories; the moving rule as a decision in DECISIONS.md, the ABI text amendment (ARTIFACT.md part 3) | jit-engineer, plan approved first; reviewer | "Moving, JIT" tests on both JITs (cheap variant also under QEMU); the "Limits" memory rows equal Wasmtime's on the dev VM; D35 lists unchanged against 2a (Python only); `memory64` numbers unchanged | runtime ~60, execmem ~5, tests ~120 |
+| 2b | JIT runtime: the i64 reservation rule, the move (skip-zero copy, publish, free), the `Reservation` size check, the one-thread-per-store check, no registry entry for i64 memories; the moving rule as a decision in DECISIONS.md, the ABI text amendment (ARTIFACT.md part 3) | jit-engineer, plan approved first; reviewer | "Moving, JIT" tests and the thread test on both JITs (cheap variant also under QEMU); the "Limits" memory rows equal Wasmtime's on the dev VM; D35 lists unchanged against 2a (Python only); `memory64` numbers unchanged | runtime ~60, execmem ~5, tests ~120 |
 | 3 | JIT table64: `_element`, table bulk ops, `call_indirect`/`tail_indirect`, elem offsets, `table.grow` mask; both JITs claim `memory64` | jit-engineer, plan approved first | `memory64` on both JITs: 8 657 pass / 3 xfail, guard and explicit, QEMU; `spec_diff` empty; D35 as above; table tests | each backend ~40, runtime ~5, tests ~80 |
 | 4 | `spectest` gains `table64` (Q5): the `table64.wast:13` entries leave all four xfail files; review of steps 2a and 3 by a `reviewer` (2b has its own) without the implementers' reasoning; docs; this spec `implemented` | reviewer, then orchestrator | 8 658 / 2 xfail (GC) on each target; core runs unchanged on all engines; findings closed | ~5 + docs |
 | (5) | optional (Q2): the hybrid check, after a wasm64 CoreMark measurement on a guard row | jit-engineer | BENCHMARKS.md row; identity of i32 code; fault tests for i64 accesses | ~40 per backend |
@@ -524,8 +534,8 @@ document to update"):
 * **Free the old reservation only when the store has no JIT entry active** (`active == 0`): that
   would turn a host thread breaking the one-thread-per-store rule into a stale read instead of a
   use after unmap. But it keeps two reservations alive during long calls (the old one with its
-  written pages), and it protects only a rule violation. Not taken; an open risk (R6 class:
-  memory safety rests on a host rule).
+  written pages), and the other thread's writes are lost. Rejected (maintainer, 2026-11-04) for
+  enforcing the rule at entry ("Threads").
 * **Reading every bulk/table operand as 64-bit on every module** (zero-extension makes it correct):
   less code, but it changes the bytes of every i32 module (D35) for no gain. Rejected.
 
@@ -574,3 +584,5 @@ document to update"):
   open.
 * 2026-11-04: Q3 decided (b): a required keyword-only `a64` parameter per method instead of the
   `index64` attribute; Q7 decided as recommended.
+* 2026-11-04: the one-thread-per-store rule is enforced at JIT entry and grow (step 2b); host
+  pointers for phase 6; approved by the maintainer.
