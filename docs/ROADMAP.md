@@ -272,6 +272,9 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29; done 2026-11-03) -> 
   JIT entry or exit can leave the store's depth and `active` raised; derive them instead (for
   example reset when the outermost entry finds no JIT frame below), then drop the PyPy skip of D34's
   stochastic test.
+* **The JIT compilers as AOT-compiled wasm modules** ([JIT-AS-WASM.md](JIT-AS-WASM.md), draft,
+  maintainer 2026-11-05): port, then replace the Python backends; a decision point (Dn) once the
+  artifact format below is fixed; criterion byte identity and portability to non-Python hosts.
 * **One LIR vocabulary** before porting to the micro-compilers (MICRO-COMPILERS.md): the operation
   names that are strings today in several places become one enumerated list, defined once,
   together with fixing the artifact format in this phase; in C or Zig they become enums anyway, so

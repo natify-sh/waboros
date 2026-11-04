@@ -139,8 +139,9 @@ anyone can run: [MICRO-COMPILERS-SHIPPING.md](MICRO-COMPILERS-SHIPPING.md) (main
   rest stay on `pyc`. *History, before D48:* they were listed as later
   candidates, and `i686` was judged costly (8 registers, i64 as register pairs, x87 vs SSE2, cdecl
   trampolines, 4 GB address space) and lowest priority.
-* Replacing the Python compilers on x86-64/aarch64 as the production path: only after the arm64 and
-  riscv64 micro-compilers have shown what two implementations cost to keep in step.
+* Replacing the Python compilers on x86-64/aarch64 as the production path: proposed as "port, then
+  replace" in [JIT-AS-WASM.md](JIT-AS-WASM.md) (draft, maintainer 2026-11-05); decided after the
+  artifact format is fixed (ROADMAP phase 5, item 6).
 
 ## Rules for now (so the door stays open)
 
