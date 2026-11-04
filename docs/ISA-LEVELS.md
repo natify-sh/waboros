@@ -118,7 +118,8 @@ instructions, S: 4-12, L: longer or no direct form), and a status: **implemented
   dot product), so each maps onto an operator we already have, the same on every target and in
   `pyc`. **`relaxed_madd`/`relaxed_nmadd` are native per target, as Wasmtime**: fused on `jit-aarch64`
   (`fmla`/`fmls`), unfused on `jit-x86_64` (the baseline has no FMA) and on `pyc`. x86-64 FMA comes
-  with x86-64-v3 (FMA3, with AVX2), not with v2. **When ISA levels above the baseline are adopted,
+  with x86-64-v3 (FMA3, with AVX2), not with v2. Done at the baseline on all three targets (S0008
+  steps 1-2): each JIT's table maps the 20 operators. **When ISA levels above the baseline are adopted,
   revisit relaxed SIMD**: a "native" mode (FMA on x86-64-v3, `pshufb` swizzle, hardware dot
   products) is where levels would pay, and it changes results across hosts (pyc stops being a
   bit-exact oracle for those operators, D35's cross-host identity needs the level in the artifact).

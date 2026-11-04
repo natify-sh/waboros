@@ -2,7 +2,7 @@
 title: Wasm proposals - what Wasmtime enables by default, what needs a flag, and where waboros stands
 kind: reference
 status: draft
-updated: 2026-11-03
+updated: 2026-11-04
 ---
 
 # Wasm proposals: Wasmtime's defaults and flags, and waboros
@@ -37,7 +37,7 @@ retried with `-W <proposal>=y`, and each default was confirmed by `-W <proposal>
 | tail calls | 5 | yes | default | yes | done |
 | typed function references | 5 | yes | default | yes | done |
 | **memory64** | 5 | yes | **default** | no (8 719 spec commands) | phase 5 |
-| **relaxed SIMD** | 5 | yes | **default** | `pyc` only (79 commands); the JITs: S0008 steps 2-3 | phase 5 (S0008) |
+| **relaxed SIMD** | 5 | yes | **default** | yes on all three targets (79 commands; S0008 steps 1-2; madd/nmadd fused on `jit-aarch64`, D49) | phase 5 (S0008) |
 | **exceptions** (`exnref`) | 5 | yes | **default** | tags validate only (110 + 9 core) | phase 5 |
 | **GC** | 5 | yes | **default** | no (798 + most of the 91 core xfails) | phase 5, last |
 | **threads** (shared memory, atomics, wait/notify) | 4 | no | **default** (`-W threads=n` refuses it) | no | late (ROADMAP item 8) |

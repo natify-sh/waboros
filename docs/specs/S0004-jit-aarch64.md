@@ -471,3 +471,4 @@ Resolved by the maintainer on 2026-11-01 (see Changes); none open.
   libgcc` the JIT runs (spec suite under QEMU 8.2.2: 54 385 pass, 91 expected failures). The
   "own I-cache routine" alternative above is the open way to musl without libgcc.
 * 2026-11-04: D39 amendment A (S0007 step 3): the operand kind `AddK` (a pinned i32 plus a constant mod 2³²) is accepted by the aarch64 `move` and as the `load`/`store` address (one `add`/`sub` into the index scratch `w9`, or into the destination); nothing else of this spec changed.
+* 2026-11-04: S0008 step 2 (relaxed SIMD) adds NEON forms `fmla`/`fmls` (vector, `.4s`, `.2d`) and `addp .8h` to `aarch64/simd.py`'s `FORMS`, each checked against `llvm-mc` (`test_neon_forms_match_llvm_mc`); all ARMv8.0-A.

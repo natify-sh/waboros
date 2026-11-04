@@ -2,7 +2,7 @@
 title: Lessons
 kind: log
 status: current
-updated: 2026-11-03
+updated: 2026-11-04
 ---
 
 # Lessons
@@ -471,3 +471,9 @@ What went wrong or surprised us while building the PoC, so it is not found again
     (HTTP 403), and the whole converted cache was gone with no way to rebuild it online. Rule: download
     and verify first, remove and convert after. Found: S0008 step 1, 2026-11-04 (the cache was rebuilt
     from a local checkout of the same commit; `counts.json` came out identical except the new wide line).
+71. **A kind derived from an operator's name can swallow a new name.** `common/simd.shape()` cuts the
+    name at `_lane` (for `extract_lane_s`, `replace_lane`, ...), so `i8x16.relaxed_laneselect` came out
+    as the kind `relaxed`, and a backend branch on `kind == "relaxed_laneselect"` never matched: the
+    module failed to load with `AssertionError: SIMD opcode 0xfd109`. Rule: a new operator that reuses
+    an inline path is mapped by opcode (`INLINE` in each backend's `simd.py`), not by matching the
+    kind its name parses to. Found: S0008 step 2, 2026-11-04.

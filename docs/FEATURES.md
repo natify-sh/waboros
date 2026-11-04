@@ -2,7 +2,7 @@
 title: Features
 kind: reference
 status: current
-updated: 2026-11-03
+updated: 2026-11-04
 ---
 
 # Features
@@ -61,7 +61,7 @@ directories (`test/core/<dir>/`) count only on a target that claims the feature
 | Profiles (`profiles`) | 1 | yes | - | - | - |
 | Reference Types (`referenceTypes`) | 5 | since 0.20 | partial 397/431 | partial 397/431 | partial 397/431 |
 | Relaxed Dead Code Validation (`relaxedDeadCodeValidation`) | 2 | - | - | - | - |
-| Relaxed SIMD (`relaxedSimd`) | 5 | since 15 | yes 79/79 | - | - |
+| Relaxed SIMD (`relaxedSimd`) | 5 | since 15 | yes 79/79 | yes 79/79 | yes 79/79 |
 | Rounding Variants (`roundingVariants`) | 2 | - | - | - | - |
 | Non-trapping float-to-int Conversions (`saturatedFloatToInt`) | 5 | yes | yes 619/619 | yes 619/619 | yes 619/619 |
 | Shared-Everything Threads (`sharedEverythingThreads`) | 1 | - | - | - | - |
@@ -85,7 +85,7 @@ directories (`test/core/<dir>/`) count only on a target that claims the feature
 * memory64 (`wasm_memory64`): addresses are already Python ints in `pyc`.
 * SIMD (`wasm_simd`): `pyc` v128 as an int, correct first (done, claimed); JIT: two slots per v128, SSE2 / NEON at the baseline (D24, D41, S0005; `jit-x86_64` complete and claimed, step 5d3; `jit-aarch64` complete in ARMv8.0-A NEON and
   claimed, step 5e2; the SIMD benchmark and the review, 5f, are done: SIMD is complete and claimed on all three targets).
-* relaxed SIMD (`wasm_relaxed_simd`, `_deterministic`): the deterministic profile of 3.0 for 16 operators, madd/nmadd native per target as Wasmtime (fused on aarch64, unfused on x86-64 and `pyc`; D49, S0008); `pyc` done and claimed (S0008 step 1), the JITs are steps 2 and 3.
+* relaxed SIMD (`wasm_relaxed_simd`, `_deterministic`): the deterministic profile of 3.0 for 16 operators, madd/nmadd native per target as Wasmtime (fused on aarch64, unfused on x86-64 and `pyc`; D49, S0008); done and claimed on `pyc` (S0008 step 1), `jit-x86_64` and `jit-aarch64` (step 2: each JIT maps the 20 operators in its own table, baseline instructions only).
 * tail calls (`wasm_tail_call`): done; `pyc` uses a trampoline for functions with `return_call*`; the JIT replaces the frame.
 * custom page sizes (`wasm_custom_page_sizes`): a property of the `Memory` facade.
 * threads (`wasm_threads`, `Config.shared_memory`): `SharedMemory`; `pyc` atomics under the GIL, care for free-threaded builds.

@@ -380,6 +380,18 @@ All decided (maintainer, 2026-11-04).
   `--engine wasmtime`: 188 pass, 0 fail (79 + 109); the claimed `pyc` run 54 573 pass / 91 expected
   failures (54 385 + 188), `jit-x86_64` 54 385 / 91 unchanged; the JITs report these modules `unsupported`
   until steps 2-3.
+* 2026-11-04: step 2 done (both JITs): each backend maps the 20 relaxed operators in its own tables
+  (x86-64: 9 `PROG` entries reuse the equivalent's program, `relaxed_swizzle` and the 4 laneselect take
+  the swizzle and bitselect paths through an opcode-to-kind table `INLINE`; aarch64: 10 `PROG` reuses,
+  laneselect through `INLINE`; 6 new programs each, as the operator table). One difference from the
+  table: on aarch64 `fmla`/`fmls` leave the result in v2 and the program stores it from there (no move
+  to v0). New NEON forms `fmla`/`fmls` `.4s`/`.2d` and `addp .8h` (`smull`/`smull2 .8h` were there);
+  x86 none. Both JITs claim `relaxedSimd`: `relaxed-simd` 79 pass / 0 fail in guard and explicit mode on
+  `jit-x86_64`, on `jit-aarch64` under QEMU and on `jit-x86_64` under `qemu64` (SSE2 only); the claimed
+  `jit-x86_64` run 54 464 pass / 91 expected failures; `spec_diff` empty on both; ISA gates clean; D35:
+  only the 8 `json/relaxed-simd/` lines change on either target, in both modes. Differential:
+  `tests/jit/test_relaxed_simd.py` (against `pyc`; the oracle comparison of the Test plan is left to
+  `pyc`'s own check in step 1).
 * 2026-11-04: approved by the maintainer: Q1 (b) in full, Q2 (a), Q3 (a), Q4 (a); Q5 as recorded. Q1 rewrote
   the Summary, the front-end paragraph, the operator table's lowering column, Plan of steps 1-2, the Test
   plan and Alternatives (front-end aliasing is now a rejected alternative). Recorded as D49.

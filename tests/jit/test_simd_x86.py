@@ -38,7 +38,8 @@ V = [*VALS, _v("<16B", [0x80] * 16), _v("<8H", [0x8000, 0x7FFF] * 4), _v("<4I", 
      *(_v("<2Q", (F64 * 2)[i : i + 2]) for i in range(0, len(F64), 2))]  # fmt: skip
 COUNTS = [0, 1, 7, 8, 15, 16, 31, 32, 33, 63, 64, 65, 0xFFFFFFFF]
 NAN_ARITH = {f"{sh}.{o}" for sh in ("f32x4", "f64x2")
-             for o in ("add", "sub", "mul", "div", "sqrt", "min", "max")}  # fmt: skip
+             for o in ("add", "sub", "mul", "div", "sqrt", "min", "max", "relaxed_min",
+                       "relaxed_max")}  # fmt: skip
 NAN_ARITH.update(("f32x4.demote_f64x2_zero", "f64x2.promote_low_f32x4"))
 
 
@@ -70,7 +71,7 @@ def _module() -> tuple[str, dict[str, list[tuple[int, ...]]]]:
     for op in sorted(x.SUPPORTED - x.MOVES):
         o = fs.OPS[op - fs.BASE]
         n, res = o.name, "v128" if o.res == fs.V else "i32"
-        if o.imm == fs.SHUFFLE:  # its own test below
+        if o.imm == fs.SHUFFLE or len(o.pops) == 3:  # own tests: below, test_relaxed_simd.py
             continue
         if o.imm == fs.MEM:  # an extending load: edges of memory 0, an offset, a constant
             ok = [(a,) for a in (0, 1, 65527, 65528, 65529, 0xFFFFFFFF)]
@@ -113,7 +114,7 @@ def test_class_d_and_s_operators_match_pyc(pins: str, monkeypatch: pytest.Monkey
                 got, want = [_nan_class(name, g) for g in got], [_nan_class(name, w) for w in want]
             assert got == want, (key, [hex(a) for a in args], got, want)
     assert run(jit, "v128.load8x8_s", 65529) is TrapCode.MEMORY_OUT_OF_BOUNDS
-    assert len(x.SUPPORTED) == 236  # every operator (S0005)
+    assert len(x.SUPPORTED) == 256  # every operator (S0005, S0008)
 
 
 def _forms() -> tuple[list[bytes], list[str]]:
@@ -238,10 +239,10 @@ def test_class_l_operators_match_pyc(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_every_lowering_has_a_v1_entry() -> None:
     """Every front-end operator is lowered by a "v1" table entry or by a named inline group."""
-    every = {fs.BASE + sub for sub in fs.OPS if sub < 0x100}  # relaxed SIMD: S0008 step 2
+    every = {fs.BASE + sub for sub in fs.OPS}
     assert all(lvl == "v1" for _, lvl in [*x.CODE, *x.SHIFTC, *x.LOADC])
     tabled = {op for op, _ in [*x.CODE, *x.SHIFTC]}
     inline = {fs.BASE + sub for sub, o in fs.OPS.items() if o.name in x.OTHER}  # bitmask, all_true,
-    # the extending loads, shuffle, swizzle
+    # the extending loads, shuffle, swizzle, relaxed_swizzle and relaxed_laneselect (S0008)
     assert tabled | x.MOVES | inline == every == x.SUPPORTED
     assert not tabled & x.MOVES and not tabled & inline
