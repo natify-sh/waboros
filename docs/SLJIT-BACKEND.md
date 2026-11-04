@@ -173,12 +173,41 @@ pwart. **This is the claim to verify** (see "first step").
 * Python twins: none for the sljit backend (sljit itself is the reference for its encodings); the
   oracle is behaviour (spec suite against `pyc`), not bytes.
 
-## First step (when the time comes)
+## First step: done as a proof of concept (2026-11-04)
 
-Port the D39 interface's sljit implementation for **x86-64** first, behind our core, and measure
-CoreMark against our hand-written x86-64 backend on the same machine. Stop rule: if it is below
-about 70 % of our backend, find out why before adding architectures. Then ppc64le or loongarch64
+The plan was: port the D39 interface's sljit implementation for **x86-64** first, behind our core,
+and measure CoreMark against our hand-written x86-64 backend on the same machine; stop rule: below
+about 70 % of our backend, find out why before adding architectures; then ppc64le or loongarch64
 (64-bit, no register pairs), then a 32-bit target (armv7 or i686) with the i64 amendment.
+
+The maintainer did it outside the package (`poc/sljit/sljit-be/`: `waboros_sljit.py` registers a
+target `jit-sljit` from outside; the core, the runtime, the context ABI and the guard registry are
+unchanged; full write-up in `poc/sljit/sljit-be/SLJIT-BACKEND-RESULTS.md`):
+
+* **Correctness: spec parity with `jit-x86_64`.** Every claimed directory but SIMD (core 20 509,
+  bulk-memory 7 483, multi-memory 912, wide-arithmetic 109): 0 commands differ in either direction
+  (`tools/spec_diff.py`), explicit and guard; the 21 corpus cases pass. The `wide` method took
+  about 25 lines (`ADD`/`ADDC` with `SLJIT_SET_CARRY`, `LMUL_SW`/`LMUL_UW`). SIMD is not
+  implemented (sljit's SIMD API is partial; the core falls back per module).
+* **Speed: about 100 % of our backend** (stop rule not reached). CoreMark, 3 alternated rounds, one
+  core: guard 18 153 vs 18 181 it/s (100.2 %), explicit 16 280 vs 16 121 (99.0 %), inside the round
+  noise; the corpus within ±5 % case by case; compile time 36-38 ms vs 41-50 ms. No placement
+  control (BENCHMARKS.md, S0007): the parity claim holds within the noise, not to a percent.
+* **Size of the backend**: about 1 000 lines of Python (half ctypes bindings) against about 1 900
+  for the x86-64 backend, encoder and trampolines (SIMD excluded in both). Trampolines and tail
+  calls are sljit functions too (no per-architecture assembly). 7 pool registers against 8.
+* **Found on the way:** sljit's 32-bit sign extensions break D39's zero-extended i32 invariant
+  (LESSONS 5) in two places, fixed with `MOV_U32`; on riscv64 every 32-bit result would need it.
+  ceil/floor/trunc/nearest/sqrt go to the C library. Guard mode reuses the x86-64 fault handler.
+
+Reading: the 60 % of pwart and of the naive translator came from what sits above the encoder;
+with our core in front, sljit's encoding costs nothing measurable on x86-64. Proposed by the
+maintainer's write-up, not decided: `jit-sljit` as a cheap **second oracle** on x86-64 and aarch64
+(two independent encoders under one core, run against each other on the spec suite); it would need
+a native `libsljit` in the dev environment. The hand-written backends stay (byte oracle for the
+micro-compilers, SIMD, the Python twins). Next steps, when the track starts: a 64-bit
+architecture without register pairs (ppc64le or loongarch64), then a 32-bit one with the i64
+amendment.
 
 ## Decision (maintainer, 2026-11-04: accepted as the D48 amendment, not a first priority)
 

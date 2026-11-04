@@ -317,8 +317,9 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29; done 2026-11-03) -> 
   reasons are in D48).
 * **Later, not a first priority (D48 amendment): the sljit track.** One D39 backend on sljit's API
   under the ported core, shipped as `sljit-<arch>.wasm`, may give those architectures a JIT,
-  verified against `pyc` under QEMU ([SLJIT-BACKEND.md](SLJIT-BACKEND.md), `poc/sljit/`). First
-  step when its time comes: the sljit backend for x86-64, measured against ours (stop below ~70 %).
+  verified against `pyc` under QEMU ([SLJIT-BACKEND.md](SLJIT-BACKEND.md), `poc/sljit/`). Its first
+  step (the sljit backend for x86-64 under our core) was done as a proof of concept on 2026-11-04:
+  spec parity and about 100 % of our backend on CoreMark (SLJIT-BACKEND.md).
 
 ## Open questions
 1. **Minimum Python.** Resolved by D19: 3.11 (the PoC's 3.8 and 3.4 `--legacy` measurements stay as
