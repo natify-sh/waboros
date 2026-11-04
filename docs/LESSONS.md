@@ -504,3 +504,13 @@ What went wrong or surprised us while building the PoC, so it is not found again
     bounds then: the check is an unconditional jump to the trap. Rule: an immediate that can be
     wider than the register needs a test at that width (here offset `2⁶⁴ − 1`, `test_memory64.py`);
     an encoder that masks silently is the dangerous one. Found: S0009 step 2a, 2026-11-04.
+
+76. **The D39 backend interface puts wasm semantics in every architecture.** D39's methods are wasm
+    operations (`divrem` with its traps, `load` with its bounds check, `call_indirect` with its
+    signature check, saturating `convert`, NaN-aware `min`/`max`), so each backend implements the
+    semantics again besides the encoding: S0009 step 2a wrote the i64 bounds check twice. The
+    sljit PoC (SLJIT-BACKEND.md) implements the semantics once over a low portable layer, at about
+    100 % of our x86-64 backend on CoreMark (x86-64 only, within the round noise, no placement
+    control; aarch64 not measured). Rule: before a large new semantic surface (exceptions, GC) is
+    written per backend, measure a two-level split (ROADMAP, "Next", item 3b). Found: maintainer
+    review of the sljit PoC, 2026-11-04.
