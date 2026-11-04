@@ -441,7 +441,11 @@ function and returns the word afterwards (putting back the value it found, an en
 preset, so nested calls on one context do not see each other's statuses); the callback writes its
 results, then its status to word 7 as its very last action. A callback that does not finish leaves 13
 with no exception pending: the runtime raises `RuntimeError` "host call interrupted" (the escaped
-exception itself is gone: ctypes swallowed it). Wasmtime keeps the outcome of a host call apart from
+exception itself is gone: ctypes swallowed it). An exception the callback catches after the host
+function returned (in the guard-mode `guard.broken()` check) fails the call too: the status is 13
+with that exception pending, never 0 with a stale one left in the store; and the outermost entry
+drops a pending exception on exit, so one left by an interrupt right after the entry call returned
+cannot surface in a later call (LESSONS 82). Wasmtime keeps the outcome of a host call apart from
 the native return value too (the trap or error is recorded in its per-call `CallThreadState`, not
 decoded from a register). wasmtime-py's trampoline (`wasmtime/_func.py`, `trampoline`: `caller =
 Caller(caller)` runs before its `try`) has the same window and does not close it. This amends context
@@ -834,3 +838,21 @@ Rejected (S0009, "Alternatives"): a 65 536-page cap (deviates from Wasmtime); a 
 reservation (address-space exhaustion); copying every byte as Wasmtime does (23.3 s and +4 GiB RSS
 for a 4 GiB memory); `mremap` (per-OS code, D47); freeing the old reservation only when the store is
 idle (keeps two reservations alive; the thread rule is enforced instead).
+
+### D51. On PyPy an asynchronous exception at a JIT entry or exit may leave the store's counters raised
+Status: accepted (maintainer, 2026-11-04) · Date: 2026-11-04 · Supersedes: — · Evidence: LESSONS 82; D34's script (`tests/jit/test_abi.py`, `ASYNC_HOST`), 100 runs at 2 ms on PyPy 3.11 (8.0.1), dev VM
+
+The entry (`Instance.call`, `JitInstance.call` for an exported import, `pyc`'s `_run`) restores the
+store's depth, the value-stack `active` count and (outermost) the pending host exception in a
+`finally` that makes no call before the restore. On CPython a signal handler runs only at a function's
+entry, after a C call and at a backward jump, so a `KeyboardInterrupt` cannot skip the restore
+(closed on CPython 3.11-3.15t, LESSONS 82). PyPy runs signal handlers at other points as well: one
+was seen at the plain compare in the `finally`, and its ctypes callback wrapper is Python code. There
+an interrupt at entry or exit can leave the depth and `active` raised (a later call may then report a
+host exception wrapped in `HostError`, and the value stack is not reset for the next outermost
+entry); never a wrong result, and the interrupt itself always surfaces. Measured (pass of 100 runs,
+explicit / guard): before S0009 step 2b 67 / 82, at 2b 38 / 74, with the fix 63 / 98. Accepted as a
+deviation: the stochastic test is skipped on PyPy; the deterministic delivery-point tests, which
+model CPython's points, still run there. Closing it needs bookkeeping that does not rely on a
+restore in a `finally` (for example reset when the outermost entry finds no JIT frame below): a later
+item in ROADMAP.md, phase 5.

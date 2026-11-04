@@ -4,6 +4,7 @@ backend's ABI methods, run through the entry trampoline of this machine's conven
 import ctypes
 import importlib.util
 import json
+import platform
 import signal
 import subprocess
 import sys
@@ -536,6 +537,10 @@ print(json.dumps([seen, st.depth, _stacks(st).active]))
 
 
 @pytest.mark.skipif(not hasattr(signal, "setitimer"), reason="needs SIGALRM timers")
+@pytest.mark.skipif(
+    platform.python_implementation() == "PyPy",
+    reason="D51: PyPy runs signal handlers where a finally cannot protect the store's counters",
+)
 def test_async_exceptions_in_host_calls_never_give_wrong_results(tramp: Trampolines) -> None:
     """KeyboardInterrupt every 2 ms while wasm calls a host function in a loop: every call gives
     the right result or an exception, never a wrong result or a stray status, and the store's
@@ -550,3 +555,132 @@ def test_async_exceptions_in_host_calls_never_give_wrong_results(tramp: Trampoli
     print(seen)
     assert set(seen) <= {"ok", "KeyboardInterrupt", "interrupted"}, seen
     assert (depth, active) == (0, 0)
+
+
+@pytest.mark.parametrize("raises", [False, True])  # the host returns, or raises ValueError
+@pytest.mark.parametrize("nested", [False, True])
+def test_async_exception_at_every_delivery_point_restores_the_store(
+    nested: bool, raises: bool
+) -> None:
+    """A signal handler runs at a function's entry or after a C call. Raise KeyboardInterrupt at
+    each Python function entry and each builtin's `c_return` of one export call (wasm -> host
+    [-> wasm]), in turn; the profiler does not see ctypes function-pointer calls, type calls or
+    backward jumps (the return of the entry call: `test_a_stale_host_exception_never_surfaces`).
+    Every call gives the right result or an exception, and depth, active and pending are back to
+    zero (D34; before: one after the owner check in Instance.call's finally left the depth
+    raised, one in guard.broken() left a stale pending with a success)."""
+    need(importlib.util.find_spec("wasmtime") is not None, "wasmtime (wat2wasm)")
+    from tests.jit.test_compiler import build as build_module
+    from tests.jit.test_compiler import wat
+    from waboros.targets.jit.common.instance import _stacks  # pyright: ignore[reportPrivateUsage]
+
+    def h(a: Sequence[Raw]) -> list[Raw]:
+        r = i("g", a[0]) if nested else [a[0] + 1]
+        if raises:
+            raise ValueError("h")
+        return r
+
+    st = StoreState()
+    i = build_module(
+        wat("""(module (import "env" "h" (func $h (param i32) (result i32)))
+          (func (export "g") (param i32) (result i32) (i32.add (local.get 0) (i32.const 1)))
+          (func (export "f") (param i32) (result i32) (local i32)
+            (loop $l (local.set 1 (call $h (local.get 1)))
+              (local.set 0 (i32.sub (local.get 0) (i32.const 1))) (br_if $l (local.get 0)))
+            (local.get 1)))"""),
+        imports={"env": {"h": h}},
+        store=st,
+    )
+    at = [0, 0, 0]  # the point to raise at, points passed, raised
+
+    def prof(frame: object, ev: str, arg: object) -> None:
+        if ev in ("call", "c_return"):
+            at[1] += 1
+            if at[1] == at[0]:
+                sys.setprofile(None)
+                at[2] = 1
+                raise KeyboardInterrupt
+
+    hook, bad = sys.unraisablehook, list[tuple[int, str, object]]()
+    sys.unraisablehook = lambda u: None  # "Exception ignored" in the callback: expected (D34)
+    try:
+        while True:
+            at[:] = [at[0] + 1, 0, 0]
+            sys.setprofile(prof)
+            try:
+                k = "ok" if i("f", 2) == [2] and not raises else "wrong result"
+            except KeyboardInterrupt:
+                k = "KeyboardInterrupt"
+            except ValueError as e:
+                k = "ok" if raises and str(e) == "h" else repr(e)
+            except RuntimeError as e:
+                k = "interrupted" if "host call interrupted" in str(e) else repr(e)
+            except BaseException as e:
+                k = repr(e)
+            finally:
+                sys.setprofile(None)
+            if not at[2]:
+                break
+            state = (st.depth, _stacks(st).active, st.pending)
+            if k not in ("ok", "KeyboardInterrupt", "interrupted") or state != (0, 0, None):
+                bad.append((at[0], k, state))
+                st.depth, _stacks(st).active, st.pending = 0, 0, None
+    finally:
+        sys.unraisablehook = hook
+    assert at[0] > 40 and not bad, bad
+
+
+def test_a_stale_host_exception_never_surfaces(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A host exception waits in the store until the entry that gets status 13 takes it. A
+    KeyboardInterrupt delivered right after the entry call returned (a wrapper stands for the
+    signal handler) skips that; the outermost entry's exit drops it, so a later call whose
+    callback is interrupted reports "host call interrupted", not the old exception (D34)."""
+    need(importlib.util.find_spec("wasmtime") is not None, "wasmtime (wat2wasm)")
+    from tests.jit.test_compiler import build as build_module
+    from tests.jit.test_compiler import wat
+    from waboros.targets.jit.common import instance
+
+    raises = [True]
+
+    def h(a: Sequence[Raw]) -> list[Raw]:
+        if raises[0]:
+            raise ValueError("call 1")
+        return [a[0] + 1]
+
+    st = StoreState()
+    i = build_module(
+        wat("""(module (import "env" "h" (func $h (param i32) (result i32)))
+          (func (export "f") (param i32) (result i32) (call $h (local.get 0))))"""),
+        imports={"env": {"h": h}},
+        store=st,
+    )
+    inst = cast(Instance, i.inst)
+    real_entry = inst.entry
+
+    def entry(*a: int) -> int:
+        status = real_entry(*a)
+        if a[2] != inst.tramp.sp_stub:  # not the stack-pointer stub of the first entry
+            raise KeyboardInterrupt
+        return status
+
+    monkeypatch.setattr(inst, "entry", entry)
+    with pytest.raises(KeyboardInterrupt):
+        i("f", 1)
+    assert (st.depth, st.pending) == (0, None)
+    monkeypatch.setattr(inst, "entry", real_entry)
+    raises[0] = False
+    assert i("f", 1) == [2] and st.pending is None
+
+    real_stacks, once = instance._stacks, [True]  # pyright: ignore[reportPrivateUsage]
+
+    def stacks(store: StoreState) -> object:
+        if once[0] and sys._getframe(1).f_code.co_name == "callback":  # pyright: ignore[reportPrivateUsage]
+            once[0] = False
+            raise KeyboardInterrupt  # escapes the callback before its try: ctypes ignores it
+        return real_stacks(store)
+
+    monkeypatch.setattr(instance, "_stacks", stacks)
+    monkeypatch.setattr(sys, "unraisablehook", lambda u: None)  # pyright: ignore[reportUnknownLambdaType, reportUnknownArgumentType]
+    with pytest.raises(RuntimeError, match="host call interrupted"):
+        i("f", 1)
+    assert (st.depth, st.pending, once[0]) == (0, None, False)

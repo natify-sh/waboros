@@ -556,3 +556,28 @@ What went wrong or surprised us while building the PoC, so it is not found again
     runner still says `unknown import`. Rule: after editing `spectest.wat`, run
     `uv run wasm-tools parse tests/spec/spectest.wat -o .cache/spec/<commit>/spectest.wasm` (CI starts
     from an empty cache and is not affected). Found: S0009 step 4, 2026-11-04.
+82. **A `finally` that restores state must make no call before the restore.** CPython runs a
+    pending signal handler at a Python function's entry and right after a C call (and at a backward
+    jump), so a `KeyboardInterrupt` can come from any call. Step 2b's `Instance.call` restored the
+    entry counters under `if store.owner == threading.get_ident():`: an interrupt delivered after
+    `get_ident()` skipped the restore and left the store's depth raised (D34's 2 ms SIGALRM test:
+    about 1 run in 10 on the dev VM, one CI cell; 0 in 480 before 2b). `pyc`'s `_run` had the same
+    window at the entry of `store.leave()` since it was written. Rule: read what the `finally` needs
+    (`me = threading.get_ident()`) before the `try`, and restore with plain loads, compares and
+    stores (`store.depth -= 1`). A test raises `KeyboardInterrupt` at every `call`/`c_return`
+    profile event of one export call in turn (`sys.setprofile`: Python function entries and
+    builtins' returns; it does not see ctypes function-pointer calls, type calls or backward jumps)
+    and checks the result and the counters (`test_async_exception_at_every_delivery_point_*`, JIT
+    and `pyc`); it also found the callback leaving a success status when the interrupt came after
+    `serve()` (D34). The return of the entry call itself, which the profiler misses, left a host
+    exception pending for a later call to raise (review); the outermost entry now drops it on exit
+    (`test_a_stale_host_exception_never_surfaces`). Accepted as is: JIT grow and instantiation release their claim through
+    `release()`, `claim()` sets the owner inside a `with`, and the first `enter()` sets the owner
+    before `entered`; an interrupt there can only leave a store with no entry yet owned by that
+    thread (no depth leak, no wrong
+    result; S0009 "Threads"). PyPy 3.11 delivers at other points too (seen at the plain compare in
+    the `finally`, and inside its ctypes callback wrapper, which is Python code): there the depth
+    can still leak, before 2b as after (D34's script, 100 runs at 2 ms: explicit 67 pass before
+    2b, 38 at 2b, 63 now; guard 82, 74, 98); closing it needs another design, not a reordering
+    (D51).
+    Found: CI platforms run, macOS x86_64, after S0009 step 2b, 2026-11-04.

@@ -268,6 +268,10 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29; done 2026-11-03) -> 
   the spread and a smaller spread between builds; aarch64 (no such erratum) measured separately.
 * Trap frames, fuel and epoch checks (the interrupt word is polled already, phase 3); Ctrl+C via the
   waiting main thread.
+* **Entry bookkeeping without a restore in a `finally`** (D51): on PyPy a `KeyboardInterrupt` at a
+  JIT entry or exit can leave the store's depth and `active` raised; derive them instead (for
+  example reset when the outermost entry finds no JIT frame below), then drop the PyPy skip of D34's
+  stochastic test.
 * **One LIR vocabulary** before porting to the micro-compilers (MICRO-COMPILERS.md): the operation
   names that are strings today in several places become one enumerated list, defined once,
   together with fixing the artifact format in this phase; in C or Zig they become enums anyway, so

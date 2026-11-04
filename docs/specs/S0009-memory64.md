@@ -365,13 +365,19 @@ memory or a table while the owner ran that store's code (a stale size; with a mo
 unmap). Step 2b (maintainer's option (b)):
 * the first claim of the owner is atomic (`StoreState.claim`, under a lock): of two threads that
   find a fresh store unowned, one wins and the other gets `RuntimeError`;
-* `Instance.call` reads the counters, then enters, and restores them only on the owner thread (a
-  refused entry used to write back counters it had read before the check, LESSONS 78);
+* `Instance.call` reads the counters and the calling thread, then enters, and restores them only on
+  the owner thread (a refused entry used to write back counters it had read before the check,
+  LESSONS 78); the `finally` makes no call before the restore, so a `KeyboardInterrupt` from a
+  signal handler cannot skip it (LESSONS 82);
 * JIT `Memory.grow`, `Table.grow` and instantiation (`JitTarget.instantiate`, which binds to the
   store's memories) refuse a thread other than the owner with `RuntimeError` before anything changes.
   On a store with no owner yet they hold a claim only while they run (`release`; only an entry makes
   it permanent), so a grow on another thread cannot overlap the first entry, and a store built on one
-  thread can still run on another.
+  thread can still run on another. Accepted (maintainer, 2026-11-04): an asynchronous exception
+  inside `claim()` or at the entry of `release()` can leave such a store owned by the thread that
+  grew or instantiated it, and so can one inside the first `enter()` after the owner is set and
+  before `entered` (the same effect: the store stays with that thread, as after any entry);
+  none of them can leak the depth or give a wrong result (LESSONS 82).
 
 A grow from the owning thread (from wasm or from a host import it called) is allowed. The cost is one
 thread-identity compare per entry, none per access. It covers i32 memories too (their stale size).
@@ -677,3 +683,12 @@ document to update"):
 * 2026-11-04: final review of steps 1–4: no correctness defect (moves across instances, mixed guard
   modules, thread claim, 32-bit assumptions, validator and `pyc` corners checked against `pyc` and
   Wasmtime); stale docs and one dead helper fixed.
+* 2026-11-04: CI (macOS x86_64) found a window from step 2b: the owner check in `Instance.call`'s
+  `finally` called `threading.get_ident()`, after which a signal handler's `KeyboardInterrupt`
+  skipped the restore and left the depth raised (D34's test, about 1 run in 10 here). The thread is
+  now read before the `try` (also in `JitInstance.call` for an exported import), `pyc`'s `_run`
+  decrements the depth without a call, and the host callback fails the call when an exception
+  arrives after `serve()` (D34). Review: the outermost entry also drops a pending host exception on
+  exit (an interrupt right after the entry call returned left it for a later call to raise). The
+  claim/release window of grow and instantiation is accepted ("Threads"). On PyPy the window stays
+  (D51). LESSONS 82.

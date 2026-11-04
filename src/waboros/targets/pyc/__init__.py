@@ -72,8 +72,8 @@ def _run(store: StoreState, fn: Callable[..., Any], *args: Any) -> Any:
         raise Trap(TrapCode.INTEGER_DIVISION_BY_ZERO, "integer divide by zero") from None
     except RecursionError:
         raise Trap(TrapCode.STACK_OVERFLOW, "call stack exhausted") from None
-    finally:
-        store.leave()
+    finally:  # no call before the restore: a signal handler could raise there (LESSONS 82)
+        store.depth -= 1
 
 
 def load(wasm: bytes, imports: Mapping[str, Mapping[str, Callable[..., Any]]]) -> dict[str, Any]:

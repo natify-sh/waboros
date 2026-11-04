@@ -473,8 +473,11 @@ class Instance:
     def call(self, func_index: int, args: Sequence[Raw]) -> list[Raw]:
         offset, nres = self.funcs[func_index - self.nimports]
         store, st, ctx = self.store, _stacks(self.store), self.ctx
-        depth, active = store.depth, st.active  # restored as they were, whatever interrupts us,
-        try:  # but only by the owner: a thread that enter() refuses writes nothing (LESSONS 78)
+        # restored as they were, whatever interrupts us, but only by the owner: a thread that
+        # enter() refuses writes nothing (LESSONS 78). `me` is read here: the finally makes no
+        # call, where a signal handler could raise before the restore (D34)
+        me, depth, active = threading.get_ident(), store.depth, st.active
+        try:
             store.enter()
             if st.guard:  # records cross within a store: any entry may reach guard code
                 guard.check()
@@ -497,8 +500,10 @@ class Instance:
                 raise self._error(status)
             return list(slots[:nres])
         finally:
-            if store.owner == threading.get_ident():
+            if store.owner == me:
                 st.active, store.depth = active, depth
+                if not depth:  # outermost: no frame below waits for a host exception (D34)
+                    store.pending = None
 
     def _nstack_limit(self, frame: int) -> int:
         """At the first JIT entry on the stack: the stack pointer as wasm code sees it (the
@@ -565,8 +570,9 @@ class Instance:
                 if why:
                     store.pending = RuntimeError(f"{guard.LOST} ({why})")
                     status = STATUS_HOST_ERROR
-            except BaseException as e:
+            except BaseException as e:  # after serve() too (guard.broken()): the call fails
                 store.pending = store.pending or e
+                status = STATUS_HOST_ERROR
             finally:
                 st.vsp = saved
                 ctypes.c_uint64.from_address(ctx + 8 * HOST_ERROR).value = status  # last
@@ -808,7 +814,8 @@ class JitInstance(Instance):
 
     def call(self, func_index: int, args: Sequence[Raw]) -> list[Raw]:
         if func_index < self.nimports:
-            depth = self.store.depth  # an exported import: the host function itself (refs: objects)
+            # an exported import: the host function itself (refs: objects); `me` as in Instance.call
+            me, depth = threading.get_ident(), self.store.depth
             try:
                 self.store.enter()
                 return list(self.hosts[func_index](args))
@@ -817,8 +824,10 @@ class JitInstance(Instance):
                     raise e.exc from None
                 raise
             finally:
-                if self.store.owner == threading.get_ident():  # as in Instance.call
+                if self.store.owner == me:  # as in Instance.call
                     self.store.depth = depth
+                    if not depth:
+                        self.store.pending = None
         ps, rs = self.module["types"][self.ftypes[func_index]]
         if not any(isref(t) or t == simd.V128 for t in (*ps, *rs)):
             return super().call(func_index, args)
