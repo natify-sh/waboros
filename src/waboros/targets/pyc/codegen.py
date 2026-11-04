@@ -676,6 +676,10 @@ class FuncGen:
         push, pop = s.push, s.pop
         n, nb, sgn = s.n, s.nb, s.sgn
         mg = s.mg
+        if 0xFC13 <= op <= 0xFC16:  # wide arithmetic (S0008), with the SIMD helpers
+            from waboros.targets.pyc import simd
+
+            return simd.gen_wide(s, x)
         if op >= 0xFD000:
             # SIMD lives in its own module (S0005); imported here because simd imports codegen
             from waboros.targets.pyc import simd

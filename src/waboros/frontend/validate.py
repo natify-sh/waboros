@@ -643,6 +643,10 @@ def _body(c: _Ctx, lt: list, nparams: int, results: list, insns: list[tuple]) ->
             if op == 0xFC0A:
                 need_mem(ins[2])
             popn(list(BULK3))
+        elif 0xFC13 <= op <= 0xFC16:  # wide arithmetic: two i64 results (S0008)
+            for _ in range(4 if op < 0xFC15 else 2):
+                pop(I64)
+            vals.extend((I64, I64))
         elif op >= simd.BASE:
             simd.validate(ins, pop, vals.append, need_mem)
         else:

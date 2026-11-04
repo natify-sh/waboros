@@ -3,6 +3,7 @@
 Run as `uv run python tests/spec/fetch.py`; idempotent: does nothing when the manifest matches.
 """
 
+import hashlib
 import io
 import json
 import shutil
@@ -14,6 +15,15 @@ from collections import Counter
 from pathlib import Path
 
 SPEC_COMMIT = "6057acdb1a213f85369c64454c078a15f11ac4b1"  # main, 2026-10-28
+# Proposal files not yet in the spec repository (S0008, Q3): directory, URL at a commit, sha256.
+PROPOSAL_FILES = (
+    (
+        "wide-arithmetic",
+        "https://raw.githubusercontent.com/WebAssembly/wide-arithmetic/"
+        "024d4ce1b28cee7fd006d9c5175e3b7ece52b429/test/core/wide-arithmetic.wast",
+        "9a3353e12e1fb78e8a7e30b7c5b356bfc897c093b83cbfc6a544660b88adcdc1",
+    ),
+)
 WASM_TOOLS_VERSION = "1.262.0"  # PyPI wasm-tools-package, dev group
 
 HERE = Path(__file__).resolve().parent
@@ -47,17 +57,26 @@ def main() -> int:
             old["commit"] == SPEC_COMMIT
             and old["wasm_tools"] == WASM_TOOLS_VERSION
             and old.get("subdirs")
+            and old.get("proposals") == [list(p) for p in PROPOSAL_FILES]
         ):
             print(f"up to date: {len(old['converted'])} converted, {len(old['failed'])} failed")
             return 0
 
+    url = f"https://github.com/WebAssembly/spec/archive/{SPEC_COMMIT}.tar.gz"
+    with urllib.request.urlopen(url) as resp:  # before the cache is removed: a refused download
+        data = resp.read()  # must not leave the machine without it
+    proposals: list[tuple[str, str, bytes]] = []
+    for sub, purl, digest in PROPOSAL_FILES:  # also before the removal
+        with urllib.request.urlopen(purl) as resp:
+            body = resp.read()
+        if hashlib.sha256(body).hexdigest() != digest:
+            print(f"sha256 mismatch for {purl}", file=sys.stderr)
+            return 2
+        proposals.append((sub, purl, body))
     shutil.rmtree(CACHE_DIR, ignore_errors=True)
     wast_dir, json_dir = CACHE_DIR / "wast", CACHE_DIR / "json"
     wast_dir.mkdir(parents=True)
     json_dir.mkdir()
-    url = f"https://github.com/WebAssembly/spec/archive/{SPEC_COMMIT}.tar.gz"
-    with urllib.request.urlopen(url) as resp:
-        data = resp.read()
     with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
         for member in tar:
             parts = member.name.split("/")
@@ -68,6 +87,10 @@ def main() -> int:
             ):
                 member.name = "/".join(parts[3:])
                 tar.extract(member, wast_dir, filter="data")
+
+    for sub, purl, body in proposals:
+        (wast_dir / sub).mkdir(exist_ok=True)
+        (wast_dir / sub / purl.rpartition("/")[2]).write_bytes(body)
 
     converted: list[str] = []
     failed: dict[str, str] = {}
@@ -98,6 +121,7 @@ def main() -> int:
         "commit": SPEC_COMMIT,
         "wasm_tools": WASM_TOOLS_VERSION,
         "subdirs": True,
+        "proposals": [list(p) for p in PROPOSAL_FILES],
         "converted": converted,
         "failed": failed,
     }

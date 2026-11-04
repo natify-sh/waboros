@@ -238,7 +238,7 @@ def test_class_l_operators_match_pyc(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_every_lowering_has_a_v1_entry() -> None:
     """Every front-end operator is lowered by a "v1" table entry or by a named inline group."""
-    every = {fs.BASE + sub for sub in fs.OPS}
+    every = {fs.BASE + sub for sub in fs.OPS if sub < 0x100}  # relaxed SIMD: S0008 step 2
     assert all(lvl == "v1" for _, lvl in [*x.CODE, *x.SHIFTC, *x.LOADC])
     tabled = {op for op, _ in [*x.CODE, *x.SHIFTC]}
     inline = {fs.BASE + sub for sub, o in fs.OPS.items() if o.name in x.OTHER}  # bitmask, all_true,

@@ -37,11 +37,11 @@ retried with `-W <proposal>=y`, and each default was confirmed by `-W <proposal>
 | tail calls | 5 | yes | default | yes | done |
 | typed function references | 5 | yes | default | yes | done |
 | **memory64** | 5 | yes | **default** | no (8 719 spec commands) | phase 5 |
-| **relaxed SIMD** | 5 | yes | **default** | no (79) | phase 5 |
+| **relaxed SIMD** | 5 | yes | **default** | `pyc` only (79 commands); the JITs: S0008 steps 2-3 | phase 5 (S0008) |
 | **exceptions** (`exnref`) | 5 | yes | **default** | tags validate only (110 + 9 core) | phase 5 |
 | **GC** | 5 | yes | **default** | no (798 + most of the 91 core xfails) | phase 5, last |
 | **threads** (shared memory, atomics, wait/notify) | 4 | no | **default** (`-W threads=n` refuses it) | no | late (ROADMAP item 8) |
-| **wide arithmetic** (`i64.add128`, `i64.mul_wide_*`) | 4 | no | **default** (`=n` refuses it; the website still says flag) | no | ROADMAP "Order of the wasm features" item 8, after GC (added 2026-11-03) |
+| **wide arithmetic** (`i64.add128`, `i64.mul_wide_*`) | 4 | no | **default** (`=n` refuses it; the website still says flag) | `pyc` only (109 commands); the JITs: S0008 step 3 | ROADMAP "Order of the wasm features" item 8, after GC (added 2026-11-03) |
 | branch hinting | 5 | no | accepted by default (a custom section; `=n` still accepts the module) | accepted (an unknown custom section is skipped) | optional: use the hints for block layout |
 | custom page sizes | 3 | no | **flag** (`-W custom-page-sizes=y`) | no | late (ROADMAP item 8) |
 | stack switching | 3 | no | **flag** (`-W stack-switching=y`) | no | not planned |

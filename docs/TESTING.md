@@ -51,7 +51,9 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
 
 * Source: `WebAssembly/spec` `test/core` (+ `simd/`, and the proposal repositories for features not
   merged yet), converted with `wasm-tools json-from-wast` (`wasm-tools-package`). Pin the commit;
-  move it in small steps. The contract is [S0001](specs/S0001-engine-interface.md).
+  move it in small steps. A proposal not yet in the spec repository is a second pin in
+  `tests/spec/fetch.py` (`PROPOSAL_FILES`: one file at a commit, with its sha256; today
+  `wide-arithmetic.wast` of `WebAssembly/wide-arithmetic`, S0008); it moves to the spec pin when merged. The contract is [S0001](specs/S0001-engine-interface.md).
 * One harness, many targets: the JSON commands (`module`, `register`, `assert_return`,
   `assert_trap`, `assert_exhaustion`, `assert_invalid`, `assert_malformed`, `assert_unlinkable`,
   `assert_uninstantiable`, `action`) are executed through the internal engine interface of S0001, one

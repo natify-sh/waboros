@@ -275,11 +275,73 @@ def _float() -> None:
     )
 
 
+# ------------------------------------------------------------------------------ relaxed SIMD
+def _relaxed() -> None:
+    """The deterministic profile (S0008, D49): every relaxed parameter 0, so alternative 0.
+    madd / nmadd are unfused: the product is rounded to the lane's precision, then added."""
+    for r, eq_ in (
+        ("i8x16.relaxed_swizzle", "i8x16.swizzle"),
+        ("i32x4.relaxed_trunc_f32x4_s", "i32x4.trunc_sat_f32x4_s"),
+        ("i32x4.relaxed_trunc_f32x4_u", "i32x4.trunc_sat_f32x4_u"),
+        ("i32x4.relaxed_trunc_f64x2_s_zero", "i32x4.trunc_sat_f64x2_s_zero"),
+        ("i32x4.relaxed_trunc_f64x2_u_zero", "i32x4.trunc_sat_f64x2_u_zero"),
+        *((f"{sh}.relaxed_laneselect", "v128.bitselect") for sh in _IW),
+        *((f"{sh}.relaxed_{o}", f"{sh}.{o}") for sh in _FW for o in ("min", "max")),
+        ("i16x8.relaxed_q15mulr_s", "i16x8.q15mulr_sat_s"),
+    ):
+        H[r] = H[eq_]
+    for sh in _FW:
+        mul, add, sub = H[sh + ".mul"], H[sh + ".add"], H[sh + ".sub"]
+        H[sh + ".relaxed_madd"] = lambda a, c, d, mul=mul, add=add: add(mul(a, c), d)
+        H[sh + ".relaxed_nmadd"] = lambda a, c, d, mul=mul, sub=sub: sub(d, mul(a, c))
+    H["i16x8.relaxed_dot_i8x16_i7x16_s"] = lambda a, c: _join(_dot16(a, c), 16)
+    H["i32x4.relaxed_dot_i8x16_i7x16_add_s"] = lambda a, c, d: _join(
+        [x + y + z for x, y, z in zip(*_pairs(a, c), _lanes(d, _S[32]), strict=True)], 32
+    )
+
+
+def _pairs(a, c):
+    """Even and odd lanes of the 16-bit dot products, signed."""
+    w = _lanes(_join(_dot16(a, c), 16), _S[16])
+    return w[0::2], w[1::2]
+
+
+def _dot16(a, c):
+    """Eight sums of two products of sign-extended byte pairs (wrapped to 16 bits by `_join`)."""
+    x, y = _lanes(a, _S[8]), _lanes(c, _S[8])
+    return [x[2 * i] * y[2 * i] + x[2 * i + 1] * y[2 * i + 1] for i in range(8)]
+
+
+# ------------------------------------------------------------------------------ wide arithmetic
+def _add128(a, b, c, d):
+    t = ((a | b << 64) + (c | d << 64)) & _M128
+    return t & _M64, t >> 64
+
+
+def _sub128(a, b, c, d):
+    t = ((a | b << 64) - (c | d << 64)) & _M128
+    return t & _M64, t >> 64
+
+
+def _mul_wide_u(a, b):
+    t = a * b
+    return t & _M64, t >> 64
+
+
+def _mul_wide_s(a, b):
+    t = (a - (a >> 63 << 64)) * (b - (b >> 63 << 64)) & _M128
+    return t & _M64, t >> 64
+
+
+WIDE = {"add128": _add128, "sub128": _sub128, "mul_wide_s": _mul_wide_s, "mul_wide_u": _mul_wide_u}
+
+
 OPS_BY_NAME = [e.name for e in OPS.values()]
 _memory()
 _access()
 _integer()
 _float()
+_relaxed()
 
 # operators written inline by `gen`: (format, sign mask for abs / neg)
 _INL = {
@@ -304,7 +366,9 @@ _missing = [n for n in OPS_BY_NAME if n not in H and n not in _INL and n != "v12
 assert not _missing, _missing
 for _n, _f in H.items():
     globals()[_hname(_n)] = _f
-__all__ = [_hname(n) for n in H]  # pyright: ignore[reportUnsupportedDunderAll]
+__all__ = [_hname(n) for n in H] + [  # pyright: ignore[reportUnsupportedDunderAll]
+    "_" + n for n in WIDE
+]
 
 
 # ------------------------------------------------------------------------------ code generation
@@ -349,3 +413,15 @@ def gen(s, x):
         s.push(E(code, "bool", 1, **dep(*args)))
         return
     s.push(E(code, e.res, _M32 if e.res == I32 else _M64 if e.res == I64 else None, **dep(*args)))
+
+
+def gen_wide(s, x):
+    """`i64.add128` ... `i64.mul_wide_u` (0xFC13..0xFC16): two i64 results from one helper call."""
+    s.mg.simd = True  # the module imports this file's helpers
+    name = list(WIDE)[x[0] - 0xFC13]
+    args = s.popn(4 if x[0] < 0xFC15 else 2)
+    s.flush(lambda e: e.x)  # an entry below that can trap runs before the helper (LESSONS 28, 30)
+    ts = [s.newtmp(I64), s.newtmp(I64)]
+    s.emit("%s = _%s(%s)" % (", ".join(ts), name, ", ".join(s.n(a) for a in args)))
+    for t in ts:
+        s.push(E(t, I64, _M64, k=True))

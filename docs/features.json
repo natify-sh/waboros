@@ -49,7 +49,7 @@
           "397/431 over ref_func+ref_is_null+ref_null+ref+table_get+table_set+table_grow+table_size+table+select; xfail 34 (ref_null 34); mostly: no current module"
         ],
         "relaxedDeadCodeValidation": null,
-        "relaxedSimd": null,
+        "relaxedSimd": true,
         "roundingVariants": null,
         "saturatedFloatToInt": true,
         "sharedEverythingThreads": null,
@@ -64,7 +64,7 @@
         "typedFunctionReferences": true,
         "wasmCApi": null,
         "webContentSecurityPolicy": null,
-        "wideArithmetic": null
+        "wideArithmetic": true
       }
     },
     "waboros jit-x86_64": {

@@ -466,3 +466,8 @@ What went wrong or surprised us while building the PoC, so it is not found again
     and −1.1 % as built. Rule: before a codegen spec is closed, re-measure each kept step against the tree
     without it, under the placement control (LESSONS 51), on top of the later steps; revert what no longer
     pays. Found: S0007 steps 2 and 3, re-measured 2026-11-03, L reverted 2026-11-04.
+70. **A fetch script must download before it deletes the cache.** `tests/spec/fetch.py` removed
+    `.cache/spec/<commit>` and then downloaded the pinned archive; the sandbox proxy refused the archive
+    (HTTP 403), and the whole converted cache was gone with no way to rebuild it online. Rule: download
+    and verify first, remove and convert after. Found: S0008 step 1, 2026-11-04 (the cache was rebuilt
+    from a local checkout of the same commit; `counts.json` came out identical except the new wide line).

@@ -289,3 +289,34 @@ def test_f32x4_binary_matches_wasmtime_off_nan(sub: int) -> None:
     b = int.from_bytes(struct.pack("<4f", -2.25, 1.0, 3.0e38, 0.0), "little")
     w = module([ty(V + V, V)], [(0, [], get(0) + get(1) + fd(sub))], [fn("f")])
     run(w, "f", a, b)  # raises if the two engines differ
+
+
+# ---- S0008: relaxed SIMD (deterministic profile, madd unfused) and wide arithmetic helpers
+def _f32x4(*xs: int) -> int:
+    return int.from_bytes(struct.pack("<4I", *xs), "little")
+
+
+def test_relaxed_madd_is_unfused() -> None:
+    from waboros.targets.pyc import simd as ps
+
+    flt_max, inf, neg_max = 0x7F7FFFFF, 0x7F800000, 0xFF7FFFFF
+    a, b, c = _f32x4(flt_max, 0, 0, 0), _f32x4(0x40000000, 0, 0, 0), _f32x4(neg_max, 0, 0, 0)
+    # FLT_MAX * 2 rounds to +inf before the add: the fused result would be FLT_MAX
+    assert ps.H["f32x4.relaxed_madd"](a, b, c) == _f32x4(inf, 0, 0, 0)
+    assert ps.H["f32x4.relaxed_nmadd"](a, b, _f32x4(flt_max, 0, 0, 0)) == _f32x4(
+        0xFF800000, 0, 0, 0
+    )
+
+
+def test_wide_arithmetic_helpers() -> None:
+    from waboros.targets.pyc import simd as ps
+
+    M = (1 << 64) - 1
+    assert ps.WIDE["add128"](M, 0, 1, 0) == (0, 1)  # carry
+    assert ps.WIDE["add128"](M, M, 1, 0) == (0, 0)  # wraps at 2^128
+    assert ps.WIDE["sub128"](0, 0, 1, 0) == (M, M)  # borrow
+    assert ps.WIDE["mul_wide_u"](M, M) == (1, M - 1)
+    assert ps.WIDE["mul_wide_s"](M, M) == (1, 0)  # -1 * -1
+    assert ps.WIDE["mul_wide_s"](1 << 63, 1 << 63) == (0, 1 << 62)  # INT64_MIN squared
+    assert ps.WIDE["mul_wide_s"](M, 1) == (M, M)  # -1 * 1
+    assert ps.WIDE["mul_wide_s"](1 << 63, 2) == (0, M)  # -2^64

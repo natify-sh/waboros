@@ -65,6 +65,7 @@ CONFIG_SWITCHES = (
     *("wasm_multi_value", "wasm_reference_types", "wasm_bulk_memory", "wasm_tail_call"),
     *("wasm_function_references", "wasm_gc", "wasm_exceptions"),
     *("wasm_multi_memory", "wasm_memory64", "wasm_simd", "wasm_relaxed_simd"),
+    *("wasm_relaxed_simd_deterministic", "wasm_wide_arithmetic"),
 )
 
 

@@ -482,6 +482,8 @@ def decode(body):
                 out.append((0xFC0E, d, r.u()))
             elif sub < 18:  # table.grow / size / fill
                 out.append((0xFC00 + sub, r.u()))
+            elif 19 <= sub <= 22:  # wide arithmetic: add128 sub128 mul_wide_s mul_wide_u (S0008)
+                out.append((0xFC00 + sub,))
             else:
                 raise Malformed("illegal opcode 0xfc %d" % sub)
         elif op == 0xFD:

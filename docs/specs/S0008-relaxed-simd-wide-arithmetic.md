@@ -160,7 +160,7 @@ k=True)`). Before the statement, the entries below the operands that can trap ar
 * **Relaxed SIMD** is in the pinned spec suite (`relaxed-simd/`, 7 files, 79 commands: 71
   `assert_return`, 33 of them `either`, and 8 modules). `tests/spec/run.py` supports `either` already
   (`matches`, `t == "either"`: any alternative, NaN patterns per lane; `test_runner.py::test_either`).
-  `i32x4_relaxed_trunc.wast` holds only its module at this pin (no assertion), so the trunc aliases
+  `i32x4_relaxed_trunc.wast` holds only its module at this pin (no assertion), so the relaxed trunc operators
   get unit and differential tests instead (Test plan).
 * **Wide arithmetic** is **not** in the pinned spec suite (`WebAssembly/spec` main, 2026-10-28: no
   file). Source: the proposal repository, `WebAssembly/wide-arithmetic`,
@@ -375,6 +375,11 @@ All decided (maintainer, 2026-11-04).
 * 2026-11-04: created (draft).
 * 2026-11-04: Q5 decided: madd/nmadd native per target as Wasmtime (fused on aarch64, unfused on
   x86-64 and pyc); consequences in Semantics, Test plan, Alternatives, Q4.
+* 2026-11-04: step 1 done (`pyc`): front end (20 relaxed `OPS`, `0xFC` 19-22, validator), `pyc`
+  (20 mappings, 4 wide helpers), second pin, claims; `--engine pyc relaxed-simd wide-arithmetic` and
+  `--engine wasmtime`: 188 pass, 0 fail (79 + 109); the claimed `pyc` run 54 573 pass / 91 expected
+  failures (54 385 + 188), `jit-x86_64` 54 385 / 91 unchanged; the JITs report these modules `unsupported`
+  until steps 2-3.
 * 2026-11-04: approved by the maintainer: Q1 (b) in full, Q2 (a), Q3 (a), Q4 (a); Q5 as recorded. Q1 rewrote
   the Summary, the front-end paragraph, the operator table's lowering column, Plan of steps 1-2, the Test
   plan and Alternatives (front-end aliasing is now a rejected alternative). Recorded as D49.

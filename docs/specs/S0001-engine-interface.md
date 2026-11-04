@@ -304,3 +304,4 @@ result and on an xpass).
 * 2026-10-30: links to the upstream v128 issues (wasmtime-py#348, wasmtime#15088).
 * 2026-11-01: an expected trap text is matched to a code by prefix (longest table key), not exactly: `bulk.wast:221` expects "uninitialized element 2"; the `pyc` expected-failure reasons are the actual failure reasons (no hand-written ones that no longer matched).
 * 2026-11-02: status `implemented` (the runner has used this interface since phase 1).
+* 2026-11-04 (S0008 step 1): a second pin, `PROPOSAL_FILES` in `fetch.py` (one file of a proposal repository at a commit, sha256 checked, recorded in the manifest; `wide-arithmetic/wide-arithmetic.wast`, 109 commands, in `counts.json`); the oracle Config gains `wasm_relaxed_simd_deterministic` and `wasm_wide_arithmetic`; Wasmtime and `pyc` claim `wideArithmetic`, `pyc` claims `relaxedSimd`.

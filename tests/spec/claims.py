@@ -14,12 +14,16 @@ DIR_FEATURE = {
     "bulk-memory": "bulkMemory",
     "exceptions": "exceptionsFinal",
     "gc": "gc",
+    "wide-arithmetic": "wideArithmetic",
 }
 CLAIMS: dict[str, frozenset[str]] = {
     "wasmtime": frozenset(
         {"simd", "relaxedSimd", "multiMemory", "memory64", "bulkMemory", "exceptionsFinal", "gc"}
+        | {"wideArithmetic"}
     ),
-    "pyc": frozenset({"bulkMemory", "multiMemory", "simd"}),  # memory64: not implemented yet
+    "pyc": frozenset(
+        {"bulkMemory", "multiMemory", "simd", "relaxedSimd", "wideArithmetic"}
+    ),  # memory64: not implemented yet
     "jit-x86_64": frozenset({"bulkMemory", "multiMemory", "simd"}),  # parity with pyc (D25)
     "jit-aarch64": frozenset({"bulkMemory", "multiMemory", "simd"}),  # parity with pyc (D25)
 }
