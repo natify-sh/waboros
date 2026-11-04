@@ -21,9 +21,8 @@ CLAIMS: dict[str, frozenset[str]] = {
         {"simd", "relaxedSimd", "multiMemory", "memory64", "bulkMemory", "exceptionsFinal", "gc"}
         | {"wideArithmetic"}
     ),
-    "pyc": frozenset(
-        {"bulkMemory", "multiMemory", "simd", "relaxedSimd", "wideArithmetic"}
-    ),  # memory64: not implemented yet
+    "pyc": frozenset({"bulkMemory", "multiMemory", "simd", "relaxedSimd", "wideArithmetic"})
+    | {"memory64"},
     "jit-x86_64": frozenset(
         {"bulkMemory", "multiMemory", "simd", "relaxedSimd", "wideArithmetic"}
     ),  # parity with pyc (D25)

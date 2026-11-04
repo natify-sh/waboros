@@ -190,21 +190,23 @@ def const(r):
 
 def validate(ins, pop, push, need_mem):
     """Type one operator: `pop(expected)` and `push(type)` act on the validator's operand stack,
-    `need_mem(index)` checks that the memory exists."""
+    `need_mem(index)` checks that the memory exists and returns its address type."""
     from waboros.frontend.validate import Invalid  # validate imports this module
 
     e = OPS[ins[0] - BASE]
+    pops = e.pops
     if e.imm in (MEM, MEMLANE):
-        need_mem(ins[3])
+        at = need_mem(ins[3])
         if ins[2] > e.align:
             raise Invalid("alignment must not be larger than natural")
-        if ins[1] > 0xFFFFFFFF:
+        if ins[1] > 0xFFFFFFFF and at == I32:
             raise Invalid("offset out of range")
+        pops = (at, *pops[1:])  # the address operand has the memory's address type
     if e.imm in (LANE, MEMLANE) and ins[-1] >= e.n:
         raise Invalid("invalid lane index")
     if e.imm == SHUFFLE and max(ins[1]) >= 32:
         raise Invalid("invalid lane index")
-    for t in reversed(e.pops):
+    for t in reversed(pops):
         pop(t)
     if e.res:
         push(e.res)

@@ -318,6 +318,11 @@ grow can exhaust the interpreter's memory instead of failing the instruction; Wa
 default cap (measured). The cap becomes a store limit (`StoreLimits.table_elements`) in phase 6; the
 JIT targets will use the same number until then so `pyc` and JIT behave alike (D25).
 
+**Applied to i64 tables (memory64, S0009 step 1, 2026-11-04):** an i64 table keeps the same cap (`pyc`
+`_tgrow64`, −1 as an i64). Wasmtime reports out-of-memory instead of −1 for a grow of an i64 table by
+10⁸ or 2⁴⁰ (`table_grow64.wast:46` is a Wasmtime expected failure for that reason); a min that
+cannot be allocated is an instantiation error on both.
+
 ### D28. `pyc` keeps floats as Python floats; f32 NaN payloads ride in the double's high bits
 Status: accepted · Date: 2026-10-30 · Supersedes: — · Evidence: spec run on pyc +83 (NaN/conversion causes), CoreMark unchanged
 

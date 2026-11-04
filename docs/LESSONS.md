@@ -483,3 +483,11 @@ What went wrong or surprised us while building the PoC, so it is not found again
     Android) failed at collection, not with a skip. Rule: import an optional tool inside the test, after
     `pytest.importorskip`; check a new test file once with the tool blocked (`ModuleNotFoundError`).
     Found: S0008 step 4, 2026-11-04.
+73. **A reader gap that raises `NotImplementedError` can hide in `assert_invalid` as a pass.** `run.py`
+    counts a `LoadError` of kind `None` (what `NotImplementedError` becomes) as a pass for
+    `assert_invalid` and `assert_malformed`. Before S0009 step 1, 286 commands of `memory64/` "passed"
+    that way (`limits flags 4/5`), with no validator rule exercised. Rule: when a target starts to claim
+    a directory, check that its rejections raise `Invalid`/`Malformed`, not only that the run is green
+    (`tests/test_memory64.py`, `test_memory64_rejections_have_the_right_reason`). Whether the runner
+    should refuse kind `None` in claimed directories is an open S0001 question. Found: S0009 step 1,
+    2026-11-04.

@@ -55,6 +55,29 @@ def _grow(M, maxpages, n):
     return old
 
 
+def _grow64(M, maxpages, n):  # an i64 memory: -1 also when the host cannot allocate (memory64)
+    old = len(M) >> 16
+    if old + n > maxpages:
+        return 0xFFFFFFFFFFFFFFFF
+    try:
+        M.extend(bytes(n << 16))
+    except (MemoryError, OverflowError):
+        return 0xFFFFFFFFFFFFFFFF
+    return old
+
+
+def _mem64(pages):
+    """An i64 memory of `pages` pages; a minimum that cannot be provided is a MemoryError."""
+    if pages >= 1 << 48:  # Wasmtime's message
+        raise MemoryError("memory minimum size of %d pages exceeds memory limits" % pages)
+    try:
+        return _Mem(pages << 16)
+    except (MemoryError, OverflowError):
+        raise MemoryError(
+            "failed to allocate %d bytes for a memory of %d pages" % (pages << 16, pages)
+        ) from None
+
+
 def _mcopy(D, S, d, s, n):
     if d + n > len(D) or s + n > len(S):
         raise Trap(TrapCode.MEMORY_OUT_OF_BOUNDS, "out of bounds memory access")
@@ -69,6 +92,12 @@ def _mfill(M, d, v, n):
 
 def _eseg(T, o, fs):
     o &= 0xFFFFFFFF
+    if o + len(fs) > len(T):
+        raise Trap(TrapCode.TABLE_OUT_OF_BOUNDS, "out of bounds table access")
+    T[o : o + len(fs)] = fs
+
+
+def _eseg64(T, o, fs):
     if o + len(fs) > len(T):
         raise Trap(TrapCode.TABLE_OUT_OF_BOUNDS, "out of bounds table access")
     T[o : o + len(fs)] = fs
@@ -95,6 +124,14 @@ def _tgrow(TX, n, v):
     return old
 
 
+def _tgrow64(TX, n, v):  # D27: the same cap of 10M elements
+    old = len(TX.t)
+    if old + n > (0xFFFFFFFFFFFFFFFF if TX.max is None else TX.max) or old + n > 10000000:
+        return 0xFFFFFFFFFFFFFFFF
+    TX.t.extend([v] * n)
+    return old
+
+
 def _tfill(T, i, v, n):
     if i + n > len(T):
         raise Trap(TrapCode.TABLE_OUT_OF_BOUNDS, "out of bounds table access")
@@ -115,6 +152,12 @@ def _tinit(T, S, d, s, n):
 
 def _dseg(M, o, d):
     o &= 0xFFFFFFFF
+    if o + len(d) > len(M):
+        raise Trap(TrapCode.MEMORY_OUT_OF_BOUNDS, "out of bounds memory access")
+    M[o : o + len(d)] = d
+
+
+def _dseg64(M, o, d):
     if o + len(d) > len(M):
         raise Trap(TrapCode.MEMORY_OUT_OF_BOUNDS, "out of bounds memory access")
     M[o : o + len(d)] = d

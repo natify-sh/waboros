@@ -75,7 +75,7 @@ def resolve(
 ) -> list[Extern]:
     """One `Extern` per import of `mod`, in import order."""
     out: list[Extern] = []
-    ntab = 0
+    ntab = nmem = 0
     for kind, modname, name, desc in cast(list[tuple[Any, ...]], mod["imports"]):
         src = providers.get(modname)
         if isinstance(src, Provider):
@@ -98,6 +98,12 @@ def resolve(
                     )
                 else:
                     ok = True
+                at = (
+                    (mod["taddr"][ntab], src.module["taddr"][ex_idx])
+                    if kind == "table"
+                    else (mod["maddr"][nmem], src.module["maddr"][ex_idx])
+                )
+                ok = ok and at[0] == at[1]  # memory64 / table64: the same address type
                 size, mx = src.instance.limits(name)
                 ok = (
                     ok
@@ -112,6 +118,6 @@ def resolve(
             if kind != "func" or fn is None:
                 raise LinkError(f"unknown import {modname}.{name}")
             out.append(Extern("func", None, host_func(fn)))
-        if kind == "table":
-            ntab += 1
+        ntab += kind == "table"
+        nmem += kind == "mem"
     return out

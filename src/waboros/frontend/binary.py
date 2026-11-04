@@ -152,12 +152,16 @@ class R:
 
     def limits(s):
         fl = s.u8()
-        if fl > 1:
+        if fl > 1 and fl not in (4, 5):
             if fl < 8:
-                raise NotImplementedError("limits flags %d (shared / 64-bit)" % fl)
+                raise NotImplementedError("limits flags %d (shared)" % fl)
             raise Malformed("malformed limits flags")
         mn = s.u64()
-        return mn, (s.u64() if fl else None)
+        return (
+            mn,
+            (s.u64() if fl & 1 else None),
+            (I64 if fl & 4 else I32),
+        )  # (min, max, address type)
 
 
 @_guard
@@ -183,10 +187,17 @@ def parse(data):
         elem_mode=[],  # "active" / "passive" / "declarative" for every segment
         elem_info=[],  # (table index or None, offset expr or None, reftype, item exprs) of every segment
         data_mem=[],  # memory index of every data segment (None: passive)
+        maddr=[],  # address type (0x7F / 0x7E) of every memory, imported first (memory64)
+        taddr=[],  # address type of every table, imported first (table64)
         tags=[],  # type index of every defined tag (tag imports are not read yet)
     )
     datacount = None
     rank = 0
+
+    def limits(addr):  # (min, max) of a memory or table; its address type goes to mod[addr]
+        mn, mx, at = r.limits()
+        mod[addr].append(at)
+        return mn, mx
 
     def initexpr():
         st = []  # operand stack of expression trees; add / sub / mul nodes are (name, type, a, b)
@@ -262,9 +273,9 @@ def parse(data):
                     mod["imports"].append(("func", m, n, r.u()))
                 elif k == 1:
                     mod["ttypes"].append(r.vt(True))
-                    mod["imports"].append(("table", m, n, r.limits()))
+                    mod["imports"].append(("table", m, n, limits("taddr")))
                 elif k == 2:
-                    mod["imports"].append(("mem", m, n, r.limits()))
+                    mod["imports"].append(("mem", m, n, limits("maddr")))
                 elif k == 3:
                     t = r.vt()
                     mod["imports"].append(("global", m, n, (t, r.mut())))
@@ -282,11 +293,11 @@ def parse(data):
                     if r.u8() != 0:
                         raise Malformed("malformed table encoding")
                 mod["ttypes"].append(r.vt(True))
-                mod["tables"].append(r.limits())
+                mod["tables"].append(limits("taddr"))
                 mod["tinit"].append(initexpr() if init else None)
         elif sid == 5:
             for _ in range(r.u()):
-                mod["mems"].append(r.limits())
+                mod["mems"].append(limits("maddr"))
         elif sid == 6:
             for _ in range(r.u()):
                 t = r.vt()

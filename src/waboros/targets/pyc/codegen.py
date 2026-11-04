@@ -8,6 +8,8 @@ from waboros.frontend.binary import F32, F64, I32, I64, M32, M64
 from waboros.frontend.validate import valtype_key
 from waboros.targets.pyc import runtime as _rt
 
+MAXPAGES64 = (1 << 48) - 1  # the byte size of an i64 memory must fit 64 bits (as in Wasmtime)
+
 BRTREE = int(
     os.environ.get("WABOROS_BT", "4")
 )  # br_table: balanced if-tree above this many runs, 0 = chain
@@ -821,14 +823,21 @@ class FuncGen:
                 s.emit("P32(%s,%s,%s)" % (mn, ad, vc))
             return
         if op == 0x3F:
-            push(E("(len(%s)>>16)" % mg.mname(x[1]), I32, 0xFFFF, m=True))
+            if mg.maddr[x[1]] == I64:
+                push(E("(len(%s)>>16)" % mg.mname(x[1]), I64, 1 << 48, m=True))
+            else:
+                push(E("(len(%s)>>16)" % mg.mname(x[1]), I32, 0xFFFF, m=True))
             return
         if op == 0x40:
             v = pop()
             s.flush_call()
-            t = s.newtmp(I32)
-            s.emit("%s = _grow(%s,%s,%s)" % (t, mg.mname(x[1]), mg.mname(x[1], "_MAXPAGES"), n(v)))
-            push(E(t, I32, M32, k=True))
+            a64 = mg.maddr[x[1]] == I64
+            t = s.newtmp(I64 if a64 else I32)
+            s.emit(
+                "%s = _grow%s(%s,%s,%s)"
+                % (t, "64" if a64 else "", mg.mname(x[1]), mg.mname(x[1], "_MAXPAGES"), n(v))
+            )
+            push(E(t, I64 if a64 else I32, M64 if a64 else M32, k=True))
             return
         if op in (0x10, 0x11, 0x12, 0x13, 0x14, 0x15):
             base = {0x12: 0x10, 0x13: 0x11, 0x15: 0x14}.get(op, op)
@@ -1331,12 +1340,13 @@ class FuncGen:
             elif op == 0xFC11:
                 s.emit("_tfill(T%d,%s)" % (k, ",".join(v)))
             else:
-                t = s.newtmp(I32)
+                a64 = mg.taddr[k] == I64
+                t = s.newtmp(I64 if a64 else I32)
                 if op == 0xFC0F:
-                    s.emit("%s = _tgrow(TX%d,%s,%s)" % (t, k, v[1], v[0]))
+                    s.emit("%s = _tgrow%s(TX%d,%s,%s)" % (t, "64" if a64 else "", k, v[1], v[0]))
                 else:
                     s.emit("%s = len(T%d)" % (t, k))
-                push(E(t, I32, M32, k=True))
+                push(E(t, I64 if a64 else I32, M64 if a64 else M32, k=True))
             return
         if op == 0xFC0A:
             nn = pop()
@@ -1385,6 +1395,8 @@ class ModGen:
         s.timports = [i for i in im if i[0] == "table"]
         s.mimports = [i for i in im if i[0] == "mem"]
         s.ttypes = mod["ttypes"]
+        s.maddr = mod["maddr"]  # address type of every memory / table (0x7F or 0x7E)
+        s.taddr = mod["taddr"]
         # functions containing return_call / return_call_indirect: body `f<i>_b` + trampoline wrapper `f<i>`
         s.tc = {
             s.nimp + k
@@ -1447,10 +1459,16 @@ class ModGen:
         ]
         nmi = len(s.mimports)
         for k, mem in enumerate(mod["mems"], nmi):
-            out.append("%s = _Mem(%d * 65536)" % (s.mname(k), mem[0]))
-            out.append("%s.max = %r" % (s.mname(k), mem[1]))
+            a64 = s.maddr[k] == I64
             out.append(
-                "%s = %d" % (s.mname(k, "_MAXPAGES"), mem[1] if mem[1] is not None else 65536)
+                "%s = _mem64(%d)" % (s.mname(k), mem[0])
+                if a64
+                else "%s = _Mem(%d * 65536)" % (s.mname(k), mem[0])
+            )
+            out.append("%s.max = %r" % (s.mname(k), mem[1]))
+            cap = MAXPAGES64 if a64 else 65536
+            out.append(
+                "%s = %d" % (s.mname(k, "_MAXPAGES"), cap if mem[1] is None else min(mem[1], cap))
             )
         L = ["def instantiate(imports):"]
         gl = []  # module globals that instantiate assigns
@@ -1489,7 +1507,13 @@ class ModGen:
         for k, im in enumerate(s.mimports):
             mn, mp = s.mname(k), s.mname(k, "_MAXPAGES")
             L.append("    %s = imports[%r][%r]" % (mn, im[1], im[2]))
-            L.append("    %s = 65536 if %s.max is None else %s.max" % (mp, mn, mn))
+            if s.maddr[k] == I64:
+                L.append(
+                    "    %s = %d if %s.max is None else min(%s.max, %d)"
+                    % (mp, MAXPAGES64, mn, mn, MAXPAGES64)
+                )
+            else:
+                L.append("    %s = 65536 if %s.max is None else %s.max" % (mp, mn, mn))
             gl += [mn, mp]
         for i in range(s.nimp):
             out.append("I%d = None" % i)
@@ -1512,7 +1536,10 @@ class ModGen:
             gl.append("S%d" % i)
             L.append("    S%d = [%s]" % (i, ", ".join(s.val(e) for e in items)))
             if mode == "active":
-                L.append("    _eseg(T%d, %s, S%d)" % (ti, s.val(off), i))
+                L.append(
+                    "    _eseg%s(T%d, %s, S%d)"
+                    % ("64" if s.taddr[ti] == I64 else "", ti, s.val(off), i)
+                )
             if mode != "passive":
                 L.append("    S%d = []" % i)
         if gl:
@@ -1520,7 +1547,11 @@ class ModGen:
         dg = []
         for i, (off, d) in enumerate(mod["datas"]):
             if off is not None:
-                L.append("    _dseg(%s, %s, %r)" % (s.mname(mod["data_mem"][i]), s.val(off), d))
+                mi = mod["data_mem"][i]
+                L.append(
+                    "    _dseg%s(%s, %s, %r)"
+                    % ("64" if s.maddr[mi] == I64 else "", s.mname(mi), s.val(off), d)
+                )
             if i in s.dused:
                 dg.append("D%d" % i)
                 L.append("    D%d = %r" % (i, d if off is None else b""))

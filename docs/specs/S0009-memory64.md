@@ -586,3 +586,7 @@ document to update"):
   `index64` attribute; Q7 decided as recommended.
 * 2026-11-04: the one-thread-per-store rule is enforced at JIT entry and grow (step 2b); host
   pointers for phase 6; approved by the maintainer.
+* 2026-11-04: step 1 implemented: `limits` flags 4 and 5, `maddr`/`taddr`, validator rules, `link.py`
+  address-type check, `pyc` (`_grow64`, `_tgrow64`, `_dseg64`, `_eseg64`, and `_mem64` for the
+  instantiation check), JIT `unsupported` (`memory64`/`table64`); `pyc` claims `memory64`: 8 657 pass / 0
+  fail / 3 xfail / 59 skip. The tests are in `tests/test_memory64.py` (flat `tests/`, no `tests/frontend`).
