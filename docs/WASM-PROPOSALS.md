@@ -36,7 +36,7 @@ retried with `-W <proposal>=y`, and each default was confirmed by `-W <proposal>
 | extended-const | 5 | yes | default | yes | done |
 | tail calls | 5 | yes | default | yes | done |
 | typed function references | 5 | yes | default | yes | done |
-| **memory64** | 5 | yes | **default** | `pyc` yes (8 657 of 8 719 spec commands pass, 3 expected failures; S0009 step 1); JITs not yet (`unsupported`, steps 2a-3) | phase 5 (S0009) |
+| **memory64** | 5 | yes | **default** | `pyc` yes (8 657 of 8 719 spec commands pass, 3 expected failures; S0009 step 1); JITs: i64 memories since step 2a, i64 tables `unsupported` until step 3 | phase 5 (S0009) |
 | **relaxed SIMD** | 5 | yes | **default** | yes on all three targets (79 commands; S0008 steps 1-2; madd/nmadd fused on `jit-aarch64`, D49) | phase 5 (S0008) |
 | **exceptions** (`exnref`) | 5 | yes | **default** | tags validate only (110 + 9 core) | phase 5 |
 | **GC** | 5 | yes | **default** | no (798 + most of the 91 core xfails) | phase 5, last |

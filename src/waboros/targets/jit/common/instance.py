@@ -15,10 +15,11 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 from waboros.frontend import validate
+from waboros.runtime.link import LinkError
 from waboros.runtime.store import StoreState
 from waboros.targets.base import Extern, HostError, HostFunc, Raw, Trap, TrapCode
 from waboros.targets.jit.common import guard, simd
-from waboros.targets.jit.common.compiler import M32, M64, NARROW, Compiled
+from waboros.targets.jit.common.compiler import I64, M32, M64, NARROW, Compiled
 from waboros.targets.jit.common.context import (
     DATA_DROP,
     ELEM_DROP,
@@ -47,6 +48,7 @@ VSTACK_BYTES = 1 << 20  # per store
 # `memory_guard_size`, for every memory in either mode, so any memory serves guard code (S0006)
 MEMORY_RESERVATION = guard.RESERVATION
 MAX_PAGES = 1 << 16
+MAX_PAGES64 = (1 << 48) - 1  # an i64 memory's byte size fits the 64-bit size word (S0009)
 DEFAULT_BUDGET = 512 << 10  # Wasmtime's default `max_wasm_stack` (D6)
 UNKNOWN_STACK_BUDGET = 128 << 10  # when the thread's stack bounds cannot be read or are implausible
 PLAUSIBLE_STACK = 1 << 30  # more stack than this below the entry: the bounds are not trusted
@@ -241,13 +243,20 @@ def native_budget(sp: int, low: int | None, budget: int) -> int:
 
 
 class Memory:
-    """A 32-bit linear memory: 4 GiB + GUARD of address space reserved (S0006), pages committed on
-    grow; the base never changes. `grow` rewrites the size word of every context bound to it."""
+    """A linear memory: 4 GiB + GUARD of address space reserved (S0006), pages committed on
+    grow; the base never changes. `grow` rewrites the size word of every context bound to it.
+    An i64 memory (`a64`, S0009) has the same reservation for now, so it is capped at MAX_PAGES
+    too (step 2a; step 2b moves it past its reservation instead)."""
 
-    def __init__(self, pages: int, maximum: int | None) -> None:
+    def __init__(self, pages: int, maximum: int | None, *, a64: bool = False) -> None:
+        if a64 and pages > MAX_PAGES64:
+            raise MemoryError(f"memory minimum size of {pages} pages exceeds memory limits")
+        if pages > MAX_PAGES:  # only an i64 memory gets here (validation): step 2a's cap
+            raise MemoryError(f"failed to reserve {pages << 16} bytes")
         self.res = Reservation(MEMORY_RESERVATION, pages << 16)
         self.pages = pages
         self.max = MAX_PAGES if maximum is None else min(maximum, MAX_PAGES)
+        self.mask = M64 if a64 else M32  # of memory.grow's result (-1 at the address width)
         self.declared = maximum  # the type's maximum, for import checks
         self.store: object = None  # the owning StoreState (set by JitInstance)
         self.users: list[tuple[ctypes.Array[ctypes.c_uint64], int]] = []
@@ -365,9 +374,12 @@ class Instance:
             mem.bind(self.ctx, self.layout.memory(i))
         if memories:  # delta, then the memory index if there are several (S0003)
             many = len(memories) > 1
-            grow = HOST(
-                self._host(lambda a: [memories[a[1] if many else 0].grow(a[0])], 1 + many, [M32])
-            )
+
+            def grow_(a: Sequence[Raw]) -> list[Raw]:  # -1 at the memory's address width
+                m = memories[a[1] if many else 0]
+                return [m.grow(a[0]) & m.mask]
+
+            grow = HOST(self._host(grow_, 1 + many, [M64]))
             self.callbacks.append(grow)  # a runtime service (libcall), not a computation (D25)
             self.ctx[self.layout.libcall(MEMORY_GROW)] = (
                 ctypes.cast(grow, ctypes.c_void_p).value or 0
@@ -589,12 +601,14 @@ class JitInstance(Instance):
                 hosts.append((f, simd.width(ps), _masks(rs)))
             elif im[0] == "mem":
                 memories.append(cast(Memory, ext.value))
+                if memories[-1].pages < im[3][0]:  # the i64 bounds check relies on it (S0009)
+                    raise LinkError(f"incompatible import type {im[1]}.{im[2]}")
             elif im[0] == "table":
                 tables.append(cast(Table, ext.value))
             else:
                 self.cells.append(cast(GlobalCell, ext.value))
         for mt in mod["mems"]:
-            memories.append(Memory(*mt))
+            memories.append(Memory(*mt, a64=mod["maddr"][len(memories)] == I64))
             memories[-1].store = store
         self.ftypes: list[int] = [im[3] for im in mod["imports"] if im[0] == "func"] + mod["funcs"]
         self.gtypes = [im[3][0] for im in mod["imports"] if im[0] == "global"]

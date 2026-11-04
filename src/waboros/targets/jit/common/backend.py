@@ -98,14 +98,20 @@ class Backend(Protocol[L, F]):
     def convert(self, f: F, op: str, dst: Reg, x: Operand) -> None: ...
 
     # memories (`mem`: the memory's `base` word, `size_bytes` follows; explicit bounds checks)
-    # and context words (globals)
+    # and context words (globals). D39 amendment B (S0009): `a64` (required, no default) says
+    # the memory or table has an i64 address type: the address, index (and, for a copy, the
+    # side's operand) is then a full 64-bit value, and `n` of a copy is 64-bit only if both flags
+    # are; with `a64` false the operands are i32 and the code is today's. `lo` (required): the
+    # declared minimum size in bytes of an i64 memory (imports: the import's), a lower bound of
+    # `size_bytes` at run time; 0 for an i32 memory. An `AddK` is never passed with `a64`.
     def memory_size(self, dst: Reg, mem: int) -> None: ...  # in pages
     def load(
         self, f: F, size: int, signed: bool, wide: bool, dst: Reg, addr: Operand | AddK,
-        offset: int, mem: int,
+        offset: int, mem: int, *, a64: bool, lo: int,
     ) -> None: ...  # fmt: skip
     def store(
-        self, f: F, size: int, addr: Operand | AddK, offset: int, src: Operand, mem: int
+        self, f: F, size: int, addr: Operand | AddK, offset: int, src: Operand, mem: int, *,
+        a64: bool, lo: int,
     ) -> None: ...  # fmt: skip
     def ctx_load(self, dst: Reg, word: int, indirect: bool) -> None: ...
     def ctx_store(self, word: int, src: Operand, indirect: bool) -> None: ...
@@ -119,8 +125,10 @@ class Backend(Protocol[L, F]):
     # and `store`; preserves pool, frame, context, memory-0 registers and `tos` (unless `dst`);
     # leaves no flags and no vector register live; may use the 4 slots from 6 above the base of
     # its operands. `imm`: lane, `(offset, memory word[, lane])`, the shuffle lanes as one int.
+    # `a64`, `lo` as for `load`; False and 0 for an operator that does not address memory.
     def simd(
-        self, f: F, op: int, dst: Dst | None, args: tuple[Operand, ...], imm: tuple[int, ...]
+        self, f: F, op: int, dst: Dst | None, args: tuple[Operand, ...], imm: tuple[int, ...], *,
+        a64: bool, lo: int,
     ) -> None: ...  # fmt: skip
     # a v128 slot pair (`Slot`) or a 128-bit constant (`Imm`) into the pair `dst` by one 16-byte
     # store, the width the next reader uses (store forwarding, LESSONS 44); no flags, no pool
@@ -136,23 +144,32 @@ class Backend(Protocol[L, F]):
     def wide(self, op: str, dst: Slot, args: tuple[Operand, ...]) -> None: ...
 
     # tables (`word`: the table's `base` word; `size` follows) and bulk memory: bounds checked
-    # before anything is written; operands are i32 but table values (64-bit references)
-    def table_get(self, f: F, dst: Reg, word: int, index: Operand) -> None: ...
-    def table_set(self, f: F, word: int, index: Operand, value: Operand) -> None: ...
-    def table_fill(self, f: F, word: int, i: Operand, v: Operand, n: Operand) -> None: ...
-    def table_copy(
-        self, f: F, dst: int, src: int, d: Operand, s: Operand, n: Operand
+    # before anything is written; operands are i32 (i64 by `a64`) but table values (64-bit
+    # references); a copy's `a64` is (destination, source)
+    def table_get(self, f: F, dst: Reg, word: int, index: Operand, *, a64: bool) -> None: ...
+    def table_set(
+        self, f: F, word: int, index: Operand, value: Operand, *, a64: bool
     ) -> None: ...  # fmt: skip
-    def memory_fill(self, f: F, d: Operand, v: Operand, n: Operand, mem: int) -> None: ...
+    def table_fill(
+        self, f: F, word: int, i: Operand, v: Operand, n: Operand, *, a64: bool
+    ) -> None: ...  # fmt: skip
+    def table_copy(
+        self, f: F, dst: int, src: int, d: Operand, s: Operand, n: Operand, *,
+        a64: tuple[bool, bool],
+    ) -> None: ...  # fmt: skip
+    def memory_fill(
+        self, f: F, d: Operand, v: Operand, n: Operand, mem: int, *, a64: bool
+    ) -> None: ...  # fmt: skip
     def memory_copy(
-        self, f: F, d: Operand, s: Operand, n: Operand, dmem: int, smem: int
+        self, f: F, d: Operand, s: Operand, n: Operand, dmem: int, smem: int, *,
+        a64: tuple[bool, bool],
     ) -> None: ...  # fmt: skip
 
     # calls (a non-zero status unwinds the caller too)
     def call_direct(self, f: F, label: L, shift_slots: int) -> None: ...
     def call_host(self, f: F, word: int, slot: int) -> None: ...
     def call_indirect(
-        self, f: F, table: int, sig: int, index: Operand, shift_slots: int
+        self, f: F, table: int, sig: int, index: Operand, shift_slots: int, *, a64: bool
     ) -> None: ...  # fmt: skip
     def call_ref(self, f: F, ref: Operand, shift_slots: int) -> None: ...  # null: NULL_REFERENCE
     def call_record(self, f: F, word: int, shift_slots: int) -> None: ...  # a function import
@@ -163,7 +180,7 @@ class Backend(Protocol[L, F]):
     # our frame is dropped, the callee returns to our caller (constant stacks)
     def tail_direct(self, f: F, label: L, src: int, n: int) -> None: ...
     def tail_indirect(
-        self, f: F, table: int, sig: int, index: Operand, src: int, n: int
+        self, f: F, table: int, sig: int, index: Operand, src: int, n: int, *, a64: bool
     ) -> None: ...  # fmt: skip
     def tail_ref(self, f: F, ref: Operand, src: int, n: int) -> None: ...
     def tail_record(self, f: F, word: int, src: int, n: int) -> None: ...

@@ -222,7 +222,7 @@ memory without knowing the target.
   opts out, `=guard` requires it. macOS (both architectures, S0006 step 3) has a handler on SIGSEGV
   and SIGBUS, verified in CI; Windows (S0006 step 4) has a vectored exception handler, and Android x86-64 (step 5) a bionic `sigaction` behind ART's `libsigchain`, verified in CI (`platforms.yml`; D47: a per-OS optimisation starts on one row and grows by exception). CoreMark: +9 % on x86-64 on a quiet machine (BENCHMARKS.md, "Guard
   pages"; +14 % on a loaded one, the PoC measured +20–25 % on another day) and +11 % on native aarch64, 20 % less machine code. The guard flag and the fault map (`TRAPMAP`) are not serialized yet: they go into the phase-5 artifact-format spec (ARTIFACT.md). Explicit checks stay the fallback (larger offsets,
-  platforms without the handler yet, `memory64`); risks in RISKS.md, R6.
+  platforms without the handler yet, every access to an i64 memory, `memory64`, S0009); risks in RISKS.md, R6.
 
 ## State shared across targets
 

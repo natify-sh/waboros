@@ -354,7 +354,7 @@ def move(a: Asm, dst: Slot, src: Slot | Imm) -> None:
 
 def emit(
     b: "Backend", f: "Frame", op: int, dst: Dst | None, args: tuple[Operand, ...],
-    imm: tuple[int, ...],
+    imm: tuple[int, ...], a64: bool, lo: int,
 ) -> None:  # fmt: skip
     a = b.a
     if op in (0x23, 0x24):  # (word, indirect): an imported global is a pointer to the owner's
@@ -395,7 +395,7 @@ def emit(
         ldst_q(a, False, run(a, SHUFFLE), FRAME, _slot(dst))
         return
     if kind in LOADC:  # 8 bytes into d0 (the upper half zeroed), then the extend
-        base, index, off = b._bounds(f, args[0], imm[0], 8, imm[1])
+        base, index, off = b._bounds(f, args[0], imm[0], 8, imm[1], a64, lo)
         b._fault_point()  # S0006: each access below is marked just before its instruction
         ld_d(a, 0, base, off, index)
         ldst_q(a, False, run(a, LOADC[kind]), FRAME, _slot(dst))
@@ -428,7 +428,7 @@ def emit(
         return
     acc: tuple[int, int | None, int] = (0, None, 0)  # the memory access, if any
     if kind in ("load", "store", "load_splat", "load_zero", "load_lane", "store_lane"):
-        acc = b._bounds(f, args[0], imm[0], size, imm[1])  # the address read first (x9-x12)
+        acc = b._bounds(f, args[0], imm[0], size, imm[1], a64, lo)  # the address read first
     base, index, off = acc
     if kind == "load":
         b._fault_point()

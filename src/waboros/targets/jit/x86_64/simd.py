@@ -459,7 +459,7 @@ def move(a: Asm, dst: Slot, src: Slot | Imm) -> None:
 
 def emit(
     b: "Backend", f: "Frame", op: int, dst: Dst | None, args: tuple[Operand, ...],
-    imm: tuple[int, ...],
+    imm: tuple[int, ...], a64: bool, lo: int,
 ) -> None:  # fmt: skip
     global _SHUF
     a = b.a
@@ -503,7 +503,7 @@ def emit(
         _copy(a, sc, _slot(dst))
         return
     if (kind, LEVEL) in LOADC:
-        m = b._bounds(f, args[0], imm[0], 8, imm[1])
+        m = b._bounds(f, args[0], imm[0], 8, imm[1], a64, lo)
         b._fault_point()  # S0006: each access below is marked just before its instruction
         movq_load(a, 0, m)
         movups(a, run(a, LOADC[kind, LEVEL]), _slot(dst), True)
@@ -533,7 +533,7 @@ def emit(
         return
     m = Mem(RCX)  # the memory access, if any: bounds checked, the address read first
     if kind in ("load", "store", "load_splat", "load_zero", "load_lane", "store_lane"):
-        m = b._bounds(f, args[0], imm[0], size, imm[1])
+        m = b._bounds(f, args[0], imm[0], size, imm[1], a64, lo)
     if kind == "load":
         b._fault_point()
         _copy(a, m, _slot(dst))

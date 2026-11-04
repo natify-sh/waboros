@@ -160,14 +160,17 @@ Wasmtime 50.0.1 with `signals_based_traps = False` emits this same shape (disass
 * **Otherwise**: `idx + k` is computed in 64 bits with the carry tested. x86-64: `mov rdx, idx;
   add rdx, k` (or `mov rdx, imm64; add rdx, idx`) `; jc oob; cmp rdx, L; ja oob`; aarch64: `adds
   x10, x9, k; b.cs oob; cmp x10, L; b.hi oob`. Flags are consumed by the next instruction (LESSONS
-  1). If the declared maximum makes the access impossible (`k > max·65536`), the backend emits
-  `jmp oob`. That decision uses **only the module's declared limits, never the runtime's limits**, so
-  an artifact stays correct for a host with a larger limit (D36).
+  1). The `k ≤ min` path uses **only the module's declared minimum, never the runtime's size**, so
+  an artifact stays correct for a host with a larger limit (D36); on x86-64 it also needs
+  `k < 2³¹` (the sign-extended imm32 of `lea`/`sub`). When `offset + size ≥ 2⁶⁴` no index is in bounds: the backend
+  emits `jmp oob` (a 64-bit `k` cannot even be formed; aarch64's `mov` would wrap it silently). The
+  shortcut for `k > max·65536` of the draft was dropped (2a: an optimisation without a measurement).
 * **Constant address** (`Imm`): `ea = value + offset` without the `& M32` of the i32 path (that mask
   would be a silent wrong-address bug). `ea + size > 2⁶⁴` gives `jmp oob`; otherwise it compares with
   `L` as the i32 path does (`cmp L, imm` when below 2³¹, else through `rdx`/`x10`).
 * The access: `[r13 + idx + offset]` (x86-64; `offset` in the displacement when it is below 2³¹,
-  otherwise added through `rdx`), `[x26, x9]` after adding `offset` (aarch64).
+  otherwise `lea rcx, [rdx − size]` from the checked end: `rdx` stays free for the stored value),
+  `[x26, x9]` after adding `offset` (aarch64; `sub x9, x10, #size` on the carry path).
 * **`AddK` (S0007 K) does not apply**: an `ADDK` entry is an i32 value (`i32.add` of a pinned i32),
   and validation never lets it address an i64 memory; the backend asserts this. A 64-bit form
   (`lea` wraps mod 2⁶⁴, as `i64.add` does) would be correct but is an optimisation without a
@@ -225,9 +228,9 @@ Every backend method whose operands address a memory or a table gains a **requir
 parameter that gives the address type, with no default, so a call site that forgets it fails at
 once (`TypeError`) instead of compiling i32 checks for an i64 memory:
 ```python
-def load(self, f, size, signed, wide, dst, addr, offset, mem, *, a64: bool) -> None: ...
-def store(self, f, size, addr, offset, src, mem, *, a64: bool) -> None: ...
-def simd(self, f, op, dst, args, imm, *, a64: bool) -> None: ...   # False for non-memory ops
+def load(self, f, size, signed, wide, dst, addr, offset, mem, *, a64: bool, lo: int) -> None: ...
+def store(self, f, size, addr, offset, src, mem, *, a64: bool, lo: int) -> None: ...
+def simd(self, f, op, dst, args, imm, *, a64: bool, lo: int) -> None: ...  # False, 0: no memory
 def memory_fill(self, f, d, v, n, mem, *, a64: bool) -> None: ...
 def memory_copy(self, f, d, s, n, dmem, smem, *, a64: tuple[bool, bool]) -> None: ...  # (dst, src)
 def table_get(self, f, dst, word, index, *, a64: bool) -> None: ...
@@ -237,7 +240,10 @@ def table_copy(self, f, dst, src, d, s, n, *, a64: tuple[bool, bool]) -> None: .
 def call_indirect(self, f, table, sig, index, shift_slots, *, a64: bool) -> None: ...
 def tail_indirect(self, f, table, sig, index, src, n, *, a64: bool) -> None: ...
 ```
-The core passes the value from `maddr`/`taddr` at every call. **Contract**: with `a64` true (for a
+`lo` (also required, step 2a): the memory's declared minimum in bytes if it is i64 (an import's
+own declared minimum), else 0; the `k ≤ min` path needs it, and it is a lower bound of the size at
+run time (linking guarantees it; `JitInstance` checks it again, `LinkError`). The core passes the
+value from `maddr`/`taddr` at every call. **Contract**: with `a64` true (for a
 copy: the side's flag), the address or index operand is a full 64-bit value; a copy's `n` is 64-bit
 only when both flags are true (the narrower type, as the validator). With `a64` false, operands
 are i32 and the method emits exactly today's code. The core never passes an `AddK` with `a64` true.
@@ -590,3 +596,16 @@ document to update"):
   address-type check, `pyc` (`_grow64`, `_tgrow64`, `_dseg64`, `_eseg64`, and `_mem64` for the
   instantiation check), JIT `unsupported` (`memory64`/`table64`); `pyc` claims `memory64`: 8 657 pass / 0
   fail / 3 xfail / 59 skip. The tests are in `tests/test_memory64.py` (flat `tests/`, no `tests/frontend`).
+* 2026-11-04: step 2a implemented: D39 amendment B in both JITs (`a64` on the eleven methods, the
+  table ones asserting `not a64` until step 3; `lo` required on `load`/`store`/`simd`,
+  maintainer), the i64 `_bounds` paths (`k ≤ lo` and `k < 2³¹` on x86-64, `k ≤ lo` on aarch64, else
+  the carry-checked add), bulk memory with the carry, mixed copies at each side's width, the grow
+  result masked by the memory's width, `MemoryError` for a min ≥ 2⁴⁸ pages. Found while testing:
+  `offset + size ≥ 2⁶⁴` with a register index must be an unconditional trap (above). **Temporary
+  (lifted in step 2b):** an i64 memory has the i32 reservation, so it is capped at 65 536 pages; a
+  grow past it returns −1 and a larger min raises `MemoryError("failed to reserve N bytes")`.
+  Results: the `memory64/` files without an i64 table pass on both JITs, guard and explicit
+  (aarch64 under QEMU); `memory64-imports.wast` fails only its 30 `unsupported: table64` commands.
+* 2026-11-04: step 2a review: the x86-64 `k ≤ min` path is bounded by `k < 2³¹`; at `k = 2³¹` the
+  `sub rdx, k` of a memory other than memory 0 did not encode (internal `ValueError` on a valid
+  module); a compile test pins it.

@@ -855,3 +855,7 @@ reservation is a crash, not a trap: the explicit-mode tests and differential run
   and the JIT tests in guard and explicit mode: 260 passed, 0 failed. Android before CPython 3.13
   (`sys.platform == "linux"` there, e.g. Chaquopy) is not a target (maintainer): it stays explicit.
 * 2026-11-03: implemented: steps 1-5 and 7 done and verified in CI; step 6 moved to the artifact-format spec (phase 5).
+* 2026-11-04 (S0009 step 2a): a module with an i64 memory is no longer explicit as a whole. The
+  check is chosen per access: in a guard module, accesses to i32 memories stay unchecked fault
+  points, accesses to i64 memories are always checked explicitly and are not in the fault map
+  (no guard can cover a 64-bit index, S0009). Nothing changes in the handler or its rows.

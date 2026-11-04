@@ -141,9 +141,7 @@ def unsupported(mod: ValidModule, ops: frozenset[int]) -> str | None:
 
     if not mod.get("validated"):
         return "module not fully validated"
-    if I64 in mod["maddr"]:  # S0009 steps 2a and 3 remove these
-        return "memory64"
-    if I64 in mod["taddr"]:
+    if I64 in mod["taddr"]:  # S0009 step 3 removes this
         return "table64"
     imps: list[tuple[Any, ...]] = mod["imports"]
     vts: list[Any] = [t for ps, rs in mod["types"] for t in (*ps, *rs)]
@@ -210,6 +208,11 @@ class _Mod:
     nimpg: int
     records: dict[int, int]  # function index -> record
     sigs: dict[int, int]  # type index -> signature word
+    # per memory (imports first): i64 address type, declared minimum in bytes if i64 else 0;
+    # per table: i64 index type (D39 amendment B, S0009)
+    m64: list[bool] = field(default_factory=list[bool])
+    mlo: list[int] = field(default_factory=list[int])
+    t64: list[bool] = field(default_factory=list[bool])
 
 
 def compile_module(mod: ValidModule, b: Backend[Any, Any], target: str) -> Compiled:
@@ -240,6 +243,10 @@ def compile_module(mod: ValidModule, b: Backend[Any, Any], target: str) -> Compi
         layout, gimps + [g[0] for g in mod["globals"]], len(gimps),
         {f: r for r, f in enumerate(sorted(refd))}, {t: k for k, t in enumerate(sigs)},
     )  # fmt: skip
+    mins = [im[3][0] for im in imps if im[0] == "mem"] + [mt[0] for mt in mod["mems"]]
+    m.m64 = [at == I64 for at in mod["maddr"]]
+    m.mlo = [mn << 16 if w else 0 for mn, w in zip(mins, m.m64, strict=True)]
+    m.t64 = [at == I64 for at in mod["taddr"]]
     nopin = os.environ.get("WABOROS_JIT_NOPIN", "")
     funcs: list[tuple[int, int]] = []
     for k, ((locs, _), insns) in enumerate(zip(mod["codes"], mod["insns"], strict=True)):
@@ -570,7 +577,8 @@ class _Func:
         self.flush()
         h0 = len(self.st) - n
         del self.st[h0:]
-        b.call_indirect(self.f, m.layout.table(table), m.layout.sig(m.sigs[ti]), index, self.L + h0)
+        lay, a64 = m.layout, self.t64(table)
+        b.call_indirect(self.f, lay.table(table), lay.sig(m.sigs[ti]), index, self.L + h0, a64=a64)
         self.st += [SLOTE] * nres
         self.maxh = max(self.maxh, h0 + max(n, nres))
 
@@ -604,7 +612,8 @@ class _Func:
         elif op == 0x13:
             assert x is not None
             lay = m.layout
-            b.tail_indirect(self.f, lay.table(ins[2]), lay.sig(m.sigs[ti]), x, src, n)
+            t, a64 = lay.table(ins[2]), self.t64(ins[2])
+            b.tail_indirect(self.f, t, lay.sig(m.sigs[ti]), x, src, n, a64=a64)
         else:
             assert x is not None
             b.tail_ref(self.f, x, src, n)
@@ -651,6 +660,13 @@ class _Func:
         """The memory immediate of memory.grow / memory.init: written only when the module has
         several memories (a one-memory module's code stays as it was; S0003)."""
         return [mi] if self.m.layout.memories > 1 else []
+
+    def a64(self, mi: int) -> tuple[bool, int]:
+        """(i64 address type, declared minimum in bytes if i64 else 0) of memory `mi`."""
+        return self.m.m64[mi], self.m.mlo[mi]
+
+    def t64(self, ti: int) -> bool:
+        return self.m.t64[ti]
 
     def pop3(self) -> tuple[Operand, Operand, Operand]:
         """Three operands of a bulk operation; `tos` is free afterwards (the backend uses it)."""
@@ -721,12 +737,14 @@ class _Func:
                 size, signed, w = LOADS[op]
                 addr = self.pop_k()
                 self.need_tos()
-                b.load(f, size, signed, w, tos, addr, ins[1], lay.memory(ins[3]))
+                a64, lo = self.a64(ins[3])
+                b.load(f, size, signed, w, tos, addr, ins[1], lay.memory(ins[3]), a64=a64, lo=lo)
                 push((TOS, None))
             elif op in STORES:
                 v = pop()
                 addr = self.pop_k()
-                b.store(f, STORES[op], addr, ins[1], v, lay.memory(ins[3]))
+                a64, lo = self.a64(ins[3])
+                b.store(f, STORES[op], addr, ins[1], v, lay.memory(ins[3]), a64=a64, lo=lo)
             elif op == 0x45 or op == 0x50:
                 if self.st[-1][0] == CMP:
                     cond, x, y, w = self.st[-1][1]
@@ -838,25 +856,27 @@ class _Func:
             elif op == 0x25:
                 x = pop()
                 self.need_tos()
-                b.table_get(f, tos, self.m.layout.table(ins[1]), x)
+                b.table_get(f, tos, self.m.layout.table(ins[1]), x, a64=self.t64(ins[1]))
                 push((TOS, None))
             elif op == 0x26:
                 v = pop()
                 x = pop()
                 self.need_tos()
-                b.table_set(f, self.m.layout.table(ins[1]), x, v)
+                b.table_set(f, self.m.layout.table(ins[1]), x, v, a64=self.t64(ins[1]))
             elif op == 0xFC10:
                 self.need_tos()
                 b.ctx_load(tos, self.m.layout.table(ins[1]) + 1, False)
                 push((TOS, None))
             elif op == 0xFC11:
-                b.table_fill(f, self.m.layout.table(ins[1]), *self.pop3())
+                b.table_fill(f, lay.table(ins[1]), *self.pop3(), a64=self.t64(ins[1]))
             elif op == 0xFC0E:
-                b.table_copy(f, lay.table(ins[1]), lay.table(ins[2]), *self.pop3())
+                a2 = (self.t64(ins[1]), self.t64(ins[2]))
+                b.table_copy(f, lay.table(ins[1]), lay.table(ins[2]), *self.pop3(), a64=a2)
             elif op == 0xFC0B:
-                b.memory_fill(f, *self.pop3(), lay.memory(ins[1]))
+                b.memory_fill(f, *self.pop3(), lay.memory(ins[1]), a64=self.a64(ins[1])[0])
             elif op == 0xFC0A:
-                b.memory_copy(f, *self.pop3(), lay.memory(ins[1]), lay.memory(ins[2]))
+                a2 = (self.a64(ins[1])[0], self.a64(ins[2])[0])
+                b.memory_copy(f, *self.pop3(), lay.memory(ins[1]), lay.memory(ins[2]), a64=a2)
             elif op == 0xFC0F:  # (init, delta) + table -> old size or -1
                 self.service(TABLE_GROW, 2, [ins[1]], 1)
             elif op == 0xFC0C:  # (d, s, n) + segment, table

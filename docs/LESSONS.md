@@ -491,3 +491,16 @@ What went wrong or surprised us while building the PoC, so it is not found again
     (`tests/test_memory64.py`, `test_memory64_rejections_have_the_right_reason`). Whether the runner
     should refuse kind `None` in claimed directories is an open S0001 question. Found: S0009 step 1,
     2026-11-04.
+74. **`Reservation.commit` past the reservation raises `ValueError`, not `OSError`.** `Memory.grow`
+    turns only `OSError` into −1, which was enough while every memory's maximum (65 536 pages) fit its
+    4 GiB reservation. An i64 memory has no such maximum: a grow past the reservation would have
+    escaped as a host error instead of −1, and a min above it as a `ValueError` at instantiation.
+    Rule: bound the size by the reservation before `commit` (step 2a caps i64 memories at 65 536 pages;
+    `test_grow_results_and_the_step_2a_cap`). Found: S0009 step 2a planning, 2026-11-04.
+75. **A static `offset + size` can exceed 64 bits.** With i64 memories the memarg offset goes up to
+    2⁶⁴ − 1, so `k = offset + size` does not fit a register: the x86-64 encoder refused the
+    immediate, and aarch64's `mov_imm` masks to 64 bits, so `adds x10, idx, k` would have checked
+    `idx + 3` and let `idx = 0, offset = 2⁶⁴ − 1` read from one byte below the memory. No index is in
+    bounds then: the check is an unconditional jump to the trap. Rule: an immediate that can be
+    wider than the register needs a test at that width (here offset `2⁶⁴ − 1`, `test_memory64.py`);
+    an encoder that masks silently is the dangerous one. Found: S0009 step 2a, 2026-11-04.
