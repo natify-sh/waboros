@@ -1,5 +1,5 @@
 ---
-title: Relaxed SIMD (deterministic profile) and wide arithmetic on pyc, jit-x86_64 and jit-aarch64
+title: Relaxed SIMD (deterministic profile; madd native per target) and wide arithmetic on pyc, jit-x86_64 and jit-aarch64
 kind: spec
 id: S0008
 status: draft
@@ -9,19 +9,22 @@ owner: maintainer
 updated: 2026-11-04
 ---
 
-# S0008 Relaxed SIMD (deterministic profile) and wide arithmetic on pyc, jit-x86_64 and jit-aarch64
+# S0008 Relaxed SIMD (deterministic profile; madd native per target) and wide arithmetic on pyc, jit-x86_64 and jit-aarch64
 
 ## Summary
 Two small proposals that Wasmtime 50 enables by default ([WASM-PROPOSALS.md](../WASM-PROPOSALS.md)),
 done as one parity step on the three targets (ROADMAP "Next" item 2; memory64, exceptions and GC follow):
 
 1. **Relaxed SIMD** (Wasm 3.0; 20 operators, `0xFD` sub-opcodes 256–275; `relaxed-simd/`, 79
-   commands). **Decided (maintainer, 2026-11-04): the deterministic profile of Wasm 3.0 on every
-   target** ([ISA-LEVELS.md](../ISA-LEVELS.md), last bullet). The profile fixes every relaxed
+   commands). **Decided (maintainer, 2026-11-04): the deterministic profile of Wasm 3.0 for 16
+   operators on every target; `relaxed_madd`/`relaxed_nmadd` native per target, as Wasmtime**
+   ([ISA-LEVELS.md](../ISA-LEVELS.md), last bullet; Q5). The profile fixes every relaxed
    parameter to 0 (spec, exec/numerics, "Relaxed Operations": "In the deterministic profile, every
    parameter is prescribed to be 0"; `relaxed(R)[A0, …, An] = A0`). Then 14 operators *are* existing
    S0005 operators and 6 are short compositions of existing ones. No new ISA, no level above the
-   baseline, no host-dependent result.
+   baseline. The result is the same on every target except madd/nmadd: fused on `jit-aarch64`
+   (`fmla`/`fmls`), unfused on `jit-x86_64` (no FMA at the baseline) and on `pyc`. It never depends
+   on the host CPU.
 2. **Wide arithmetic** (phase-4 proposal, not in 3.0; `i64.add128`, `i64.sub128`, `i64.mul_wide_s`,
    `i64.mul_wide_u`, `0xFC` 19–22; two `i64` results each). On the JITs it needs one new backend
    method, `wide`, that only these four opcodes reach.
@@ -34,12 +37,14 @@ wrong kind, because Wasmtime accepts it.
 
 ## Goals / Non-goals
 * Goals: `relaxed-simd/` (79 commands) and the pinned wide-arithmetic file (109 commands) pass on
-  `pyc`, `jit-x86_64` and `jit-aarch64` and are claimed by each (D25: the same results as `pyc`);
+  `pyc`, `jit-x86_64` and `jit-aarch64` and are claimed by each (D25: the same results as `pyc`,
+  except madd/nmadd on `jit-aarch64`, see "Semantics");
   JIT code stays at x86-64-v1 (SSE2) and ARMv8.0-A (D24); the D35 lists of every module without these
   opcodes and CoreMark stay byte-identical on both JITs; the generated `pyc` source of every
   module without them stays identical.
-* Non-goals: a "native" relaxed mode (FMA, `pshufb` swizzle semantics, hardware dot products), which
-  belongs to the ISA-level work ([ISA-LEVELS.md](../ISA-LEVELS.md), D42); a `Config` switch for it;
+* Non-goals: a "native" relaxed mode beyond aarch64 madd/nmadd (x86-64 FMA from x86-64-v3,
+  `pshufb` swizzle semantics, hardware dot products), which belongs to the ISA-level work
+  ([ISA-LEVELS.md](../ISA-LEVELS.md), D42); a `Config` switch for it;
   other phase-4 arithmetic ideas from the wide-arithmetic overview (`add_overflow`, `add_with_carry`);
   `mpy` (tier 3, D22); the public API; any speed claim (none is made, so no measurement plan).
 
@@ -67,11 +72,11 @@ construction). A later native mode would stop aliasing for the operators it chan
 `0xFC15`/`0xFC16` pop two, each pushes `i64`, `i64` (a small table next to `OPSIG`, which holds one
 result per opcode). No other front-end change.
 
-### The relaxed operators (opcode → deterministic result → lowering on each target)
+### The relaxed operators (opcode → result → lowering on each target)
 Spec references are to the Wasm 3.0 spec, exec/numerics, section "Relaxed Operations" (read
 2026-11-04); "alt 0" is the first argument of `relaxed(R)[…]`.
 
-| sub | operator | alt 0 (spec text) | maps to | pyc | x86-64 (SSE2) | aarch64 (NEON) |
+| sub | operator | alt 0 (spec text); madd/nmadd: the unfused alternative | maps to | pyc | x86-64 (SSE2) | aarch64 (NEON) |
 |---|---|---|---|---|---|---|
 | 0x100 | `i8x16.relaxed_swizzle` | `ivrelaxed_swizzle_lane`: `j < 16` → `i[j]`; `signed(j) < 0` → 0; else `relaxed[0, i[j mod n]]` → 0; note: "behaves like regular ivswizzle" | alias `i8x16.swizzle` (0x0E) | existing | existing (byte gather, class L) | existing (`tbl`) |
 | 0x101–0x104 | `i32x4.relaxed_trunc_{f32x4_s,f32x4_u,f64x2_s_zero,f64x2_u_zero}` | `relaxed[trunc_sat_{s,u}(z), R]`; note: "behaves like regular trunc_sat" | alias 0xF8, 0xF9, 0xFC, 0xFD | existing | existing | existing |
@@ -79,9 +84,9 @@ Spec references are to the Wasm 3.0 spec, exec/numerics, section "Relaxed Operat
 | 0x10D, 0x10E | `f32x4.relaxed_{min,max}` | `relaxed[fmin/fmax(z1, z2), …]`; note: "behaves like regular fmin/fmax" | alias 0xE8, 0xE9 | existing | existing | existing |
 | 0x10F, 0x110 | `f64x2.relaxed_{min,max}` | as above | alias 0xF4, 0xF5 | existing | existing | existing |
 | 0x111 | `i16x8.relaxed_q15mulr_s` | both `−2^(N−1)`: `relaxed[2^(N−1)−1, …]`; else `iq15mulrsat_s`; note: "behaves like regular iq15mulrsat_s" | alias 0x82 | existing | existing | existing (`sqrdmulh`) |
-| 0x105 | `f32x4.relaxed_madd` | `relaxed[fadd(fmul(z1, z2), z3), fma(z1, z2, z3)]`; note: "the unfused behaviour is used" | `f32x4.add(f32x4.mul(a, b), c)` | the two helpers composed | `mulps 0 1; addps 0 2` | `fmul.4s 0 0 1; fadd.4s 0 0 2` |
-| 0x106 | `f32x4.relaxed_nmadd` | `frelaxed_madd(−z1, z2, z3)` | `add(mul(neg a, b), c)` ≡ `c − a·b` (below) | composed | `mulps 0 1; subps 2 0` | `fmul.4s 0 0 1; fsub.4s 0 2 0` |
-| 0x107, 0x108 | `f64x2.relaxed_madd`, `_nmadd` | as f32x4 | as f32x4 | composed | `mulpd`, `addpd`/`subpd` | `.2d` forms |
+| 0x105 | `f32x4.relaxed_madd` | `relaxed[fadd(fmul(z1, z2), z3), fma(z1, z2, z3)]`; note: "the unfused behaviour is used" | `f32x4.add(f32x4.mul(a, b), c)` | the two helpers composed | `mulps 0 1; addps 0 2` | fused: `fmla.4s 2 0 1` (`c + a·b`, result moved to v0) |
+| 0x106 | `f32x4.relaxed_nmadd` | `frelaxed_madd(−z1, z2, z3)` | `add(mul(neg a, b), c)` ≡ `c − a·b` (below) | composed | `mulps 0 1; subps 2 0` | fused: `fmls.4s 2 0 1` (`c − a·b`, result moved to v0) |
+| 0x107, 0x108 | `f64x2.relaxed_madd`, `_nmadd` | as f32x4 | as f32x4 | composed | `mulpd`, `addpd`/`subpd` | `.2d` forms (fused) |
 | 0x112 | `i16x8.relaxed_dot_i8x16_i7x16_s` | `vextbinop` row `relaxed_dot_s`: `sx2 = relaxed[s, u]` → s; `f = ivrelaxed_dot = relaxed[ivdot, ivdotsat]` → `ivdot_16` (wrapping) | Σ of products of sign-extended byte pairs, mod 2^16 | `i16x8.add(mul(ev a, ev b), mul(od a, od b))`, `ev`/`od` by `shl`/`shr_s` 8 | 11: `movaps 2 0; psrawi 2 8; movaps 3 1; psrawi 3 8; pmullw 2 3; psllwi 0 8; psrawi 0 8; psllwi 1 8; psrawi 1 8; pmullw 0 1; paddw 0 2` | `smull.8h 2 0 1; smull2.8h 3 0 1; addp.8h 0 2 3` |
 | 0x113 | `i32x4.relaxed_dot_i8x16_i7x16_add_s` | `vextternop`: `N = relaxed[2·N1, N2]` → 16: `ivrelaxed_dot_16`, extend_s to 32, `ivadd_pairwise_32`, `add c3` | `i32x4.add(i32x4.extadd_pairwise_i16x8_s(dot16(a, b)), c)` | composed | the dot above with temporaries in xmm3/xmm4 (xmm2 holds `c`), then `pcmpeqw 1 1; psrlwi 1 15; pmaddwd 0 1; paddd 0 2` (~15) | the dot, then `saddlp.4s 0 0; add.4s 0 0 2` |
 
@@ -91,11 +96,16 @@ Notes on the table:
   signed zeros included). So `c − a·b` gives the same bits as the spec's form except for the sign
   and payload of a NaN result, which the spec leaves open and our comparisons take by class (S0005,
   "NaN and determinism"). Each target may use either form.
-* **Never a fused instruction.** The unfused result is two roundings. aarch64 `fmla`/`fmls` are
-  fused and must not appear; SSE2 has no FMA. `pyc` composes its per-lane helpers, which round the
-  product to the lane's precision before the add. Computing `a*b + c` in doubles and rounding once
-  to f32 would be wrong: `FLT_MAX · 2 − FLT_MAX` gives `FLT_MAX` (the fused answer) instead of
-  `+inf`. The pinned test accepts both answers, so only the Test plan's differential catches this.
+* **Fused only on aarch64.** The unfused result is two roundings. `jit-x86_64` (SSE2 has no FMA)
+  and `pyc` use it; `jit-aarch64` uses the fused `fmla`/`fmls` (one rounding), as Wasmtime does on
+  aarch64. `fmls Vd, Vn, Vm` computes `Vd − Vn·Vm` fused (ARM ARM, C7.2 "FMLS (vector)", to be
+  checked against the manual and `llvm-mc` in step 2: not available when this was written), so
+  nmadd = `fma(−a, b, c)` = `fmls Vd(c), Va, Vb`; madd = `fmla Vd(c), Va, Vb`. The accumulator is
+  `c`, so the program copies `c` into a scratch register, fuses, and moves the result to v0.
+  `pyc` composes its per-lane helpers, which round the product to the lane's precision before the
+  add. Computing `a*b + c` in doubles and rounding once to f32 would be wrong for the unfused
+  targets: `FLT_MAX · 2 − FLT_MAX` gives `FLT_MAX` (the fused answer) instead of `+inf`. The pinned
+  test accepts both answers, so only the Test plan's differential catches this.
 * **dot**: the products of two sign-extended bytes fit in 16 bits (from −16 256 to 16 384), so
   `pmullw`/`smull` are exact; the pairwise add wraps (`paddw`, `addp`), as `ivdot` does (`−128·−128 ·
   2 = 32 768` wraps to `−32 768`; a pinned command checks this lane).
@@ -106,7 +116,7 @@ Notes on the table:
 **Verified before writing (2026-11-04, scratch script, not committed):** the table's compositions, built
 from `pyc`'s existing helpers, pass all 71 `assert_return` of the pinned `relaxed-simd/` (the 8
 other commands are modules), and equal Wasmtime 50.0.1 with `wasm_relaxed_simd_deterministic`
-for every operator except madd/nmadd on 3 000 inputs each (random, special floats, byte
+for every operator except madd/nmadd (unfused, as `pyc` and `jit-x86_64` do) on 3 000 inputs each (random, special floats, byte
 patterns), NaN lanes by class. For madd/nmadd see "Semantics".
 
 ### Wide arithmetic: one backend method (D39)
@@ -167,7 +177,8 @@ k=True)`). Before the statement, the entries below the operands that can trap ar
 * **Oracle Config** (`wasmtime_engine.py`, S0001: "every switch the claimed directories need,
   explicit"): add `wasm_wide_arithmetic` (on by default in 50.0.1, explicit by the rule) and
   `wasm_relaxed_simd_deterministic` (Q4). Measured with both switches: the oracle passes all 71 + 99
-  `assert_return` and 8 `assert_invalid`.
+  `assert_return` and 8 `assert_invalid`. Madd/nmadd are exempt from the bit-exact oracle
+  comparison on x86 (Q4).
 
 ### Context ABI, artifact, ISA: unchanged
 No new context word, trap code, libcall, trampoline or frame rule; baseline instructions only
@@ -179,10 +190,18 @@ operations instead of exposing a carry.
 
 ## Semantics
 
-### Relaxed SIMD: the deterministic profile, and where Wasmtime differs
-Every relaxed operator gives alt 0 on every target and in `pyc`, independent of the host CPU, so
-the D35 cross-host identity holds and `pyc` stays a bit-exact oracle (NaN payloads aside, as for
-all float operators, S0005).
+### Relaxed SIMD: the deterministic profile, madd/nmadd native per target
+Sixteen operators give alt 0 on every target and in `pyc`, independent of the host CPU, so `pyc`
+stays a bit-exact oracle for them (NaN payloads aside, as for all float operators, S0005).
+`f32x4/f64x2.relaxed_madd` and `relaxed_nmadd` follow Wasmtime's native choice per architecture
+(maintainer, 2026-11-04): **fused on `jit-aarch64`, unfused on `jit-x86_64` and `pyc`.** So relaxed
+SIMD is **no longer one result on every target**. The pinned tests accept both: in
+`relaxed_madd_nmadd.wast` 8 of 18 `assert_return` are `either` with the fused and the unfused value
+(first command: `FLT_MAX·2+(−FLT_MAX)` → `FLT_MAX` or `+inf`), the other 10 have one result in both
+(checked in the pinned JSON, 2026-11-04; the runner's `either` support is in "Tests"). The code for a target is the same on every host, so D35 (cross-host byte
+identity) is unaffected: the result differs by target, not by host. FMA on x86-64 arrives with
+x86-64-v3 (FMA3), when ISA levels above the baseline are adopted
+([ISA-LEVELS.md](../ISA-LEVELS.md)); until then `jit-x86_64` matches Wasmtime on a CPU without FMA.
 
 **Measured deviation from Wasmtime (2026-11-04, Wasmtime 50.0.1, Xeon 2.1 GHz with FMA).**
 * Wasmtime's `wasm_relaxed_simd_deterministic` **fuses** `relaxed_madd`/`relaxed_nmadd`:
@@ -193,12 +212,21 @@ all float operators, S0005).
   23 928 of 60 000 calls differ from the 3.0 profile (swizzle, trunc, laneselect, min/max, dot,
   madd).
 
-So the maintainer's decision (the 3.0 profile) is a **deliberate deviation from Wasmtime** for
-madd/nmadd only. It is recorded in DECISIONS.md with this evidence (CLAUDE.md, "Wasmtime is the
-oracle"). The spec text is normative, the pinned tests accept both answers, and following Wasmtime
-would need FMA, which x86-64-v1 lacks: a software FMA per lane is a long exact-product sequence,
-D25 forbids a computation helper, and `pyc` would need `math.fma`, which exists only from Python
-3.13 (D19: minimum 3.11). Q5 asks the maintainer to confirm this with the data above.
+So the maintainer's decision is **Wasmtime's native choice per architecture** for madd/nmadd, not
+its deterministic switch (which fuses on every host). `jit-aarch64` is fused as Wasmtime is on
+aarch64; `jit-x86_64` is unfused as Wasmtime is on an x86 CPU without FMA; `pyc` is unfused (the 3.0
+deterministic profile, target-neutral; `math.fma` exists only from Python 3.13, D19: minimum 3.11).
+The decision goes into DECISIONS.md when this spec is approved. A software FMA on SSE2 was
+rejected: a long exact-product sequence per lane, and D25 forbids a computation helper.
+
+**Consequences.**
+* Bit-exact comparisons against `pyc` (`spec_diff`, the differential tests, the D25 parity claim)
+  exempt madd/nmadd on `jit-aarch64`. Instead its madd/nmadd is checked (Test plan) against a fused
+  reference (`math.fma` where Python is 3.13 or newer, exact `Fraction` arithmetic rounded once
+  otherwise) and against Wasmtime on an aarch64 host (CI's arm64 job, the platforms Linux arm cell).
+* On `jit-x86_64` and `pyc` madd/nmadd are checked against the unfused reference.
+* Q4: the oracle switch fuses madd/nmadd on every host, so on x86 hosts it differs from
+  `jit-x86_64` for these two operators only.
 
 ### Wide arithmetic
 From the proposal's Overview, "Execution": `add128`/`sub128` join `c1:c2` and `c3:c4` (low:high)
@@ -245,7 +273,8 @@ New encoder forms: `adc`, `sbc`, `umulh`, `smulh`, each checked against `llvm-mc
 * **Spec parity, both bounds modes**: for each JIT, `uv run python -m tests.spec.run --engine <jit>
   relaxed-simd wide-arithmetic` with `WABOROS_JIT_BOUNDS=guard` and `=explicit`: 79 + 109 pass, 0 fail.
   `uv run python tools/spec_diff.py pyc <jit> relaxed-simd wide-arithmetic` is empty (no
-  `--allow-unsupported` at the claim). `jit-aarch64` under QEMU:
+  `--allow-unsupported` at the claim); for `jit-aarch64` the madd/nmadd results are exempt from the
+  comparison (fused there), and its pinned `either` assertions pass. `jit-aarch64` under QEMU:
   `python3 tools/run_arm64.py -m tests.spec.run --engine jit-aarch64 --in-process relaxed-simd
   wide-arithmetic`, in both modes. `jit-x86_64` `relaxed-simd` also under the SSE2-only `qemu64`
   CPU with `WABOROS_JIT_BOUNDS=explicit`, as the CI `simd` step does.
@@ -261,9 +290,12 @@ New encoder forms: `adc`, `sbc`, `umulh`, `smulh`, each checked against `llvm-mc
   case (the flags test).
 * **Differential, relaxed** (a test, seeded, ~500 inputs per operator: random, special floats,
   byte patterns as in the scratch check above): for each target, the 16 operators other than
-  madd/nmadd equal Wasmtime with `wasm_relaxed_simd_deterministic`. madd/nmadd equal `pyc`
-  bit for bit and **differ from fused** on the `FLT_MAX` case. All comparisons take NaN lanes by
-  class. This covers `relaxed_trunc`, which has no pinned assertion.
+  madd/nmadd equal Wasmtime with `wasm_relaxed_simd_deterministic`. madd/nmadd: on `pyc`
+  and `jit-x86_64`, equal to the unfused reference bit for bit and **differ from fused** on the
+  `FLT_MAX` case; on `jit-aarch64`, equal to a fused reference (`math.fma` where Python >= 3.13,
+  exact `Fraction` arithmetic rounded once otherwise) and **differ from unfused** on the same case,
+  and equal to Wasmtime on an aarch64 host in CI's arm64 job (platforms Linux arm cell; under QEMU
+  the reference alone). All comparisons take NaN lanes by class. This covers `relaxed_trunc`, which has no pinned assertion.
 * **Front end**: decode and validate of each relaxed sub-opcode (aliases yield the S0005 tuple;
   composites their own); `0xFC` 18 and 23 stay `Malformed`; wrong operand types fail validation;
   the wide `assert_invalid` commands pass on every target.
@@ -278,11 +310,12 @@ New encoder forms: `adc`, `sbc`, `umulh`, `smulh`, each checked against `llvm-mc
 
 A step that needs more than its size stops and reports. Docs per step (STANDARDS.md, "Which
 document to update"): FEATURES.md through `python3 tools/features.py` plus its notes (relaxed SIMD:
-"deterministic profile of 3.0; madd unfused, unlike Wasmtime's deterministic switch"; wide
+"deterministic profile of 3.0; madd/nmadd native per target as Wasmtime: fused on aarch64,
+unfused on x86-64 and pyc"; wide
 arithmetic: done); WASM-PROPOSALS.md rows (relaxed SIMD, wide arithmetic → yes on all three);
 TARGETS.md (the "not done" list); ROADMAP.md ("Next" item 2 done); TESTING.md (the proposal pin as a
 test source); S0001 Changes (second pin, the two oracle switches); DECISIONS.md (the deterministic
-profile and the madd deviation, one new decision; the `wide` method in D39's paragraph);
+profile and madd/nmadd native per target, one new decision, on approval; the `wide` method in D39's paragraph);
 ISA-LEVELS.md (relaxed SIMD now done at the baseline; the native-mode bullet stays).
 
 ## Alternatives considered
@@ -294,8 +327,12 @@ ISA-LEVELS.md (relaxed SIMD now done at the baseline; the native-mode bullet sta
   place): works for madd/nmadd without temporaries, but the dot products need temporaries (scratch
   slots that the operator's own scratch rule overlaps). Programs in the backends' tables are shorter and
   follow S0005's pattern.
-* **Fused madd, as Wasmtime's deterministic switch does**: needs FMA, which the baseline lacks
-  (Semantics). Rejected by the maintainer's decision; Q5 confirms with the measured data.
+* **Unfused madd on every target (the plain 3.0 profile)**: one result everywhere, `pyc` a bit-exact
+  oracle for all 20 operators, but it deviates from Wasmtime on aarch64 and wastes `fmla`. Rejected
+  by the maintainer's decision (Q5).
+* **Fused madd on every target, as Wasmtime's deterministic switch**: needs FMA, which the x86-64
+  baseline lacks (software FMA per lane, or `math.fma` that Python 3.11-3.12 lacks). Rejected by the
+  maintainer's decision; x86-64 FMA waits for x86-64-v3.
 * **Wide arithmetic in the core with existing operations, no backend method**: `add128` is
   `add`, `cmp_set lt_u` for the carry, two more `add`s through `tos` and a scratch slot (~6 backend
   calls). `mul_wide` needs four 32×32 partial products, carries and, for `_s`, the correction
@@ -322,14 +359,18 @@ ISA-LEVELS.md (relaxed SIMD now done at the baseline; the native-mode bullet sta
   tarball (a fork of the spec repository: every core file again, older); (c) vendor the `.wast`.
   Recommended: (a); it moves to the spec pin when the proposal merges.
 * **Q4 The oracle's relaxed switch.** (a) Add `wasm_relaxed_simd_deterministic`, so the oracle does
-  not depend on the host CPU, and differential runs compare 16 of 20 operators exactly; (b) leave
-  the oracle native (host-dependent; the pinned tests pass either way). Recommended: (a); the oracle
-  passes all 79 with it (measured).
-* **Q5 madd/nmadd versus Wasmtime.** (a) The 3.0 profile, unfused, as decided, with a recorded
-  deviation from Wasmtime's deterministic switch (fused); (b) fused, as Wasmtime: software FMA on
-  SSE2, `fmla` on aarch64, `math.fma` or an exact emulation in `pyc` for 3.11–3.12. Recommended: (a).
-  The spec text is normative, and (b) breaks the baseline-only rule's spirit (D24) for two
-  operators.
+  not depend on the host CPU, and differential runs compare 16 of 20 operators exactly, with
+  madd/nmadd exempt from the bit-exact comparison on x86 (the switch fuses them, `jit-x86_64` does
+  not) and compared against the unfused reference instead; (b) leave the oracle native
+  (host-dependent; the pinned tests pass either way; madd/nmadd then accept either result through
+  the `either` assertions). Recommended: (a), keep the switch; the oracle passes all 79 with it
+  (measured).
+* **Q5 madd/nmadd versus Wasmtime. Decided (maintainer, 2026-11-04):** "as Wasmtime: FMA on aarch64
+  and unfused on SSE2; FMA for x86-64 later, when we add higher ISA levels". So `jit-aarch64` is
+  fused (`fmla`/`fmls`), `jit-x86_64` and `pyc` unfused; the other 16 operators keep the
+  deterministic profile. DECISIONS.md gets the decision when this spec is approved.
 
 ## Changes
 * 2026-11-04: created (draft).
+* 2026-11-04: Q5 decided: madd/nmadd native per target as Wasmtime (fused on aarch64, unfused on
+  x86-64 and pyc); consequences in Semantics, Test plan, Alternatives, Q4.
