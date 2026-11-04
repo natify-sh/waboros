@@ -425,7 +425,7 @@ error, a Python exception or a crash, on every target and host. On 32-bit `pyc` 
 | grow by 2³², 2⁴⁸−2, 2⁴⁸, 2⁶³ | −1 each | −1 each (2⁴⁸−2: by the size check, "Runtime") | −1 each |
 | `table.grow` (i64) by 10⁷ | 1 | 1 | 1 |
 | `table.grow` (i64) by 10⁸; by 2⁴⁰ | **error** "out of memory (failed to allocate …)" (not −1) | −1 (D27 cap; the spec allows it) | the same |
-| table64 min 2³² elements | instantiation error (out of memory) | instantiation error (D27 cap) | the same |
+| table min that cannot be allocated (i64 2³², 2⁶¹, 2⁶⁴−1; i32 2³²−1); an i32 min of 10⁸ | error "out of memory (failed to allocate N bytes)"; 10⁸ instantiates | no cap at instantiation; a failed allocation is `MemoryError("out of memory (failed to allocate N bytes)")`, N = 8 × elements, i32 and i64 tables | the same (`_tnew` for a min above 10⁷; smaller mins keep their source) |
 | an access with offset `0xFFFF_FFFF_FFFF_FFFF` | trap | trap | trap |
 
 **Memories follow Wasmtime** (Q1 (b)). The rule is the same on every target: no cap beyond 2⁴⁸ − 1
@@ -491,8 +491,12 @@ reason). This is recorded in step 1 as D27 applied to i64 tables.
     then by 2²⁰ → 65 537, both moving); after each a store and load at
     `size − 8`. CI can run it because pages commit lazily and the copy skips zero pages: about 3 s
     and a few MiB of RSS on the dev VM. The test asserts RSS grew by less than 64 MiB (where
-    `/proc/self/status` exists). Native rows only; under QEMU the cheap variant stands in. On
-    Windows a commit is charged to the commit limit, so −1 is accepted with nothing changed;
+    `/proc/self/status` exists). Native rows only; under QEMU the cheap variant stands in. A host
+    may not provide these sizes (a container's limits, Windows' commit charge: CI's cibuildwheel and
+    Windows cells refused the 2²⁰-page min and grow). The test probes each size once (a
+    `Reservation` of exactly what the instantiation or move needs, freed at once): where the host
+    can, it asserts Wasmtime's results; where it cannot, the clean failure (`MemoryError` at
+    instantiation, −1 on grow with base, size, context words and marks unchanged), on every OS;
   * **the size check**: grow by 2⁴⁸ − 2 from 1 page returns −1, and `Reservation(2⁶³)` raises
     `OSError` without mapping; a planted removal of the check must fail.
 * **`pyc`**: i64 grow failure −1, also when `MemoryError` is injected; min 2⁴⁸ gives Wasmtime's
@@ -642,3 +646,23 @@ document to update"):
   the old reservation on any exception, and every context write (bind, in-place grow, move) puts
   the base before the size. The entry counters are restored also when an exception lands right
   after `enter()`, still only by the owner thread (LESSONS 78, 79).
+* 2026-11-04: step 3 implemented: i64 tables on both JITs. `_element` reads an i64 index with a
+  64-bit move and compares it with the 64-bit `size` word (`cmp; jae` / `cmp; b.hs`);
+  `table_fill`/`table_copy` read i64 operands at 64 bits and check each i64 side's end with the
+  carry (`add; jc` / `adds; b.hs`), `n` at the narrower width; `call_indirect`/`tail_indirect`
+  through `_element`, trap order unchanged. Tables stay explicit in guard mode. Runtime: `Table`
+  has the address width (`mask`): `table.grow` returns −1 at it, active element offsets are masked
+  by it. Corrected here: the "Limits" row of a huge table min (below). Both JITs claim `memory64`: 8 657 pass /
+  3 xfail / 59 skip in both bounds modes (aarch64 under QEMU); D35 lists change only in the 71
+  `json/memory64/` modules that were `unsupported: table64`.
+* 2026-11-04: test plan, "past 4 GiB": the Windows-only excuse is replaced by a probe of the host
+  on every OS (CI's cibuildwheel containers and Windows could not reserve or commit 66 GiB): Wasmtime's
+  results where the host provides the size, the clean failure where it does not (tests only).
+* 2026-11-04: huge table minimums (maintainer, option A): no cap at instantiation, as Wasmtime
+  50.0.1 (an i32 min of 10⁸ instantiates); every failed allocation of a table at instantiation
+  is `MemoryError("out of memory (failed to allocate N bytes)")`, N = 8 × elements, on the JIT
+  (`Table`) and on `pyc` (`_tnew`, emitted only for a min above 10⁷, so the source of every other
+  module is unchanged), for i32 and i64 tables, never an `OverflowError`.
+* 2026-11-04: step 3 review: the huge-minimum test keeps only sizes no host can provide (an i32 min
+  of 2³²−1 is allocated eagerly and could succeed with 32 GiB resident); D27 notes the eager
+  allocation and that a table above the cap cannot grow (grow of 0 is −1; Wasmtime returns the size).

@@ -1498,7 +1498,8 @@ class ModGen:
                 gi.append("    %s = %s" % (s.gname(i), s.val(init)))
         for ti, (mn, mx) in enumerate(mod["tables"]):
             k = len(s.timports) + ti
-            out.append("T%d = [None] * %d" % (k, mn))
+            big = mn > 10000000  # above D27's cap: a checked allocation (S0009), else as before
+            out.append(("T%d = _tnew(%d)" if big else "T%d = [None] * %d") % (k, mn))
             out.append("TX%d = _Table(T%d, %r)" % (k, k, mx))
         for i, im in enumerate(s.timports):
             L.append("    TX%d = imports[%r][%r]" % (i, im[1], im[2]))

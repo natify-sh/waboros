@@ -343,12 +343,19 @@ class Table:
     ctypes array that grows by reallocation; `grow` rewrites the base and size words of every
     context bound to it (code reads them at each use and never across a host call)."""
 
-    def __init__(self, size: int, maximum: int | None, init: int = 0, store: object = None) -> None:
+    def __init__(
+        self, size: int, maximum: int | None, init: int = 0, store: object = None, *,
+        a64: bool = False,
+    ) -> None:  # fmt: skip
         self.size, self.declared, self.store = size, maximum, store
+        self.mask = M64 if a64 else M32  # of table.grow's result and active element offsets
         self.max = min(TABLE_LIMIT, M32 if maximum is None else maximum)
-        self.buf = (ctypes.c_uint64 * max(size, 1))()
-        if init:
-            self.buf[:size] = [init] * size
+        try:  # a minimum that cannot be allocated: Wasmtime's error, as pyc's (S0009)
+            self.buf = (ctypes.c_uint64 * max(size, 1))()
+            if init:
+                self.buf[:size] = [init] * size
+        except (MemoryError, OverflowError):
+            raise MemoryError(f"out of memory (failed to allocate {8 * size} bytes)") from None
         self.users: list[tuple[ctypes.Array[ctypes.c_uint64], int]] = []
 
     def bind(self, ctx: "ctypes.Array[ctypes.c_uint64]", word: int) -> None:
@@ -356,8 +363,8 @@ class Table:
         self.users.append((ctx, word))
 
     def grow(self, delta: int, init: int) -> int:
-        """table.grow: the old size, or -1 (as u32). Another thread than the store's raises
-        RuntimeError before anything changes."""
+        """table.grow: the old size, or -1 at the table's address width (S0009). Another thread
+        than the store's raises RuntimeError before anything changes."""
         st = cast(StoreState | None, self.store)
         took = st.claim() if st is not None else False
         try:
@@ -369,7 +376,7 @@ class Table:
     def _grow(self, delta: int, init: int) -> int:
         old = self.size
         if delta > self.max - old:
-            return M32
+            return self.mask
         if old + delta > len(self.buf):
             buf = (ctypes.c_uint64 * max(old + delta, 2 * len(self.buf)))()
             ctypes.memmove(buf, self.buf, 8 * old)
@@ -718,7 +725,8 @@ class JitInstance(Instance):
                     ctx[word] = self._const(init) & mask(t)
                 self.gaddr.append(base + 8 * word)
         for (mn, mx), init in zip(mod["tables"], mod["tinit"], strict=True):
-            tables.append(Table(mn, mx, 0 if init is None else self._const(init), store))
+            at = mod["taddr"][len(tables)] == I64
+            tables.append(Table(mn, mx, 0 if init is None else self._const(init), store, a64=at))
         for i, t in enumerate(tables):
             t.bind(ctx, lay.table(i))
         self.tables = tables
@@ -735,13 +743,13 @@ class JitInstance(Instance):
         if self.datas and memories:
             services.append((MEMORY_INIT, self._memory_init, 4 + (len(memories) > 1), 0))
         for j, fn, nargs, nres in services:  # runtime services (libcalls), not computation (D25)
-            cb = HOST(self._host(fn, nargs, [M32] * nres))
+            cb = HOST(self._host(fn, nargs, [M64] * nres))  # table.grow: masked by the table
             self.callbacks.append(cb)
             ctx[lay.libcall(j)] = ctypes.cast(cb, ctypes.c_void_p).value or 0
         segs: list[tuple[int, Any, Any, Any]] = mod["elem_info"]
         for i, ((ti, off, _, _), mode) in enumerate(zip(segs, mod["elem_mode"], strict=True)):
             if mode == "active":
-                tables[ti].write(self._const(off) & M32, self.elems[i])
+                tables[ti].write(self._const(off) & tables[ti].mask, self.elems[i])
             if mode != "passive":
                 self.elems[i] = []
         for i, ((off, data), mi) in enumerate(zip(mod["datas"], mod["data_mem"], strict=True)):

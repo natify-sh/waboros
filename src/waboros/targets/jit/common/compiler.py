@@ -141,8 +141,6 @@ def unsupported(mod: ValidModule, ops: frozenset[int]) -> str | None:
 
     if not mod.get("validated"):
         return "module not fully validated"
-    if I64 in mod["taddr"]:  # S0009 step 3 removes this
-        return "table64"
     imps: list[tuple[Any, ...]] = mod["imports"]
     vts: list[Any] = [t for ps, rs in mod["types"] for t in (*ps, *rs)]
     vts += [g[0] for g in mod["globals"]] + [im[3][0] for im in imps if im[0] == "global"]

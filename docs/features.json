@@ -101,7 +101,10 @@
         "jsPrimitiveBuiltins": null,
         "jsStringBuiltins": null,
         "jspi": null,
-        "memory64": null,
+        "memory64": [
+          "partial",
+          "8716/8719 over memory64/; xfail 3 (memory64/table64 1, memory64/table_init64 2); mostly: LinkError: unknown import spectest.table64"
+        ],
         "memoryControl": null,
         "moreArrayConstructors": null,
         "multibyteArrayAccess": null,
@@ -167,7 +170,10 @@
         "jsPrimitiveBuiltins": null,
         "jsStringBuiltins": null,
         "jspi": null,
-        "memory64": null,
+        "memory64": [
+          "partial",
+          "8716/8719 over memory64/; xfail 3 (memory64/table64 1, memory64/table_init64 2); mostly: LinkError: unknown import spectest.table64"
+        ],
         "memoryControl": null,
         "moreArrayConstructors": null,
         "multibyteArrayAccess": null,

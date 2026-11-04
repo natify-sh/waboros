@@ -949,26 +949,28 @@ class Backend:
         else:
             self.move(Reg(r), o, False)
 
-    def _element(self, f: Frame, word: int, index: Operand) -> Mem:
-        """Bounds-check index (rcx) against the table's size; the element's address via rdx."""
+    def _element(self, f: Frame, word: int, index: Operand, a64: bool) -> Mem:
+        """Bounds-check index (rcx) against the table's size; the element's address via rdx. An
+        i64 index (S0009) is read by a 64-bit move: `cmp` with the 64-bit size word, no carry."""
         a = self.a
-        self._u32(RCX, index)
+        if a64:
+            self.move(Reg(RCX), index, True)
+        else:
+            self._u32(RCX, index)
         a.alu("cmp", RCX, Mem(R15, 8 * word + 8), w=True)
         a.jcc("ae", self._stub(f, TrapCode.TABLE_OUT_OF_BOUNDS))
         a.mov(RDX, Mem(R15, 8 * word), w=True)
         return Mem(RDX, 0, RCX, 8)
 
     def table_get(self, f: Frame, dst: Reg, word: int, index: Operand, *, a64: bool) -> None:
-        assert not a64, "table64: S0009 step 3"
-        self.a.mov(dst.id, self._element(f, word, index), w=True)
+        self.a.mov(dst.id, self._element(f, word, index, a64), w=True)
 
     def table_set(
         self, f: Frame, word: int, index: Operand, value: Operand, *, a64: bool
     ) -> None:  # fmt: skip
         """The index is read (into rcx) before anything is written: either operand may be in
         `rax`. Then `rax` is free unless it holds `value`."""
-        assert not a64, "table64: S0009 step 3"
-        elem = self._element(f, word, index)
+        elem = self._element(f, word, index, a64)
         if not isinstance(value, Reg):
             self.move(Reg(RAX), value, True)  # a slot or an immediate: rcx/rdx are not touched
             value = Reg(RAX)
@@ -1099,10 +1101,9 @@ class Backend:
     def table_fill(
         self, f: Frame, word: int, i: Operand, v: Operand, n: Operand, *, a64: bool
     ) -> None:  # fmt: skip
-        assert not a64, "table64: S0009 step 3"
         a = self.a
-        self._three(i, v, n, True)
-        self._end_check(f, RAX, Mem(R15, 8 * word + 8), TrapCode.TABLE_OUT_OF_BOUNDS)
+        self._three(i, v, n, True, a64, a64)
+        self._end_check(f, RAX, Mem(R15, 8 * word + 8), TrapCode.TABLE_OUT_OF_BOUNDS, a64)
         a.shift("shl", RAX, 3, w=True)
         a.alu("add", RAX, Mem(R15, 8 * word), w=True)
         loop, done = a.label(), a.label()
@@ -1119,11 +1120,10 @@ class Backend:
         self, f: Frame, dst: int, src: int, d: Operand, s: Operand, n: Operand, *,
         a64: tuple[bool, bool],
     ) -> None:  # fmt: skip
-        assert a64 == (False, False), "table64: S0009 step 3"
-        a, oob = self.a, TrapCode.TABLE_OUT_OF_BOUNDS
-        self._three(d, s, n, False)
-        self._end_check(f, RAX, Mem(R15, 8 * dst + 8), oob)
-        self._end_check(f, RDX, Mem(R15, 8 * src + 8), oob)
+        a, oob, (ad, as_) = self.a, TrapCode.TABLE_OUT_OF_BOUNDS, a64
+        self._three(d, s, n, as_, ad, ad and as_)  # n: the narrower type, as memory_copy
+        self._end_check(f, RAX, Mem(R15, 8 * dst + 8), oob, ad)
+        self._end_check(f, RDX, Mem(R15, 8 * src + 8), oob, as_)
         for r, word in ((RAX, dst), (RDX, src)):
             a.shift("shl", r, 3, w=True)
             a.alu("add", r, Mem(R15, 8 * word), w=True)
@@ -1151,12 +1151,12 @@ class Backend:
         a.test(RAX, RAX)
         a.jcc("ne", f.unwind)
 
-    def _table_record(self, f: Frame, table: int, sig: int, index: Operand) -> None:
+    def _table_record(self, f: Frame, table: int, sig: int, index: Operand, a64: bool) -> None:
         """rdx = the function record of element `index`: bounds (TABLE_OUT_OF_BOUNDS), null
         (INDIRECT_CALL_TO_NULL), its canonical type id against the signature word (BAD_SIGNATURE),
         in the spec's order (Wasmtime's codes)."""
         a = self.a
-        elem = self._element(f, table, index)
+        elem = self._element(f, table, index, a64)
         a.mov(RDX, elem, w=True)
         a.test(RDX, RDX, w=True)
         a.jcc("e", self._stub(f, TrapCode.INDIRECT_CALL_TO_NULL))
@@ -1197,8 +1197,7 @@ class Backend:
     def call_indirect(
         self, f: Frame, table: int, sig: int, index: Operand, shift_slots: int, *, a64: bool
     ) -> None:  # fmt: skip
-        assert not a64, "table64: S0009 step 3"
-        self._table_record(f, table, sig, index)  # the index is read before r12 moves
+        self._table_record(f, table, sig, index, a64)  # the index is read before r12 moves
         self._call_record(f, shift_slots)
 
     def call_ref(self, f: Frame, ref: Operand, shift_slots: int) -> None:
@@ -1256,8 +1255,7 @@ class Backend:
     def tail_indirect(
         self, f: Frame, table: int, sig: int, index: Operand, src: int, n: int, *, a64: bool
     ) -> None:  # fmt: skip
-        assert not a64, "table64: S0009 step 3"
-        self._table_record(f, table, sig, index)
+        self._table_record(f, table, sig, index, a64)
         self._tail(f, src, n)
         self._tail_record()
 

@@ -50,7 +50,7 @@ directories (`test/core/<dir>/`) count only on a target that claims the feature
 | JS Primitive Builtins (`jsPrimitiveBuiltins`) | 2 | - | - | - | - |
 | JS String Builtins (`jsStringBuiltins`) | 5 | - | - | - | - |
 | JS Promise Integration (`jspi`) | 5 | - | - | - | - |
-| Memory64 (`memory64`) | 5 | since 30 | partial 8716/8719 | - | - |
+| Memory64 (`memory64`) | 5 | since 30 | partial 8716/8719 | partial 8716/8719 | partial 8716/8719 |
 | Memory Control (`memoryControl`) | 1 | - | - | - | - |
 | More Array Constructors (`moreArrayConstructors`) | 1 | - | - | - | - |
 | Multibyte Array Access (`multibyteArrayAccess`) | 2 | - | - | - | - |
@@ -82,7 +82,7 @@ directories (`test/core/<dir>/`) count only on a target that claims the feature
 **Implementation notes per proposal** (hand-written; Wasmtime's `Config.wasm_*` switch in brackets):
 
 * multi-memory (`wasm_multi_memory`): done on every target (D37); **needed for fused components** (D7).
-* memory64 (`wasm_memory64`): done and claimed on `pyc` (S0009 step 1: front end, validator, link, four helpers; 8 657 of 8 719 commands pass, 3 expected failures: `table64.wast:13` until `spectest.table64`, and the two GC commands of `table_init64.wast`); the JITs compile i64 memories since S0009 step 2a (not claimed yet) and refuse an i64 table as `unsupported` until step 3.
+* memory64 (`wasm_memory64`): done and claimed on all three targets: `pyc` (S0009 step 1: front end, validator, link, four helpers), `jit-x86_64` and `jit-aarch64` (i64 memories with explicit checks in every bounds mode, steps 2a and 2b; i64 tables, step 3). 8 657 of 8 719 commands pass on each, 3 expected failures: `table64.wast:13` until `spectest.table64` (step 4), and the two GC commands of `table_init64.wast`.
 * SIMD (`wasm_simd`): `pyc` v128 as an int, correct first (done, claimed); JIT: two slots per v128, SSE2 / NEON at the baseline (D24, D41, S0005; `jit-x86_64` complete and claimed, step 5d3; `jit-aarch64` complete in ARMv8.0-A NEON and
   claimed, step 5e2; the SIMD benchmark and the review, 5f, are done: SIMD is complete and claimed on all three targets).
 * relaxed SIMD (`wasm_relaxed_simd`, `_deterministic`): the deterministic profile of 3.0 for 16 operators, madd/nmadd native per target as Wasmtime (fused on aarch64, unfused on x86-64 and `pyc`; D49, S0008); done and claimed on `pyc` (S0008 step 1), `jit-x86_64` and `jit-aarch64` (step 2: each JIT maps the 20 operators in its own table, baseline instructions only).

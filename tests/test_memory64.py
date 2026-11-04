@@ -1,6 +1,6 @@
 # pyright: reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportArgumentType=false
-"""S0009 step 1: memory64 and table64 in the front end, the validator, `pyc`; the JIT refuses
-i64 tables as `unsupported` (since step 2a)."""
+"""S0009 step 1: memory64 and table64 in the front end, the validator, `pyc`; the JIT compiles
+i64 memories since step 2a and i64 tables since step 3."""
 
 import json
 from typing import Any
@@ -183,15 +183,13 @@ def test_pyc_minimum_that_cannot_be_provided(monkeypatch: pytest.MonkeyPatch) ->
 
 
 @pytest.mark.parametrize("target", ["jit-x86_64", "jit-aarch64"])
-def test_jit_refuses_i64_tables(target: str) -> None:
-    """i64 memories compile since step 2a (tests/jit/test_memory64.py); i64 tables in step 3."""
+def test_jit_compiles_i64_memories_and_tables(target: str) -> None:
+    """i64 memories since step 2a, i64 tables since step 3 (tests/jit/test_memory64.py)."""
     t = base.TARGETS[target]()
     assert t.supports(check(mem64(b"\x04\x01"))) is None
     m = check(module(sec(4, b"\x01\x70\x04\x01")))
-    assert t.supports(m) == "table64"
-    with pytest.raises(base.Unsupported) as e:
-        t.compile(m)
-    assert e.value.feature == "table64"
+    assert t.supports(m) is None
+    t.compile(m)
 
 
 def test_memory64_rejections_have_the_right_reason() -> None:

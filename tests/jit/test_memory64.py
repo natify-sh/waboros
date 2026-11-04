@@ -3,7 +3,8 @@
 explicit checks in both bounds modes, the `k <= min` path and the carry-checked one, constant
 addresses near 2**64, bulk memory at the 64-bit wrap, mixed i32/i64 copies; results and traps
 compared with `pyc` and Wasmtime. The D39 amendment B contract (`a64`, `lo` required) and the
-fault map of a guard module with mixed memories are checked without running (both targets)."""
+fault map of a guard module with mixed memories are checked without running (both targets).
+Step 3: i64 tables (access, bulk operations, indirect calls, element offsets, grow results)."""
 
 import errno
 import importlib.util
@@ -317,6 +318,153 @@ def test_mixed_memories_trap_in_both_modes(mode: str) -> None:
         assert trap_of(jit, "a" if first == "i64" else "b", M64) is TrapCode.MEMORY_OUT_OF_BOUNDS
 
 
+# ---------------------------------------------------------------- table64 (S0009 step 3)
+# $t: i64, 5 elements (max 20); $u: i32, 5 elements; the indices straddle size and 2**32 (a
+# 32-bit compare would take 2**32 for 0) and reach 2**64 - 1.
+TSIZE, M32 = 5, 0xFFFFFFFF
+TIDX = [0, 1, TSIZE - 1, TSIZE, 1 << 32, (1 << 32) + 1, 1 << 63, M64]
+
+
+def _tables() -> str:
+    out = [
+        """(module (type $ii (func (param i64) (result i64))) (type $v (func))
+  (table $t i64 5 20 funcref) (table $u 5 funcref) (table $big i64 1 funcref)
+  (global $g i64 (i64.const 3))
+  (elem (table $t) (i64.const 1) func $f1 $f2) (elem (table $t) (global.get $g) func $f3)
+  (elem (table $u) (i32.const 0) func $f4 $f5) (elem declare func $nop)
+  (func $f1 (type $ii) (i64.add (local.get 0) (i64.const 100)))
+  (func $f2 (type $ii) (i64.add (local.get 0) (i64.const 200)))
+  (func $f3 (type $ii) (i64.add (local.get 0) (i64.const 300)))
+  (func $f4 (type $ii) (i64.add (local.get 0) (i64.const 400)))
+  (func $f5 (type $ii) (i64.add (local.get 0) (i64.const 500)))
+  (func $nop (type $v))
+  (func (export "grow$big") (param i64) (result i64)
+    (table.grow $big (ref.null func) (local.get 0)))"""
+    ]
+    for t, at in (("$t", "i64"), ("$u", "i32")):
+        out.append(f"""
+  (func (export "peek{t}") (param {at}) (result i64)
+    (if (result i64) (ref.is_null (table.get {t} (local.get 0))) (then (i64.const -1))
+      (else (call_indirect {t} (type $ii) (i64.const 0) (local.get 0)))))
+  (func (export "set{t}") (param {at} i32)
+    (table.set {t} (local.get 0) (if (result funcref) (local.get 1)
+      (then (ref.func $f5)) (else (ref.null func)))))
+  (func (export "setnop{t}") (param {at}) (table.set {t} (local.get 0) (ref.func $nop)))
+  (func (export "fill{t}") (param {at} {at})
+    (table.fill {t} (local.get 0) (ref.func $f2) (local.get 1)))
+  (func (export "call{t}") (param {at} i64) (result i64)
+    (call_indirect {t} (type $ii) (local.get 1) (local.get 0)))
+  (func (export "tcall{t}") (param {at} i64) (result i64)
+    (return_call_indirect {t} (type $ii) (local.get 1) (local.get 0)))
+  (func (export "tos{t}") (param {at} {at}) (result i64)
+    (call_indirect {t} (type $ii) (i64.const 7) ({at}.add (local.get 0) (local.get 1))))
+  (func (export "grow{t}") (param {at}) (result {at})
+    (table.grow {t} (ref.null func) (local.get 0)))
+  (func (export "size{t}") (result {at}) (table.size {t}))""")
+        for k in TIDX:
+            if at == "i64" or k <= M32:  # the index as an `Imm`
+                k_ = f"({at}.const {k})"
+                out.append(f'(func (export "k{t}{k}") (result i64) '
+                           f"(call_indirect {t} (type $ii) (i64.const 9) {k_}))")  # fmt: skip
+                out.append(f'(func (export "kget{t}{k}") (result i32) '
+                           f"(ref.is_null (table.get {t} {k_})))")  # fmt: skip
+    for d, da in (("$t", "i64"), ("$u", "i32")):
+        for s, sa in (("$t", "i64"), ("$u", "i32")):
+            na = "i64" if da == sa == "i64" else "i32"  # n: the narrower type
+            args = "(local.get 0) (local.get 1) (local.get 2)"
+            out.append(f'(func (export "copy{d}{s}") (param {da} {sa} {na}) '
+                       f"(table.copy {d} {s} {args}))")  # fmt: skip
+    return "\n".join(out) + ")"
+
+
+TABLES = _tables()
+
+
+def _dump(e: Three) -> None:
+    """Every element of both tables, as the function it holds (or -1 for null)."""
+    for t in ("$t", "$u"):
+        for i in range(cast(list[int], e(f"size{t}"))[0]):
+            e(f"peek{t}", i)
+
+
+@pytest.mark.usefixtures("pins")
+def test_table64_access_bulk_and_calls(mode: str) -> None:
+    """table.get/set/fill/copy, call_indirect and return_call_indirect at 0, size - 1, size,
+    2**32, 2**63 and 2**64 - 1 with the index in a register, a slot, `tos` and an immediate; null
+    and signature traps after the bounds; fills and copies whose end wraps 2**64; copies between
+    an i32 and an i64 table (each side at its width, n the narrower); grow results. Tables are
+    explicit in either bounds mode."""
+    e = Three(wat(TABLES))
+    _dump(e)
+    for t, lim in (("$t", M64), ("$u", M32)):
+        idx = [i for i in TIDX if i <= lim]
+        for i in idx:
+            e(f"peek{t}", i)
+            e(f"call{t}", i, 5)
+            e(f"tcall{t}", i, 6)
+            e(f"k{t}{i}")
+            e(f"kget{t}{i}")
+        for x, y in ((0, 1), (TSIZE - 1, 0), (TSIZE, 0), (lim, 1), (lim, 3), (1 << 31, 1 << 31)):
+            e(f"tos{t}", x, y)
+        e(f"setnop{t}", 0)
+        e(f"call{t}", 0, 1)  # BAD_SIGNATURE
+        for i in idx:
+            e(f"set{t}", i, 1)
+        e(f"set{t}", 2, 0)
+        e(f"call{t}", 2, 1)  # INDIRECT_CALL_TO_NULL
+        _dump(e)
+        for i in idx:
+            for n in (0, 1, 2, max(TSIZE - i, 0), lim):
+                e(f"fill{t}", i, n)
+        _dump(e)
+    big = [0, 1, 2, 4, 5, 1 << 32, 1 << 63, M64 - 1, M64]
+    for d in ("$t", "$u"):
+        for s in ("$t", "$u"):
+            dw, sw = d == "$t", s == "$t"
+            ns = [0, 1, 2, 5] + ([M64, 1 << 63] if dw and sw else [M32])
+            for x in (x for x in big if dw or x <= M32):
+                for y in (y for y in big if sw or y <= M32):
+                    for n in ns:
+                        e(f"copy{d}{s}", x, y, n)
+            _dump(e)
+    for t, lim in (("$t", M64), ("$u", M32)):
+        for n in (1, lim, 1 << 32, 100, 0):
+            e(f"grow{t}", n)
+        _dump(e)
+
+
+def test_table64_grow_results_and_cap() -> None:
+    """-1 at the table's width; the D27 cap of 10M elements (Wasmtime raises out-of-memory
+    instead, so pyc is the reference)."""
+    e = Three(wat(TABLES))
+    assert e.jit("grow$big", 10_000_000) == [M64] == e.pyc("grow$big", 10_000_000)
+    assert e.jit("grow$big", 9_999_999) == [1] == e.pyc("grow$big", 9_999_999)
+    assert e.jit("grow$t", 100) == [M64] and e.jit("grow$u", 10_000_000) == [M32]
+
+
+@pytest.mark.parametrize("off", ["(i64.const 0x1_0000_0001)", "(i64.const -1)", "(i64.const 4)"])
+def test_table64_active_element_offsets(off: str) -> None:
+    """An active segment's i64 offset is not masked to 32 bits: each of these is out of bounds
+    (a 32-bit mask would place the first at 1) and traps at instantiation, as on pyc."""
+    text = f"""(module (table $t i64 5 funcref) (elem (table $t) {off} func $f $f) (func $f))"""
+    for target in ("pyc", JIT):
+        with pytest.raises(base.Trap) as ex:
+            build(wat(text), target)
+        assert ex.value.code is TrapCode.TABLE_OUT_OF_BOUNDS
+
+
+@pytest.mark.parametrize("n", [1 << 61, M64])
+def test_huge_table_minimum_is_out_of_memory(n: int) -> None:
+    """No cap at instantiation (as Wasmtime 50.0.1); a minimum that cannot be allocated is
+    Wasmtime's out-of-memory error on the JIT and on pyc, never an OverflowError or a crash
+    (S0009 "Limits"). Only sizes no host can provide: tables are allocated eagerly, so an i32
+    minimum of 2**32 - 1 (32 GiB) could succeed on a large or overcommitting host."""
+    for target in ("pyc", JIT):
+        with pytest.raises(MemoryError) as ex:
+            build(wat(f"(module (table i64 {n} funcref))"), target)
+        assert str(ex.value) == f"out of memory (failed to allocate {8 * n} bytes)"
+
+
 AMENDED = {"load": ("a64", "lo"), "store": ("a64", "lo"), "simd": ("a64", "lo"),
            "memory_fill": ("a64",), "memory_copy": ("a64",), "table_get": ("a64",),
            "table_set": ("a64",), "table_fill": ("a64",), "table_copy": ("a64",),
@@ -522,37 +670,75 @@ def _rss() -> int | None:
         return None
 
 
+def _fits(pages: int, moving: bool) -> bool:
+    """Can this host reserve and commit what an i64 memory of `pages` pages needs, at
+    instantiation (`moving` False) or as the target of a move? A container's or Windows' commit
+    limit may refuse it; the runtime must then fail cleanly (S0009 Test plan)."""
+    m = pages << 16
+    fixed = m <= instance.RESERVATION64 and not moving
+    size = (instance.RESERVATION64 if fixed else m + instance.GROWTH64) + instance.TAIL64
+    try:
+        Reservation(size, m).free()
+    except (OSError, MemoryError):
+        return False
+    return True
+
+
+def _grow_or_nothing(jit: Inst, delta: int, want: int, moves: bool, marks: dict[int, int]) -> bool:
+    """grow0 by `delta`: Wasmtime's result (`want`) where the host can provide the memory, else
+    -1 with the base, the size, both context words and the marks unchanged. True if it grew."""
+    mem = _mems(jit)[0]
+    ctx, word = mem.users[0]
+    before = (mem.res.addr, mem.pages, ctx[word], ctx[word + 1])
+    can = _fits(want + delta, moves)
+    got = jit("grow0", delta)
+    if not can:
+        assert got == [M64] and before == (mem.res.addr, mem.pages, ctx[word], ctx[word + 1])
+    else:
+        assert got == [want] and (mem.res.addr != before[0]) == moves
+    for at, v in marks.items():
+        assert jit("get0", at) == [v]
+    return can
+
+
 @pytest.mark.skipif(QEMU, reason="the cheap variant stands in under QEMU")
 def test_move_past_4_gib() -> None:
     """Real sizes: 1 page, +65 535 in place, +1 a move to 4 GiB + 64 KiB, +2**20 a move to
     68 GiB of address space; Wasmtime's row (+65 536 -> 1, then +2**20 -> 65 537). The copy skips
-    zero pages: RSS stays small. Windows charges a commit to its limit: -1 is accepted there."""
+    zero pages: RSS stays small. A host that cannot provide a size (a container's or Windows'
+    commit limit; probed by `_fits`) must return -1 with nothing changed, on every OS."""
     rss = _rss()
     jit = build(wat(NOHOST))
-    mem = _mems(jit)[0]
     jit("put0", 8, 0x5EED)
+    marks = {8: 0x5EED}
     steps = [(65535, 1, False), (1, 65536, True), (1 << 20, 65537, True)]
+    done = True
     for delta, want, moves in steps:
-        addr, got = mem.res.addr, jit("grow0", delta)
-        if got == [M64] and sys.platform == "win32":
-            assert mem.res.addr == addr and jit("get0", 8) == [0x5EED]
-            return
+        if not _grow_or_nothing(jit, delta, want, moves, marks):
+            done = False
+            break
         end = (want + delta) << 16
-        assert got == [want] and (mem.res.addr != addr) == moves
         jit("put0", end - 8, want)
-        assert jit("get0", end - 8) == [want] and jit("get0", 8) == [0x5EED]
+        marks[end - 8] = want
         assert trap_of(jit, "get0", end - 7) is TrapCode.MEMORY_OUT_OF_BOUNDS
     other = build(wat(NOHOST))
-    assert other("grow0", 65536) == [1] and other("grow0", 1 << 20) == [65537]
-    if rss is not None:
+    if _grow_or_nothing(other, 65536, 1, True, {}):
+        _grow_or_nothing(other, 1 << 20, 65537, True, {})
+    if rss is not None and done:
         assert cast(int, _rss()) - rss < 64 << 20
 
 
 def test_limits_rows() -> None:
-    """S0009 "Limits", memory rows (Wasmtime 50.0.1 on a 47-bit host)."""
+    """S0009 "Limits", memory rows (Wasmtime 50.0.1 on a 47-bit host); a min this host cannot
+    provide (`_fits`) is the clean instantiation error instead."""
     build(wat("(module (memory i64 0 0x1_0000_0000_0000))"))
     for pages in (65537, 1 << 20):
-        assert build(wat(f"(module (memory i64 {pages}))"))
+        if _fits(pages, False):
+            assert build(wat(f"(module (memory i64 {pages}))"))
+        else:
+            size = (pages << 16) + instance.GROWTH64 + instance.TAIL64
+            with pytest.raises(MemoryError, match=f"failed to reserve {size} bytes"):
+                build(wat(f"(module (memory i64 {pages}))"))
     with pytest.raises(
         MemoryError, match=f"failed to reserve {(1 << 48) + (2 << 30) + (32 << 20)}"
     ):

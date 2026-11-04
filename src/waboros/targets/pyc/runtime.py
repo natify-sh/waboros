@@ -78,6 +78,15 @@ def _mem64(pages):
         ) from None
 
 
+def _tnew(n):
+    """The elements of a table with a large minimum (S0009): an allocation that fails is
+    Wasmtime's out-of-memory error, never an OverflowError."""
+    try:
+        return [None] * n
+    except (MemoryError, OverflowError):
+        raise MemoryError("out of memory (failed to allocate %d bytes)" % (n * 8)) from None
+
+
 def _mcopy(D, S, d, s, n):
     if d + n > len(D) or s + n > len(S):
         raise Trap(TrapCode.MEMORY_OUT_OF_BOUNDS, "out of bounds memory access")

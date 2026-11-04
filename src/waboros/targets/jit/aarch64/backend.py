@@ -747,24 +747,26 @@ class Backend:
         else:
             self.move(Reg(r), o, False)
 
-    def _element(self, f: Frame, word: int, index: Operand) -> None:
-        """x9 = index, bounds-checked against the table's size; x10 = the elements' base."""
-        self._u32(9, index)
+    def _element(self, f: Frame, word: int, index: Operand, a64: bool) -> None:
+        """x9 = index, bounds-checked against the table's size; x10 = the elements' base. An
+        i64 index (S0009) is read by a 64-bit move: `cmp` with the 64-bit size word, no carry."""
+        if a64:
+            self.move(Reg(9), index, True)
+        else:
+            self._u32(9, index)
         self._word(True, 10, CTX, 8 * word + 8)
         self.a.cmp(9, 10)
         self._bcc("hs", self._stub(f, TrapCode.TABLE_OUT_OF_BOUNDS))
         self._word(True, 10, CTX, 8 * word)
 
     def table_get(self, f: Frame, dst: Reg, word: int, index: Operand, *, a64: bool) -> None:
-        assert not a64, "table64: S0009 step 3"
-        self._element(f, word, index)
+        self._element(f, word, index, a64)
         self.a.ld_idx(dst.id, 10, 9, 8, scaled=True)
 
     def table_set(
         self, f: Frame, word: int, index: Operand, value: Operand, *, a64: bool
     ) -> None:  # fmt: skip
-        assert not a64, "table64: S0009 step 3"
-        self._element(f, word, index)
+        self._element(f, word, index, a64)
         self.a.st_idx(self._r(value, 11, True), 10, 9, 8, scaled=True)
 
     def _three(
@@ -872,11 +874,10 @@ class Backend:
     def table_fill(
         self, f: Frame, word: int, i: Operand, v: Operand, n: Operand, *, a64: bool
     ) -> None:  # fmt: skip
-        assert not a64, "table64: S0009 step 3"
         a = self.a
-        self._three(i, v, n, True)
+        self._three(i, v, n, True, a64, a64)
         self._word(True, 10, CTX, 8 * word + 8)
-        self._end_check(f, 13, 10, TrapCode.TABLE_OUT_OF_BOUNDS)
+        self._end_check(f, 13, 10, TrapCode.TABLE_OUT_OF_BOUNDS, a64)
         self._word(True, 10, CTX, 8 * word)
         a.addsub("add", 13, 10, 13, sh="lsl", amount=3)
         loop, done = a.label(), a.label()
@@ -892,12 +893,11 @@ class Backend:
         self, f: Frame, dst: int, src: int, d: Operand, s: Operand, n: Operand, *,
         a64: tuple[bool, bool],
     ) -> None:  # fmt: skip
-        assert a64 == (False, False), "table64: S0009 step 3"
-        a, oob = self.a, TrapCode.TABLE_OUT_OF_BOUNDS
-        self._three(d, s, n, False)
-        for r, word in ((13, dst), (14, src)):
+        a, oob, (ad, as_) = self.a, TrapCode.TABLE_OUT_OF_BOUNDS, a64
+        self._three(d, s, n, as_, ad, ad and as_)  # n: the narrower type, as memory_copy
+        for r, word, w in ((13, dst, ad), (14, src, as_)):
             self._word(True, 10, CTX, 8 * word + 8)
-            self._end_check(f, r, 10, oob)
+            self._end_check(f, r, 10, oob, w)
         for r, word in ((13, dst), (14, src)):
             self._word(True, 10, CTX, 8 * word)
             a.addsub("add", r, 10, r, sh="lsl", amount=3)
@@ -905,12 +905,12 @@ class Backend:
         self._copy(8)
 
     # ---------------------------------------------------------------- indirect calls
-    def _table_record(self, f: Frame, table: int, sig: int, index: Operand) -> None:
+    def _table_record(self, f: Frame, table: int, sig: int, index: Operand, a64: bool) -> None:
         """x15 = the function record of element `index`: bounds (TABLE_OUT_OF_BOUNDS), null
         (INDIRECT_CALL_TO_NULL), its canonical type id against the signature word (BAD_SIGNATURE),
         in the spec's order (Wasmtime's codes)."""
         a = self.a
-        self._element(f, table, index)
+        self._element(f, table, index, a64)
         a.ld_idx(15, 10, 9, 8, scaled=True)
         self._cbz(15, self._stub(f, TrapCode.INDIRECT_CALL_TO_NULL))
         self._word(True, 9, CTX, 8 * sig)
@@ -934,8 +934,7 @@ class Backend:
     def call_indirect(
         self, f: Frame, table: int, sig: int, index: Operand, shift_slots: int, *, a64: bool
     ) -> None:  # fmt: skip
-        assert not a64, "table64: S0009 step 3"
-        self._table_record(f, table, sig, index)  # the index is read before x27 moves
+        self._table_record(f, table, sig, index, a64)  # the index is read before x27 moves
         self._call_x15(f, shift_slots)
 
     def call_ref(self, f: Frame, ref: Operand, shift_slots: int) -> None:
@@ -979,8 +978,7 @@ class Backend:
     def tail_indirect(
         self, f: Frame, table: int, sig: int, index: Operand, src: int, n: int, *, a64: bool
     ) -> None:  # fmt: skip
-        assert not a64, "table64: S0009 step 3"
-        self._table_record(f, table, sig, index)
+        self._table_record(f, table, sig, index, a64)
         self._tail(f, src, n)
         self.a.mov(16, 15)
         self._tail_record()

@@ -542,3 +542,10 @@ What went wrong or surprised us while building the PoC, so it is not found again
     (roll back on any exception, in an order that never makes an unsafe pair), and every writer
     writes all the words it depends on, base before size (`test_an_interrupted_move_changes_nothing`).
     Found: S0009 step 2b review, 2026-11-04.
+80. **A mutation of a bounds check can crash the test process instead of failing a test.** With the
+    carry test removed from `table_fill` (S0009 step 3), `d = 2⁶⁴ − 1, n = 2` wraps to an end of 1,
+    passes the check, and the fill writes 8 bytes below the table's buffer: pytest died with
+    SIGSEGV, no assertion. The same mutation in `table_copy` corrupted memory silently and was
+    caught only by the result comparison. Rule: mutation checks of memory-safety code run in a
+    subprocess, and a crash counts as "caught"; a test suite that passes after such a mutation is
+    not evidence that the check is unneeded. Found: S0009 step 3, 2026-11-04.
