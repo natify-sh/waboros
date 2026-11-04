@@ -137,6 +137,18 @@ where today's code emits a guard.
 | **sink**: the case code that follows a dispatch tree (a lowered `br_table`) moves into the tree's leaves when its end values make every later guard false | the `br_table` leaves (known when it is emitted), and the case regions emitted later | needs **deferred emission**: the leaves are recorded (line positions and indentation) and each case region, once generated, is moved (re-indented) into its leaf. A region that two or more leaves need is copied when it is small (bropt: ≤ 80 AST nodes); otherwise the leaf keeps `_br = K`. This is the switch lowering of BENCHMARKS.md, "`br_table`" |
 | **dse**: drop dead stores of `_br` | backward liveness | partly by construction: with sink and chain, many stores are simply not emitted, and the header `_br = 0` goes when no `_br` remains. A general liveness pass is out of scope unless step 0 shows that dse adds a measurable gain beyond the other rules |
 
+**Sink precondition: the same Python loop (a correctness rule, maintainer 2026-11-04).** A moved or
+copied region keeps the meaning of its `break` and `continue` only if it runs inside the same
+innermost Python `while` as at its original place. In `bropt.py` this holds by construction: the
+dispatch tree and the chain of guards are adjacent statements of one list, so a leaf and the region
+share their loop. In the codegen the region is re-indented into a leaf, so it must be checked
+explicitly: **no `while` may open between the leaf and the point where the region would otherwise be
+emitted** (the leaf's loop stack equals the region's). If one does, the region is not sunk, and the
+leaf keeps `_br = K` (the guard path, correct as today). A `break` or `continue` in a sunk region
+would otherwise leave or restart a different loop: wrong control flow that a test with only one
+level of loops does not see. The precondition is asserted at emission, not only tested; `return`
+and `return_call` are unaffected.
+
 **Proposal: the minimal set.** Implement *simplify*, *chain* and *to_else* in one step (they need
 only the arrival sets), then *sink* (the deferred emission). The first group is cheap and removes
 most guards on the common path (static: 635 → 322 with dse, 492 without). Sink is the hand rewrite
@@ -250,8 +262,9 @@ corpus stays the stronger test of control flow, and the unit tests below add dee
   * CoreMark `f11`: the shape test above.
 
   A planted defect must fail at least one test: the chain rule checking only the first test of the
-  appended tail (the experiment's real bug), and sink moving a region whose end value is accepted by
-  a later guard.
+  appended tail (the experiment's real bug), sink moving a region whose end value is accepted by
+  a later guard, and sink moving a region across a `while` (a `break` in the region then leaves the
+  wrong loop; the test needs a region with `break`/`continue` and a loop between leaf and region).
 * **Speed** (step 0 and the final step; BENCHMARKS.md): CoreMark with alternated rounds against the
   commit before, on CPython 3.11, 3.13 and 3.14, plus one pair on PyPy 3.11 to check it does not
   regress; the switch VM `poc/bench/switch/vm.wasm` through the package's `pyc`; the corpus timings;
@@ -341,3 +354,5 @@ document to update"):
 
 ## Changes
 * 2026-11-04: created (draft).
+* 2026-11-04: the sink precondition "same Python loop" stated as a correctness rule, asserted at
+  emission, with a planted defect (maintainer's review).
