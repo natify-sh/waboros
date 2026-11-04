@@ -220,22 +220,32 @@ mov eax,[r8]`, that is, a branch-free Spectre mask to address 0 instead of `ja`;
 * **Decided (Q2, 2026-11-04)**: explicit only in this spec. The hybrid is an optional later step,
   taken only if a wasm64 CoreMark run on a guard row shows a gain worth the second path.
 
-### Backend interface: D39 amendment B (both backends, one step, reviewer)
+### Backend interface: D39 amendment B (both backends, one step, reviewer; Q3 (b))
+Every backend method whose operands address a memory or a table gains a **required keyword-only**
+parameter that gives the address type, with no default, so a call site that forgets it fails at
+once (`TypeError`) instead of compiling i32 checks for an i64 memory:
 ```python
-class Backend(Protocol[L, F]):
-    index64: frozenset[int]  # context words (memory `base`, table `base`) whose address type is i64
+def load(self, f, size, signed, wide, dst, addr, offset, mem, *, a64: bool) -> None: ...
+def store(self, f, size, addr, offset, src, mem, *, a64: bool) -> None: ...
+def simd(self, f, op, dst, args, imm, *, a64: bool) -> None: ...   # False for non-memory ops
+def memory_fill(self, f, d, v, n, mem, *, a64: bool) -> None: ...
+def memory_copy(self, f, d, s, n, dmem, smem, *, a64: tuple[bool, bool]) -> None: ...  # (dst, src)
+def table_get(self, f, dst, word, index, *, a64: bool) -> None: ...
+def table_set(self, f, word, index, value, *, a64: bool) -> None: ...
+def table_fill(self, f, word, i, v, n, *, a64: bool) -> None: ...
+def table_copy(self, f, dst, src, d, s, n, *, a64: tuple[bool, bool]) -> None: ...  # (dst, src)
+def call_indirect(self, f, table, sig, index, shift_slots, *, a64: bool) -> None: ...
+def tail_indirect(self, f, table, sig, index, src, n, *, a64: bool) -> None: ...
 ```
-The core sets `index64` once per module, before the first `func_begin`, from `maddr`/`taddr` and the
-`Layout`. The default `frozenset()` means i32 everywhere, so an i32-only module goes down exactly
-today's paths. **Contract**: for a word in `index64`, the address or index operands of the methods
-that name that word are full 64-bit values. Those methods are `load`, `store`, the SIMD memory
-operators (the memory word in `imm`), `memory_fill`, `memory_copy` (each side by its own word, `n`
-64-bit only when both are), `table_get`, `table_set`, `table_fill`, `table_copy`, `call_indirect`
-and `tail_indirect`. For any other word, operands stay i32 as today. The core never passes an
-`AddK` for an `index64` word. `memory_size` and the table-size `ctx_load` are unchanged (both words
-are already 64-bit). No method or signature changes. Under D39 this is still an amendment, because
-the meaning of operands changes. So it needs maintainer approval, both backends in the same step,
-x86-64 byte identity for every module without an i64 memory or table, and a `reviewer` pass.
+The core passes the value from `maddr`/`taddr` at every call. **Contract**: with `a64` true (for a
+copy: the side's flag), the address or index operand is a full 64-bit value; a copy's `n` is 64-bit
+only when both flags are true (the narrower type, as the validator). With `a64` false, operands
+are i32 and the method emits exactly today's code. The core never passes an `AddK` with `a64` true.
+`memory_size` and the table-size `ctx_load` are unchanged (both words are already 64-bit). Under
+D39 this is an amendment (signatures and operand meaning change), so: both backends in the same
+step, x86-64 byte identity for every module without an i64 memory or table (D35 lists), and a
+`reviewer` pass. The sljit PoC backend (`poc/sljit/sljit-be`) is outside the package and follows
+when it is next run.
 
 **Table64 on the JIT**: `_element` loads the index with a 64-bit move and compares it with the
 64-bit `size` word (`cmp; jae`, no carry possible). `table_fill`/`table_copy` use the carry-checked
@@ -461,7 +471,7 @@ reason). This is recorded in step 1 as D27 applied to i64 tables.
 | step | content | agent | acceptance | size (lines) |
 |---|---|---|---|---|
 | 1 | front end (`limits`, `maddr`/`taddr`, validator rules, `simd.validate` address type), `link.py` address-type check, `pyc` (typing, 4 helpers, min check), JIT `unsupported` → `"memory64"`/`"table64"`, D27 applied to i64 tables in DECISIONS.md; `pyc` claims `memory64` (no memory cap) | implementer | `--engine pyc memory64`: 8 657 pass / 0 fail / 3 xfail (`table64.wast:13`, `table_init64.wast:2457` and `:2471`) / 59 skip; rejection test (0 `NotImplementedError`); `pyc` source identity; JIT D35 lists identical (i64 modules `unsupported`) | front end ~60, `pyc` ~40, link ~8, tests ~150 |
-| 2a | JIT memories: D39 amendment B (`index64`), the i64 `_bounds` paths and bulk memory in both backends, the core sets `index64`, runtime (min check, grow mask; i64 reservation as an i32 one, a grow past it −1 until 2b); i64 tables still `unsupported` | jit-engineer, plan approved first | the `memory64/` files without an i64 table pass on both JITs, guard and explicit, aarch64 under QEMU; `spec_diff` empty on them; D35: only `json/memory64/` lines; ISA gates; `test_memory64.py` (bounds part) | core ~15, each backend ~70, runtime ~15, tests ~180 |
+| 2a | JIT memories: D39 amendment B (`a64` parameters), the i64 `_bounds` paths and bulk memory in both backends, the core passes `a64`, runtime (min check, grow mask; i64 reservation as an i32 one, a grow past it −1 until 2b); i64 tables still `unsupported` | jit-engineer, plan approved first | the `memory64/` files without an i64 table pass on both JITs, guard and explicit, aarch64 under QEMU; `spec_diff` empty on them; D35: only `json/memory64/` lines; ISA gates; `test_memory64.py` (bounds part) | core ~15, each backend ~70, runtime ~15, tests ~180 |
 | 2b | JIT runtime: the i64 reservation rule, the move (skip-zero copy, publish, free), the `Reservation` size check, no registry entry for i64 memories; the moving rule as a decision in DECISIONS.md, the ABI text amendment (ARTIFACT.md part 3) | jit-engineer, plan approved first; reviewer | "Moving, JIT" tests on both JITs (cheap variant also under QEMU); the "Limits" memory rows equal Wasmtime's on the dev VM; D35 lists unchanged against 2a (Python only); `memory64` numbers unchanged | runtime ~60, execmem ~5, tests ~120 |
 | 3 | JIT table64: `_element`, table bulk ops, `call_indirect`/`tail_indirect`, elem offsets, `table.grow` mask; both JITs claim `memory64` | jit-engineer, plan approved first | `memory64` on both JITs: 8 657 pass / 3 xfail, guard and explicit, QEMU; `spec_diff` empty; D35 as above; table tests | each backend ~40, runtime ~5, tests ~80 |
 | 4 | `spectest` gains `table64` (Q5): the `table64.wast:13` entries leave all four xfail files; review of steps 2a and 3 by a `reviewer` (2b has its own) without the implementers' reasoning; docs; this spec `implemented` | reviewer, then orchestrator | 8 658 / 2 xfail (GC) on each target; core runs unchanged on all engines; findings closed | ~5 + docs |
@@ -490,10 +500,11 @@ document to update"):
   consumer of `mems`, `tables` and import descriptors changes (validator, `pyc`, JIT runtime, link),
   with a risk to i32 identity. Rejected in favour of the two parallel lists, as `ttypes` already
   is.
-* **One parameter per backend method** (`a64: bool` on ~11 methods) instead of `index64`: explicit
-  at every call, and the core decides. It changes 11 signatures in two backends and in every
-  future backend (riscv64, sljit); the per-module set is one attribute, like the guard mode, which
-  is constructor state. Q3.
+* **A per-module attribute** (`index64: frozenset[int]`, set by the core before the first
+  `func_begin`) instead of a parameter per method: fewer changed lines (no signature changes), the
+  same shape as the guard mode. Rejected by the maintainer (Q3, 2026-11-04): a forgotten or stale
+  attribute fails silently, compiling i32 checks for an i64 memory (out-of-bounds reads), while a
+  missing required parameter fails at once.
 * **Guard pages for i64 by masking the index** to the reservation: a masked out-of-bounds index
   would read inside the memory instead of trapping, which is wrong semantics (S0006 already rejected
   masking for i32).
@@ -527,8 +538,9 @@ document to update"):
 * **Q2 The hybrid check. Decided 2026-11-04: explicit checks only.** The hybrid stays optional
   step 5, taken only if a wasm64 CoreMark on a guard row shows a gain. It saves 1 instruction per
   access (`lea`), more only with large offsets.
-* **Q3 How a backend learns the address width (open).** (a) The `index64` attribute (D39 amendment B, no
-  signature change). (b) A parameter per method. **Recommendation: (a).**
+* **Q3 How a backend learns the address width. Decided 2026-11-04: (b)**, a required keyword-only
+  `a64` parameter on each method that addresses a memory or table ("Backend interface"); the
+  `index64` attribute (a) is a rejected alternative.
 * **Q4 Context ABI version. Decided 2026-11-04: (a), amend v1 without a bump**, as D37, D38 and
   S0005 (no artifact is serialized yet; ARTIFACT.md part 2 says no artifact is written before the
   phase-5 format spec). The amendment also covers the ARTIFACT.md sentence "the base never moves",
@@ -544,10 +556,11 @@ document to update"):
 * **Q6 The exception for a min that cannot be provided. Decided 2026-11-04: `MemoryError`** with
   Wasmtime's message (for min ≥ 2⁴⁸) at instantiation, on every target; phase 6 maps it to the
   API's error, as for every other instantiation failure. A new waboros exception is rejected.
-* **Q7 `NotImplementedError` counts as a passing `assert_invalid` (open).** `run.py` accepts a
+* **Q7 `NotImplementedError` counts as a passing `assert_invalid`. Decided 2026-11-04: as
+  recommended.** `run.py` accepts a
   `LoadError` of kind `None` for `assert_invalid`/`assert_malformed`. In `memory64/` this hides 286
   wrong-reason passes (Summary). It matters only for a directory a target claims while part of it is
-  unimplemented. **Recommendation:** step 1's rejection test closes it for `memory64`; a LESSONS
+  unimplemented. Step 1's rejection test closes it for `memory64`; a LESSONS
   entry; whether the runner should count kind `None` as a failure in claimed directories is a
   separate S0001 question for the maintainer, not part of this spec.
 
@@ -559,3 +572,5 @@ document to update"):
   registry. `Reservation` refuses sizes ≥ 2⁶³ (ctypes truncation). The step plan splits step 2
   into 2a/2b. Q2, Q4 (including "the base never moves"), Q5 and Q6 are decided; Q3 and Q7 stay
   open.
+* 2026-11-04: Q3 decided (b): a required keyword-only `a64` parameter per method instead of the
+  `index64` attribute; Q7 decided as recommended.
