@@ -112,3 +112,11 @@ instructions, S: 4-12, L: longer or no direct form), and a status: **implemented
 * Relaxed SIMD (follow-up spec, S0005 Q7) is the place where levels matter most: its operators are
   defined to let each ISA use its fastest form (FMA, `pshufb` semantics, dot products), so its spec
   should start with this table.
+* **Decided for the first relaxed-SIMD step (maintainer, 2026-11-04): the deterministic profile of
+  Wasm 3.0** (every relaxed operator takes the first of its allowed results: `relaxed_madd` unfused,
+  swizzle out of range 0, trunc saturating, min/max and q15mulr as the plain operators, dot the plain
+  signed dot product), so each maps onto an operator we already have, the same on every target and
+  in `pyc`. **When ISA levels above the baseline are adopted, revisit relaxed SIMD**: a "native"
+  mode (FMA on aarch64 or x86-64-v3, `pshufb` swizzle, hardware dot products) is where levels would
+  pay, and it changes results across hosts (pyc stops being a bit-exact oracle for those operators,
+  D35's cross-host identity needs the level in the artifact).
