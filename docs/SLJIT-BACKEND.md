@@ -202,7 +202,7 @@ unchanged; full write-up in `poc/sljit/sljit-be/SLJIT-BACKEND-RESULTS.md`):
 
 Reading: the 60 % of pwart and of the naive translator came from what sits above the encoder;
 with our core in front, sljit's encoding costs nothing measurable on x86-64. Proposed by the
-maintainer's write-up, not decided: `jit-sljit` as a cheap **second oracle** on x86-64 and aarch64
+maintainer's write-up, **deferred (maintainer, 2026-11-04)**: `jit-sljit` as a cheap **second oracle** on x86-64 and aarch64
 (two independent encoders under one core, run against each other on the spec suite); it would need
 a native `libsljit` in the dev environment. The hand-written backends stay (byte oracle for the
 micro-compilers, SIMD, the Python twins). Next steps, when the track starts: a 64-bit
