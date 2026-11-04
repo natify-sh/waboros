@@ -6,7 +6,9 @@ bit for bit. madd/nmadd: `jit-x86_64` equals `pyc` (unfused) and differs from a 
 on FLT_MAX * 2 - FLT_MAX; `jit-aarch64` equals the fused reference and differs from `pyc` there.
 The fused reference is `math.fma` for f64 where Python >= 3.13, exact `Fraction` arithmetic
 rounded once otherwise and always for f32 (an fma in doubles, then to f32, rounds twice). NaN
-lanes compare by class. aarch64 runs on an arm64 machine or under QEMU (`tools/run_arm64.py`)."""
+lanes compare by class. aarch64 runs on an arm64 machine or under QEMU (`tools/run_arm64.py`).
+The 16 deterministic operators also equal Wasmtime with `wasm_relaxed_simd_deterministic`, on `pyc`
+and on this machine's JIT (`test_deterministic_operators_match_wasmtime`)."""
 
 import math
 import random
@@ -16,9 +18,11 @@ from typing import Any
 
 import pytest
 
-from tests.jit import native
+from tests.jit import native, native_jit
+from tests.jit.test_compiler import build, wat
 from tests.jit.test_simd_abi import _pair, run
 from tests.jit.test_simd_x86 import F32, F64, _nan_class, _v
+from tests.spec.wasmtime_engine import CONFIG_SWITCHES
 from waboros.frontend import simd as fs
 
 OPS = {o.name: len(o.pops) for sub, o in fs.OPS.items() if sub >= 0x100}
@@ -136,3 +140,56 @@ def test_relaxed_simd_differential(target: str, monkeypatch: pytest.MonkeyPatch)
                 _v("<2Q", [0xFFEFFFFFFFFFFFFF] * 2))  # fmt: skip
         want = _v("<2Q", [0x7FEFFFFFFFFFFFFF] * 2) if fused else _v("<2Q", [0x7FF0 << 48] * 2)
         assert run(jit, name, *args) == [want], (target, name)
+
+
+def _oracle_module() -> str:
+    """All 20 operators on i64 parameters and results (wasmtime-py has no v128); the test
+    decides which it compares (madd/nmadd on `jit-aarch64` only)."""
+    fs_: list[str] = []
+    for n, k in OPS.items():
+        ps = " ".join(["(param i64)"] * (2 * k))
+        vs = " ".join(
+            "(i64x2.replace_lane 1 (i64x2.replace_lane 0 (v128.const i64x2 0 0)"
+            f" (local.get {2 * i})) (local.get {2 * i + 1}))"
+            for i in range(k)
+        )
+        fs_.append(
+            f'(func (export "{n}") {ps} (result i64 i64) (local $r v128) (local.set $r ({n} {vs}))'
+            " (i64x2.extract_lane 0 (local.get $r)) (i64x2.extract_lane 1 (local.get $r)))"
+        )
+    return "(module " + "\n".join(fs_) + ")"
+
+
+@pytest.mark.parametrize("target", ["pyc", "native"])
+def test_deterministic_operators_match_wasmtime(target: str) -> None:
+    """The 16 operators other than madd/nmadd, 500 seeded inputs each, against Wasmtime 50 with
+    `wasm_relaxed_simd_deterministic`.
+    madd/nmadd: on `jit-aarch64` too (fused there and in Wasmtime's switch; CI's native arm64
+    run); elsewhere covered per target by `test_relaxed_simd_differential`."""
+    wasmtime = pytest.importorskip("wasmtime")
+    if target == "native":
+        target = native_jit()
+        native(target)
+    w = wat(_oracle_module())
+    cfg = wasmtime.Config()
+    for sw in CONFIG_SWITCHES:
+        setattr(cfg, sw, True)
+    engine = wasmtime.Engine(cfg)
+    store = wasmtime.Store(engine)
+    inst = wasmtime.Instance(store, wasmtime.Module(engine, w), [])
+    ours = build(w, target)
+    mask = (1 << 64) - 1
+    inputs = _inputs(random.Random(11))
+    for name, k in OPS.items():
+        if name in MADD and target != "jit-aarch64":  # Wasmtime's switch fuses, as aarch64 does
+            continue
+        f = inst.exports(store)[name]
+        for args in inputs:
+            flat = [x for v in args[:k] for x in (v & mask, v >> 64)]
+            r = f(store, *[x - (1 << 64) if x >> 63 else x for x in flat])
+            want = (r[0] & mask) | (r[1] & mask) << 64
+            g = ours(name, *flat)
+            got = g[0] | g[1] << 64
+            if name in FLOATS:
+                got, want = _nan_class(name, got), _nan_class(name, want)
+            assert got == want, (target, name, [hex(a) for a in args[:k]])

@@ -2,7 +2,7 @@
 title: Relaxed SIMD (deterministic profile; madd native per target) and wide arithmetic on pyc, jit-x86_64 and jit-aarch64
 kind: spec
 id: S0008
-status: approved
+status: implemented
 superseded_by:
 related: [D19, D22, D24, D25, D35, D39, D41, D42, D47, D48, S0001, S0005, R3]
 owner: maintainer
@@ -375,6 +375,9 @@ All decided (maintainer, 2026-11-04).
 * 2026-11-04: created (draft).
 * 2026-11-04: Q5 decided: madd/nmadd native per target as Wasmtime (fused on aarch64, unfused on
   x86-64 and pyc); consequences in Semantics, Test plan, Alternatives, Q4.
+* 2026-11-04: approved by the maintainer: Q1 (b) in full, Q2 (a), Q3 (a), Q4 (a); Q5 as recorded. Q1 rewrote
+  the Summary, the front-end paragraph, the operator table's lowering column, Plan of steps 1-2, the Test
+  plan and Alternatives (front-end aliasing is now a rejected alternative). Recorded as D49.
 * 2026-11-04: step 1 done (`pyc`): front end (20 relaxed `OPS`, `0xFC` 19-22, validator), `pyc`
   (20 mappings, 4 wide helpers), second pin, claims; `--engine pyc relaxed-simd wide-arithmetic` and
   `--engine wasmtime`: 188 pass, 0 fail (79 + 109); the claimed `pyc` run 54 573 pass / 91 expected
@@ -390,8 +393,8 @@ All decided (maintainer, 2026-11-04).
   `jit-x86_64`, on `jit-aarch64` under QEMU and on `jit-x86_64` under `qemu64` (SSE2 only); the claimed
   `jit-x86_64` run 54 464 pass / 91 expected failures; `spec_diff` empty on both; ISA gates clean; D35:
   only the 8 `json/relaxed-simd/` lines change on either target, in both modes. Differential:
-  `tests/jit/test_relaxed_simd.py` (against `pyc`; the oracle comparison of the Test plan is left to
-  `pyc`'s own check in step 1).
+  `tests/jit/test_relaxed_simd.py` (against `pyc`; the comparison with Wasmtime that the Test plan
+  asks for was not part of this step and is added in step 4).
 * 2026-11-04: step 3 done (both JITs): the core branch for `0xFC13`-`0xFC16` (`WIDEOPS` in
   `common/compiler.py`; each backend adds them to `supported`), `wide` in both backends as specified
   (x86-64: an operand that is not an imm32 goes to rdx by `mov`/`movabs`; aarch64: the operands into
@@ -404,6 +407,10 @@ All decided (maintainer, 2026-11-04).
   `tests/jit/test_wide.py` (both backends, guard and explicit, pinned and unpinned; against `pyc`
   and an exact reference; a planted `xor` between `add` and `adc` fails the carry case). Wasmtime is
   not run by the unit test (the spec file is checked against it in step 1).
-* 2026-11-04: approved by the maintainer: Q1 (b) in full, Q2 (a), Q3 (a), Q4 (a); Q5 as recorded. Q1 rewrote
-  the Summary, the front-end paragraph, the operator table's lowering column, Plan of steps 1-2, the Test
-  plan and Alternatives (front-end aliasing is now a rejected alternative). Recorded as D49.
+* 2026-11-04: implemented: steps 1-3 landed; step 4, the independent review, found no correctness defect
+  (9 planted bugs caught by the tests); the Wasmtime comparison of the 16 deterministic operators added
+  as a test (`test_deterministic_operators_match_wasmtime`, `pyc` and this machine's JIT, 500 inputs
+  per operator, about 1 s); aarch64 madd/nmadd against Wasmtime on a real arm64 host is covered by CI's
+  native arm64 run (`arm64` job: `uv run pytest tests/jit` on `ubuntu-24.04-arm` with the dev group,
+  which has wasmtime): on `jit-aarch64` the same test also compares madd/nmadd with Wasmtime (whose
+  deterministic switch fuses them, as aarch64 does), besides the fused reference.

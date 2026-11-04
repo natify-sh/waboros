@@ -19,4 +19,4 @@ lifecycle: [STANDARDS.md](../STANDARDS.md).
 | [S0005](S0005-simd.md) | Fixed-width SIMD (v128) on pyc, jit-x86_64 and jit-aarch64 | implemented | maintainer |
 | [S0006](S0006-guard-pages.md) | Guard pages instead of explicit bounds checks on jit-x86_64 and jit-aarch64 | implemented | maintainer |
 | [S0007](S0007-scalar-codegen.md) | Scalar code generation in both JITs (addressing, returns, temporaries) | implemented | maintainer |
-| [S0008](S0008-relaxed-simd-wide-arithmetic.md) | Relaxed SIMD (deterministic profile) and wide arithmetic on pyc, jit-x86_64 and jit-aarch64 | approved | maintainer |
+| [S0008](S0008-relaxed-simd-wide-arithmetic.md) | Relaxed SIMD (deterministic profile) and wide arithmetic on pyc, jit-x86_64 and jit-aarch64 | implemented | maintainer |
