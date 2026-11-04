@@ -41,7 +41,7 @@ retried with `-W <proposal>=y`, and each default was confirmed by `-W <proposal>
 | **exceptions** (`exnref`) | 5 | yes | **default** | tags validate only (110 + 9 core) | phase 5 |
 | **GC** | 5 | yes | **default** | no (798 + most of the 91 core xfails) | phase 5, last |
 | **threads** (shared memory, atomics, wait/notify) | 4 | no | **default** (`-W threads=n` refuses it) | no | late (ROADMAP item 8) |
-| **wide arithmetic** (`i64.add128`, `i64.mul_wide_*`) | 4 | no | **default** (`=n` refuses it; the website still says flag) | `pyc` only (109 commands); the JITs: S0008 step 3 | ROADMAP "Order of the wasm features" item 8, after GC (added 2026-11-03) |
+| **wide arithmetic** (`i64.add128`, `i64.mul_wide_*`) | 4 | no | **default** (`=n` refuses it; the website still says flag) | yes on all three targets (109 commands; S0008 steps 1 and 3) | ROADMAP "Order of the wasm features" item 8, after GC (added 2026-11-03) |
 | branch hinting | 5 | no | accepted by default (a custom section; `=n` still accepts the module) | accepted (an unknown custom section is skipped) | optional: use the hints for block layout |
 | custom page sizes | 3 | no | **flag** (`-W custom-page-sizes=y`) | no | late (ROADMAP item 8) |
 | stack switching | 3 | no | **flag** (`-W stack-switching=y`) | no | not planned |
@@ -59,7 +59,7 @@ and JS string builtins (JavaScript only).
   (memory64, relaxed SIMD, exceptions, GC) plus **threads** and **wide arithmetic**. All six are
   in ROADMAP as parity items (wide arithmetic and threads since 2026-11-03). Wide arithmetic is small (128-bit
   add/sub and widening multiply on register pairs, `mul`/`adc` on x86-64, `umulh`/`adds`/`adc` on
-  aarch64) and could join relaxed SIMD's step. Threads are the hardest for `pyc` (shared memory
+  aarch64) and joined relaxed SIMD's step (S0008, done on all three targets). Threads are the hardest for `pyc` (shared memory
   needs real synchronisation, ROADMAP open question 8) and stay last, but they are on the path, not
   out of scope.
 * **Parity with Wasmtime's flags** comes after: custom page sizes, stack switching,

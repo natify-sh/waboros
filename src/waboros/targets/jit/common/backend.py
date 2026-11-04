@@ -127,6 +127,14 @@ class Backend(Protocol[L, F]):
     # register or `tos` changed, no vector register left live
     def move_v128(self, dst: Slot, src: Slot | Imm) -> None: ...
 
+    # wide arithmetic (S0008, a D39 addition only 0xFC13-0xFC16 reach): `op` add128 | sub128
+    # (args a_lo, a_hi, b_lo, b_hi) | mul_wide_s | mul_wide_u (args x, y), wasm order, i64 operands;
+    # the low 64 bits into `dst`, the high into `Slot(dst.k + 1)`. `dst.k` is the first operand's
+    # stack slot, so an operand slot may be overwritten, each only after it is read. May write
+    # `tos` (the core spills it first); preserves pool, frame, context and memory-0 registers;
+    # leaves no flags live; cannot trap.
+    def wide(self, op: str, dst: Slot, args: tuple[Operand, ...]) -> None: ...
+
     # tables (`word`: the table's `base` word; `size` follows) and bulk memory: bounds checked
     # before anything is written; operands are i32 but table values (64-bit references)
     def table_get(self, f: F, dst: Reg, word: int, index: Operand) -> None: ...

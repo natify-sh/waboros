@@ -25,10 +25,10 @@ CLAIMS: dict[str, frozenset[str]] = {
         {"bulkMemory", "multiMemory", "simd", "relaxedSimd", "wideArithmetic"}
     ),  # memory64: not implemented yet
     "jit-x86_64": frozenset(
-        {"bulkMemory", "multiMemory", "simd", "relaxedSimd"}
+        {"bulkMemory", "multiMemory", "simd", "relaxedSimd", "wideArithmetic"}
     ),  # parity with pyc (D25)
     "jit-aarch64": frozenset(
-        {"bulkMemory", "multiMemory", "simd", "relaxedSimd"}
+        {"bulkMemory", "multiMemory", "simd", "relaxedSimd", "wideArithmetic"}
     ),  # parity with pyc (D25; madd/nmadd fused, D49)
 }
 

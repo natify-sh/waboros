@@ -5,9 +5,9 @@ x16/x17 for indirect branches and offsets no immediate takes, v0/v1 for popcnt a
 first, then x2-x8 (saved by the bridge).
 
 i32 values stay zero-extended: 32-bit (w) forms write the whole register (LESSONS 5). Only
-`cmp/cmn/ccmp/fcmp` write the flags, and each compare is emitted right before its consumer
-(LESSONS 1). ARMv8.0 only (D24): division checked explicitly (sdiv/udiv do not trap), popcnt
-through NEON, trapping float truncations checked before `fcvtz*`.
+`cmp/cmn/ccmp/fcmp` and `wide`'s `adds/subs` write the flags, each emitted right before its
+consumer (LESSONS 1). ARMv8.0 only (D24): division checked explicitly (sdiv/udiv do not trap),
+popcnt through NEON, trapping float truncations checked before `fcvtz*`.
 
 Far mode (S0004): a conditional branch reaches ±1 MiB. `func_end` reports a function in which one
 does not; compiled again with `far`, every conditional branch to a label becomes `b.!cond` over
@@ -33,7 +33,7 @@ from waboros.targets.jit.aarch64.encoder import (
     invert,
 )
 from waboros.targets.jit.common.backend import SWAP, AddK, Dst, Imm, Operand, Reg, Slot
-from waboros.targets.jit.common.compiler import SUPPORTED
+from waboros.targets.jit.common.compiler import SUPPORTED, WIDEOPS
 from waboros.targets.jit.common.context import (
     HOST_BRIDGE,
     INTERRUPT,
@@ -70,7 +70,7 @@ class Frame:
 class Backend:
     pool = POOL
     tos = 0
-    supported = SUPPORTED | v128.SUPPORTED
+    supported = SUPPORTED | v128.SUPPORTED | frozenset(WIDEOPS)
 
     def __init__(self, *, guard: bool = False) -> None:
         self.a = Asm()
@@ -367,6 +367,22 @@ class Backend:
             a.madd(dst.id, 11, yr, xr, w, sub=True)
         else:
             a.dp2(div, dst.id, xr, yr, w)
+
+    def wide(self, op: str, dst: Slot, args: tuple[Operand, ...]) -> None:
+        """S0008: the operands into registers first (x9-x12; loads and moves leave the flags),
+        then adds/adc or subs/sbc back to back (after subs C = NOT borrow, as sbc takes it), or
+        mul plus umulh/smulh; both results through x13/x14 into their slots."""
+        a = self.a
+        rs = [self._r(x, 9 + i, True) for i, x in enumerate(args)]
+        if op in ("add128", "sub128"):
+            sub = op == "sub128"
+            a.addsub("subs" if sub else "adds", 13, rs[0], rs[2])
+            a.adc(14, rs[1], rs[3], sub=sub)
+        else:
+            a.madd(13, rs[0], rs[1], ZR)
+            a.mulh(14, rs[0], rs[1], op == "mul_wide_s")
+        self._word(False, 13, FRAME, 8 * dst.k)
+        self._word(False, 14, FRAME, 8 * dst.k + 8)
 
     def unop(self, op: str, dst: Reg, x: Operand, wide: bool) -> None:
         a, d, w = self.a, dst.id, wide

@@ -392,6 +392,18 @@ All decided (maintainer, 2026-11-04).
   only the 8 `json/relaxed-simd/` lines change on either target, in both modes. Differential:
   `tests/jit/test_relaxed_simd.py` (against `pyc`; the oracle comparison of the Test plan is left to
   `pyc`'s own check in step 1).
+* 2026-11-04: step 3 done (both JITs): the core branch for `0xFC13`-`0xFC16` (`WIDEOPS` in
+  `common/compiler.py`; each backend adds them to `supported`), `wide` in both backends as specified
+  (x86-64: an operand that is not an imm32 goes to rdx by `mov`/`movabs`; aarch64: the operands into
+  x9-x12 through `_r`, results through x13/x14). New encoder forms: x86 `imul r/m64` (`F7 /5`,
+  `UNARY`), aarch64 `adc`/`sbc` and `umulh`/`smulh` (scalar `Asm` methods; `FORMS` unchanged), each
+  equal to `llvm-mc`. Both JITs claim `wideArithmetic`: 109 pass / 0 fail in guard and explicit mode
+  on `jit-x86_64` and on `jit-aarch64` under QEMU; the claimed `jit-x86_64` run 54 573 pass / 91
+  expected failures (54 464 + 109); `spec_diff pyc jit-x86_64` empty; ISA gates clean; D35: only the
+  two compiled `json/wide-arithmetic/` modules change on either target, in both modes.
+  `tests/jit/test_wide.py` (both backends, guard and explicit, pinned and unpinned; against `pyc`
+  and an exact reference; a planted `xor` between `add` and `adc` fails the carry case). Wasmtime is
+  not run by the unit test (the spec file is checked against it in step 1).
 * 2026-11-04: approved by the maintainer: Q1 (b) in full, Q2 (a), Q3 (a), Q4 (a); Q5 as recorded. Q1 rewrote
   the Summary, the front-end paragraph, the operator table's lowering column, Plan of steps 1-2, the Test
   plan and Alternatives (front-end aliasing is now a rejected alternative). Recorded as D49.

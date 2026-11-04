@@ -130,7 +130,7 @@
         "typedFunctionReferences": true,
         "wasmCApi": null,
         "webContentSecurityPolicy": null,
-        "wideArithmetic": null
+        "wideArithmetic": true
       }
     },
     "waboros jit-aarch64": {
@@ -196,7 +196,7 @@
         "typedFunctionReferences": true,
         "wasmCApi": null,
         "webContentSecurityPolicy": null,
-        "wideArithmetic": null
+        "wideArithmetic": true
       }
     }
   }

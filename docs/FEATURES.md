@@ -76,7 +76,7 @@ directories (`test/core/<dir>/`) count only on a target that claims the feature
 | Typed Function References (`typedFunctionReferences`) | 5 | since 47 | yes 127/127 | yes 127/127 | yes 127/127 |
 | WebAssembly C and C++ API (`wasmCApi`) | 1 | - | - | - | - |
 | Web Content Security Policy (`webContentSecurityPolicy`) | 5 | - | - | - | - |
-| Wide Arithmetic (`wideArithmetic`) | 4 | flag | yes 109/109 | - | - |
+| Wide Arithmetic (`wideArithmetic`) | 4 | flag | yes 109/109 | yes 109/109 | yes 109/109 |
 <!-- features:end -->
 
 **Implementation notes per proposal** (hand-written; Wasmtime's `Config.wasm_*` switch in brackets):
@@ -92,7 +92,7 @@ directories (`test/core/<dir>/`) count only on a target that claims the feature
 * exceptions (`wasm_exceptions`): `Tag`, `try_table`, `throw`, `exnref`.
 * typed function references (`wasm_function_references`): `call_ref`, non-null types.
 * GC (`wasm_gc`, `Config.gc_support`): structs/arrays map naturally to Python objects in `pyc`.
-* wide arithmetic (`wasm_wide_arithmetic`): `pyc` done and claimed (big ints; S0008 step 1); the JITs get one backend method, `wide` (S0008 steps 2 and 3).
+* wide arithmetic (`wasm_wide_arithmetic`): done and claimed on `pyc` (big ints; S0008 step 1), `jit-x86_64` and `jit-aarch64` (step 3: one backend method, `wide`; `add`/`adc`, `sub`/`sbb`, one-operand `mul`/`imul` on x86-64, `adds`/`adc`, `subs`/`sbc`, `mul` + `umulh`/`smulh` on aarch64).
 * stack switching (`wasm_stack_switching`): after everything else.
 * component model: out of scope; fused core modules only (D7).
 

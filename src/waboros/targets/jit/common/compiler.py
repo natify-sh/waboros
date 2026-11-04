@@ -105,6 +105,9 @@ CONTROL = (
     0xD5,
     0xD6,
 )  # tail calls, typed function references
+# wide arithmetic (S0008): name and operand count; in a backend's `supported` with its `wide`
+WIDEOPS = {0xFC13: ("add128", 4), 0xFC14: ("sub128", 4), 0xFC15: ("mul_wide_s", 2),
+           0xFC16: ("mul_wide_u", 2)}  # fmt: skip
 TABLES = (0x11, 0x25, 0x26, 0xD0, 0xD1, 0xD2, *range(0xFC08, 0xFC12))  # incl. bulk memory
 SUPPORTED = frozenset(
     (*CONTROL, *range(0x20, 0x25), *range(0x41, 0x46), 0x50, *BINOPS, *CMPS, *UNOPS, *LOADS,
@@ -862,6 +865,13 @@ class _Func:
                 self.service(DATA_DROP, 0, [ins[1]], 0)
             elif op in REINTERPRET or op == 0x01:
                 pass
+            elif op in WIDEOPS:  # two i64 results, low first, into the operands' first slots
+                name, n = WIDEOPS[op]
+                args = [pop() for _ in range(n)][::-1]
+                self.need_tos()
+                b.wide(name, Slot(L + len(self.st)), tuple(args))
+                push(SLOTE)
+                push(SLOTE)
             elif op >= 0xFD000:
                 simd.op(self, ins)
             else:  # unsupported() already refused it

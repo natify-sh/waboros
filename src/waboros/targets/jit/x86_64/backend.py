@@ -17,7 +17,7 @@ from typing import cast
 
 from waboros.targets.base import TrapCode
 from waboros.targets.jit.common.backend import NEGATE, SWAP, AddK, Dst, Imm, Operand, Reg, Slot
-from waboros.targets.jit.common.compiler import SUPPORTED
+from waboros.targets.jit.common.compiler import SUPPORTED, WIDEOPS
 from waboros.targets.jit.common.context import (
     HOST_BRIDGE,
     INTERRUPT,
@@ -83,7 +83,7 @@ def _imm32(o: Operand, wide: bool) -> int | None:
 class Backend:
     pool = POOL
     tos = RAX
-    supported = SUPPORTED | v128.SUPPORTED
+    supported = SUPPORTED | v128.SUPPORTED | frozenset(WIDEOPS)
 
     def __init__(self, check_align: bool = False, *, guard: bool = False) -> None:
         self.a = Asm()
@@ -288,6 +288,31 @@ class Backend:
         res = RDX if rem else RAX
         if dst.id != res:
             a.mov(dst.id, res, w=w)
+
+    def wide(self, op: str, dst: Slot, args: tuple[Operand, ...]) -> None:
+        """S0008: add/adc or sub/sbb through rcx with only `mov` between them (LESSONS 1: CF
+        carries into the high half; an imm64 goes to rdx by movabs); mul/imul rcx into rdx:rax,
+        `y` read first as divrem does (it may be in tos = rax, LESSONS 32). 64-bit forms only."""
+        a = self.a
+        if op in ("add128", "sub128"):
+            lo, hi = ("add", "adc") if op == "add128" else ("sub", "sbb")
+            for k, (alu, x, y) in enumerate(((lo, args[0], args[2]), (hi, args[1], args[3]))):
+                if isinstance(x, Imm):
+                    a.mov_imm(RCX, x.value, w=True)  # never `xor`: CF is live after the first
+                else:
+                    a.mov(RCX, x.id if isinstance(x, Reg) else _slot(x.k), w=True)
+                imm = _imm32(y, True)
+                if imm is not None:
+                    a.alu_imm(alu, RCX, imm, w=True)
+                else:
+                    a.alu(alu, RCX, self._rm(y, RDX, True), w=True)
+                a.mov(_slot(dst.k + k), RCX, w=True)  # slot k + 1 is read before it is written
+            return
+        self.move(Reg(RCX), args[1], True)
+        self.move(Reg(RAX), args[0], True)
+        a.unary("imul" if op == "mul_wide_s" else "mul", RCX, w=True)
+        a.mov(_slot(dst.k), RAX, w=True)
+        a.mov(_slot(dst.k + 1), RDX, w=True)
 
     def unop(self, op: str, dst: Reg, x: Operand, wide: bool) -> None:
         a, d, w = self.a, dst.id, wide
