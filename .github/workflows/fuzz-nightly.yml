@@ -1,0 +1,56 @@
+name: fuzz-nightly
+# Differential fuzzing (ROADMAP.md, "Next"): pyc, jit-x86_64 (guard and explicit) and Wasmtime on
+# wasm-tools smith modules and on the structured --gen modules. Never blocking: it is outside `ci`
+# and `platforms`, the fuzz step cannot fail the job, and a divergence is a finding to triage later
+# (the module and a description are kept in the artifact), not a red build.
+on:
+  schedule:
+    - cron: "17 2 * * *"  # off-peak
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: "minutes for each of smith and gen"
+        default: "45"
+permissions:
+  contents: read
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    continue-on-error: true
+    env:
+      MINUTES: ${{ inputs.minutes || '45' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+      - run: uv sync --python 3.13
+      # a seed that differs every night, printed so a finding can be reproduced:
+      # uv run python tools/fuzz.py --targets pyc,jit,wasmtime --seed N [--gen] --minutes M
+      - run: |
+          for mode in smith gen; do
+            flag=; [ $mode = gen ] && flag=--gen
+            uv run python tools/fuzz.py --targets pyc,jit,wasmtime --minutes $MINUTES $flag \
+              --seed $(( GITHUB_RUN_ID % 1000000 * 1000 )) --out fuzz-out/$mode | tee fuzz-out-$mode.log || true
+          done
+      - if: ${{ !cancelled() }}
+        run: |
+          {
+            echo "## Differential fuzzing: pyc, jit-x86_64 (guard, explicit), Wasmtime"
+            for mode in smith gen; do
+              echo "- $mode: $(tail -n 1 fuzz-out-$mode.log 2>/dev/null || echo 'no result')"
+            done
+            echo
+            echo "Divergences (modules and descriptions are in the artifact \`fuzz-out\`):"
+            for f in fuzz-out/*/div_*.txt; do
+              [ -e "$f" ] && { echo; echo "### $f"; echo '```'; head -n 12 "$f"; echo '```'; }
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: fuzz-out
+          path: |
+            fuzz-out
+            fuzz-out-*.log
+          retention-days: 14
+          if-no-files-found: ignore

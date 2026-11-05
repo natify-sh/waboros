@@ -19,8 +19,16 @@ shapes.
 Modules are bounded (1 MiB memory, 1000 table elements, 3-12 functions, 3000 instructions, no SIMD,
 GC, exceptions, threads or memory64) with a 20 s alarm each: unbounded smith modules get the process
 OOM-killed. Termination is ensured by smith (--ensure-termination). Needs wasm-tools (the dev
-group; WASM_TOOLS overrides the lookup)."""
+group; WASM_TOOLS overrides the lookup).
 
+    python tools/fuzz.py --targets pyc,jit,wasmtime [--minutes M] [--seed S] [--gen] [--out D]
+
+is the cross-target mode (TESTING.md): pyc, jit-x86_64 (guard, explicit) and Wasmtime for M minutes;
+a divergence is saved as `div_<seed>.wasm` + `.txt` in DIR and the exit status stays 0."""
+
+import argparse
+import ctypes
+import gc
 import hashlib
 import os
 import random
@@ -28,6 +36,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +49,7 @@ import bropt  # noqa: E402  # type: ignore[import-not-found]
 
 from waboros.frontend.binary import parse  # noqa: E402
 from waboros.frontend.validate import validate  # noqa: E402
+from waboros.runtime import link  # noqa: E402
 from waboros.runtime.store import StoreState  # noqa: E402
 from waboros.targets.pyc import (  # noqa: E402
     _from_raw,
@@ -435,7 +445,235 @@ def main(n: int, seed0: int, gen: bool = False) -> int:
     return 1 if bad else 0
 
 
+# --- the cross-target mode: pyc, jit-x86_64 (guard, explicit) and Wasmtime ---------------------
+
+EDGE = [0, 1, 2, 3, 7, 8, 16, 100, 255, 256, 65535, 65536, 0x7FFFFFFF, 0x80000000, (1 << 64) - 1]
+
+
+def _nan_bits(ty: int, v: int) -> int:
+    """A NaN of the type with any payload or sign becomes the canonical one: which NaN an operator
+    makes is nondeterministic in the spec (the spec runner's `nan:arithmetic`)."""
+    if ty == 0x7D and v & 0x7F800000 == 0x7F800000 and v & 0x7FFFFF:
+        return 0x7FC00000
+    if ty == 0x7C and v & 0x7FF0 << 48 == 0x7FF0 << 48 and v & (1 << 52) - 1:
+        return 0x7FF8 << 48
+    return v
+
+
+def _same(a: tuple[Any, ...], b: tuple[Any, ...]) -> bool:
+    """Equal outcomes; a v128 result also matches if it does under f32x4 or f64x2 NaN lanes."""
+    if a == b:
+        return True
+    if a[0] != "ok" or b[0] != "ok":
+        return False
+    for (t, x), (_, y) in zip(a[1], b[1], strict=True):
+        if x != y and not (
+            t == 0x7B and any(_canon_lanes(x, w) == _canon_lanes(y, w) for w in (32, 64))
+        ):
+            return False
+    return True
+
+
+def _canon_lanes(v: int, w: int) -> list[int]:
+    m, ty = (1 << w) - 1, 0x7D if w == 32 else 0x7C
+    return [_nan_bits(ty, v >> i & m) for i in range(0, 128, w)]
+
+
+class _Side:
+    """One target (or Wasmtime) running one module: calls by export name, memory hashes."""
+
+    def __init__(self, name: str, eng: Any, mod: Any, inst: Any, mems: list[str]) -> None:
+        self.name, self.eng, self.inst, self.mems = name, eng, inst, mems
+        self.mod = mod  # None for Wasmtime, which types its own values
+
+    def call(self, ty: tuple[list[int], list[int]], name: str, args: list[int]) -> tuple[Any, ...]:
+        from tests.spec.engine import EngineError, Trap
+
+        try:
+            res = self.eng.call(self.inst, name, args)
+        except Trap as e:
+            return ("trap", e.code.name)
+        except EngineError as e:
+            return ("exc", type(e).__name__)
+        except Exception as e:  # a crash in a target is a finding too
+            return ("exc", type(e).__name__)
+        return (
+            "ok",
+            [(t, _nan_bits(t, v & (1 << _BITS[t]) - 1)) for t, v in zip(ty[1], res, strict=True)],
+        )
+
+    def memhash(self) -> str:
+        h = hashlib.sha1()
+        for n in self.mems:
+            if self.mod is None:  # wasmtime
+                m = self.inst.exports(self.eng._store)[n]
+                b = m.read(self.eng._store, 0, m.data_len(self.eng._store))
+            else:
+                v = self.inst.provider[1].export(n).value
+                b = ctypes.string_at(v.res.addr, v.pages << 16) if hasattr(v, "res") else bytes(v)
+            h.update(len(b).to_bytes(8, "little") + hashlib.sha1(b).digest())
+        return h.hexdigest()
+
+
+_BITS = {0x7F: 32, 0x7E: 64, 0x7D: 32, 0x7C: 64, 0x7B: 128}
+SIDES = ["pyc", "jit-guard", "jit-explicit", "wasmtime"]
+
+
+def _open(name: str, wasm: bytes, mod: Any) -> _Side | str:
+    """The side `name` loaded and instantiated, or a string: `skip:<why>` (a target that cannot run
+    the module) or `inst:<outcome>` (instantiating trapped or failed)."""
+    from tests.spec.engine import EngineError, LoadError, Trap, Unsupported
+
+    wt = name == "wasmtime"
+    if wt:
+        from tests.spec.wasmtime_engine import WasmtimeEngine
+
+        eng: Any = WasmtimeEngine()
+    else:
+        from tests.spec.target_engine import TargetEngine
+
+        eng = TargetEngine("pyc" if name == "pyc" else "jit-x86_64")
+        os.environ["WABOROS_JIT_BOUNDS"] = name.removeprefix("jit-")
+    try:
+        m = eng.load(wasm)
+        if isinstance(m, Unsupported):
+            return "skip:unsupported " + str(m)
+        inst = eng.instantiate(m, {})
+    except Unsupported as e:
+        return "skip:unsupported " + str(e)
+    except LoadError as e:
+        return "skip:load" if e.kind is None or wt else "inst:load-error " + e.kind
+    except Trap as e:
+        return "inst:trap " + e.code.name
+    except EngineError as e:
+        return "inst:" + type(e).__name__
+    except Exception as e:  # a crash in a target is a finding too
+        return "inst:" + type(e).__name__
+    return _Side(name, eng, None if wt else mod, inst, [n for n, k, _ in mod["exports"] if k == 2])
+
+
+def _args(rnd: random.Random, ps: list[int]) -> list[int] | None:
+    out: list[int] = []
+    for t in ps:
+        if t not in _BITS:
+            return None  # a reference type: not driven from here
+        w = _BITS[t]
+        out.append(rnd.choice(EDGE) & (1 << w) - 1 if t in (0x7F, 0x7E) and rnd.random() < 0.4
+                   else rnd.getrandbits(w))  # fmt: skip
+    return out
+
+
+def compare(wasm: bytes, rnd: random.Random, gen: bool, skips: dict[str, int]) -> str | None:
+    """Run `wasm` on every side: None if they agree, else the first divergence described."""
+    mod = parse(wasm)
+    validate(mod)
+    sides: list[_Side] = []
+    insts: dict[str, str] = {}
+    for name in SIDES:
+        r = _open(name, wasm, mod)
+        if isinstance(r, _Side):
+            sides.append(r)
+        elif r.startswith("skip:"):
+            skips[name] = skips.get(name, 0) + 1
+        else:
+            insts[name] = r
+    if insts and len(set(insts.values())) > 1 or insts and sides:
+        return f"instantiate: {insts} (ok on {[s.name for s in sides]})"
+    if len(sides) + len(insts) < 2:
+        return None
+    for name, kind, idx in mod["exports"]:
+        if kind != 0 or not sides:
+            continue
+        ps, rs = link.func_type(mod, idx)
+        ty = (ps, rs)
+        trials = [list(a) for a in GEN_ARGS] if gen else [_args(rnd, ps) for _ in range(3)]
+        for args in trials:
+            if args is None:
+                break
+            got = [(s.name, s.call(ty, name, args), s.memhash()) for s in sides]
+            ref = got[-1] if got[-1][0] == "wasmtime" else got[0]
+            bad = [g[0] for g in got if not _same(g[1], ref[1]) or g[2] != ref[2]]
+            if bad:
+                return (
+                    f"export {name} args {args}\n"
+                    + "\n".join(f"  {n}: {o} mem {h[:12]}" for n, o, h in got)
+                    + f"\ndiffering from {ref[0]}: {bad}"
+                )
+    return None
+
+
+def cross(minutes: float, seed0: int, gen: bool, out: Path) -> int:
+    if not WT:
+        sys.exit("wasm-tools not found (uv sync, or set WASM_TOOLS)")
+    sys.path.insert(0, str(ROOT))
+    out.mkdir(parents=True, exist_ok=True)
+    signal.signal(signal.SIGALRM, _alarm)
+    end = time.monotonic() + minutes * 60
+    n = ok = div = timeouts = 0
+    skips: dict[str, int] = {}
+    seed = seed0
+    while time.monotonic() < end:
+        rnd, seed, n = random.Random(seed), seed + 1, n + 1
+        s = seed - 1
+        if gen:
+            r = subprocess.run([WT, "parse", "-o", "/dev/stdout"],
+                               input=structured(rnd).encode(), capture_output=True)  # fmt: skip
+        else:
+            fl = list(FLAGS)
+            for k, v in {
+                "--simd-enabled": rnd.random() < 0.4, "--memory64-enabled": rnd.random() < 0.25,
+                "--max-memories": rnd.choice([1, 1, 3]), "--max-memory64-bytes": 1048576,
+                "--wide-arithmetic-enabled": rnd.random() < 0.2, "--canonicalize-nans": True,
+            }.items():  # fmt: skip
+                if k in fl:
+                    fl[fl.index(k) + 1] = str(v).lower()
+                else:
+                    fl += [k, str(v).lower()]
+            r = subprocess.run([WT, "smith", *fl, "-o", "/dev/stdout"],
+                               input=rnd.randbytes(4096), capture_output=True)  # fmt: skip
+        if r.returncode:
+            skips["generator"] = skips.get("generator", 0) + 1
+            continue
+        signal.alarm(ALARM)
+        try:
+            d = compare(r.stdout, rnd, gen, skips)
+        except TimeoutError:
+            timeouts += 1
+            continue
+        except Exception as e:  # the harness or the front end, not a target
+            skips["harness:" + type(e).__name__] = skips.get("harness:" + type(e).__name__, 0) + 1
+            continue
+        finally:
+            signal.alarm(0)
+        ok += 1
+        if d:
+            div += 1
+            (out / f"div_{s}.wasm").write_bytes(r.stdout)
+            (out / f"div_{s}.txt").write_text(f"seed {s} mode {'gen' if gen else 'smith'}\n{d}\n")
+            print("DIVERGENCE seed", s, d.splitlines()[0][:200], flush=True)
+        if n % 200 == 0:
+            gc.collect()  # the JIT's address-space reservations
+            print(f"  ... {n} modules, {div} divergences", flush=True)
+    print(
+        f"cross-target {'gen' if gen else 'smith'} seeds {seed0}..{seed - 1}: generated {n}, "
+        f"compared {ok}, timeouts {timeouts}, skips {skips}, divergences {div} (in {out})"
+    )
+    return 0  # non-blocking: findings are triaged later (ROADMAP.md)
+
+
 if __name__ == "__main__":
+    if "--targets" in sys.argv:
+        ap = argparse.ArgumentParser()
+        ap.add_argument("--targets", required=True, help="pyc,jit,wasmtime (all three compared)")
+        ap.add_argument("--minutes", type=float, default=5)
+        ap.add_argument("--seed", type=int, default=0)
+        ap.add_argument("--gen", action="store_true")
+        ap.add_argument("--fbits", action="store_true")
+        ap.add_argument("--out", type=Path, default=Path("fuzz-out"))
+        a = ap.parse_args()
+        if set(a.targets.split(",")) != {"pyc", "jit", "wasmtime"}:
+            sys.exit("--targets: only pyc,jit,wasmtime is implemented")
+        sys.exit(cross(a.minutes, a.seed, a.gen, a.out))
     args = [a for a in sys.argv[1:] if a not in ("--fbits", "--gen")]
     if len(args) != 2:
         sys.exit(__doc__)

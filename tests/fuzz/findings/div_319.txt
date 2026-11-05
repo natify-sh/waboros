@@ -1,0 +1,7 @@
+seed 319 mode smith
+export 2 args [16859766553141812024]
+  pyc: ('trap', 'TABLE_OUT_OF_BOUNDS') mem 8131298780fd
+  jit-guard: ('trap', 'MEMORY_OUT_OF_BOUNDS') mem 8131298780fd
+  jit-explicit: ('trap', 'MEMORY_OUT_OF_BOUNDS') mem 8131298780fd
+  wasmtime: ('trap', 'MEMORY_OUT_OF_BOUNDS') mem 8131298780fd
+differing from wasmtime: ['pyc']

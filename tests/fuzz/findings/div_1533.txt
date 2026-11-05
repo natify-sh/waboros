@@ -1,0 +1,7 @@
+seed 1533 mode smith
+export 5 args [0]
+  pyc: ('trap', 'MEMORY_OUT_OF_BOUNDS') mem a35d1688a60a
+  jit-guard: ('trap', 'BAD_CONVERSION_TO_INTEGER') mem a35d1688a60a
+  jit-explicit: ('trap', 'BAD_CONVERSION_TO_INTEGER') mem a35d1688a60a
+  wasmtime: ('trap', 'BAD_CONVERSION_TO_INTEGER') mem a35d1688a60a
+differing from wasmtime: ['pyc']

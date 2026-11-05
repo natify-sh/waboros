@@ -1,0 +1,7 @@
+seed 4020 mode smith
+export  args [2034544512858373044]
+  pyc: ('trap', 'INTEGER_OVERFLOW') mem a35d1688a60a
+  jit-guard: ('trap', 'MEMORY_OUT_OF_BOUNDS') mem a35d1688a60a
+  jit-explicit: ('trap', 'MEMORY_OUT_OF_BOUNDS') mem a35d1688a60a
+  wasmtime: ('trap', 'MEMORY_OUT_OF_BOUNDS') mem a35d1688a60a
+differing from wasmtime: ['pyc']

@@ -1,0 +1,7 @@
+seed 50544 mode smith
+export  args []
+  pyc: ('trap', 'TABLE_OUT_OF_BOUNDS') mem a35d1688a60a
+  jit-guard: ('trap', 'MEMORY_OUT_OF_BOUNDS') mem a35d1688a60a
+  jit-explicit: ('trap', 'MEMORY_OUT_OF_BOUNDS') mem a35d1688a60a
+  wasmtime: ('trap', 'MEMORY_OUT_OF_BOUNDS') mem a35d1688a60a
+differing from wasmtime: ['pyc']

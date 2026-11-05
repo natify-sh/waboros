@@ -90,8 +90,29 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   identifier index or only a default; `if`/`else` frames, blocks with a result, `return`,
   `return_call`, `unreachable`. It draws `BRTREE` from {0, 1, 2, 4} per module and also compares
   `sink` and `dse` alone; the rules change 0.9 % of smith modules (8 of 938) and 40 % of `--gen` modules (4 045 of 10 000). `--fbits` runs it
-  with `WABOROS_PYC_FBITS=1` (D46). Comparing `pyc`, `jit-x86_64` (guard and explicit) and Wasmtime,
-  and the nightly non-blocking CI job, come next (ROADMAP.md); neither exists yet.
+  with `WABOROS_PYC_FBITS=1` (D46).
+* `tools/fuzz.py --targets pyc,jit,wasmtime [--minutes M] [--seed S] [--gen] [--out DIR]` compares
+  `pyc`, `jit-x86_64` in guard and in explicit mode (`WABOROS_JIT_BOUNDS` set per module, in process)
+  and Wasmtime (the spec runner's engines, so the same config switches) for `M` minutes. Per export
+  call (three random argument sets with edge values, or the 28 fixed pairs with `--gen`) it compares
+  the results, the trap code and a hash of every exported memory; a NaN result compares as any NaN
+  (a v128 one also under f32x4 and f64x2 lanes) and smith runs with `--canonicalize-nans`, because
+  which NaN is made is nondeterministic. Smith modules draw SIMD (40 %), memory64 (25 %), wide
+  arithmetic (20 %) and 1 or 3 memories per seed; relaxed SIMD stays off (its results may differ by
+  design). A target that cannot run a module (`Unsupported`, a load limit) is skipped for it and
+  counted; a divergence (also in instantiating) writes `div_<seed>.wasm` and `div_<seed>.txt` (the
+  export, the arguments, each side's outcome and which differ from Wasmtime) into `--out`
+  (default `fuzz-out`). The exit status is always 0; the last line is the summary (modules, skips
+  per target, timeouts, divergences). The workflow `fuzz-nightly.yml` (cron, and `workflow_dispatch`
+  with the minutes) runs smith and `--gen` for 45 minutes each outside `ci` and `platforms`, never
+  blocks, puts the counts and the descriptions in the job summary and keeps the artifact `fuzz-out`
+  (the modules, the descriptions, the logs) for 14 days; a divergence is triaged later (above), not
+  fixed at once.
+* `tests/fuzz/findings/` keeps the divergences of the first runs (2026-11-05, seeds 319-4020 and
+  50204-50544), untriaged: in all eight only `pyc` differs, and only in which trap fires when two
+  compete (`pyc` raises another trap code than both JIT modes and Wasmtime; the memory hashes are
+  equal). The suspected cause is the order in which `pyc` evaluates operands. Triage is before the
+  exceptions spec closes (ROADMAP.md, "Next").
 
 ## Programs and benchmarks
 
