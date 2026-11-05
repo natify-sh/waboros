@@ -77,7 +77,7 @@ running it on waboros.
 
 2026-11-05 (maintainer): fusedwasi 0.1.0b1 is released (PyPI: one `py3-none-any` wheel, Python >= 3.10,
 no dependencies; WASI 0.1 implemented over WASI 0.2 with one state; `wasi:sockets` and `wasi:http` still
-unstable). Still the candidate until the WASI phase runs it on waboros.
+unstable). 0.1.0b2 followed the same day. Still the candidate until the WASI phase runs it on waboros.
 
 ### D9. Cache compiled artifacts
 Status: accepted · Date: 2026-10-26 · Supersedes: — · Evidence: —
