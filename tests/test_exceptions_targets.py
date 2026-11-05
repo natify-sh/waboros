@@ -118,6 +118,7 @@ def test_legacy_opcodes_are_a_load_error_without_a_kind(body: bytes) -> None:
 
 
 def test_wasmtime_start_function_throw_is_uncaught_exception() -> None:
+    pytest.importorskip("wasmtime")  # the oracle is a dev tool, absent on platform runners
     from tests.spec.engine import Trap as SpecTrap
     from tests.spec.engine import TrapCode as SpecCode
     from tests.spec.wasmtime_engine import WasmtimeEngine
