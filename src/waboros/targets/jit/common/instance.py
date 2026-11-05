@@ -259,7 +259,10 @@ class Memory:
     def __init__(self, pages: int, maximum: int | None, *, a64: bool = False) -> None:
         self.a64 = a64
         if not a64:
-            self.res = Reservation(MEMORY_RESERVATION, pages << 16)
+            try:  # a commit limit (Windows' paging file, a container) refuses the min cleanly
+                self.res = Reservation(MEMORY_RESERVATION, pages << 16)
+            except OSError:
+                raise MemoryError(f"failed to reserve {MEMORY_RESERVATION} bytes") from None
             self.max = MAX_PAGES if maximum is None else min(maximum, MAX_PAGES)
         else:
             if pages > MAX_PAGES64:

@@ -207,10 +207,13 @@ def test_two_gib_memories(mode: str, i64: bool, monkeypatch: pytest.MonkeyPatch)
     x86-64 and the i64 `k <= lo` path at k = 2**31, switch on and off. Values are read back where
     the access fits, and it traps exactly at the bound."""
     wasm = wat(_big(i64))
-    monkeypatch.setenv("WABOROS_JIT_TWOLEVEL", "1")
-    new = build(wasm)
-    monkeypatch.setenv("WABOROS_JIT_TWOLEVEL", "")
-    old = build(wasm)
+    try:  # four 2 GiB memories committed at once: a commit limit (Windows, containers) may refuse
+        monkeypatch.setenv("WABOROS_JIT_TWOLEVEL", "1")
+        new = build(wasm)
+        monkeypatch.setenv("WABOROS_JIT_TWOLEVEL", "")
+        old = build(wasm)
+    except MemoryError as e:  # the clean refusal S0009 requires; the forms are not reachable here
+        pytest.skip(f"this host cannot commit four 2 GiB memories: {e}")
     for m in ("$a", "$b"):
         for ea in BIG64 if i64 else BIG32:
             v = 0x1122334455667700 | ea & 0xFF
