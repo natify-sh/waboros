@@ -791,6 +791,8 @@ class JitInstance(Instance):
                 self.cells.append(cast(GlobalCell, ext.value))
             elif im[0] == "tag":  # (exporting instance, tag index): the exporter's tag (S0012)
                 src, idx = cast(Any, ext.value)
+                if not isinstance(src, JitInstance):  # a tag of another target is not ours
+                    raise LinkError(f"incompatible import type {im[1]}.{im[2]}")
                 tag = cast(Tag, src.tags[idx])
                 if tag.store is not store:
                     raise ValueError("tag import belongs to another store")
@@ -962,6 +964,8 @@ class JitInstance(Instance):
                 return Extern("memory", self.owner, self.memories[idx])
             if kind == 3:
                 return Extern("global", self.owner, GlobalCell(self.gaddr[idx], self))
+            if kind == 4:
+                return Extern("tag", self.owner, self.tags[idx])
         raise LookupError(f"no export {name}")
 
     def limits(self, name: str) -> tuple[int, int | None]:

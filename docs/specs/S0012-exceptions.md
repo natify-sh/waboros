@@ -155,7 +155,14 @@ step 4 (Q5).
   * each clause's label must accept the tag's parameters (`catch`), plus `(ref exn)` (`catch_ref`),
     nothing (`catch_all`), or `(ref exn)` (`catch_all_ref`), with subtyping
     `nullexnref <: exnref` and `(ref exn) <: exnref`.
-* `Extern.kind` gains `"tag"` (S0002): the value is the target's tag handle.
+* `Extern.kind` gains `"tag"` (S0002). A tag import's value is `(exporting instance, tag index)`,
+  built by `link.resolve`; each target resolves it to its own tag object, and an instance of another
+  target is a `LinkError` ("incompatible import type"): a tag has one identity per store and
+  target. `TargetInstance.export` of a tag returns `Extern("tag", owner, <the target's tag>)`.
+* `Trap.exn` is the same on every target: `(tag, values)`, the values as `call` returns them on
+  that target (i32/i64/f32/f64 as raw bits, v128 as an int; references are target handles, as
+  results are). A host that passes a value that is not an exnref where one is expected gets a
+  `TypeError` on every target.
 * `link.py` checks a tag import's type as a function import's: equivalent function types
   ("incompatible import type", `tag.wast`).
 * Runner (S0001):
@@ -240,7 +247,8 @@ None. Nothing in this spec differs by operating system.
   * `pyc`: 10⁵ rethrows of one exnref in a loop, with memory flat (`tracemalloc`).
 * **Differential:**
   * `tools/fuzz.py --targets pyc,jit,wasmtime` with exceptions enabled in its `wasm-smith`
-    configuration (the step adds the flag), run before the review step;
+    configuration (the cross-target mode sets the flag; a reference result is compared as null or
+    not), run at the review step;
   * findings triaged as ROADMAP "Next" says.
 * **Mutations** (LESSONS 80), in a subprocess, with a crash counted as caught. Each must be caught:
   * the landing pad dispatches every non-zero status (traps become catchable);
@@ -403,7 +411,7 @@ in a comment (REFERENCES.md).
 * **Q8 Legacy exceptions** (`try`, `catch`, `rethrow`, `delegate`). They are not in the pinned
   suite, Wasmtime 50 refuses them by default, and the oracle cannot enable them.
   Recommendation: **out of scope**. They stay `NotImplementedError` (a `LoadError` without a
-  kind). Decision (maintainer, 2026-11-05): the legacy format is not planned.
+  kind, from the reader or the validator alike: the spec runner wraps both). Decision (maintainer, 2026-11-05): the legacy format is not planned.
 
 ## Changes
 * 2026-11-05: created (draft). Pinned-suite census, wasmtime-py 50 probes (host boundary,
@@ -454,3 +462,17 @@ in a comment (REFERENCES.md).
     Mutations under QEMU: 16 of 17 caught; the survivor (`call_host` keeps `unwind`) is
     equivalent, as no libcall returns 14.
   * The native arm64 job and the throw cost on arm64 hardware are not measured here (no hardware).
+* 2026-11-05: step 5 done (review of steps 1-4, closed). Findings and fixes:
+  * `Trap.exn` differed: `pyc` gave floats (or bit patterns only on a FBITS host) and the JITs raw
+    bits; `pyc` converts the payload with the tag's parameter types (`_Tag` carries them), a
+    cross-target test pins i32, f32, f64, i64 and v128. A non-exnref given to `throw_ref` through an
+    entry is a `TypeError` on `pyc` too (was `AttributeError`).
+  * A tag imported across targets raised `AttributeError`; it is a `LinkError` both ways.
+    `JitInstance.export` returns the tag `Extern`, as `pyc` does.
+  * The runner wrapped `NotImplementedError` only around the reader; a legacy opcode failed in the
+    validator escaped as an error. Both are a `LoadError` without a kind now.
+  * The Wasmtime adapter mapped a start function's "thrown Wasm exception" to `LinkError`; it is
+    `Trap(UNCAUGHT_EXCEPTION)`.
+  * `tools/fuzz.py` cross mode enables smith exceptions, and compares a reference result as null or
+    not (it was a `KeyError` that dropped the module). Fuzz numbers: `--targets pyc,jit,wasmtime --minutes 5 --seed 90000`: 3 637 modules generated, 3 636 compared, 1 timeout, 10 divergences, all of them `pyc` alone with a different trap code (the known trap-order class, triage); about half of the smith modules have `throw` or `try_table` (101 of the first 200 seeds, 35 with a tag), and none of the divergences has a tag.
+  * No machine-code change: `tools/jit_dump.py` x86-64 is identical to before the step.

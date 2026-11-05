@@ -8,7 +8,7 @@ from typing import Any, Literal, cast
 
 from waboros.frontend.binary import F32, F64, parse
 from waboros.frontend.validate import validate, valtype_key
-from waboros.runtime.link import func_type, global_type
+from waboros.runtime.link import LinkError, func_type, global_type
 from waboros.runtime.store import StoreState
 from waboros.targets.base import (
     Extern,
@@ -76,7 +76,7 @@ def _run(store: StoreState, fn: Callable[..., Any], *args: Any) -> Any:
         raise
     except _rt._Thrown as e:  # an exception that reaches an entry (S0012, Q4)
         t = Trap(TrapCode.UNCAUGHT_EXCEPTION, "thrown Wasm exception")
-        t.exn = (e.tag, e.vals)
+        t.exn = (e.tag, tuple(_to_raw(ty, v) for ty, v in zip(e.tag.ps, e.vals, strict=True)))
         raise t from None
     # OverflowError: an address of 2**31 or more on a 32-bit host (Py_ssize_t)
     except (IndexError, struct.error, OverflowError):
@@ -188,6 +188,8 @@ class PycTarget:
             val = ext.value
             if im[0] == "tag":  # (exporting instance, tag index): the exporter's tag object
                 inst, idx = cast(Any, val)
+                if not isinstance(inst, PycInstance):  # a tag of another target is not ours
+                    raise LinkError(f"incompatible import type {im[1]}.{im[2]}")
                 val = inst.ns[f"TG{idx}"]
             if im[0] == "func":
                 if ext.owner is None:

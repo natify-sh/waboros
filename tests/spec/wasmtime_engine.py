@@ -100,6 +100,8 @@ class WasmtimeEngine:
         except wasmtime.Trap as e:
             raise self._trap(e) from None
         except wasmtime.WasmtimeError as e:
+            if "thrown Wasm exception" in str(e):  # a start function (S0012, Q4)
+                raise Trap(TrapCode.UNCAUGHT_EXCEPTION, _first_line(e)) from None
             raise LinkError(_first_line(e)) from None
 
     def call(self, instance: Instance, name: str, args: Sequence[Value]) -> list[Value]:

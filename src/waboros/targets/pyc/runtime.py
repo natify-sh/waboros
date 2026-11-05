@@ -244,7 +244,10 @@ class _TC:
 class _Tag:
     """An exception tag (S0012); compared with `is`, an imported tag is the exporter's object."""
 
-    __slots__ = ()
+    __slots__ = ("ps",)
+
+    def __init__(self, ps):
+        self.ps = ps  # the parameter types, for the payload a host sees (`_run`)
 
 
 class _Thrown(Exception):
@@ -263,6 +266,8 @@ def _rethrow(x):
     same object in a loop does not grow a chain."""
     if x is None:
         raise Trap(TrapCode.NULL_REFERENCE, "null reference")
+    if not isinstance(x, _Thrown):
+        raise TypeError(f"not an exception reference: {x!r}")
     x.__traceback__ = x.__context__ = x.__cause__ = None
     raise x
 

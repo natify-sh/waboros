@@ -1806,7 +1806,7 @@ class ModGen:
             if not first:
                 gi.append("    %s = %s" % (s.gname(i), s.val(init)))
         for j in range(len(s.tagimports), len(s.tagtypes)):
-            out.append("TG%d = _Tag()" % j)
+            out.append("TG%d = _Tag(%r)" % (j, tuple(mod["types"][s.tagtypes[j]][0])))
         for ti, (mn, mx) in enumerate(mod["tables"]):
             k = len(s.timports) + ti
             big = mn > 10000000  # above D27's cap: a checked allocation (S0009), else as before

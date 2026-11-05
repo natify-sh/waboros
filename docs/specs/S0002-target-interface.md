@@ -6,7 +6,7 @@ status: implemented
 superseded_by:
 related: [D5, D6, D10, D16, D17, D18, D23, D24, S0001, S0003]
 owner: maintainer
-updated: 2026-11-04
+updated: 2026-11-05
 ---
 
 # S0002 Target interface
@@ -34,10 +34,12 @@ class TrapCode(IntEnum):    # numbers and names of ARTIFACT.md part 3 (Wasmtime'
     UNREACHABLE = 1; MEMORY_OUT_OF_BOUNDS = 2; INTEGER_DIVISION_BY_ZERO = 3; INTEGER_OVERFLOW = 4
     STACK_OVERFLOW = 5; BAD_CONVERSION_TO_INTEGER = 6; INDIRECT_CALL_TO_NULL = 7
     BAD_SIGNATURE = 8; TABLE_OUT_OF_BOUNDS = 9; NULL_REFERENCE = 10; INTERRUPT = 12
+    UNCAUGHT_EXCEPTION = 14
 
 class Trap(Exception):      # the only trap type of the package; targets raise nothing else for traps
     def __init__(self, code: TrapCode, message: str = "") -> None: ...
     code: TrapCode
+    exn: tuple[object, tuple[object, ...]] | None   # UNCAUGHT_EXCEPTION only: (tag, payload)
 
 class Unsupported(Exception):       # a valid module this target cannot compile (yet)
     def __init__(self, target: str, feature: str) -> None: ...
@@ -272,3 +274,10 @@ weights itself until then.
   the tag type as a function import's, and never calls `TargetInstance.export` for a tag; the targets
   ignore a tag import when instantiating. A body with `throw`, `throw_ref` or `try_table` is
   `Unsupported("exceptions")` on every target (`supports()`).
+* 2026-11-05 (S0012 steps 2-5): supersedes the S0012 step 1 entry above. `TrapCode` gains
+  `UNCAUGHT_EXCEPTION = 14` and `Trap` gains `exn: tuple[tag, tuple[Raw | RefVal, ...]]`, set only
+  for that code, with the payload as `call` returns values on the target. A body with `throw`,
+  `throw_ref` or `try_table` is no longer `Unsupported("exceptions")`: all three targets compile it.
+  A tag `Extern`'s `value` is `(exporting instance, tag index)` from `link.resolve`, each target
+  resolves it to its own tag; `TargetInstance.export` of a tag returns the target's tag; a tag of
+  another target is a `LinkError`.

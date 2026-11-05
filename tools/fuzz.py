@@ -17,9 +17,9 @@ before S0010; every module is called on the same 28 argument pairs. Smith module
 shapes.
 
 Modules are bounded (1 MiB memory, 1000 table elements, 3-12 functions, 3000 instructions, no SIMD,
-GC, exceptions, threads or memory64) with a 20 s alarm each: unbounded smith modules get the process
-OOM-killed. Termination is ensured by smith (--ensure-termination). Needs wasm-tools (the dev
-group; WASM_TOOLS overrides the lookup).
+GC, threads or memory64; exceptions only in the cross-target mode) with a 20 s alarm each: unbounded
+smith modules get the process OOM-killed. Termination is ensured by smith (--ensure-termination).
+Needs wasm-tools (the dev group; WASM_TOOLS overrides the lookup).
 
     python tools/fuzz.py --targets pyc,jit,wasmtime [--minutes M] [--seed S] [--gen] [--out D]
 
@@ -499,7 +499,10 @@ class _Side:
             return ("exc", type(e).__name__)
         return (
             "ok",
-            [(t, _nan_bits(t, v & (1 << _BITS[t]) - 1)) for t, v in zip(ty[1], res, strict=True)],
+            [
+                (t, _nan_bits(t, v & (1 << _BITS[t]) - 1) if t in _BITS else int(v is not None))
+                for t, v in zip(ty[1], res, strict=True)
+            ],  # a reference result: null or not (the handles differ per engine)
         )
 
     def memhash(self) -> str:
@@ -624,6 +627,7 @@ def cross(minutes: float, seed0: int, gen: bool, out: Path) -> int:
                 "--simd-enabled": rnd.random() < 0.4, "--memory64-enabled": rnd.random() < 0.25,
                 "--max-memories": rnd.choice([1, 1, 3]), "--max-memory64-bytes": 1048576,
                 "--wide-arithmetic-enabled": rnd.random() < 0.2, "--canonicalize-nans": True,
+                "--exceptions-enabled": True,
             }.items():  # fmt: skip
                 if k in fl:
                     fl[fl.index(k) + 1] = str(v).lower()
