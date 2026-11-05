@@ -423,10 +423,14 @@ class FuncGen:
         s.stack[i] = E(t, e.t, e.b, k=True, w=e.w)
 
     def flush(s, pred=lambda e: not e.pure_const or True):
-        for i, e in enumerate(s.stack):
-            if e.k or (e.pure_const and not e.x and e.c[:1] not in "pl"):
-                continue
-            if pred(e):
+        sel = [
+            i
+            for i, e in enumerate(s.stack)
+            if not (e.k or (e.pure_const and not e.x and e.c[:1] not in "pl")) and pred(e)
+        ]
+        # the first trap wins: whatever below the last one may trap runs before it
+        for i in range(sel[-1] + 1 if sel else 0):
+            if i in sel or s.stack[i].m or s.stack[i].x:
                 s.materialize(i)
 
     def flush_all(s):
@@ -995,6 +999,7 @@ class FuncGen:
         if op == 0x1A:
             e = pop()
             if (e.m or e.x) and not e.k:  # a dropped load/div/trunc can still trap
+                s.flush_trapping()
                 s.emit(e.c)
             return
         if op == 0x1B:
@@ -1003,6 +1008,7 @@ class FuncGen:
             a = pop()
             bb = max(a.b, b.b) if a.b is not None and b.b is not None else None
             if any((e.m or e.x) and not e.k for e in (a, b)):  # both arms are always evaluated
+                s.flush_trapping()
                 ab = []
                 for e in (a, b):
                     if not e.k:
@@ -1022,6 +1028,8 @@ class FuncGen:
             nm = s.lname(x[1])
             v = pop()
             s.flush_local(nm)
+            if v.m or v.x:
+                s.flush_trapping()
             if v.t in (I32, I64) and v.b is None and v.w:
                 MAXS, MODS = (
                     ("0xFFFFFFFF", "0x100000000")
@@ -1119,6 +1127,10 @@ class FuncGen:
                 s.emit(("P64(%s,%s,%s)" if s.mg.fb else "F64S(%s,%s,%s)") % (mn, ad, v.c))
             elif op in (0x3A, 0x3C):
                 vc = v.c if v.b is not None and v.b <= 255 else "%s&255" % v.c
+                if (a.m or a.x) and (v.m or v.x):  # Python evaluates the value before the index
+                    t = s.newtmp()
+                    s.emit("%s = %s" % (t, ad))
+                    ad = t
                 s.emit("%s[%s] = %s" % (mn, ad, vc))
             elif op in (0x3B, 0x3D):
                 vc = v.c if v.b is not None and v.b <= 0xFFFF else "%s&0xFFFF" % v.c
@@ -1154,10 +1166,10 @@ class FuncGen:
                 callee = mg.fname(fi)
             else:
                 ps, rs = mg.types[x[1]]
-                if op == 0x14:  # args then the reference are evaluated before the null check
-                    for i in range(len(s.stack) - len(ps) - 1, len(s.stack)):
-                        if (s.stack[i].m or s.stack[i].x) and not s.stack[i].k:
-                            s.materialize(i)
+                # args (then the reference of call_ref) are evaluated before the table or null check
+                chk = s.stack[len(s.stack) - len(ps) - 1 :]
+                if any((e.m or e.x) and not e.k for e in (chk if op == 0x14 else chk[:-1])):
+                    s.flush_trapping()
                 ix = pop()
             args = s.popn(len(ps))
             s.flush_call()
@@ -1168,8 +1180,12 @@ class FuncGen:
             if op == 0x11:
                 callee = s.newtmp()
                 q = s.newtmp()
+                ixc = n(ix)
+                if ix.m or ix.x:  # a bad address in the index is not an IndexError of the table
+                    ixc = s.newtmp()
+                    s.emit("%s = %s" % (ixc, n(ix)))
                 s.emit("try:")
-                s.emit("    %s = T%d[%s]" % (callee, x[2], n(ix)))
+                s.emit("    %s = T%d[%s]" % (callee, x[2], ixc))
                 s.emit("    %s = %s.s" % (q, callee))
                 s.emit("except IndexError:")
                 s.emit("    _toob()")
@@ -1310,6 +1326,8 @@ class FuncGen:
                 b = s.popc()
                 a = s.popc()  # bool & bool stays a (pure) bool expression
                 o = {10: "and", 11: "or", 12: "!="}[k]
+                if k != 12 and (b.x or b.m):  # `and`/`or` would skip a trapping second operand
+                    o = "&" if k == 10 else "|"
                 push(E("(%s %s %s)" % (a.c, o, b.c), "bool", 1, **dep(a, b)))
                 return
             b = pop()
@@ -1623,8 +1641,8 @@ class FuncGen:
             return
         if 0xFC0C <= op <= 0xFC11 or op in (0x26, 0xFC0D):
             if op == 0xFC0D:
-                s.globals_set.add("S%d" % x[1])
-                s.emit("S%d = []" % x[1])
+                s.globals_set.add("ES%d" % x[1])
+                s.emit("ES%d = []" % x[1])
                 return
             k = len(x) > 1 and x[1] or 0
             args = {
@@ -1641,7 +1659,7 @@ class FuncGen:
             if op == 0x26:
                 s.emit("_tset(T%d,%s,%s)" % (k, v[0], v[1]))
             elif op == 0xFC0C:
-                s.emit("_tinit(T%d,S%d,%s)" % (x[2], k, ",".join(v)))
+                s.emit("_tinit(T%d,ES%d,%s)" % (x[2], k, ",".join(v)))
             elif op == 0xFC0E:
                 s.emit("_tcopy(T%d,T%d,%s)" % (k, x[2], ",".join(v)))
             elif op == 0xFC11:
@@ -1650,7 +1668,7 @@ class FuncGen:
                 a64 = mg.taddr[k] == I64
                 t = s.newtmp(I64 if a64 else I32)
                 if op == 0xFC0F:
-                    s.emit("%s = _tgrow%s(TX%d,%s,%s)" % (t, "64" if a64 else "", k, v[1], v[0]))
+                    s.emit("%s = _tgrow%s(TX%d,%s,%s)" % (t, "64" if a64 else "", k, v[0], v[1]))
                 else:
                     s.emit("%s = len(T%d)" % (t, k))
                 push(E(t, I64 if a64 else I32, M64 if a64 else M32, k=True))
@@ -1848,15 +1866,15 @@ class ModGen:
         for i, ((ti, off, _, items), mode) in enumerate(
             zip(mod["elem_info"], mod["elem_mode"], strict=True)
         ):
-            gl.append("S%d" % i)
-            L.append("    S%d = [%s]" % (i, ", ".join(s.val(e) for e in items)))
+            gl.append("ES%d" % i)
+            L.append("    ES%d = [%s]" % (i, ", ".join(s.val(e) for e in items)))
             if mode == "active":
                 L.append(
-                    "    _eseg%s(T%d, %s, S%d)"
+                    "    _eseg%s(T%d, %s, ES%d)"
                     % ("64" if s.taddr[ti] == I64 else "", ti, s.val(off), i)
                 )
             if mode != "passive":
-                L.append("    S%d = []" % i)
+                L.append("    ES%d = []" % i)
         if gl:
             L.insert(1, "    global " + ", ".join(gl))
         dg = []

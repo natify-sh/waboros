@@ -108,11 +108,17 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   blocks, puts the counts and the descriptions in the job summary and keeps the artifact `fuzz-out`
   (the modules, the descriptions, the logs) for 14 days; a divergence is triaged later (above), not
   fixed at once.
-* `tests/fuzz/findings/` keeps the divergences of the first runs (2026-11-05, seeds 319-4020 and
-  50204-50544), untriaged: in all eight only `pyc` differs, and only in which trap fires when two
-  compete (`pyc` raises another trap code than both JIT modes and Wasmtime; the memory hashes are
-  equal). The suspected cause is the order in which `pyc` evaluates operands. Triage is before the
-  exceptions spec closes (ROADMAP.md, "Next").
+* Triage of the first runs (2026-11-05, 43 divergent modules from seeds 319-4020, 50204-50544, 70475-71186,
+  90086-93499 and 900223-908219; only the 8 of `tests/fuzz/findings/` were kept in git and are removed; the reduced cases are in `tests/test_pyc_trap_order.py`): in all of them only `pyc` differed, in
+  five causes, all fixed and covered by `tests/test_pyc_trap_order.py` with the reduced modules. Four
+  were the order in which two traps compete (the first trapping instruction wins; `pyc` evaluates
+  operands as Python expressions, so a statement made of a later operand ran before an earlier
+  pending one: `drop`, `select`, `local.set`/`local.tee`, a `flush` that skipped an earlier trapping
+  entry), the arguments of `call_indirect` against its table check, a bad address in the table index
+  caught as the table's `IndexError`, and the value of an `i32.store8` (`M[a] = v` evaluates `v`
+  first); the fifth was a name collision (element segment 8 was `S8`, the runtime's signed-byte
+  reader; LESSONS 96). A review of the fix added two more of the same class, none yet seen by the fuzzer: a bool `i32.and`/`i32.or` lowered to short-circuit `and`/`or`, and `table.grow` evaluating its count before its initial value. Later runs: triage them the same way before the exceptions spec and phase 5
+  close (ROADMAP.md, "Next").
 
 ## Programs and benchmarks
 

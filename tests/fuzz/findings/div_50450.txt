@@ -1,7 +1,0 @@
-seed 50450 mode smith
-export 2 args [7154063506746684786, 1227470892, 14951662581587397144]
-  pyc: ('trap', 'INTEGER_OVERFLOW') mem da39a3ee5e6b
-  jit-guard: ('trap', 'BAD_CONVERSION_TO_INTEGER') mem da39a3ee5e6b
-  jit-explicit: ('trap', 'BAD_CONVERSION_TO_INTEGER') mem da39a3ee5e6b
-  wasmtime: ('trap', 'BAD_CONVERSION_TO_INTEGER') mem da39a3ee5e6b
-differing from wasmtime: ['pyc']

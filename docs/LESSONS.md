@@ -688,3 +688,22 @@ What went wrong or surprised us while building the PoC, so it is not found again
     kept running and grew past 2 GB, and the kernel killed processes of other commands for memory.
     Rule: start a mutant in its own session (`start_new_session=True`) and kill the whole process
     group on timeout (`os.killpg`). Found: S0012 step 4, 2026-11-05.
+95. **A generated expression has its own evaluation order.** `pyc` keeps operands as Python
+    expressions and emits them late, so every statement that evaluates a popped operand must first
+    run what below it on the stack can still trap. Four spots forgot (`drop`, `select`,
+    `local.set`/`local.tee`, `flush` itself), `call_indirect` looked up its table before evaluating the
+    arguments, `table.grow` passed its count before its initial value, and Python adds three
+    inversions of its own: `M[a] = v` evaluates `v` before `a`, an expression inside
+    `try: T[i] ... except IndexError` turns a memory `IndexError` into a table trap, and `a and b`
+    (the lowering of a bool `i32.and`/`i32.or`) never evaluates a trapping `b` when `a` decides. Wasmtime and the JITs fail the first trap in program
+    order. Rule: use `&`/`|`, not `and`/`or`, when the second operand may trap; a statement built from popped operands calls `flush_trapping()` when an operand may
+    trap; a trapping operand never sits inside a `try` that maps an exception class to a trap code.
+    Found: S0012 fuzz triage, 2026-11-05; CoreMark source unchanged.
+96. **Generated names and runtime names share one globals dict.** Functions resolve a name through
+    their module's globals, then builtins, so a separate exec scope does not isolate the two sides;
+    `from runtime import *` and the generated assignments meet in the same dict. Element segment 8 was
+    `S8`, the runtime's `Struct("<b").unpack_from`: `elem.drop 8` rebound it and a later
+    `i32.load8_s` raised `TypeError`. Segments 16 and 32 collided the same way (`S16`, `S32`).
+    Rule: generated names match one fixed pattern (`GEN` in `tests/test_pyc_trap_order.py`) that no
+    runtime name matches, and a test checks both; no generated name comes from module input (names
+    are only ever `%r` strings). Found: S0012 fuzz triage, 2026-11-05.

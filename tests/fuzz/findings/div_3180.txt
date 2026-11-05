@@ -1,7 +1,0 @@
-seed 3180 mode smith
-export 1 args [7816353605117615231]
-  pyc: ('trap', 'INTEGER_OVERFLOW') mem 904c7cc95f16
-  jit-guard: ('trap', 'MEMORY_OUT_OF_BOUNDS') mem 904c7cc95f16
-  jit-explicit: ('trap', 'MEMORY_OUT_OF_BOUNDS') mem 904c7cc95f16
-  wasmtime: ('trap', 'MEMORY_OUT_OF_BOUNDS') mem 904c7cc95f16
-differing from wasmtime: ['pyc']

@@ -1,2 +1,0 @@
-seed 50204 mode smith
-instantiate: {'pyc': 'inst:trap MEMORY_OUT_OF_BOUNDS', 'jit-guard': 'inst:trap BAD_CONVERSION_TO_INTEGER', 'jit-explicit': 'inst:trap BAD_CONVERSION_TO_INTEGER', 'wasmtime': 'inst:trap BAD_CONVERSION_TO_INTEGER'} (ok on [])

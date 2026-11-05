@@ -1,7 +1,0 @@
-seed 3910 mode smith
-export 1 args []
-  pyc: ('trap', 'BAD_CONVERSION_TO_INTEGER') mem c6bf6c5e0ab1
-  jit-guard: ('trap', 'MEMORY_OUT_OF_BOUNDS') mem c6bf6c5e0ab1
-  jit-explicit: ('trap', 'MEMORY_OUT_OF_BOUNDS') mem c6bf6c5e0ab1
-  wasmtime: ('trap', 'MEMORY_OUT_OF_BOUNDS') mem c6bf6c5e0ab1
-differing from wasmtime: ['pyc']

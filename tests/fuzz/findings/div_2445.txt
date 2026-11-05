@@ -1,7 +1,0 @@
-seed 2445 mode smith
-export  args [3528799949, 668384415, 65535, 3564994734210231816]
-  pyc: ('trap', 'INTEGER_OVERFLOW') mem e02e1c3e517a
-  jit-guard: ('trap', 'MEMORY_OUT_OF_BOUNDS') mem e02e1c3e517a
-  jit-explicit: ('trap', 'MEMORY_OUT_OF_BOUNDS') mem e02e1c3e517a
-  wasmtime: ('trap', 'MEMORY_OUT_OF_BOUNDS') mem e02e1c3e517a
-differing from wasmtime: ['pyc']

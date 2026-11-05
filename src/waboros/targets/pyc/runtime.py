@@ -124,7 +124,7 @@ def _tset(T, i, v):
     T[i] = v
 
 
-def _tgrow(TX, n, v):
+def _tgrow(TX, v, n):
     old = len(TX.t)
     # the cap is Wasmtime's default table limit (10M elements)
     if old + n > (0xFFFFFFFF if TX.max is None else TX.max) or old + n > 10000000:
@@ -133,7 +133,7 @@ def _tgrow(TX, n, v):
     return old
 
 
-def _tgrow64(TX, n, v):  # D27: the same cap of 10M elements
+def _tgrow64(TX, v, n):  # D27: the same cap of 10M elements
     old = len(TX.t)
     if old + n > (0xFFFFFFFFFFFFFFFF if TX.max is None else TX.max) or old + n > 10000000:
         return 0xFFFFFFFFFFFFFFFF
