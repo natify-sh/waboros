@@ -991,8 +991,45 @@ confirmed by the 10-round set (+2.6 %). dse adds nothing beyond the noise; it on
 (461 → 235 with all four rules).
 
 **Switch VM** (`poc/bench/switch/vm.wasm` through the package's `pyc`, million VM operations per second,
-median of 5 sets of 3 runs; every run the same checksum): CPython 3.11 1.11 → 2.81 (×2.5), 3.13 1.00 → 2.28
-(×2.3), 3.14 1.23 → 2.68 (×2.2), PyPy 15.2 → 15.7 (×1.03). `_br` occurrences 158 → 0.
+median of 5 sets of 3 runs; every run the same result, `fb62750f`): CPython 3.11 1.11 → 2.81 (×2.5), 3.13
+1.00 → 2.28 (×2.3), 3.14 1.23 → 2.68 (×2.2), PyPy 15.2 → 15.7 (×1.03). `_br` occurrences 158 → 0.
+
+**Switch VM per rule** (follow-up, 2026-11-05, CPython 3.13.18, `taskset -c 3`; 12 configurations, one
+process each per round, 10 rounds, order rotated each round and reversed on odd rounds; a value is the
+median over the rounds of each process's median of 3 timed runs of 2 000 iterations; every run gives
+`fb62750f`). Spreads (max − min over the rounds, relative to the median) are 10-30 %:
+
+| rules | M ops/s | vs base | `_br` in the source |
+|---|---|---|---|
+| base | 0.959 | — | 158 |
+| simplify (dse on) | 1.155 | ×1.20 | 96 |
+| simplify + chain (dse on) | 1.497 | ×1.56 | 64 |
+| simplify + chain + to_else (dse on) | 1.461 | ×1.52 | 64 |
+| all four, dse on / off | 2.595 / 2.436 | ×2.71 / ×2.54 | 0 / 95 |
+| all four without simplify / chain / to_else (dse on) | 2.542 / 2.618 / 2.594 | ×2.65 / ×2.73 / ×2.71 | 0 |
+| all four without sink (dse on) | 1.485 | ×1.55 | 64 |
+| **sink only**, dse on / off | 2.611 / 2.265 | **×2.72** / ×2.36 | 0 / 95 |
+
+Sink alone gives the whole gain of the full set (×2.72 against ×2.71); simplify, chain and to_else left out
+of the full set change nothing beyond the spread, and without sink the first three reach only ×1.55. With
+sink alone, dse matters here (×2.72 against ×2.36): the 95 stores left without it are the `_br = K` /
+`_br = 0` pairs and the cases' `_br = 5` exits that sink leaves in the leaves.
+
+**CoreMark, sink only** (same follow-up, CPython 3.13.18, `poc/pyc-bropt/tools/run_src.py`, three sources
+alternated, 10 rounds, every run "Correct operation validated"), median (min-max):
+
+| source | it/s | vs base | `_br` | bytes |
+|---|---|---|---|---|
+| base | 126.2 (110.5–135.2) | — | 635 | 148 123 |
+| sink only (dse on) | 139.0 (129.0–143.8) | +10.1 % | 517 | 156 661 (+5.8 %) |
+| all four (dse on) | 140.6 (134.5–151.8) | +11.4 % | 235 | 149 367 |
+
+Sink only with dse off leaves 597 `_br` (158 618 bytes); it was not timed. The difference between sink only
+and all four (1.3 %) is below the noise. The source growth of sink only (+5.8 %) comes from the pass
+copying guard arms into leaves; the codegen does not emit those guards (S0010, Design).
+
+**Decision (maintainer, 2026-11-05):** S0010 implements sink alone, with the dead `_br` stores that are
+evident at emission; simplify, chain and to_else are measured and rejected (sink subsumes their gain).
 
 **Corpus** (`tools/run_corpus.py --targets pyc`, CPython 3.13, 5 alternated rounds): 21/21 agree with and
 without the pass; per-call times 2-8 % faster, `inflate 8K` −13.6 %, `deflate 8K` 58.0 → 54.6 ms. As a
@@ -1009,7 +1046,11 @@ the rules have to live in the codegen (S0010's design).
 | 1 648 spec modules that validate and generate | 215 ms (all) | 2.9 s | 8 805 → 8 104 | +1 level in 38 modules (sink) |
 
 Max indentation grows by one level in the switch VM and in 38 of the 1 648 spec modules, all from sink;
-step 2 must watch it (LESSONS 22). Source size: CoreMark 148 123 → 149 366 bytes, `zip` 278 682 → 276 388.
+step 2 must watch it (LESSONS 22). Re-checked 2026-11-05 on the pass's output (CPython 3.13.18, the cached
+spec modules that validate and generate: 2 366 on this run, 20 of them with `_br`): most of the growth is
+`ast.unparse` splitting the codegen's one-line `if c: x` into two lines. Against the base after the same
+parse/unparse round trip, only `align.106`, `align64.106` and `switch.0` grow (4 → 5 levels); in the switch
+VM the deepest lines after the pass are such split one-liners (`l3 -= …`) at the new leaf depth. Source size: CoreMark 148 123 → 149 366 bytes, `zip` 278 682 → 276 388.
 
 **Line profile** (`poc/pyc-bropt/tools/lines.py`, CPython 3.13, one CoreMark run): line events −27 %; `_br`
 guards fall from 31.0 % to 5.4 % of the executed lines.

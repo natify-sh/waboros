@@ -72,8 +72,9 @@ output also compiles on CPython 3.11.
 ## Goals / Non-goals
 * Goals:
   * `pyc` emits, directly in `codegen.py`, control flow equivalent to what `bropt.py` produces for
-    the rules that pay. "Pay" is measured per rule in step 0. CoreMark's `f11` takes the shape of
-    `examples/f11_hand.py`: the dispatch goes straight to each case, with no ladder.
+    the rules that pay. "Pay" was measured per rule in step 0 and its follow-up: **sink**, plus the
+    `_br` stores that are evidently dead at emission (maintainer, 2026-11-05; Q1). CoreMark's `f11`
+    takes the shape of `examples/f11_hand.py`: the dispatch goes straight to each case, with no ladder.
   * The behaviour of every module is unchanged: the spec suite, the corpus and the differential fuzz
     agree with today's emission. Functions whose source has no `_br` today come out byte-identical.
   * The CoreMark gain is re-measured and recorded (step 0: the pass; the final step: the codegen).
@@ -128,14 +129,67 @@ arrive: `0` when the frame is `live` at its end (or `tg`), plus the ids in the f
 is the information `bropt.py` recovers by dataflow, available here without one, at every point
 where today's code emits a guard.
 
-### Rules and where they can be decided
-| rule (bropt) | decided at emission from | what changes in the codegen |
-|---|---|---|
-| **simplify**: drop guards whose result is known; merge `if _br == K: _br = 0` with `if not _br: B` when 0 cannot arrive; drop a store of a value already held | the arrival set at the frame end (`live`/`tg`, `esc`) | `end_frame`/`propagate` emit `if _br == K: _br = 0` and then put the rest *inside* it when 0 cannot arrive. They emit nothing when the set is `{0}`, and no test when it is `{K}` |
-| **chain**: consecutive guards become `if/elif` when no arm can fall through with a value that a later test accepts | the arrival set, plus the set of values each guarded region can end with | a per-region record of the `_br` values set inside it (an extension of `esc`); the next guard opens as `elif` when the condition holds. The whole elif tail is checked, not only its first test (LESSONS entry from the experiment) |
-| **to_else**: `if C: X` followed by `if not _br: Y` becomes `if C: X else: Y` when entered with 0 and X never falls through with 0 | the frame end of a wasm `if` without `else` whose then-arm is not live at its end | at `end_frame` of such an `if` frame, the parent's `if not _br:` becomes `else:` of the same `if`. `br_if` already does this (lines 495–499) |
-| **sink**: the case code that follows a dispatch tree (a lowered `br_table`) moves into the tree's leaves when its end values make every later guard false | the `br_table` leaves (known when it is emitted), and the case regions emitted later | needs **deferred emission**: the leaves are recorded (line positions and indentation) and each case region, once generated, is moved (re-indented) into its leaf. A region that two or more leaves need is copied when it is small (bropt: ≤ 80 AST nodes); otherwise the leaf keeps `_br = K`. This is the switch lowering of BENCHMARKS.md, "`br_table`" |
-| **dse**: drop dead stores of `_br` | backward liveness | partly by construction: with sink and chain, many stores are simply not emitted, and the header `_br = 0` goes when no `_br` remains. A general liveness pass is out of scope unless step 0 shows that dse adds a measurable gain beyond the other rules |
+### The rule set (revised by the maintainer, 2026-11-05)
+Step 0 and its follow-up (BENCHMARKS.md, "`pyc`: `_br` ladders (S0010 step 0)") measured each of
+`bropt.py`'s rules. Sink alone gives the whole gain: the switch VM ×2.72 with sink only against ×2.71
+with all four rules, CoreMark +10.1 % against +11.4 % (10 rounds, CPython 3.13; the difference is below
+the noise). simplify, chain and to_else, each left out of the full set, change neither benchmark beyond
+the noise. With sink alone, dse matters on the switch VM (×2.72 with, ×2.36 without). So:
+
+| rule (bropt) | in this spec |
+|---|---|
+| **sink**: the case code that follows a dispatch tree (a lowered `br_table`) moves into the tree's leaves | **step 1**, by deferred emission (below) |
+| **dse**: drop dead stores of `_br` | **step 1, only the stores that are evidently dead at emission** (below). A general liveness pass is not built; if the evident rule turns out not to be enough (or not trivial), it becomes its own step with its own measurement |
+| simplify, chain, to_else | measured and rejected (Alternatives) |
+
+The changes are confined to the emission of `_br` in `br_code`, `br_table` and `end_frame`, plus a
+helper that splices lines into the line list. No new module, no AST, no IR change: `pyc` emits text
+from the wasm structure, as today (D17 is unaffected; HIR/LIR are not involved).
+
+### Sink at emission
+Terms. A **leaf** is an arm of a lowered `br_table` (the `BRTREE` tree or the `if/elif` chain)
+whose branch only sets the flag: `br_code` emitted `_br = K` with no `break` (the target frame T has
+id K and no Python loop lies between), or emitted nothing (depth 0: T is the innermost frame, which
+the leaf reaches with `_br == 0`; today `close` writes `pass` there). The **case region** of T is the
+code emitted after T's end in its parent P, up to P's end. Today it runs behind
+`if _br == K: _br = 0` and the `if not _br:` that `propagate` opens, after the ladder of every frame
+between the leaf and T.
+
+1. **Record, at `br_table`.** For each leaf: the position of its `_br = K` line (or, for a depth-0
+   leaf, the position where the arm's `pass` will be), its indentation, T, the innermost Python loop
+   (`Ctl` with `pyloop`) at that point, and the position where the dispatch tree ends. Every branch to
+   a non-loop frame counts its arrivals (`br_code`: stores with or without `break` and depth-0
+   exits), so that at T's end the codegen knows whether the leaves are the only way in.
+2. **Capture, at `end_frame` of T.** T is a candidate when it is a `block`, P is a `block` or a
+   `loop` (not an `if`, whose arms end at `else`, and not the function), T is not live at its end,
+   and its recorded leaves are all its arrivals. The codegen emits exactly as today and notes on P
+   where T's guard starts, where the region's body starts and the body's indentation.
+3. **Decide, at `end_frame` of P**, after P's nests are closed and before a loop's `break` and the
+   pop. The captures of P are taken latest first (a later capture lies inside an earlier one's
+   region). A region is sunk when all of these hold:
+   * **the same Python loop** (below), asserted;
+   * **its end values make every later guard false.** If the region may fall through with 0 (P is
+     live at its end, or a branch left P structurally with 0), nothing may remain between the end of
+     the leaf's dispatch tree and T's guard: earlier sinks have cut those regions, so falling out of
+     the leaf reaches the code that followed the region before. Otherwise the region leaves only by
+     `_br = J` to P or a frame around it (every test in between is false for J: they name
+     frames inside P or test for 0), by `return`/`raise`, or by `break`/`continue` of the same loop, and no
+     condition is needed;
+   * **the copy limit** (Q2): with n leaves, the body's lines × (n − 1) ≤ 10 (`SINK_COPY`), and a body
+     that holds a leaf record not yet resolved is not copied;
+   * **the indentation limit** (below).
+
+   Then the lines from T's guard to the end are cut; the body is re-indented (its indentation
+   stripped, the leaf's prefixed) and replaces each leaf's `_br = K` line, or the leaf's `pass`, or is
+   inserted at an empty leaf. Positions recorded after a splice point shift by the difference.
+   Otherwise nothing changes: the region stays behind its guard, as today, and the leaves keep
+   `_br = K`.
+
+The emitter stays a flat list of indented lines. When P ends, every frame opened after the dispatch
+tree is closed, so no open frame's mark lies after a leaf and `close`'s empty-body test is unchanged
+(asserted). A spliced line contains no newline (asserted). The `local.set` peephole that rewrites the
+last emitted line cannot reach into a cut, because a region's values do not survive P's end on the
+stack.
 
 **Sink precondition: the same Python loop (a correctness rule, maintainer 2026-11-04).** A moved or
 copied region keeps the meaning of its `break` and `continue` only if it runs inside the same
@@ -143,28 +197,41 @@ innermost Python `while` as at its original place. In `bropt.py` this holds by c
 dispatch tree and the chain of guards are adjacent statements of one list, so a leaf and the region
 share their loop. In the codegen the region is re-indented into a leaf, so it must be checked
 explicitly: **no `while` may open between the leaf and the point where the region would otherwise be
-emitted** (the leaf's loop stack equals the region's). If one does, the region is not sunk, and the
-leaf keeps `_br = K` (the guard path, correct as today). A `break` or `continue` in a sunk region
-would otherwise leave or restart a different loop: wrong control flow that a test with only one
-level of loops does not see. The precondition is asserted at emission, not only tested; `return`
-and `return_call` are unaffected.
+emitted** (the leaf's loop stack equals the region's). A leaf whose branch needed `break` is never
+recorded, so the leaf keeps `_br = K; break` (the guard path, correct as today). At the decision the
+innermost loop recorded with the leaf must be the innermost loop around P (`is`); a difference is a
+codegen bug and raises `AssertionError` at translation, not a silent fallback. A `break` or
+`continue` in a sunk region would otherwise leave or restart a different loop: wrong control flow
+that a test with only one level of loops does not see. `return` and `return_call` are unaffected.
 
-**Proposal: the minimal set.** Implement *simplify*, *chain* and *to_else* in one step (they need
-only the arrival sets), then *sink* (the deferred emission). The first group is cheap and removes
-most guards on the common path (static: 635 → 322 with dse, 492 without). Sink is the hand rewrite
-of `f11`, which by itself gave +11 % in the experiment. dse is not implemented unless step 0 shows
-that `BROPT_DSE=1` adds more than the noise (±3 %) to the full rule set. The order and the cut are
-fixed by step 0's per-rule numbers. A rule that contributes less than the noise on CoreMark and on
-the switch VM is not implemented, and that is recorded in BENCHMARKS.md.
+**The indentation limit (LESSONS 22).** A sunk body moves to the leaf's depth, which is usually
+deeper than the region's. The move is not made when any of its lines would land deeper than
+`SINK_MAXIND` = 90 levels (CPython allows 100; the margin is for the function's own levels and keeps
+the check simple). It adds no `while`, so the 20 statically nested blocks (LESSONS 2) are unchanged.
+Step 0 counted +1 level in the switch VM and 38 spec modules, but on `ast.unparse` output, which splits
+the codegen's one-line `if c: x`; against the base after the same round trip only 3 spec modules grow
+(4 → 5 levels; BENCHMARKS.md). Acceptance: the max depth of CoreMark, every corpus module and the
+switch VM does not increase; spec modules whose depth grows are listed in the step's report; no line
+beyond 90.
 
-The rules are confined to the emission of `_br` in `br_code`, `end_frame`, `propagate` and
-`br_table`, plus one helper for moving a line region. No new module, no AST, no IR change: pyc
-emits text from the wasm structure, as today (D17 is unaffected; HIR/LIR are not involved).
+### Dead `_br` stores evident at emission
+The codegen records the position of every `_br = J` store emitted without `break`, and of every line
+that tests `_br` (both shift with splices). At `end_frame` of J, before its guard: **a store of J with
+no test of `_br` after it in the line list is dead.** From such a store control only moves forward to
+J's end (no Python loop lies between, or the store would carry a `break`), passes no test, and J's end
+clears `_br` to 0; without the store `_br` is already 0 there (the invariant above), so every later
+statement sees the same value. The store line is deleted, or becomes `pass` when it was its arm's only
+line. When every store of J is dead, J leaves `esc` and its guard is not emitted. A test in a sibling
+arm that the store's path never reaches still counts: the rule is conservative and needs no flow
+analysis. The header `_br = 0` is emitted only when some `_br` remains in the function. This is the
+case of the switch VM after sink: the cases' `_br = 5` exits reach block 5's end with no test between,
+so the expected result is no `_br` at all, as with `bropt.py`'s dse.
 
 ### A knob for bisection and for the differential check
 A module global `BRRULES` in `codegen.py`, read from `WABOROS_PYC_BR` the way `BRTREE` reads
-`WABOROS_BT` (line 13). It takes a comma-separated rule list; the default is every implemented
-rule, and `0` (or empty) gives exactly today's emission. Tests and `tools/fuzz.py` set the global
+`WABOROS_BT` (line 13). It takes a comma-separated rule list, `sink` and `dse` (the evident dead
+stores; it works with or without sink, for bisection); the default is both, and `0` (or empty) gives
+exactly today's emission. Tests and `tools/fuzz.py` set the global
 directly. The knob is internal: it is not public API and not a `Config` field. With `0`, the output
 must stay byte-identical to the code before this spec, which keeps the "old" side of every
 differential check available in the package itself (Q4).
@@ -177,9 +244,10 @@ interpreter (Q5). Checks:
 * step 0 and the last step compile the generated sources of CoreMark and the corpus with
   `micropython` where it is installed. The unix port is not in CI before phase 7, so this is a
   manual check recorded in the step's report;
-* the max indentation depth (LESSONS 22) of every generated spec, corpus and CoreMark source must not
-  increase, and moving a region into a leaf must not exceed the CPython limit of 100 levels or
-  the 20 statically nested blocks (LESSONS 2). A move that would cross the limit is not made.
+* the max indentation depth (LESSONS 22): no move puts a line deeper than `SINK_MAXIND` (90 levels),
+  so the CPython limit of 100 levels and the 20 statically nested blocks (LESSONS 2) are not reached
+  by sink; the depth of CoreMark, the corpus and the switch VM does not increase, and spec modules
+  that grow are listed (Design, "The indentation limit").
 
 ### The FBITS mode (D46)
 The rules concern only control flow, so the `fb` mode changes only the value expressions inside the
@@ -194,7 +262,8 @@ measured while drafting), and a cold load ~111 ms. Budget:
 * the new emission adds **at most 10 % to `generate()` time** on CoreMark and on `zip.wasm` (the
   largest corpus module and the deepest nest, 1 244 `_br`), median of 5;
 * the generated source **does not grow** by more than 5 % in bytes (copies made by sink are bounded
-  per leaf).
+  per leaf). `bropt.py` with sink only grew CoreMark by 5.8 %, mostly by copying guard arms that the
+  codegen does not emit; if the budget is still hit, `SINK_COPY` is lowered and that is measured (Q2).
 
 Both are measured in step 0 (today's values) and after each implementation step, and recorded in
 BENCHMARKS.md, "Compile and load times".
@@ -209,12 +278,14 @@ BENCHMARKS.md, "Compile and load times".
      (empty both ways), in both FBITS modes;
    * **corpus**: `tools/run_corpus.py --targets pyc`, 21/21 against the references;
    * **fuzz**: `tools/fuzz.py` over a fixed seed range. It compares results, trap codes and a hash of
-     memory, export by export, between two configurations.
+     memory, export by export, between the three configurations (below).
 3. **Shape**: a test asserts that the source of functions without `_br` under `BRRULES = 0` is
    byte-identical with the default, for CoreMark and the corpus. A one-off command in the step's
    report checks the same over every spec module. A second test asserts, as a regression guard
    rather than a correctness proof, that CoreMark's `_br` count is at most the step's recorded value
-   and that `f11` contains no `_br == ` test.
+   (`bropt.py` with sink only and its dse leaves 517) and that `f11` has no `_br == K` test for a frame
+   K that its state machine's `br_table` targets (its exits after the loop, `_br == 3` and `_br == 4`,
+   stay: sink does not remove them).
 4. **The `bropt.py` oracle on our output**: running `bropt.py` over the new source should find
    little to do. Its remaining `_br` count is recorded per step. A large gap means a rule missed a
    case; it is information, not a gate.
@@ -228,9 +299,11 @@ dependency, `wasm-tools-package==1.262.0.0`) on modules bounded as in the experi
 * a 20 s alarm per module.
 
 Unbounded smith modules got the process OOM-killed. Every export is called three times with
-deterministic arguments from the seed; a mismatch saves `bad_<seed>.wasm`. It compares two `pyc`
-configurations in one process: default against `BRRULES = 0`, or (step 0, before the knob exists)
-`pyc` against `pyc` + `bropt.py`. It is used for this spec's acceptance. Comparing a JIT or Wasmtime
+deterministic arguments from the seed; a mismatch saves `bad_<seed>.wasm`. In step 0 it compared
+`pyc` against `pyc` + `bropt.py`. From step 1 it compares three `pyc` configurations in one process:
+the default (the new emission), `BRRULES = 0` (today's emission), and `BRRULES = 0` + `bropt.py` (the
+oracle); all three must agree, and it also reports how many functions each changed. It is used for
+this spec's acceptance. Comparing a JIT or Wasmtime
 with it is a small step right after step 0 (the nightly non-blocking CI job, ROADMAP "Next",
 maintainer 2026-11-04); the project-wide campaign with WASI stays in phase 6. Random modules rarely nest deeply (in the experiment 15 % were touched), so the
 corpus stays the stronger test of control flow, and the unit tests below add deep nests by hand.
@@ -246,25 +319,33 @@ corpus stays the stronger test of control flow, and the unit tests below add dee
     `--fbits` over 300 modules;
   * the JIT D35 lists (`tools/jit_dump.py`, both targets) unchanged, since the JIT is not touched.
 * **Unit tests** (`tests/test_pyc_branches.py`, small WAT modules, each compared with Wasmtime and
-  with `BRRULES = 0`):
-  * a `switch` with fall-through between cases; cases that end in `br` out of the whole switch, in
-    `return`, in `unreachable` and in `br` to an enclosing loop;
+  with `BRRULES = 0`; where a test is about shape, it also asserts that sink happened or did not, by
+  the `_br` count of the function):
+  * a `switch` (nested blocks with a `br_table` innermost) whose cases end in `br` out of the whole
+    switch, in `return`, in `unreachable` and in `br` to an enclosing loop (`continue`);
+  * fall-through between cases (a region that falls into the next case): the next region must stay
+    in place or be reached the same way;
   * `br_table` in both lowerings (`BRTREE` tree and `if/elif` chain), with a default inside the nest,
-    with repeated targets (copied leaves) and with a target that is a loop;
-  * blocks with results and with parameters (multi-value), so that the assignments of `rv` before a
-    branch are kept in the moved region;
-  * `br_if` to outer blocks with results; wasm `if` with and without `else`, with a then-arm that
-    branches out (to_else);
-  * a nest deeper than the copy limit, and a nest close to LESSONS 22 (90+ levels), where no move may
-    cross 100 levels;
+    with a depth-0 target (the empty leaf), with repeated targets (copies within and beyond
+    `SINK_COPY`) and with a target that is a loop;
+  * a case block that is also reached by a `br`/`br_if` from outside the `br_table` (no sink);
+  * blocks with results and with parameters (multi-value), so that the `rv` assignments before a
+    branch stay in the leaf and the region reads them;
+  * a `switch` inside a loop whose regions use `break`/`continue`, and a `br_table` inside a loop
+    inside the case block (the leaf needs `break`: no sink);
+  * a nested switch inside a case region (a region that holds leaf records of its own);
+  * a nest close to LESSONS 22 (90+ levels), where no move may go past `SINK_MAXIND`;
   * an escape through two python loops (`break`, then the loop's `if _br:` ladder);
   * `return_call` inside a moved region (`_TC` wrapper);
-  * CoreMark `f11`: the shape test above.
+  * dse: a store followed by J's end only (removed), and one with a test of `_br` after it (kept);
+  * CoreMark `f11` and the switch VM: the shape test above.
 
-  A planted defect must fail at least one test: the chain rule checking only the first test of the
-  appended tail (the experiment's real bug), sink moving a region whose end value is accepted by
-  a later guard, and sink moving a region across a `while` (a `break` in the region then leaves the
-  wrong loop; the test needs a region with `break`/`continue` and a loop between leaf and region).
+  A planted defect must fail at least one test: (1) the arrival count ignored (a region sunk although
+  T is also reached by a branch that is not a leaf); (2) the end-value condition ignored (a region that
+  falls through with 0 sunk while an unsunk region lies between the tree and it); (3) sink across a
+  `while` (a leaf that needs `break` recorded; the test needs a region with `break`/`continue` and a
+  loop between leaf and region, and the assertion of the precondition removed as well); (4) a region
+  with an unresolved leaf record copied; (5) dse ignoring a test of `_br` after the store.
 * **Speed** (step 0 and the final step; BENCHMARKS.md): CoreMark with alternated rounds against the
   commit before, on CPython 3.11, 3.13 and 3.14, plus one pair on PyPy 3.11 to check it does not
   regress; the switch VM `poc/bench/switch/vm.wasm` through the package's `pyc`; the corpus timings;
@@ -276,11 +357,10 @@ at the same time.
 
 | step | content | agent | acceptance | size (lines) |
 |---|---|---|---|---|
-| 0 | **Bring in and re-measure.** (a) The experiment goes to `poc/pyc-bropt/` unchanged: `bropt.py`, `site/`, `examples/`, its `tools/` and the write-up as `README.md`. Its absolute `/tmp` path in `run_src.py` is replaced, and `tools/corpus_case.py` resolves the repository root itself. (b) `tools/fuzz.py`, adapted: argument parsing, the configurations of "The fuzz harness", `--fbits`, the bounds. (c) Measurements with the pass applied through `PYC_BROPT=1` and the `PYTHONPATH` hook: CoreMark baseline against the full rule set, alternated, ≥ 5 rounds each, on CPython 3.11, 3.13 and 3.14, plus one PyPy 3.11 pair. Then the per-rule contribution on 3.13: the cumulative order simplify → +chain → +to_else → +sink, ± dse, and each rule left out of the full set. Also the switch VM and the corpus timings; `generate()` time, source size and max indentation for CoreMark, the corpus and the spec modules; the line profile (`tools/lines.py`) before and after. (d) Correctness of the pass in the repository: spec suite in both FBITS modes, corpus, `tools/fuzz.py 1000 1000` | runner (measurements); implementer (a, b); orchestrator checks the numbers itself | the experiment's claims confirmed or corrected in BENCHMARKS.md; the per-rule table fixes the rule set and order of steps 1–3 (Q1). Fuzz 0 mismatches; spec_diff empty | `tools/fuzz.py` ~130; PoC copied (~950, not package code); docs |
-| 1 | **Arrival sets: simplify, chain, to_else.** `BRRULES`/`WABOROS_PYC_BR`; per-frame and per-region value sets; `end_frame`/`propagate` emit merged, chained and `else` forms; the header `_br = 0` only when needed | implementer, with a plan approved by the orchestrator first; reviewer after | Test plan "every step"; `BRRULES = 0` output byte-identical to before (sha256 of `generate()` for CoreMark and every spec module); functions without `_br` byte-identical; unit tests except sink's; CoreMark `_br` count ≤ step 0's figure for the same rules; compile budget; CoreMark alternated vs step 0's baseline, recorded | codegen ~120, tests ~200 |
-| 2 | **Sink (switch lowering).** Leaf records at `br_table`; each case region is moved or copied into its leaves when the sink preconditions hold, with the copy limit and the indentation limit | implementer, plan approved first; reviewer after (control-flow emission is high-stakes for `pyc`, as the experiment's bug showed) | as step 1, plus the sink unit tests and the planted defects; `f11` has no `_br == ` test; CoreMark alternated on 3.11, 3.13, 3.14 ≥ step 0's "full set" minus noise, or the gap explained | codegen ~150, tests ~150 |
-| (3) | **dse**, only if step 0 shows it pays beyond the noise: drop `_br` stores that no guard can read, decided where they are emitted | implementer | as step 1; BENCHMARKS row | ~60 |
-| 4 | **Review and close.** A `reviewer` reads steps 1–3 against this spec without the implementers' reasoning; final measurements; `bropt.py` over the new source (remaining `_br`, information); docs; this spec `implemented` | reviewer, then orchestrator | findings closed; BENCHMARKS rows complete; check_docs passes | docs |
+| 0 | **Bring in and re-measure** (done 2026-11-05). (a) The experiment goes to `poc/pyc-bropt/` unchanged: `bropt.py`, `site/`, `examples/`, its `tools/` and the write-up as `README.md`. Its absolute `/tmp` path in `run_src.py` is replaced, and `tools/corpus_case.py` resolves the repository root itself. (b) `tools/fuzz.py`, adapted: argument parsing, the configurations of "The fuzz harness", `--fbits`, the bounds. (c) Measurements with the pass applied through `PYC_BROPT=1` and the `PYTHONPATH` hook: CoreMark baseline against the full rule set, alternated, ≥ 5 rounds each, on CPython 3.11, 3.13 and 3.14, plus one PyPy 3.11 pair. Then the per-rule contribution on 3.13: the cumulative order simplify → +chain → +to_else → +sink, ± dse, and each rule left out of the full set. Also the switch VM and the corpus timings; `generate()` time, source size and max indentation for CoreMark, the corpus and the spec modules; the line profile (`tools/lines.py`) before and after. (d) Correctness of the pass in the repository: spec suite in both FBITS modes, corpus, `tools/fuzz.py 1000 1000` | runner (measurements); implementer (a, b); orchestrator checks the numbers itself | the experiment's claims confirmed or corrected in BENCHMARKS.md; the per-rule table fixes the rule set and order of steps 1–3 (Q1). Fuzz 0 mismatches; spec_diff empty | `tools/fuzz.py` ~130; PoC copied (~950, not package code); docs |
+| 1 | **Sink and evident dead stores.** `BRRULES`/`WABOROS_PYC_BR` (`sink`, `dse`); leaf records at `br_table`; arrival counts in `br_code`; captures at `end_frame` of a case block and the decision at its parent's end (same loop asserted, end values, `SINK_COPY`, `SINK_MAXIND`); the splice helper with position shifts; dead stores removed at `end_frame` of their target; the header `_br = 0` only when `_br` remains; `tools/fuzz.py` with the three configurations | implementer, with a plan approved by the orchestrator first; reviewer after (control-flow emission is high-stakes for `pyc`, LESSONS 84) | Test plan "every step"; `BRRULES = 0` output byte-identical to before (sha256 of `generate()` for CoreMark and every spec module); functions without `_br` byte-identical; the unit tests and the planted defects; `_br` counts recorded for CoreMark (≤ 517, `bropt.py` sink only with dse), the switch VM (0 expected) and `zip`; the `f11` shape test; max depth (Design); compile and size budgets; CoreMark alternated, ≥ 10 rounds, on 3.11, 3.13 and 3.14 ≥ the follow-up's "sink only" (+10.1 % on 3.13) minus noise, or the gap explained; the switch VM per the follow-up's conditions | codegen ~250 (stop and report past 350), tests ~350, `tools/fuzz.py` ~40 |
+| (2) | **General dse**, only if step 1's evident rule leaves a measured gap: the switch VM or CoreMark below `bropt.py` with sink only and dse by more than the noise (10 alternated rounds), or a `_br` count well above it with a line profile showing the stores executed. Its own spec text first (a backward liveness over the emitted structure) | implementer, plan approved first; reviewer after | as step 1; BENCHMARKS row | measured first; ~100 |
+| 3 | **Review and close.** A `reviewer` reads steps 1–2 against this spec without the implementers' reasoning; final measurements; `bropt.py` over the new source (remaining `_br`, information); docs; this spec `implemented` | reviewer, then orchestrator | findings closed; BENCHMARKS rows complete; check_docs passes | docs |
 
 A step that needs more than its size stops and reports. **Docs per step** (STANDARDS.md, "Which
 document to update"):
@@ -298,9 +378,10 @@ document to update"):
     maintainer's exception for speed;
   * TESTING.md: the tool in the tools table, its bounds and what it compares;
   * CLAUDE.md "Commands": `uv run python tools/fuzz.py N SEED` (maintainer's file, proposed only);
-* steps 1–3: BENCHMARKS.md (compile time and CoreMark rows); TARGETS.md (the `pyc` description of
-  control flow, if it describes the ladder); LESSONS.md for any trap found; this spec's Changes;
-* step 4: this spec `implemented`; `docs/specs/README.md`; DECISIONS.md, only if the maintainer's
+* steps 1–2: BENCHMARKS.md (compile time, source size, CoreMark and switch VM rows); TARGETS.md (the
+  `pyc` description of control flow, if it describes the ladder); TESTING.md (the fuzz tool's three
+  configurations); LESSONS.md for any trap found; this spec's Changes;
+* step 3: this spec `implemented`; `docs/specs/README.md`; DECISIONS.md, only if the maintainer's
   answers to Q1–Q5 are decisions worth recording (Q4 and Q5 are candidates).
 
 ## Alternatives considered
@@ -315,10 +396,17 @@ document to update"):
   s390x, loongarch and mips, and the fallback where native code is forbidden. If step 0 measures
   less than +5 % on CoreMark and nothing on the switch VM, this is the recommendation and the spec
   is closed as `superseded`, with no successor.
+* **simplify, chain and to_else in the codegen (the old step 1). Measured and rejected (maintainer,
+  2026-11-05).** They need only the arrival sets at frame ends and would have been the cheaper step.
+  But sink subsumes their gain: on the switch VM (CPython 3.13, 10 rounds) simplify ×1.20, + chain
+  ×1.56, + to_else ×1.52, sink alone ×2.72 against ×2.71 for all four; each of the three left out of
+  the full set ×2.65-2.73. On CoreMark (10 rounds) the three give +2.6 %, sink alone +10.1 %, all four
+  +11.4 % (the difference below the noise). BENCHMARKS.md, "`pyc`: `_br` ladders (S0010 step 0)".
+  Each would add its own control-flow emission to review and fuzz for a gain the measurements do not
+  show.
 * **Range tests on ordered label ids** (BENCHMARKS.md, "`br_table`": number the labels so that one
   `if _br <= d` replaces the two tests per level): it halves the tests but keeps the walk, and it is
-  not measured. It is subsumed by simplify + chain (one test per level, then elif) and by sink (no
-  walk). Not proposed.
+  not measured. It is subsumed by sink (no walk). Not proposed.
 * **A flat state machine** (`while True:` + label variable + one `if/elif` level, the Relooper
   fallback of LESSONS 22): it removes nesting entirely, but each dispatch costs a loop iteration plus
   a chain of tests. It is a remedy for depth, not for speed. Out of scope.
@@ -326,7 +414,8 @@ document to update"):
   source per interpreter would multiply the test matrix and the future cache key. Rejected (Q5).
 
 ## Open questions
-* **Q1 The rule set. Decided 2026-11-04 (maintainer): as recommended.** simplify + chain + to_else (step 1) and sink (step 2); dse only
+* **Q1 The rule set. Decided 2026-11-04 (maintainer): as recommended; revised by the maintainer
+  2026-11-05 (below).** simplify + chain + to_else (step 1) and sink (step 2); dse only
   if step 0 shows it adds more than the noise. The final cut follows step 0's per-rule table: a rule
   below the noise on both CoreMark and the switch VM is dropped and recorded as measured and
   rejected.
@@ -335,22 +424,27 @@ document to update"):
   CoreMark by ≤ 1.2 %, below the noise). The switch VM was measured only with the full set (×2.3 on
   3.13), not per rule, so the first group's share there is unknown; whether step 1 stays as planned
   is asked of the maintainer separately.
+  **Revised (maintainer, 2026-11-05):** after the switch VM per-rule follow-up (sink alone ×2.72,
+  all four ×2.71; CoreMark sink alone +10.1 %, all four +11.4 %), sink is implemented first and alone,
+  with the `_br` stores that are evidently dead at emission (no general liveness pass; if that is not
+  trivial, it becomes its own step with its own measurement). simplify, chain and to_else are recorded
+  as measured and rejected (Alternatives).
 * **Q2 Copying regions into several leaves. Decided 2026-11-04: as recommended.** Sink may copy a small case region into more than one
   leaf. bropt.py's limit was 80 AST nodes and was not tuned. Recommendation: the same limit,
-  expressed in generated lines (about 10). It is measured in step 2 only if the source-size budget
-  is hit.
+  expressed in generated lines (about 10): `SINK_COPY`, the body's lines × (copies − 1) ≤ 10. It is
+  measured in step 1 only if the source-size budget is hit.
 * **Q3 `pyc` source identity. Decided 2026-11-04: as recommended.** The repository has no stored `pyc` identity list. D46 and S0009 use
   an ad-hoc check: sha256 of `generate()` for CoreMark and every spec module is unchanged. This spec
   breaks that by design for functions that use `_br`. Recommendation:
-  * during steps 1–3, the identity check is `BRRULES = 0` (byte-identical to today) plus "functions
+  * during steps 1–2, the identity check is `BRRULES = 0` (byte-identical to today) plus "functions
     without `_br` are byte-identical";
-  * after step 4, later specs take the new default output as their baseline: the baseline is
+  * after step 3, later specs take the new default output as their baseline: the baseline is
     re-taken, and no list is created.
-* **Q4 Keep the `WABOROS_PYC_BR` knob after step 4? Decided 2026-11-04: keep it.** Recommendation: keep it, like `WABOROS_BT`. It
+* **Q4 Keep the `WABOROS_PYC_BR` knob after step 3? Decided 2026-11-04: keep it.** Recommendation: keep it, like `WABOROS_BT`. It
   is the cheapest way to bisect a future control-flow bug by mixing the old and new emission
   (CLAUDE.md, "Debug by mixing a known-good and a new code generator"), and the fuzz tool's second
   configuration. The cost is that today's ladder code stays and is tested. Alternative: delete it in
-  step 4 and keep only `bropt.py` in `poc/` as the oracle.
+  step 3 and keep only `bropt.py` in `poc/` as the oracle.
 * **Q5 CPython-version-specific emission. Decided 2026-11-04: no.** Recommendation: no. One source for every interpreter
   (3.11–3.15, PyPy, MicroPython flavour), as now.
 * **Decided (maintainer, 2026-11-04): the fuzz tool comes now.** `tools/fuzz.py` enters at step 0 as
@@ -371,3 +465,11 @@ document to update"):
   10-15× `generate()`. Spec (both FBITS modes), corpus and fuzz (938 + 281 modules) show no
   difference. The MicroPython compile check was not done (not installed). The experiment's +13 % is
   corrected to +11-13 % on 3.13.
+* 2026-11-05: plan changed by the maintainer after the switch VM per-rule follow-up (BENCHMARKS.md):
+  step 1 is sink plus the dead `_br` stores evident at emission; simplify, chain and to_else moved to
+  Alternatives as measured and rejected; general dse becomes conditional step 2; review is step 3.
+  Design describes the deferred emission (leaf records, captures, the decision at the parent's end,
+  splicing and re-indentation, `SINK_COPY`, `SINK_MAXIND` = 90, the same-loop assertion) and the
+  evident dead-store rule; the indentation acceptance is restated (step 0's +1 level was mostly
+  `ast.unparse` splitting one-line `if`s); the fuzz tool compares three configurations; unit tests and
+  planted defects are those of sink; budgets enlarged. Q1 revised.
