@@ -2,7 +2,7 @@
 title: pyc - leaving nested blocks without `_br` ladders
 kind: spec
 id: S0010
-status: approved
+status: implemented
 superseded_by:
 related: [D9, D19, D25, D35, D46, S0002]
 owner: maintainer
@@ -517,3 +517,7 @@ document to update"):
   (budget ~250), tests 457 lines (~350), `tools/fuzz.py` +335 / −36 (~40: the structured generator
   and the per-rule comparison were not in the plan). The default output of CoreMark, the corpus,
   the switch VM and the spec modules did not change in the reviews: the speed figures stand.
+* 2026-11-05: implemented (maintainer). CI green on every platform. Accepted against the acceptance:
+  CoreMark keeps 538 `_br` (target <= 517; speed equals bropt.py sink-only, the rest needs a
+  general liveness pass) and `generate()` on zip.wasm is about +10 % (budget 10 %). A general dse
+  stays an optional later step, taken only if a measured gap appears.
