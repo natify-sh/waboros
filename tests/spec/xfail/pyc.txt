@@ -65,7 +65,7 @@ type-rec.wast:45  LoadError: NotImplementedError: rec / sub / struct / array typ
 type-rec.wast:71  LoadError: NotImplementedError: rec / sub / struct / array types
 type-rec.wast:78  LoadError: NotImplementedError: rec / sub / struct / array types
 
-# proposal subdirectories (S0001, 2026-10-30): bulk-memory is the only one claimed
+# proposal subdirectories (S0001): every claimed one is in tests/spec/claims.py; the rest need GC types
 bulk-memory/table_init.wast:2272  LoadError: NotImplementedError: rec / sub / struct / array types
 bulk-memory/table_init.wast:2286  LookupError: no exported function run
 memory64/table_init64.wast:2457  LoadError: NotImplementedError: rec / sub / struct / array types

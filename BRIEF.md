@@ -86,14 +86,14 @@ State of `main` (phases 0–4 and SIMD merged on 2026-11-02, published as 0.0.0)
 
 * **Done, phases 0–2:** package layout, strict binary reader and validator (`src/waboros/frontend/`), the
   spec-suite runner (the metric), and the `pyc` target complete for the core group (spec core: `pyc`
-  20509 pass, 89 expected failures; wasmtime oracle 63 782 over all claimed directories). `pyc` is frozen
+  20532 pass, 66 expected failures; the oracle, Wasmtime, 63 911 pass over all claimed directories, GC included). `pyc` is frozen
   for new features and gets correctness fixes only (except the proposals that land on every target
   together, and S0010, the maintainer's exception for speed).
 * **Phase 3 (`jit-x86_64`, `docs/specs/S0002` step 3) done, including step 6, the final review (S0002, S0003 implemented):**
   3a ABI, 3b integer core, 3c SSE2 floats with `memory.grow`, 3d tables, `call_indirect`, reference
   types and bulk memory, 3e tail calls, typed function references and tags, 3f function imports
   through records (D32), step 4 the fallback to `pyc` with `JitUnavailableWarning` (D31), step 5 the
-  ISA gate in CI. `jit-x86_64` fails exactly what `pyc` fails in the core group (20509 pass on both)
+  ISA gate in CI. `jit-x86_64` fails exactly what `pyc` fails in the core group (20532 pass on both)
   and `auto` selects it; CoreMark 17 526 vs PoC `w2jit2` 17 662 it/s (99.2 %). Phase 3 went beyond the
   "integer core" (floats, tables) because the goal is completeness (D25).
 * **Phase 4 done:** multi-memory on both targets; `jit-aarch64` on native arm64 runners at parity with `pyc`
@@ -103,12 +103,12 @@ State of `main` (phases 0–4 and SIMD merged on 2026-11-02, published as 0.0.0)
   D41) and the rename to `waboros` is done (D40). Guard pages are complete (S0006, D44): `auto` gives them on
   Linux glibc and musl x86-64, Linux glibc aarch64, macOS, Windows and Android x86-64, explicit checks
   elsewhere. Platform tests run through cibuildwheel (`platforms.yml`), and `pyc` has a bits mode for
-  32-bit x86 (D46). Scalar code generation (S0007) is implemented (steps 1 and 3). Relaxed SIMD and wide arithmetic (S0008) and memory64 with table64 (S0009) are implemented on all three targets. The reconnaissance of a two-level JIT backend
-  (ROADMAP, "Next" 3b) is done: the maintainer chose to unify. **Next:** the JIT low layer
-  ([S0011](docs/specs/S0011-jit-low-layer.md), approved; step 1 done) with exceptions in parallel, and the
-  `pyc` `_br` ladders ([S0010](docs/specs/S0010-pyc-branch-emission.md), implemented: CoreMark +9-10 %, switch VM x2.5), then GC on top of
-  the low layer, then threads
-  (`docs/WASM-PROPOSALS.md`), and the artifact format; the public API only in phase 6.
+  32-bit x86 (D46). Scalar code generation (S0007) is implemented (steps 1 and 3). Relaxed SIMD and wide arithmetic (S0008) and memory64 with table64 (S0009) are implemented on all three targets. The JIT memory semantics are written once over a
+  per-architecture low layer ([S0011](docs/specs/S0011-jit-low-layer.md), implemented, D53), the `pyc` `_br`
+  ladders ([S0010](docs/specs/S0010-pyc-branch-emission.md)) are implemented (CoreMark +9-10 %, switch VM x2.5),
+  and exceptions with `exnref` ([S0012](docs/specs/S0012-exceptions.md), implemented, D52) are claimed on all
+  three targets. **Next:** GC on top of the low layer, then the artifact format, then threads
+  (`docs/WASM-PROPOSALS.md`); the public API only in phase 6.
   Native JIT targets are x86-64, aarch64 and riscv64 (planned); every other architecture runs `pyc` (D48).
 
 1. **Read** this page, then `docs/BENCHMARKS.md`, then `docs/ARCHITECTURE.md` and the spec of the step

@@ -285,7 +285,7 @@ machine code. Risks and possible answers:
 
 | risk | where |
 |---|---|
-| scope: feature parity with Wasmtime (GC, exceptions, threads; SIMD and memory64 are done) is large | FEATURES.md, ROADMAP.md |
+| scope: feature parity with Wasmtime (GC, threads; SIMD, memory64 and exceptions are done) is large | FEATURES.md, ROADMAP.md |
 | `pyc` speed ceiling on CPython (~1.5–2× the PoC at best) | DECISIONS.md D4, BENCHMARKS.md |
 | long calls: GIL in `pyc`, uninterruptible machine code | ARCHITECTURE.md, "Long calls and the GIL" |
 | deep recursion in `pyc` | ARCHITECTURE.md, "Calls, stack depth and recursion" |

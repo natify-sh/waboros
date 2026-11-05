@@ -55,8 +55,8 @@ speed is measured and recorded, but it is **not** the threshold of the decision.
 * The **C reference loader and the specified runtime services** (D36) are what runs the artifact of
   the compiler outside Python.
 
-**Exceptions and GC** stay in the ROADMAP order: written in Python first, so the Python
-implementation is the byte oracle for that part of the port. Format v1 must leave room for new
+**Exceptions and GC** follow the ROADMAP order: written in Python first (exceptions are, S0012; GC is
+next), so the Python implementation is the byte oracle for that part of the port. Format v1 must leave room for new
 sections (stack maps for GC), or be fixed after them, as the ROADMAP order already has it.
 Exceptions need no handler table per module: they propagate as a status word checked after each
 call (S0012, D52).

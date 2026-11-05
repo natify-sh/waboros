@@ -148,4 +148,4 @@ a dependency; the cost of p1 over p2 on a hot `fd_write` loop (measure).
 | fuzzing infrastructure (section 3) | yes | `tools/`, CI |
 | WASI binding through fusedwasi (section 4) | yes, after the maintainer's decision on the dependency | a new `wasi` area over the internal engine interface |
 | micro-compilers, the C reference loader | no | wait for the fixed artifact format (D36) |
-| a third architecture (riscv64, D48) | no | the backend interface still changes (the S0011 low layer, exceptions, GC); it comes as a micro-compiler, after `arm64.wasm` |
+| a third architecture (riscv64, D48) | no | the backend interface still changes (GC; the S0011 low layer and exceptions are done); it comes as a micro-compiler, after `arm64.wasm` |

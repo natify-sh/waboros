@@ -25,19 +25,19 @@ around it, run from a checkout.
 What passes (details: [`docs/FEATURES.md`](docs/FEATURES.md), [`docs/ROADMAP.md`](docs/ROADMAP.md)):
 
 * The pinned WebAssembly spec suite has 65 462 commands. The directories our targets claim (the core,
-  SIMD, bulk memory, multiple memories, memory64, relaxed SIMD, wide arithmetic) hold 64 554 of them,
-  1 230 of which are text-format checks skipped for every engine; of the remaining 63 324, `pyc`,
-  `jit-x86_64` and `jit-aarch64` each pass 63 231, and the other 93 are expected failures (listed in
-  `tests/spec/xfail/`, mostly tests that use GC or exception types). Not claimed yet: GC (798
-  commands), exceptions (110).
+  SIMD, bulk memory, multiple memories, memory64, relaxed SIMD, wide arithmetic, exceptions) hold
+  64 664 of them, 1 232 of which are text-format checks skipped for every engine; of the remaining
+  63 432, `pyc`, `jit-x86_64` and `jit-aarch64` each pass 63 354, and the other 78 are expected
+  failures (listed in `tests/spec/xfail/`, mostly tests that use GC types). Not claimed yet: GC
+  (798 commands).
 * Claimed and complete on all three targets: fixed-width SIMD (25 990 commands), relaxed SIMD (79),
   wide arithmetic (109), multiple memories, multi-value, tail calls, typed function references,
-  extended constants, sign extension, non-trapping float-to-int. Bulk memory, memory64, reference
-  types and mutable globals are partial (a few commands listed as expected failures).
+  extended constants, mutable globals, sign extension, non-trapping float-to-int. Bulk memory, memory64, exceptions
+  (`exnref`, S0012) and reference types are partial (a few commands listed as expected failures).
 * CoreMark and a corpus of real C libraries (Monocypher, SHA-256, BLAKE3, miniz) give the same results as
   `hashlib`, `zlib` and Wasmtime.
 
-Not there yet: the public API, the CLI and WASI (phase 6), exceptions, GC,
+Not there yet: the public API, the CLI and WASI (phase 6), GC,
 threads, fuel and epochs, the `mpy` (MicroPython) target and a JIT for riscv64 (the other architectures
 stay on `pyc`, D48). Bounds checks use guard pages by default on Linux glibc (x86-64 and aarch64), Linux
 musl (x86-64), macOS (x86-64 and arm64), Windows (x64 and arm64) and Android (x86-64) (S0006), and
@@ -87,11 +87,11 @@ group. Conditions and history: [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 | wasmtime (Cranelift) | 19 044 |
 | **package `jit-x86_64`** (median of 5 runs, 2026-10-31) | **17 526** |
 | wasm3 (pywasm3) | 2 433 |
-| **package `pyc`**, CPython 3.13 | 110.4 / 107.6 |
+| **package `pyc`**, CPython 3.13 (2026-11-05, after S0010) | 143.9 |
 | pywasm 2.2.3 (pure-Python interpreter), CPython 3.13 | 0.58 |
 
 All rows but wasmtime and wasm3 need nothing but the standard library. Among the pure-Python options,
-the package's `pyc` target is about 185 times faster than the pywasm interpreter (107.6 / 0.58), and
+the package's `pyc` target is about 250 times faster than the pywasm interpreter (143.9 / 0.58), and
 the JIT about 30 000 times.
 
 The real-library corpus, microseconds per call, package `jit-x86_64` against Wasmtime: BLAKE2b 1 KiB

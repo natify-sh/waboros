@@ -73,8 +73,8 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   test.
 * `tools/fuzz.py` (S0010 step 0): `uv run python tools/fuzz.py N SEED [--fbits]` runs N
   `wasm-tools smith --ensure-termination` modules from seed SEED, bounded (1 MiB memory, 1 000 table
-  elements, 3-12 functions, 3 000 instructions; no SIMD, reference types, GC, exceptions, threads or
-  memory64; a 20 s alarm per module: unbounded modules got the process OOM-killed). Every export is
+  elements, 3-12 functions, 3 000 instructions; no SIMD, reference types, GC, threads or
+  memory64, and exceptions only in the cross-target mode; a 20 s alarm per module: unbounded modules got the process OOM-killed). Every export is
   called three times with arguments drawn from the seed; results, trap codes and a hash of memory are
   compared between three `pyc` sources: the default (S0010's rules), the emission before S0010
   (`WABOROS_PYC_BR=0`) and that source after `poc/pyc-bropt/bropt.py` (the oracle;
@@ -109,7 +109,7 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   (the modules, the descriptions, the logs) for 14 days; a divergence is triaged later (above), not
   fixed at once.
 * Triage of the first runs (2026-11-05, 43 divergent modules from seeds 319-4020, 50204-50544, 70475-71186,
-  90086-93499 and 900223-908219; only the 8 of `tests/fuzz/findings/` were kept in git and are removed; the reduced cases are in `tests/test_pyc_trap_order.py`): in all of them only `pyc` differed, in
+  90086-93499 and 900223-908219; the reduced cases are in `tests/test_pyc_trap_order.py`): in all of them only `pyc` differed, in
   five causes, all fixed and covered by `tests/test_pyc_trap_order.py` with the reduced modules. Four
   were the order in which two traps compete (the first trapping instruction wins; `pyc` evaluates
   operands as Python expressions, so a statement made of a later operand ran before an earlier
@@ -117,8 +117,10 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   entry), the arguments of `call_indirect` against its table check, a bad address in the table index
   caught as the table's `IndexError`, and the value of an `i32.store8` (`M[a] = v` evaluates `v`
   first); the fifth was a name collision (element segment 8 was `S8`, the runtime's signed-byte
-  reader; LESSONS 96). A review of the fix added two more of the same class, none yet seen by the fuzzer: a bool `i32.and`/`i32.or` lowered to short-circuit `and`/`or`, and `table.grow` evaluating its count before its initial value. Later runs: triage them the same way before the exceptions spec and phase 5
-  close (ROADMAP.md, "Next").
+  reader; LESSONS 96). A review of the fix added two more of the same class, none yet seen by the fuzzer: a bool `i32.and`/`i32.or` lowered to short-circuit `and`/`or`, and `table.grow` evaluating its count before its initial value. The cross-target run with smith's exceptions enabled was triaged the same way when S0012
+  closed (2026-11-05: every divergence was a `pyc` defect outside the exception code, now fixed; a
+  3-minute run found none). Later runs: triage them before the GC spec and phase 5 close
+  (ROADMAP.md, "Next").
 
 ## Programs and benchmarks
 

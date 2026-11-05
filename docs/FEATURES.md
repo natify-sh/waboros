@@ -82,14 +82,14 @@ directories (`test/core/<dir>/`) count only on a target that claims the feature
 **Implementation notes per proposal** (hand-written; Wasmtime's `Config.wasm_*` switch in brackets):
 
 * multi-memory (`wasm_multi_memory`): done on every target (D37); **needed for fused components** (D7).
-* memory64 (`wasm_memory64`): done and claimed on all three targets: `pyc` (S0009 step 1: front end, validator, link, four helpers), `jit-x86_64` and `jit-aarch64` (i64 memories with explicit checks in every bounds mode, steps 2a and 2b; i64 tables, step 3). 8 658 of 8 719 commands pass on each, 2 expected failures: the two GC commands of `table_init64.wast` (S0009 implemented; `spectest.table64`, step 4).
+* memory64 (`wasm_memory64`): done and claimed on all three targets: `pyc` (S0009 step 1: front end, validator, link, four helpers), `jit-x86_64` and `jit-aarch64` (i64 memories with explicit checks in every bounds mode, steps 2a and 2b; i64 tables, step 3). 8 658 of 8 719 commands pass on each, 59 are skipped and 2 are expected failures: the two GC commands of `table_init64.wast` (S0009 implemented; `spectest.table64`, step 4).
 * SIMD (`wasm_simd`): `pyc` v128 as an int, correct first (done, claimed); JIT: two slots per v128, SSE2 / NEON at the baseline (D24, D41, S0005; `jit-x86_64` complete and claimed, step 5d3; `jit-aarch64` complete in ARMv8.0-A NEON and
   claimed, step 5e2; the SIMD benchmark and the review, 5f, are done: SIMD is complete and claimed on all three targets).
 * relaxed SIMD (`wasm_relaxed_simd`, `_deterministic`): the deterministic profile of 3.0 for 16 operators, madd/nmadd native per target as Wasmtime (fused on aarch64, unfused on x86-64 and `pyc`; D49, S0008); done and claimed on `pyc` (S0008 step 1), `jit-x86_64` and `jit-aarch64` (step 2: each JIT maps the 20 operators in its own table, baseline instructions only).
 * tail calls (`wasm_tail_call`): done; `pyc` uses a trampoline for functions with `return_call*`; the JIT replaces the frame.
 * custom page sizes (`wasm_custom_page_sizes`): a property of the `Memory` facade.
 * threads (`wasm_threads`, `Config.shared_memory`): `SharedMemory`; `pyc` atomics under the GIL, care for free-threaded builds.
-* exceptions (`wasm_exceptions`): `Tag`, `try_table`, `throw`, `exnref`.
+* exceptions (`wasm_exceptions`): done and claimed on all three targets (S0012, D52): `pyc` runs `try_table` as a `try`/`except` of one private class, the JITs propagate a status through frames with landing pads, objects bumped from a store arena in code. 100 of 110 `exceptions/` commands pass, 2 are skipped and 8 are expected failures that need GC (5 in `cast.wast`: `ref.test`/`ref.cast`; 3 in `tag.wast`: rec groups). The legacy proposal (`exceptions`) is not run.
 * typed function references (`wasm_function_references`): `call_ref`, non-null types.
 * GC (`wasm_gc`, `Config.gc_support`): structs/arrays map naturally to Python objects in `pyc`.
 * wide arithmetic (`wasm_wide_arithmetic`): done and claimed on `pyc` (big ints; S0008 step 1), `jit-x86_64` and `jit-aarch64` (step 3: one backend method, `wide`; `add`/`adc`, `sub`/`sbb`, one-operand `mul`/`imul` on x86-64, `adds`/`adc`, `subs`/`sbc`, `mul` + `umulh`/`smulh` on aarch64).
