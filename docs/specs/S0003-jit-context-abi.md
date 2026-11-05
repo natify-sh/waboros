@@ -388,3 +388,7 @@ uv run pytest tests/jit -k "entry or trap or reentry or host or interrupt or sta
   10 (rcx/rdx only). `throw` bumps the object from the arena in code; only a full chunk goes
   through the bridge (word 11). Status 14 at the trampoline becomes `Trap(UNCAUGHT_EXCEPTION)`; a
   host function's `Trap(UNCAUGHT_EXCEPTION)` is a host error (13).
+* 2026-11-05 (S0012 step 4, D52): the same on aarch64, no change to the words. A call site's
+  `cbnz w0` goes to `error`; at a landing pad only w0 (the status) and the pins are live, x27 and
+  x28/x26/x25 restored before the test; a pad does `cmp w0, #14; b.ne`, and the clauses re-read
+  word 10 into x9-x10. `throw` uses x9-x12 (x16/x17 for offsets no immediate takes).

@@ -862,7 +862,7 @@ restore in a `finally` (for example reset when the outermost entry finds no JIT 
 item in ROADMAP.md, phase 5.
 
 ### D52. JIT exceptions: status 14 through frames, objects bumped from a store arena in code, context ABI v1 amended
-Status: accepted (maintainer, 2026-11-05) · Date: 2026-11-05 · Supersedes: — · Evidence: S0012 step 3; `tests/jit/test_exceptions.py`; BENCHMARKS.md "Exceptions: throw cost"
+Status: accepted (maintainer, 2026-11-05) · Date: 2026-11-05 · Supersedes: — · Evidence: S0012 steps 3-4; `tests/jit/test_exceptions.py`; BENCHMARKS.md "Exceptions: throw cost"
 
 An exception crosses JIT frames as status 14 (`UNCAUGHT_EXCEPTION`), as traps do (S0012 Q1 A): each
 call site's existing `test eax, eax; jnz` goes to the frame's `error` label, which is the epilogue
@@ -895,8 +895,9 @@ D39 amendment (S0012 Q5): the frame's `error` label and six backend methods, `la
 no exnref register, unlike S0012's first text: at a pad the result register holds the status and
 every pool register may be a pin, so each method re-reads the pending word (maintainer, Q-A (a)).
 `throw` is a method because its allocation needs registers the core cannot name. x86-64 has them
-since S0012 step 3; aarch64 completes the amendment in step 4 (maintainer, Q-F). Until then its
-`supported` set has no exception opcode, its call sites keep `unwind` and its code is unchanged
-(D35 list identical). Not done: a `throw` caught in the same function as a plain jump. Two tags of
+since S0012 step 3; aarch64 completes the amendment in step 4 (maintainer, Q-F), with the same
+shapes in AArch64 (`cmp w0, #14; b.ne` at a pad, `cbnz w0` after every call to `error`, x9-x12
+scratch); its code without exception instructions is unchanged (D35 list), and both JITs claim
+`exceptions/`, so the D25 parity test needs no exemption any more. Not done: a `throw` caught in the same function as a plain jump. Two tags of
 different indices are the same tag when both are imports of one export, so the first matching
 clause is not always known at compile time. Nothing measured asks for it.

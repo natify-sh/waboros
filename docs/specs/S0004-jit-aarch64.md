@@ -6,7 +6,7 @@ status: implemented
 superseded_by:
 related: [D10, D14, D23, D24, D25, D26, D29, D30, D31, D32, D34, D35, D36, D37, R2, R3, R6, S0002, S0003]
 owner: maintainer
-updated: 2026-11-04
+updated: 2026-11-05
 ---
 
 # S0004 jit-aarch64, the second architecture (phase 4, integer core)
@@ -472,3 +472,6 @@ Resolved by the maintainer on 2026-11-01 (see Changes); none open.
   "own I-cache routine" alternative above is the open way to musl without libgcc.
 * 2026-11-04: D39 amendment A (S0007 step 3): the operand kind `AddK` (a pinned i32 plus a constant mod 2³²) is accepted by the aarch64 `move` and as the `load`/`store` address (one `add`/`sub` into the index scratch `w9`, or into the destination); nothing else of this spec changed.
 * 2026-11-04: S0008 step 2 (relaxed SIMD) adds NEON forms `fmla`/`fmls` (vector, `.4s`, `.2d`) and `addp .8h` to `aarch64/simd.py`'s `FORMS`, each checked against `llvm-mc` (`test_neon_forms_match_llvm_mc`); all ARMv8.0-A.
+* 2026-11-05: S0012 step 4 (exceptions, D52): the frame's `error` label and the six exception
+  methods; the call sites' `cbnz w0` goes to `error` (the epilogue outside a `try_table`, so code
+  without one is unchanged). `jit-aarch64` claims `exceptions/`.

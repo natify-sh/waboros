@@ -1,8 +1,8 @@
 # pyright: reportUnknownVariableType=false, reportUnknownArgumentType=false, reportUnknownMemberType=false
-"""Exception handling on jit-x86_64 (S0012 step 3; jit-aarch64 joins in step 4): the cases of
-tests/test_exceptions_pyc.py, and what only the status path and the inline arena can get wrong
-(pins across unwinding, v128 payloads, clause order, nested pads, imported tags, the refill path,
-no Python on a throw). The spec suite (`exceptions/`) is the metric."""
+"""Exception handling on the native JIT (S0012 steps 3-4; aarch64 under QEMU, tools/run_arm64.py):
+the cases of tests/test_exceptions_pyc.py, and what only the status path and the inline arena can
+get wrong (pins across unwinding, v128 payloads, clause order, nested pads, imported tags, the
+refill path, no Python on a throw). The spec suite (`exceptions/`) is the metric."""
 
 import sys
 import threading
@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from tests.jit import native
+from tests.jit import native, native_jit
 from tests.jit.test_compiler import Inst, pins, wat
 from tests.jit.test_compiler import build as _build
 from tests.jit.test_tables import provider
@@ -24,16 +24,16 @@ from waboros.targets.jit.common import instance
 from waboros.targets.jit.common.instance import ExnRef, Tag
 
 __all__ = ["pins"]  # the fixture, used by name
-X86 = "jit-x86_64"  # the native JIT once aarch64 has the methods (step 4)
+JIT = native_jit()
 
 
 @pytest.fixture(autouse=True)
 def _jit() -> None:
-    native(X86)
+    native(JIT)
 
 
 def build(text: str, imports: Any = None, store: StoreState | None = None) -> Inst:
-    return _build(wat(text), X86, imports, store)
+    return _build(wat(text), JIT, imports, store)
 
 
 def raises(i: Inst, name: str, *args: int) -> Trap:
@@ -58,6 +58,29 @@ def test_payload_words_land_in_the_label_slots(pins: None) -> None:
     (i32.reinterpret_f32 (local.get $f)) (local.get $k)))
 """)
     assert i("go") == [0xFFFFFFFF, 2**64 - 2, 0x1111, 0x2222, 0x3FC00000, 7]
+
+
+def test_an_object_larger_than_an_add_immediate() -> None:
+    """520 words: the object is 4168 bytes, which no aarch64 add imm12 takes (LESSONS 83); each
+    word lands at its own position (a weighted sum), and the cursor moves by the whole object."""
+    n, store = 520, StoreState()
+    sets = "".join(f"(local.set {k})" for k in reversed(range(n)))
+    acc = "".join(f"(i64.add (i64.mul (local.get {k}) (i64.const {k + 1})))" for k in range(n))
+    i = build(
+        f"""
+(module (tag $t (param {"i64 " * n}))
+  (func (export "go") (result i64) (local {"i64 " * n})
+    (block $h (result {"i64 " * n})
+      (try_table (catch $t $h) {"".join(f"(i64.const {k * k + 1})" for k in range(n))} (throw $t))
+      unreachable)
+    {sets} (i64.const 0) {acc}))
+""",
+        store=store,
+    )
+    st: Any = store.target_state
+    cursor = st.exn[1]
+    assert i("go") == [sum((k * k + 1) * (k + 1) for k in range(n)) % 2**64]
+    assert st.exn[1] - cursor == 8 * (1 + n)
 
 
 def test_catch_ref_and_throw_ref_keep_the_object(pins: None) -> None:
@@ -247,7 +270,7 @@ def test_a_host_trap_14_is_a_host_error_never_status_14() -> None:
 """)
     )
     validate(mod)
-    t = base.TARGETS[X86]()
+    t = base.TARGETS[JIT]()
     i = Inst(mod, t.instantiate(t.compile(mod), [base.Extern("func", None, host)], StoreState()))
     e = raises(i, "go")
     assert e.exn is None and str(e) == "forged"

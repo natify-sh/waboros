@@ -682,3 +682,9 @@ What went wrong or surprised us while building the PoC, so it is not found again
     `finally`, and the mutant stayed in the (scratch) tree. Rule: run each mutant in a subprocess
     with a timeout, and count a hang as caught (LESSONS 80). Run the mutants on a copy of the tree,
     never on the working tree. Found: S0012 step 3, 2026-11-05.
+94. **A subprocess timeout kills the child, not the child's children.** Under QEMU each mutant ran
+    as `tools/run_arm64.py` → `qemu-aarch64`. `subprocess.run(timeout=…)` killed `run_arm64.py`;
+    the QEMU grandchild of a looping mutant (a refill one word short: a new chunk on every pass)
+    kept running and grew past 2 GB, and the kernel killed processes of other commands for memory.
+    Rule: start a mutant in its own session (`start_new_session=True`) and kill the whole process
+    group on timeout (`os.killpg`). Found: S0012 step 4, 2026-11-05.

@@ -29,6 +29,7 @@ CLAIMS: dict[str, frozenset[str]] = {
     ),  # parity with pyc (D25)
     "jit-aarch64": frozenset(
         {"bulkMemory", "multiMemory", "simd", "relaxedSimd", "wideArithmetic", "memory64"}
+        | {"exceptionsFinal"}
     ),  # parity with pyc (D25; madd/nmadd fused, D49)
 }
 

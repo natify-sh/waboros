@@ -442,3 +442,15 @@ in a comment (REFERENCES.md).
     are unchanged.
   * Not done: a throw caught in the same function as a plain jump (D52).
   * Throw cost: BENCHMARKS.md.
+* 2026-11-05: step 4 done (`jit-aarch64`): the six methods of D52 in `aarch64/backend.py` (pads by
+  direct branches only, so no BTI pad), and the four post-call `cbnz w0` checks go to `f.error`.
+  Nothing in the shared core changed.
+  * Spec `jit-aarch64` under QEMU, guard and explicit, whole suite: `exceptions/` 100 pass,
+    2 skipped, 8 expected failures; all claimed directories 63 354 pass, 0 fail (as `jit-x86_64`).
+    Its expected failures equal `jit-x86_64`'s; the D25 test lost its exceptions exemption.
+  * D35 lists: only the 11 modules with exception instructions differ (all were "unsupported:
+    exceptions"); x86-64 and CoreMark unchanged. `tests/jit/test_exceptions.py` runs on the
+    machine's JIT (25 pass under QEMU; new: a 520-word object, whose size no add imm12 takes).
+    Mutations under QEMU: 16 of 17 caught; the survivor (`call_host` keeps `unwind`) is
+    equivalent, as no libcall returns 14.
+  * The native arm64 job and the throw cost on arm64 hardware are not measured here (no hardware).

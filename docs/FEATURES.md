@@ -2,7 +2,7 @@
 title: Features
 kind: reference
 status: current
-updated: 2026-11-04
+updated: 2026-11-05
 ---
 
 # Features
@@ -38,7 +38,7 @@ directories (`test/core/<dir>/`) count only on a target that claims the feature
 | Custom Page Sizes (`customPageSizes`) | 3 | flag | - | - | - |
 | ESM Integration (`esmIntegration`) | 3 | - | - | - | - |
 | Legacy Exception Handling (`exceptions`) | inactive | - | - | - | - |
-| Exception Handling with exnref (`exceptionsFinal`) | 5 | since 47 | partial 102/110 | partial 102/110 | - |
+| Exception Handling with exnref (`exceptionsFinal`) | 5 | since 47 | partial 102/110 | partial 102/110 | partial 102/110 |
 | Extended Constant Expressions (`extendedConst`) | 5 | since 25 | yes 346/346 | yes 346/346 | yes 346/346 |
 | Extended Name Section (`extendedNameSection`) | 2 | - | - | - | - |
 | Flexible Vectors (`flexibleVectors`) | 1 | - | - | - | - |
