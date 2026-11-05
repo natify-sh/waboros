@@ -8,19 +8,28 @@ from typing import Any, Literal, cast
 
 from waboros.frontend.binary import F32, F64, parse
 from waboros.frontend.validate import validate, valtype_key
-from waboros.runtime.link import func_type, global_type
+from waboros.runtime.link import LinkError, func_type, global_type
 from waboros.runtime.store import StoreState
-from waboros.targets.base import Extern, HostError, HostFunc, Raw, Trap, TrapCode, ValidModule
+from waboros.targets.base import (
+    Extern,
+    HostError,
+    HostFunc,
+    Raw,
+    Trap,
+    TrapCode,
+    ValidModule,
+)
 from waboros.targets.pyc import runtime as _rt
 from waboros.targets.pyc.codegen import generate
 
 __all__ = ["PycTarget", "Trap", "load", "translate"]
 
-_KIND: dict[int, Literal["func", "table", "memory", "global"]] = {
+_KIND: dict[int, Literal["func", "table", "memory", "global", "tag"]] = {
     0: "func",
     1: "table",
     2: "memory",
     3: "global",
+    4: "tag",
 }
 _f32_i32 = cast(Callable[[int], float], _rt._f32_i32)
 _f64_i64 = cast(Callable[[int], float], _rt._f64_i64)
@@ -30,10 +39,14 @@ _i64_f64 = cast(Callable[[float], int], _rt._i64_f64)
 
 def _from_raw(ty: Any, r: Any) -> Any:
     """Raw -> the value `pyc` code uses: f32/f64 become floats. References pass as they are."""
+    if _rt.FBITS:
+        return r
     return _f32_i32(r) if ty == F32 else _f64_i64(r) if ty == F64 else r
 
 
 def _to_raw(ty: Any, v: Any) -> Any:
+    if _rt.FBITS:
+        return v
     return _i32_f32(v) if ty == F32 else _i64_f64(v) if ty == F64 else v
 
 
@@ -61,14 +74,19 @@ def _run(store: StoreState, fn: Callable[..., Any], *args: Any) -> Any:
         raise
     except Trap:
         raise
-    except (IndexError, struct.error):
+    except _rt._Thrown as e:  # an exception that reaches an entry (S0012, Q4)
+        t = Trap(TrapCode.UNCAUGHT_EXCEPTION, "thrown Wasm exception")
+        t.exn = (e.tag, tuple(_to_raw(ty, v) for ty, v in zip(e.tag.ps, e.vals, strict=True)))
+        raise t from None
+    # OverflowError: an address of 2**31 or more on a 32-bit host (Py_ssize_t)
+    except (IndexError, struct.error, OverflowError):
         raise Trap(TrapCode.MEMORY_OUT_OF_BOUNDS, "out of bounds memory access") from None
     except ZeroDivisionError:
         raise Trap(TrapCode.INTEGER_DIVISION_BY_ZERO, "integer divide by zero") from None
     except RecursionError:
         raise Trap(TrapCode.STACK_OVERFLOW, "call stack exhausted") from None
-    finally:
-        store.leave()
+    finally:  # no call before the restore: a signal handler could raise there (LESSONS 82)
+        store.depth -= 1
 
 
 def load(wasm: bytes, imports: Mapping[str, Mapping[str, Callable[..., Any]]]) -> dict[str, Any]:
@@ -168,6 +186,11 @@ class PycTarget:
         wired: dict[str, dict[str, Any]] = {}
         for im, ext in zip(c.module["imports"], imports, strict=True):
             val = ext.value
+            if im[0] == "tag":  # (exporting instance, tag index): the exporter's tag object
+                inst, idx = cast(Any, val)
+                if not isinstance(inst, PycInstance):  # a tag of another target is not ours
+                    raise LinkError(f"incompatible import type {im[1]}.{im[2]}")
+                val = inst.ns[f"TG{idx}"]
             if im[0] == "func":
                 if ext.owner is None:
                     ps, rs = c.module["types"][im[3]]

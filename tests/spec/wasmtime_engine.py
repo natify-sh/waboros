@@ -65,6 +65,7 @@ CONFIG_SWITCHES = (
     *("wasm_multi_value", "wasm_reference_types", "wasm_bulk_memory", "wasm_tail_call"),
     *("wasm_function_references", "wasm_gc", "wasm_exceptions"),
     *("wasm_multi_memory", "wasm_memory64", "wasm_simd", "wasm_relaxed_simd"),
+    *("wasm_relaxed_simd_deterministic", "wasm_wide_arithmetic"),
 )
 
 
@@ -99,6 +100,8 @@ class WasmtimeEngine:
         except wasmtime.Trap as e:
             raise self._trap(e) from None
         except wasmtime.WasmtimeError as e:
+            if "thrown Wasm exception" in str(e):  # a start function (S0012, Q4)
+                raise Trap(TrapCode.UNCAUGHT_EXCEPTION, _first_line(e)) from None
             raise LinkError(_first_line(e)) from None
 
     def call(self, instance: Instance, name: str, args: Sequence[Value]) -> list[Value]:
@@ -157,5 +160,7 @@ class WasmtimeEngine:
     def _trap(e: wasmtime.Trap) -> Exception:
         code = e.trap_code
         if code is None:
+            if "thrown Wasm exception" in e.message:  # wasmtime-py 50 gives no code (S0012, Q4)
+                return Trap(TrapCode.UNCAUGHT_EXCEPTION, e.message)
             return e
         return Trap(TrapCode[code.name], e.message)  # a code with no member: KeyError, as is

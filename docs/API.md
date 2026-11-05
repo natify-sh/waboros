@@ -2,7 +2,7 @@
 title: API and CLI
 kind: reference
 status: current
-updated: 2026-11-02
+updated: 2026-11-03
 ---
 
 # API and CLI
@@ -18,7 +18,7 @@ reason), never silently differently.
 from waboros import Engine, Config, Store, Module, Linker, WasiConfig
 
 config = Config()
-config.target = "auto"            # waboros: "pyc", "mpy", "jit-x86_64", ... or a list
+config.target = "auto"            # waboros: "pyc", "mpy", "jit-x86_64", "jit-aarch64", ... or a list
 config.cache = True               # same name as wasmtime-py's Config.cache
 engine = Engine(config)
 module = Module.from_file(engine, "app.wasm")
@@ -36,7 +36,7 @@ instance.exports(store)["_start"](store)
 
 | wasmtime-py name | members in wasmtime-py 50 | waboros scope |
 |---|---|---|
-| `Config` | `cache`, `consume_fuel`, `epoch_interruption`, `max_wasm_stack`, `memory_reservation`, `memory_guard_size`, `wasm_*` feature switches (see FEATURES.md), `strategy`, `target`, `cranelift_*`, `profiler`, `debug_info`, `parallel_compilation`, … | feature switches, fuel, epoch, stack, cache: yes. `strategy` / `target` map to our target choice. `signals_based_traps`: `False` selects explicit bounds checks in the JIT (D29). `cranelift_*`, `profiler`, `native_unwind_info`, `macos_use_mach_ports`: accepted with no effect or rejected (decide once, document) |
+| `Config` | `cache`, `consume_fuel`, `epoch_interruption`, `max_wasm_stack`, `memory_reservation`, `memory_guard_size`, `wasm_*` feature switches (see FEATURES.md), `strategy`, `target`, `cranelift_*`, `profiler`, `debug_info`, `parallel_compilation`, … | feature switches, fuel, epoch, stack, cache: yes. `strategy` / `target` map to our target choice. `signals_based_traps`: `False` selects explicit bounds checks in the JIT, `True` guard pages where the host row is verified (D29, D44; today the environment variable `WABOROS_JIT_BOUNDS=auto|explicit|guard`). `cranelift_*`, `profiler`, `native_unwind_info`, `macos_use_mach_ports`: accepted with no effect or rejected (decide once, document) |
 | `Engine` | `increment_epoch`, `is_pulley` | yes; plus waboros's `target` (read-only, what was selected) |
 | `Module` | `Module(engine, wasm)`, `from_file`, `validate`, `imports`, `exports`, `serialize`, `deserialize`, `deserialize_file` | yes; `.wat` input through an optional text parser (wasmtime-py accepts text too) |
 | `Store` | `data`, `gc`, `get_fuel`, `set_fuel`, `set_epoch_deadline`, `set_limits`, `set_wasi`, `set_wasi_http` | yes; `set_wasi_http` through the WASI host's `wasi:http` |
@@ -63,7 +63,7 @@ the `wasmtime` command itself. Entry points: `waboros …` and `python -m waboro
 | command | meaning | as in wasmtime |
 |---|---|---|
 | `waboros run [opts] file.wasm [args…]` | run a command module (`_start`) or `--invoke name` with arguments | `wasmtime run` |
-| `waboros compile [-o out] [--fat] file.wasm` | write the serialized file for a target (`--target`), `<name>.<target>.w2a`; `--fat` embeds the wasm so the file regenerates itself on a mismatch (DECISIONS.md D18) | `wasmtime compile` (`.cwasm`) |
+| `waboros compile [-o out] [--fat] file.wasm` | write the serialized file for a target (`--target`), `<name>.<target>.<ext>` (the extension is open, ARTIFACT-CONTAINER.md); `--fat` embeds the wasm so the file regenerates itself on a mismatch (DECISIONS.md D18) | `wasmtime compile` (`.cwasm`) |
 | `waboros wast file.wast` | run a spec-test script (needs a WAT/WAST parser or a `.json` from `wast2json`) | `wasmtime wast` |
 | `waboros settings` / `waboros targets` | the targets available on this machine, their features, why others are not | `wasmtime settings` |
 | `waboros cache {stats,clear,dir}` | the compilation cache | `wasmtime config` / cache options |

@@ -2,7 +2,7 @@
 title: Decisions
 kind: log
 status: current
-updated: 2026-11-02
+updated: 2026-11-05
 ---
 
 # Decisions
@@ -43,7 +43,7 @@ wasmtime). Accepted with its costs: per-architecture work and platforms that for
 by D5.
 
 ### D5. Targets behind one interface, chosen automatically, falling back per module
-Status: accepted · Date: 2026-10-26 · Supersedes: — · Evidence: —
+Status: accepted (per-module fallback superseded by D25) · Date: 2026-10-26 · Supersedes: — · Evidence: —
 
 `pyc` always; `mpy` on MicroPython; `jit-<arch>` where the architecture matches and executable memory
 works. Architectures are added one by one; a module using a feature a JIT lacks runs on `pyc`.
@@ -75,6 +75,20 @@ choice must not set the minimum Python of the package (3.11, D19).
 wasm3 and wasmext, so it is expected to fit waboros as well; the choice is confirmed in the WASI phase by
 running it on waboros.
 
+2026-11-05 (maintainer): fusedwasi 0.1.0b1 is released (PyPI: one `py3-none-any` wheel, Python >= 3.10,
+no dependencies; WASI 0.1 implemented over WASI 0.2 with one state; `wasi:sockets` and `wasi:http` still
+unstable). 0.1.0b2 followed the same day. Still the candidate until the WASI phase runs it on waboros.
+
+2026-11-05 (maintainer): fusedwasi 0.1.0b3: changes in `wasi:http`, and a draft spec (fusedwasi's own spec number 15) on
+what a preopen promises in `wasi:filesystem` and WASI 0.1. On POSIX the path walk (one name at a time
+through held descriptors, `O_NOFOLLOW`, `..` handled by the walk) cannot be led out of the preopen
+by a race (one 8-second run on the Python twin, 0 escapes; the C twin, which wasmext uses, only
+read). On Windows the check and the open are two steps, so another process that can write the
+shared folder can race a junction in; closing it needs a walk by handle (`NtCreateFile` with a root
+directory), native in C, `ctypes` in Python. A link the guest makes with `symlink-at` (0.2) may point
+out; the walk never follows it, another process may. For waboros (the Python twin) this means a
+preopen is not a barrier against other processes on Windows until that work is done.
+
 ### D9. Cache compiled artifacts
 Status: accepted · Date: 2026-10-26 · Supersedes: — · Evidence: —
 
@@ -95,7 +109,7 @@ Differential tests run every target against a pinned wasmtime; wabt, wasm-tools,
 MicroPython and QEMU are development tools too. None of them is a runtime dependency.
 
 ### D12. Dropped and parked
-Status: accepted · Date: 2026-10-26 · Supersedes: — · Evidence: —
+Status: accepted (the Lua item superseded by D20) · Date: 2026-10-26 · Supersedes: — · Evidence: —
 
 * **mypyc target** — dropped: needs `librt` at run time (a dependency) and a native build is better
   served by wasm2c/wasmext.
@@ -122,7 +136,7 @@ needed, subinterpreters / free-threaded builds / a process). One thread per stor
 (ARCHITECTURE.md, "Long calls and the GIL").
 
 ### D15. The JIT artifact is a language-neutral, versioned contract
-Status: accepted · Date: 2026-10-26 · Supersedes: — · Evidence: —
+Status: accepted (narrowed by D36) · Date: 2026-10-26 · Supersedes: — · Evidence: —
 
 Compiled code depends on nothing Python-specific (byte-identical output under CPython 3.8 and 3.13), so
 its boundary is fixed and versioned in ARTIFACT.md: (1) **ISA levels** — portable artifacts use the
@@ -135,7 +149,7 @@ contract honest. *Narrowed by D18*: the contract is first of all the format of c
 serialized files read by the waboros runtime; other-language loaders and the C loader are optional.
 
 ### D16. Our own thin IR; wasm is the portable IR; no LLVM
-Status: accepted · Date: 2026-10-26 · Supersedes: — · Evidence: —
+Status: accepted (LIR as a materialised list superseded by D26) · Date: 2026-10-26 · Supersedes: — · Evidence: —
 
 Wasm already is a typed, validated, producer-optimised IR, so no LLVM-class optimiser is needed (a
 baseline JIT reached ~80 % of Cranelift). A thin IR of our own carries what wasm lacks: **HIR** (trees,
@@ -155,7 +169,7 @@ Python-family targets (`pyc`, `mpy`, JITs loaded from Python) are in scope; the 
 insurance, not a commitment.
 
 ### D18. No embedded runtime: the Wasmtime model, not the wasmext model
-Status: accepted · Date: 2026-10-30 · Supersedes: — · Evidence: —
+Status: accepted (in part superseded by D36) · Date: 2026-10-30 · Supersedes: — · Evidence: —
 
 waboros generates code when a module is loaded, so what it generates is a derivative owned by the engine,
 as in Wasmtime — not a product that lives without the tool, as wasm2c + a C build is in wasmext (there
@@ -318,6 +332,15 @@ grow can exhaust the interpreter's memory instead of failing the instruction; Wa
 default cap (measured). The cap becomes a store limit (`StoreLimits.table_elements`) in phase 6; the
 JIT targets will use the same number until then so `pyc` and JIT behave alike (D25).
 
+**Applied to i64 tables (memory64, S0009 step 1, 2026-11-04):** an i64 table keeps the same cap (`pyc`
+`_tgrow64`, −1 as an i64). Wasmtime reports out-of-memory instead of −1 for a grow of an i64 table by
+10⁸ or 2⁴⁰ (`table_grow64.wast:46` is a Wasmtime expected failure for that reason); a min that
+cannot be allocated is an instantiation error on both. The cap applies to `table.grow` only: no table min is
+capped at instantiation, as in Wasmtime, and a min that cannot be allocated (i32 or i64) is
+`MemoryError("out of memory (failed to allocate N bytes)")` on every target (maintainer, S0009 step 3). Unlike Wasmtime, both targets allocate a table eagerly (8 bytes per element resident: a min of 10⁸
+costs about 800 MB), and a table whose min is above the cap cannot grow at all (`table.grow` of 0
+returns −1; Wasmtime returns the size).
+
 ### D28. `pyc` keeps floats as Python floats; f32 NaN payloads ride in the double's high bits
 Status: accepted · Date: 2026-10-30 · Supersedes: — · Evidence: spec run on pyc +83 (NaN/conversion causes), CoreMark unchanged
 
@@ -331,7 +354,7 @@ double and re-rounded to f32 once per operation (proved exact for add/sub/mul/di
 rounded once (sticky bit). A JIT libcall for an f32 operation reuses the same helpers (D25 parity).
 
 ### D29. JIT bounds checks: guard pages by default where the handler is verified; explicit checks as the fallback
-Status: accepted · Date: 2026-10-30 · Supersedes: — · Evidence: BENCHMARKS.md "Guard pages in the JIT" (PoC: explicit ~78 %, guard pages ~91 % of wasmtime on CoreMark)
+Status: accepted (its "guard by default where verified" superseded by D43, then restored by D44) · Date: 2026-10-30 · Supersedes: — · Evidence: BENCHMARKS.md "Guard pages in the JIT" (PoC: explicit ~78 %, guard pages ~91 % of wasmtime on CoreMark)
 
 The bounds-check mode is a compile-time property of JIT code, recorded in the artifact and the cache
 key (`guard` or `explicit`). As in Wasmtime (`signals_based_traps = true` by default), the default is
@@ -432,7 +455,11 @@ function and returns the word afterwards (putting back the value it found, an en
 preset, so nested calls on one context do not see each other's statuses); the callback writes its
 results, then its status to word 7 as its very last action. A callback that does not finish leaves 13
 with no exception pending: the runtime raises `RuntimeError` "host call interrupted" (the escaped
-exception itself is gone: ctypes swallowed it). Wasmtime keeps the outcome of a host call apart from
+exception itself is gone: ctypes swallowed it). An exception the callback catches after the host
+function returned (in the guard-mode `guard.broken()` check) fails the call too: the status is 13
+with that exception pending, never 0 with a stale one left in the store; and the outermost entry
+drops a pending exception on exit, so one left by an interrupt right after the entry call returned
+cannot surface in a later call (LESSONS 82). Wasmtime keeps the outcome of a host call apart from
 the native return value too (the trap or error is recorded in its per-call `CallThreadState`, not
 decoded from a register). wasmtime-py's trampoline (`wasmtime/_func.py`, `trampoline`: `caller =
 Caller(caller)` runs before its `try`) has the same window and does not close it. This amends context
@@ -531,7 +558,9 @@ the opcode sets out of `common/compiler.py`. Measured for that decision (S0004 4
 abi ~930 code lines on aarch64 (integer core) vs ~1490 on x86-64 (full); compile 0.19–0.22 vs
 0.14–0.18 ms per module.
 
-Amended twice: S0005 (D41) added the `simd` method and the meaning of a v128 operand, in both backends, approved by the maintainer; then S0005 (D39 amendment item 5, Changes of 2026-11-02) added `move_v128`, which moves a v128 slot pair or writes a 128-bit constant as one 16-byte store (the store-forwarding fix, LESSONS 44), in both backends, approved by the maintainer.
+Amended four times: S0005 (D41) added the `simd` method and the meaning of a v128 operand, in both backends, approved by the maintainer; then S0005 (D39 amendment item 5, Changes of 2026-11-02) added `move_v128`, which moves a v128 slot pair or writes a 128-bit constant as one 16-byte store (the store-forwarding fix, LESSONS 44), in both backends, approved by the maintainer. S0007 (amendment A, step 3) added the operand kind `AddK` (a pinned i32 plus a constant mod 2³²), accepted only by `move` and as the `load`/`store` address, in both backends, approved by the maintainer with x86-64 byte identity waived (amendment F). S0009 (amendment B, step 2a, 2026-11-04; maintainer, Q3 (b)) gave every method that addresses a memory or a table a **required keyword-only** `a64` (the i64 address type; a `(dst, src)` pair for `memory_copy`/`table_copy`), and `load`, `store` and `simd` a required keyword-only `lo` (an i64 memory's declared minimum in bytes, a lower bound of its size at run time; 0 for an i32 memory or a non-memory operator), neither with a default, so a forgotten argument is a `TypeError`, never i32 checks for an i64 memory. With `a64` the address or index operand is a full 64-bit value (a copy's `n` only when both sides are i64) and no `AddK` is passed; with `a64` false the method emits exactly the earlier code. In both backends; the code of every module without an i64 memory is unchanged on both JITs, guard and explicit (D35 lists; CoreMark included). The table methods assert `not a64` until S0009 step 3.
+
+Added without an amendment (the rule above: a method only a new opcode reaches): S0008 (Q2 (a), step 3) added `wide(op, dst: Slot, args)` for the four wide-arithmetic opcodes `0xFC13`-`0xFC16`, in both backends: the low and high 64 bits into slots `dst.k`, `dst.k + 1` (the first operand's slots, each operand read before its slot is written), may write `tos` (the core spills it first), no flags live afterwards, no trap; read by a `reviewer` (S0008 step 4). The code of every module without these opcodes is unchanged on both JITs (D35 lists).
 
 ### D40. The project is renamed `waboros` (from `w2py`)
 Status: accepted (maintainer, 2026-11-01) · Date: 2026-11-01 · Supersedes: — · Evidence: the name `waboros` is free on PyPI (`https://pypi.org/pypi/waboros/json` -> 404 on 2026-11-01)
@@ -579,3 +608,339 @@ code's tables (each program carries its ISA level; today all are the baseline), 
 declared in the artifact (D33), with the baseline artifact byte-identical, its own ISA gate and QEMU
 CPU model, and the same spec parity as `pyc` (D25). Not planned: XOP, ARMv7 NEON, wider vectors;
 AVX-512 only on a measurement.
+
+### D43. Guard pages are opt-in; explicit bounds checks stay the default
+Status: superseded by D44 (maintainer, 2026-11-02; accepted 2026-11-02) · Date: 2026-11-02 · Supersedes: D29 (only its "guard by default where verified") · Evidence: [S0006](specs/S0006-guard-pages.md) measurements (CoreMark +7.5 % median over 9 alternated pairs, the PoC's own pair +6.9 % on this machine; code −21 %)
+
+Guard pages (S0006) are a JIT option chosen explicitly (`bounds = "guard"` or `"auto"`); the default
+stays `explicit`. The rest of D29 holds: the mode is a compile-time property recorded in the artifact
+and the cache key, explicit checks are the only mode of a new architecture, of memory64 and of hosts
+without a verified handler. Making `guard` (or `auto`) the default needs measurements on several
+machines and a new decision.
+
+### D44. Guard pages by default where verified (`bounds = "auto"`); explicit checks by flag
+Status: accepted (maintainer, 2026-11-02) · Date: 2026-11-02 · Supersedes: D43 · Evidence: [S0006](specs/S0006-guard-pages.md) step 1 (CoreMark +14.3 % median over 7 alternated pairs on a loaded machine, +7.5 % on a quiet one in the draft; code −20 %); BENCHMARKS.md, "Guard pages" (quiet machine, 9 pairs: +9.35 % median)
+
+As in Wasmtime (`signals_based_traps` on by default), the JIT's default bounds mode becomes `auto`:
+guard pages on every (OS, architecture, libc) row whose handler is verified in CI, explicit checks
+elsewhere, silently. `bounds = "explicit"` turns guard pages off; `"guard"` requires them. The switch
+lands in its own step after step 1's review and a measurement on a quiet machine; until then the
+default stays `explicit` (D43). The rest of D29 holds. The handler's chaining follows Wasmtime with
+one deliberate difference: a sent signal whose previous action is the default is re-sent with
+`raise`, so the process ends as it would without us (S0006 Changes, LESSONS 46).
+
+**Done** (2026-11-02): `auto` is the default; Linux glibc x86-64 is the first verified row (glibc
+named by `platform.libc_ver()`, so musl stays explicit); an empty `WABOROS_JIT_BOUNDS` counts as
+unset. The switch also brought the Q1 check's rule A (`dladdr` tells the interpreter's handlers
+from a library's, so wasmtime above ours under faulthandler is no error) and the handler's refusal
+to install in a process of another architecture (S0006 Changes).
+
+**Linux glibc aarch64** (2026-11-02, S0006 step 2): the second row in `verified` (`jit-aarch64`),
+so `auto` gives guard pages in an aarch64 Linux glibc process (QEMU user mode included); the
+spec suite passes in both modes under QEMU, and CI's native `arm64` runner runs it and
+`test_guard.py` in both modes. The row holds once the step's review and that runner confirm it.
+Every other aarch64 row stays explicit.
+
+**Linux musl x86-64** (2026-11-02, S0006's musl step): a third row in `verified` (`jit-x86_64`).
+musl is detected positively, by its mapped `ld-musl-<arch>.so.1`, because `platform.libc_ver()`
+names only glibc. musl's `struct sigaction` and its `sigaction`/`raise` were checked against its
+source and agree with glibc's. CI `jit` runs the spec suite and `test_guard.py` in guard mode in a
+`python:3.13-alpine` container. Linux musl aarch64 stays explicit: `jit-aarch64` needs libgcc's
+`__clear_cache`, which the stock Alpine image lacks (S0004, S0006 Changes).
+
+**macOS x86-64 and arm64** (2026-11-03, S0006 step 3): `darwin` joins `verified` in both targets,
+so `auto` gives guard pages on macOS, Intel and Apple Silicon. Evidence: CI run 41610392553, fully
+green: the spec suite on `jit-x86_64` (`os (macos-26-intel)`) and `jit-aarch64` (`arm64 (macos-latest)`)
+and `test_guard.py` + `test_fault_handler.py` in guard mode on both. The handlers use signals (SIGSEGV and
+SIGBUS), not Mach ports (S0006 Q5).
+
+**Windows x64 and arm64** (2026-11-03, S0006 step 4): `win32` joins `verified` in both targets, so
+`auto` gives guard pages on Windows. Evidence: CI run 41633456821 (`arm64 (windows-11-arm)` fully green:
+the `jit-aarch64` spec suite, `test_guard.py` + `test_fault_handler.py` in guard mode) and CI run
+41640149866 (`os (windows-latest)` fully green: the `jit-x86_64` spec suite and the same tests,
+including the forced-CET shadow-stack tests and the faulthandler-order test). The handler is a
+vectored exception handler, not structured exception handling.
+
+### D45. In guard mode stores rely on guard pages, as in Wasmtime; a split store may tear
+Status: accepted (maintainer, 2026-11-02) · Date: 2026-11-02 · Supersedes: — · Evidence: [S0006](specs/S0006-guard-pages.md) Changes; LESSONS 50; BENCHMARKS.md, "Checked stores in guard mode (rejected alternative)"
+
+In guard mode every store of every width is a fault point, as every load is; nothing checks it
+explicitly. Wasmtime does the same and accepts that a store straddling the end of memory may
+commit its in-bounds part where the hardware allows it (its issue 7237; PR 8221 unmerged;
+WebAssembly/design issue 1490 open). Native x86-64 faults are precise, so a trapping store writes
+nothing there. An emulator that splits wide stores may tear one: QEMU's TCG split a 16-byte store
+in CI (LESSONS 50), and box64 or FEX may too; Arm and RISC-V allow it in hardware. CI's qemu64
+steps therefore run in explicit mode. Rejected: checking stores of 2 bytes or more (CoreMark −2
+to −3 % against unchecked stores; guard would lead explicit by +4.5 to +6.3 % instead of about
++9 %, with 14.6 % less code instead of 20 %), and a probe, a 1-byte read of the store's last byte
+as the fault point (measured, no faster than the check). D44 stands: the default stays `auto`.
+
+**aarch64** (S0006 step 2): the same rule, as the brief decided: every store is a fault point. Under
+QEMU 8.2.2 a straddling 16-byte `str q` wrote its first 8 bytes before the trap (scalar and 8-byte
+stores wrote nothing). On aarch64 `test_guard.py` records a torn store rather than failing, and
+CI's QEMU SIMD step runs in explicit mode. What native Arm hardware does is shown by the `arm64`
+runner, not assumed.
+
+### D46. Float constants cross the front end as bit patterns; `pyc` has a mode that carries f32/f64 as ints
+Status: accepted (maintainer, 2026-11-03) · Date: 2026-11-03 · Supersedes: — · Evidence: [PYC-PLATFORMS.md](PYC-PLATFORMS.md) sections 5 and 6 (i686: 88 failures -> 0; CoreMark and the 64-bit output unchanged)
+
+On 32-bit x86 the x87 FPU quiets a signalling NaN in any Python float, so `pyc` cannot keep f32/f64 NaN
+payloads while those values are floats (LESSONS 63). Decided:
+1. The decoder (`frontend/binary.py`, function bodies and constant expressions) yields an f32/f64
+   constant as its bit pattern, an int. This keeps the shared layers language-neutral (D17): no NaN-as-double
+   convention. The JIT takes the bits directly (its machine code is byte-identical: `tools/jit_dump.py`
+   lists of both targets, both bounds modes); `pyc` turns the bits into the same float literal as before,
+   so its default source is byte-identical (sha256 over `generate()` for CoreMark and every spec module).
+2. `pyc` generates a second mode (`ModGen.fb`): f32/f64 are ints (32/64-bit unsigned) in every wasm
+   value; moves, constants, load, store, select, neg, abs, copysign, reinterpret and the SIMD scalar
+   boundary work on the bits, arithmetic, comparison, conversion, demote and promote make a float inside
+   one expression and convert the result back; inside one expression a bits-to-float-to-bits pair is
+   dropped (exact: an arithmetic result is a quiet NaN or no NaN). The host boundary (`Raw`) is bits already.
+3. Selection: a behavioural probe at import (`runtime.FBITS`: a signalling NaN must survive the helper round
+   trip), overridden by `WABOROS_PYC_FBITS=1|0` and `generate(mod, fb=...)`. Only a host whose floats quiet
+   gets the mode by default; CI runs it on x86_64 as well (`ci.yml`).
+4. `pyc.load()` (test helper) exposes bit patterns for f32/f64 in this mode.
+5. `pyc` has no on-disk cache. A future `pyc` artifact or cache key must include the mode (`fb`), since the
+   same wasm gives two different sources.
+Rejected: a `float` subclass that carries the bits of a NaN constant (prototype; one more convention for
+every consumer of the front end), f32 as bits everywhere (slows the CoreMark path of every host).
+
+
+### D47. An optimisation that needs code per operating system starts on one row and grows only by exception
+Status: accepted (maintainer, 2026-11-03) · Date: 2026-11-03 · Supersedes: — · Evidence: S0006 steps 1-5 (LESSONS 67)
+
+"Per-OS code" differs by operating system, libc or OS-level runtime: signal or exception handling, OS
+structures and offsets, OS APIs, process policies such as CET. It does not cover ISA variants (D24, D42)
+or code every OS shares.
+
+1. Such an optimisation is first built and verified on **one row**: Linux glibc x86-64 (the fastest
+   CI, the reference machine). Every other row keeps the portable path, silently and without a
+   warning, as `auto` does for guard pages (D44).
+2. It is extended to another row **only when one of the exceptions below holds**; the step's brief
+   names which one, with its evidence.
+3. A row becomes the default only after it is **verified in CI on that OS** (a real runner, or an
+   emulator that shows the behaviour), with a silent fallback to the portable path when the feature
+   cannot be installed at run time.
+4. Every per-OS row is listed in one table (as S0006's rows), with its CI job.
+
+Exceptions (any one is enough):
+* **(a) Required, not faster.** Without the per-OS code the JIT or a hard rule fails on that OS: it
+  cannot run at all (macOS `MAP_JIT` and per-thread write protection, Windows `VirtualAlloc`), or it
+  breaks "never crash the interpreter", W^X, CET or BTI compliance, or a trap the oracle gives.
+  Correctness and safety are not optimisations.
+* **(b) Large measured gain on that row.** At least **+10 %** median on CoreMark or on the corpus
+  (`tools/run_corpus.py`), measured on that OS's CI runner (alternated rounds, as BENCHMARKS.md
+  requires), **and** a stated need on that platform (a user, a maintainer's target, a program that is
+  too slow there).
+* **(c) Small marginal cost.** The new row reuses existing code with at most about **100 lines**
+  specific to it, needs **no new CI infrastructure** (an existing job or container gains a step), and
+  adds **no new interaction class** (no new handler mechanism, no new process policy). Example: guard
+  pages on Linux musl reused the glibc handler unchanged (one detection function).
+* **(d) The maintainer asks for it explicitly**, knowing the cost; the decision record says so.
+
+Not exceptions: "Wasmtime does it" by itself (Wasmtime has a team per platform), completeness of a
+table, symmetry between OSes, or a gain measured on another OS.
+
+Existing per-OS work (S0006 on Linux glibc and musl, macOS, Windows and Android x86-64; executable
+memory per OS) stays as it is. Briefs and reviews: a brief for anything per-OS names the rows it
+touches and, for each row beyond the first, the exception and its evidence; a reviewer treats a per-OS
+change without a named exception as out of scope.
+
+### D48. Native JIT targets are x86-64, aarch64 and riscv64
+Status: accepted (maintainer, 2026-11-03; amended 2026-11-04: the sljit track) · Date: 2026-11-03 · Supersedes: — · Evidence: [ARTIFACT-CONTAINER.md](ARTIFACT-CONTAINER.md) (Wasmtime 50.0.1 CLI, checked 2026-11-02: `--target i686-...` and `--target armv7-...` give "Support for this target has not been implemented yet"; 32-bit hosts get Pulley, its bytecode interpreter)
+
+**Scope: the JIT under CPython** (desktop, server, mobile). MicroPython (the `mpy` target, phase 7) is a
+separate question with its own architectures (Thumb, Xtensa, RISC-V 32 and others, through
+MicroPython's own native emitters and viper); this decision does not limit it, and the maintainer may
+decide differently there.
+
+1. **Architectures.** A JIT target exists only for x86-64, aarch64 and riscv64: three of
+   Cranelift's four 64-bit architectures (x86-64, aarch64, riscv64, s390x). x86-64 and aarch64 are
+   done; riscv64 is planned, the first micro-compiler after `arm64.wasm`
+   ([MICRO-COMPILERS.md](MICRO-COMPILERS.md)); ROADMAP phase 8.
+   **s390x is excluded by the maintainer** and runs `pyc` (IBM mainframes only). Reasons, recorded, not a plan: the host
+   is big-endian and wasm memory is little-endian, so every load and store would byte-swap (s390x
+   has byte-reversed `lrv`, `lrvg`, `strv`, `strvg`, `lrvh`, so the cost is small, but it is a new
+   axis for the backend interface (D39) and for SIMD lanes); there is no native CI runner, only
+   QEMU user-mode, which is slow; Wasmtime's own s390x backend would be the closest reference if
+   this is ever reopened. `pyc` passes the spec suite on s390x under QEMU
+   ([PYC-PLATFORMS.md](PYC-PLATFORMS.md)); the optional exotic QEMU job keeps covering it.
+2. **Operating systems** stay open within those architectures: Linux (glibc, musl), macOS, Windows
+   and Android are tested today, and the JIT artifact is OS-independent (D23). D47 governs per-OS
+   *optimisations*; D48 is about which architectures get a JIT at all. They do not conflict.
+3. **Every other architecture runs `pyc`**: s390x, i686 and 32-bit Windows, armv7, ppc64le,
+   loongarch64, mips32el (Ingenic X2000) and the rest. `auto` already falls back with the D31
+   warning. No hand-written 32-bit JIT and no LLVM long-tail backend is planned; the one possible
+   exception is the sljit track below. `pyc`'s 32-bit
+   issues are therefore real work, not stop-gaps (both are fixed: D46 and the OverflowError mapping).
+4. **Pyodide** is a separate track with its own way of running code (the guest as an Emscripten
+   side module loaded with `ctypes.CDLL`, compiled by the browser's engine, [PYODIDE.md](PYODIDE.md)).
+   It is not a JIT target of ours and not part of the architecture list.
+
+LLVM as an optional ahead-of-time tier for speed is a separate question and is not closed by this
+decision. Rejected: a 32-bit pathfinder (i686), an LLVM tier for the long tail of architectures.
+
+**Amendment (maintainer, 2026-11-04): the sljit track.** Native hand-written JITs exist only for
+x86-64, aarch64 and riscv64. Other architectures run `pyc`; optionally, later, a sljit backend under
+our core may give them a JIT: one more implementation of the D39 interface written against sljit's
+API, shipped as a micro-compiler (`sljit-<arch>.wasm`) built from the same C/Zig port of the core,
+verified behaviourally against `pyc` (spec suite under QEMU), not byte-checked by Python twins. Not
+a first priority: it comes after the hand-written micro-compilers; until then it shapes one thing,
+the review of the LIR vocabulary (every D39 operation should map onto one to three sljit calls).
+The big-endian and 32-bit consequences below hold for the hand-written JITs, not for this track
+(sljit has byte-reversed loads and stores; i64 on 32-bit targets needs register pairs, a D39
+amendment of that track). Proposal, proof of concept and measurements:
+[SLJIT-BACKEND.md](SLJIT-BACKEND.md), `poc/sljit/`.
+
+Consequences (for the hand-written JITs): there is no big-endian JIT host, so the backend interface (D39) never needs
+byte-reversed loads and stores and SIMD lanes stay in host order on every JIT target; the JIT CI stays
+on native runners (x86-64, arm64) plus QEMU for riscv64 when it comes. The micro-compilers are
+`x64.wasm`, `arm64.wasm` and `riscv64.wasm`.
+
+### D49. Relaxed SIMD: the deterministic profile of Wasm 3.0 for 16 operators, madd/nmadd native per target as Wasmtime; each target lowers all 20 itself
+Status: accepted (maintainer, 2026-11-04) · Date: 2026-11-04 · Supersedes: — · Evidence: [S0008](specs/S0008-relaxed-simd-wide-arithmetic.md) (Semantics: Wasmtime 50.0.1 measured 2026-11-04, its deterministic switch fuses madd/nmadd on every host and equals the 3.0 profile on the other 16 operators; without the switch 23 928 of 60 000 calls differ from the profile)
+
+1. **16 operators** (swizzle, the four trunc, the four laneselect, min/max of f32x4 and f64x2, q15mulr,
+   the two dot products) give the deterministic profile's result (every relaxed parameter 0, alt 0) on
+   every target, whatever the host CPU. `pyc` stays a bit-exact oracle for them.
+2. **`f32x4`/`f64x2` `relaxed_madd` and `relaxed_nmadd`** follow Wasmtime's native choice per
+   architecture: fused on `jit-aarch64` (`fmla`/`fmls`), unfused on `jit-x86_64` (SSE2 has no FMA) and
+   on `pyc`. The result differs by target, never by host, so D35 holds. x86-64 FMA comes with
+   x86-64-v3 (D42).
+3. **No front-end aliasing.** The front end decodes all 20 relaxed opcodes as operations of their own;
+   every target (`pyc`, `jit-x86_64`, `jit-aarch64`) maps each of the 20 itself, to its lowering of the
+   equivalent operator or to one of 6 compositions. No shared default table. A target keeps the freedom
+   to lower a relaxed operator natively when ISA levels are extended.
+4. The oracle runs with `wasm_relaxed_simd_deterministic`; madd/nmadd are compared against the unfused
+   (or, on aarch64, the fused) reference, not bit for bit against the oracle on x86.
+
+Consequence: **revisit with ISA levels** ([ISA-LEVELS.md](ISA-LEVELS.md)): native results for the other
+16 operators (`cvttps2dq`, `minps`/`maxps`, `pshufb` from SSSE3, hardware dot products) and FMA on
+x86-64 arrive per target with a declared level, recorded per operator (D42); the front end needs no
+change for it. Rejected: aliases in the front end (they erase which instruction was relaxed); unfused
+madd everywhere (deviates from Wasmtime on aarch64); fused everywhere (a software FMA on SSE2).
+
+### D50. An i64 memory moves when a grow exceeds its reservation; an i32 memory never moves; context ABI v1 amended in text only
+Status: accepted (maintainer, 2026-11-04) · Date: 2026-11-04 · Supersedes: — · Evidence: [S0009](specs/S0009-memory64.md) ("Runtime"; Wasmtime 50.0.1 reservations measured from `/proc/self/maps`; the zero-skipping copy measured: 4 GiB + 64 KiB with 3 written pages, 1.46 s and +1 MiB RSS on the dev VM)
+
+1. **Reservation as Wasmtime 50.0.1** (S0009 Q1 (b)): an i64 memory with a min of at most 4 GiB
+   reserves `RESERVATION64` (4 GiB) + `TAIL64` (the 32 MiB guard); a larger min reserves min +
+   `GROWTH64` (2 GiB) + `TAIL64`. A grow that fits in the reservation minus the tail commits in place.
+   No cap beyond 2⁴⁸ − 1 pages (or the declared maximum).
+2. **A grow beyond it moves the memory** (`Memory._move`): a new reservation of the new size +
+   `GROWTH64` + `TAIL64` (a failure is −1 with nothing changed); the old contents copied 64 KiB at a
+   time, skipping pages that read as zero (the new pages already do); the base and then the size
+   rewritten in every bound context (`users`); then the old reservation freed. The rewrite is all or
+   nothing: an asynchronous exception (`KeyboardInterrupt`) during it puts every context back on
+   (old base, old size), size first, and the `Memory` back on the old reservation, then re-raises: the
+   grow did not happen. Both reservations stay mapped while contexts are rewritten (`retired`); only a
+   second interruption during the rollback leaves them there (a leak, never an unmap). Every write of
+   a context puts the base before the size, and an in-place grow rewrites the base too, so no context
+   is ever paired with a size larger than its base's commit (LESSONS 79).
+3. **Why it is safe**: a move happens only inside `Memory.grow`, reached from wasm only through the
+   host bridge; every bridge call site reloads memory 0's registers and every other memory is read
+   from its context words at each access (S0009, "No stale base after a move"). A host thread is
+   kept out by the one-thread-per-store rule (S0002, enforced at entry, grow and instantiation).
+4. **An i32 memory never moves** (4 GiB + 32 MiB, as S0006), and its code bytes do not change (D35).
+5. **Context ABI v1, text amendment without a bump** (S0009 Q4): an i64 memory's `base` and
+   `size_bytes` may change during any host call or libcall; code keeps neither across a call. No
+   word is added or moved; no artifact is serialized yet.
+6. `Reservation` refuses a size ≥ 2⁶³ with `OSError(ENOMEM)` before any mapping call (ctypes
+   truncates an oversized `c_size_t`, LESSONS 77).
+
+Rejected (S0009, "Alternatives"): a 65 536-page cap (deviates from Wasmtime); a huge fixed
+reservation (address-space exhaustion); copying every byte as Wasmtime does (23.3 s and +4 GiB RSS
+for a 4 GiB memory); `mremap` (per-OS code, D47); freeing the old reservation only when the store is
+idle (keeps two reservations alive; the thread rule is enforced instead).
+
+### D51. On PyPy an asynchronous exception at a JIT entry or exit may leave the store's counters raised
+Status: accepted (maintainer, 2026-11-04) · Date: 2026-11-04 · Supersedes: — · Evidence: LESSONS 82; D34's script (`tests/jit/test_abi.py`, `ASYNC_HOST`), 100 runs at 2 ms on PyPy 3.11 (8.0.1), dev VM
+
+The entry (`Instance.call`, `JitInstance.call` for an exported import, `pyc`'s `_run`) restores the
+store's depth, the value-stack `active` count and (outermost) the pending host exception in a
+`finally` that makes no call before the restore. On CPython a signal handler runs only at a function's
+entry, after a C call and at a backward jump, so a `KeyboardInterrupt` cannot skip the restore
+(closed on CPython 3.11-3.15t, LESSONS 82). PyPy runs signal handlers at other points as well: one
+was seen at the plain compare in the `finally`, and its ctypes callback wrapper is Python code. There
+an interrupt at entry or exit can leave the depth and `active` raised (a later call may then report a
+host exception wrapped in `HostError`, and the value stack is not reset for the next outermost
+entry); never a wrong result, and the interrupt itself always surfaces. Measured (pass of 100 runs,
+explicit / guard): before S0009 step 2b 67 / 82, at 2b 38 / 74, with the fix 63 / 98. Accepted as a
+deviation: the stochastic test is skipped on PyPy; the deterministic delivery-point tests, which
+model CPython's points, still run there. Closing it needs bookkeeping that does not rely on a
+restore in a `finally` (for example reset when the outermost entry finds no JIT frame below): a later
+item in ROADMAP.md, phase 5.
+
+### D52. JIT exceptions: status 14 through frames, objects bumped from a store arena in code, context ABI v1 amended
+Status: accepted (maintainer, 2026-11-05) · Date: 2026-11-05 · Supersedes: — · Evidence: S0012 steps 3-4; `tests/jit/test_exceptions.py`; BENCHMARKS.md "Exceptions: throw cost"
+
+An exception crosses JIT frames as status 14 (`UNCAUGHT_EXCEPTION`), as traps do (S0012 Q1 A): each
+call site's existing `test eax, eax; jnz` goes to the frame's `error` label, which is the epilogue
+outside a `try_table` (code without one is byte-identical, D35 lists) and the innermost landing
+pad inside one. A pad dispatches only 14; traps, interrupts, host errors and stack overflows pass
+through, as in Wasmtime. Every `ret` matches its `call` (R2). The context ABI v1 is amended without
+a bump (S0012 Q2 (a), as D34 and D50; no artifact file exists yet): word 10 the address of the
+store's pending-exception word, 11 the arena refill service, 12 and 13 the addresses of the store's
+arena cursor and limit, one tag-identity word per tag after the records (ARTIFACT.md part 3).
+
+`throw` runs no Python (maintainer, plan review): the code bumps the object `{tag, payload}` from
+the store's arena chunk, makes it pending and returns 14; only a full chunk calls the refill
+service through the bridge. A first version called a throw service through the bridge for every
+throw (2.1-2.8 µs per throw caught one frame up; BENCHMARKS.md). Words 12 and 13 hold addresses,
+not the cursor and limit themselves, because every context of a store allocates from one arena: a
+per-context copy of the cursor would hand out the same memory twice. Chunks are 64 KiB, never
+move, and live until the store is dropped (S0012 Q3 (a): 8·(1 + payload words) bytes per throw; one
+ctypes object per throw kept 137 bytes for a one-word payload). That keeps every exception a program
+throws, where Wasmtime's collector frees unreachable ones: a deviation until GC (Q3 (c)).
+
+At an entry status 14 becomes `Trap(UNCAUGHT_EXCEPTION)` with `exn = (Tag, values)`; an exnref seen
+by the host is an opaque `ExnRef` of its store (S0012 Q4; the public shape is phase 6). A host
+function's `Trap(UNCAUGHT_EXCEPTION)` is a host error (status 13), so an exception that left wasm
+through a host frame is not caught again below it (wasmtime-py 50 behaves so). Before this step
+the host-call status set was `frozenset(TrapCode)`, which had admitted 14 since S0012 step 2
+(LESSONS 91).
+
+D39 amendment (S0012 Q5): the frame's `error` label and six backend methods, `landing`,
+`exn_match`, `exn_field`, `exn_load`, `throw` and `throw_ref`. `exn_match` and `exn_field` take
+no exnref register, unlike S0012's first text: at a pad the result register holds the status and
+every pool register may be a pin, so each method re-reads the pending word (maintainer, Q-A (a)).
+`throw` is a method because its allocation needs registers the core cannot name. x86-64 has them
+since S0012 step 3; aarch64 completes the amendment in step 4 (maintainer, Q-F), with the same
+shapes in AArch64 (`cmp w0, #14; b.ne` at a pad, `cbnz w0` after every call to `error`, x9-x12
+scratch); its code without exception instructions is unchanged (D35 list), and both JITs claim
+`exceptions/`, so the D25 parity test needs no exemption any more. Not done: a `throw` caught in the same function as a plain jump. Two tags of
+different indices are the same tag when both are imports of one export, so the first matching
+clause is not always known at compile time. Nothing measured asks for it.
+
+### D53. JIT memory semantics written once, over a per-architecture low layer
+Status: accepted (maintainer, 2026-11-05) · Date: 2026-11-05 · Supersedes: — · Evidence: S0011 steps 1-4; D35 lists; BENCHMARKS.md "JIT low layer" and "S0011 step 4"
+
+The JIT's memory semantics are written once, in `jit/common/lower.py`, and no longer in each
+backend (LESSONS 76). The low layer under them is the `ll_*` methods of each backend: about twenty
+operations that name the machine registers and fit every immediate to its encoding. The group
+covered:
+* the bounds checks of loads, stores and SIMD memory operators, i32 and i64, in guard and explicit
+  mode;
+* the end checks of `memory.copy`, `memory.fill`, `table.copy` and `table.fill`, with the widths
+  and order of their operands;
+* the table element check.
+
+[S0011](specs/S0011-jit-low-layer.md) is the contract: the operations, the registers each writes,
+flags, immediate ranges, and the fault-point rule. The low layer lies below D39 and is not part
+of its frozen interface.
+
+The bulk operators take aarch64's order per operator (S0011 amendment B2, maintainer):
+* `memory.copy` checks a range, then forms its address, before the other range;
+* `table.copy` checks both ranges, then forms both addresses.
+
+So aarch64 code is unchanged, and x86-64 changes in the 70 spec modules with `memory.copy`, each a
+reorder of the same instructions. One order for both operators would have changed 106 aarch64
+modules.
+
+Elsewhere generated code is byte-identical: CoreMark on both architectures in both bounds modes,
+and every other spec module except `address64.0-3`, whose differences the maintainer accepted.
+Speed is unchanged by construction (identity); a short `memory.copy` measured 0.99× after the
+reorder. Compile time is within the +5 % bound (S0011). The trap code stays at each backend's
+plug point, which creates the stub, so the shared layer never sees a frame (S0011 Q5).
+`WABOROS_JIT_TWOLEVEL` and the per-backend bodies are removed (Q3). GC is to be written on this
+layer.

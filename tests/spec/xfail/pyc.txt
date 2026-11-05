@@ -1,26 +1,3 @@
-imports.wast:240  LoadError: NotImplementedError: tag import
-imports.wast:244  LoadError: NotImplementedError: tag import
-imports.wast:248  LoadError: NotImplementedError: tag import
-imports.wast:252  LoadError: NotImplementedError: tag import
-imports.wast:256  LoadError: NotImplementedError: tag import
-imports.wast:35  LoadError: NotImplementedError: tag import
-imports.wast:97  LookupError: no exported function print32
-imports.wast:98  LookupError: no exported function print64
-instance.wast:101  no current module
-instance.wast:102  no current module
-instance.wast:103  no current module
-instance.wast:104  no current module
-instance.wast:128  LoadError: NotImplementedError: tag import
-instance.wast:15  LoadError: NotImplementedError: tag import
-instance.wast:167  no current module
-instance.wast:168  no current module
-instance.wast:169  no current module
-instance.wast:170  no current module
-instance.wast:54  no current module
-instance.wast:55  no current module
-instance.wast:56  no current module
-instance.wast:57  no current module
-instance.wast:62  LoadError: NotImplementedError: tag import
 linking.wast:112  LinkError: incompatible import type Mref_ex.g-const-func
 ref_null.wast:1  LoadError: NotImplementedError: value type 0x6e
 ref_null.wast:16  no current module
@@ -88,6 +65,16 @@ type-rec.wast:45  LoadError: NotImplementedError: rec / sub / struct / array typ
 type-rec.wast:71  LoadError: NotImplementedError: rec / sub / struct / array types
 type-rec.wast:78  LoadError: NotImplementedError: rec / sub / struct / array types
 
-# proposal subdirectories (S0001, 2026-10-30): bulk-memory is the only one claimed
+# proposal subdirectories (S0001): every claimed one is in tests/spec/claims.py; the rest need GC types
 bulk-memory/table_init.wast:2272  LoadError: NotImplementedError: rec / sub / struct / array types
 bulk-memory/table_init.wast:2286  LookupError: no exported function run
+memory64/table_init64.wast:2457  LoadError: NotImplementedError: rec / sub / struct / array types
+memory64/table_init64.wast:2471  LookupError: no exported function run
+exceptions/cast.wast:1  LoadError: NotImplementedError: opcode 0xfb (GC ref.test / ref.cast)
+exceptions/cast.wast:21  no current module
+exceptions/cast.wast:22  no current module
+exceptions/cast.wast:23  no current module
+exceptions/cast.wast:24  no current module
+exceptions/tag.wast:30  LoadError: NotImplementedError: rec / sub / struct / array types
+exceptions/tag.wast:40  LoadError: NotImplementedError: rec / sub / struct / array types
+exceptions/tag.wast:49  LoadError: NotImplementedError: rec / sub / struct / array types

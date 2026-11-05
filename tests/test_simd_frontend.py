@@ -24,11 +24,11 @@ ADD = fd(0xAE)  # i32x4.add
 DROP = b"\x1a"
 
 
-def test_table_has_the_236_operators() -> None:
-    assert len(simd.OPS) == 236
+def test_table_has_the_256_operators() -> None:
+    assert len(simd.OPS) == 256  # 236 + the 20 relaxed ones (S0008)
     assert simd.OPS[0x0C].name == "v128.const" and simd.OPS[0xAE].name == "i32x4.add"
     assert simd.OPS[0xFB].name == "f32x4.convert_i32x4_u"
-    assert not {0x9A, 0xA2, 0xEE, 0xFF + 1} & simd.OPS.keys()  # reserved or relaxed
+    assert not {0x9A, 0xA2, 0xEE, 0x114} & simd.OPS.keys()  # reserved or past the end
 
 
 def test_decode_immediates() -> None:
@@ -64,9 +64,40 @@ def test_malformed(body: bytes) -> None:
         decode(body + b"\x0b")
 
 
-def test_relaxed_simd_is_a_gap() -> None:
-    with pytest.raises(NotImplementedError):
-        decode(fd(0x100) + b"\x0b")
+RELAXED_ARITY = {  # sub -> operands; the result is always v128
+    **dict.fromkeys([0x100, 0x10D, 0x10E, 0x10F, 0x110, 0x111, 0x112], 2),
+    **dict.fromkeys(range(0x101, 0x105), 1),
+    **dict.fromkeys([*range(0x105, 0x10D), 0x113], 3),
+}
+
+
+def test_relaxed_simd_is_decoded_as_20_operators_of_its_own() -> None:
+    assert sorted(RELAXED_ARITY) == list(range(0x100, 0x114))
+    for sub, n in RELAXED_ARITY.items():
+        assert decode(fd(sub) + b"\x0b") == [(simd.BASE + sub,), (0x0B,)]
+        assert simd.OPS[sub].pops == (simd.V,) * n and simd.OPS[sub].res == simd.V
+        check(mod(b"", b"", CONST * n + fd(sub) + DROP))  # valid
+        with pytest.raises(Invalid):  # one operand short
+            check(mod(b"", b"", CONST * (n - 1) + fd(sub) + DROP))
+    with pytest.raises(Invalid):  # an i32 for the last v128
+        check(mod(b"", b"", CONST + b"\x41\x00" + fd(0x10D) + DROP))
+    with pytest.raises(Malformed):
+        decode(fd(0x114) + b"\x0b")
+
+
+def test_wide_arithmetic_decodes_and_validates() -> None:
+    for sub, n in ((19, 4), (20, 4), (21, 2), (22, 2)):
+        op = b"\xfc" + bytes([sub])
+        assert decode(op + b"\x0b") == [(0xFC00 + sub,), (0x0B,)]
+        args = b"\x42\x00" * n
+        check(mod(b"", b"", args + op + b"\x1a\x1a"))  # two i64 results
+        with pytest.raises(Invalid):  # three results are not there
+            check(mod(b"", b"", args + op + b"\x1a\x1a\x1a"))
+        with pytest.raises(Invalid):  # an i32 operand
+            check(mod(b"", b"", args[:-2] + b"\x41\x00" + op + b"\x1a\x1a"))
+    for sub in (18, 23):
+        with pytest.raises(Malformed):
+            decode(b"\xfc" + bytes([sub]) + b"\x0b")
 
 
 def test_v128_type_and_constant_expression() -> None:

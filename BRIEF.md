@@ -2,7 +2,7 @@
 title: Briefing: read this first
 kind: guide
 status: current
-updated: 2026-11-02
+updated: 2026-11-05
 ---
 
 # Read this first
@@ -14,11 +14,11 @@ else under `docs/` is reference material: read it when a task needs it, not befo
 
 **A WebAssembly compiler written in pure Python that makes fast machine code at run time, with no
 native dependency.** Python can map executable memory (`mmap`) and call into it (`ctypes`), so a
-compiler written in Python can emit x86-64 (later AArch64, RISC-V, …) bytes for a wasm module and run
+compiler written in Python can emit x86-64 and AArch64 (RISC-V planned, D48) bytes for a wasm module and run
 them at native speed. The proof of concept already runs CoreMark at **86 % of Wasmtime/Cranelift with
 explicit bounds checks and ~91 % with guard pages**, from a `pip install` that contains only `.py`
 files. The package's `jit-x86_64` (explicit bounds checks) reaches 99.2 % of the PoC's JIT on CoreMark
-(17 526 vs 17 662 it/s, `docs/BENCHMARKS.md`); guard pages in the package are phase 5. Where machine code is not allowed or no backend exists yet, the same front end translates wasm
+(17 526 vs 17 662 it/s, `docs/BENCHMARKS.md`), and guard pages are the default where verified (D44; CoreMark +9.35 % over explicit checks on x86-64, S0006). Where machine code is not allowed or no backend exists yet, the same front end translates wasm
 to Python source (`pyc`), or to MicroPython code (`mpy`). Around the compiler sits a **thin runtime**
 (memories, tables, instances, traps, host calls, WASI) — necessary, but not the point.
 
@@ -31,7 +31,7 @@ to Python source (`pyc`), or to MicroPython code (`mpy`). Around the compiler si
 | WAMR AOT | ~120 % | `wamrc` (LLVM) per module per platform, a native runtime, `.aot` tied to the WAMR version; modules cannot share memories or tables |
 | wasm3 | ~13 % | a native extension |
 | pywasm (pure-Python interpreter) | ~0.003 % | nothing |
-| **this project** | **86–91 %** (JIT, PoC numbers; the package is at the PoC's level with explicit checks), ~0.8 % (`pyc` on CPython, PoC) | **nothing**: standard library only |
+| **this project** | **86–91 %** (JIT, PoC numbers; the package is at the PoC's level with explicit checks, and guard pages are its default where verified), ~0.8 % (`pyc` on CPython, PoC) | **nothing**: standard library only |
 
 Measured numbers and conditions: `docs/BENCHMARKS.md`. The niche: run wasm from Python fast,
 anywhere Python runs, without anyone building anything native.
@@ -82,28 +82,34 @@ only what its test programs needed.
 
 ## Where to start
 
-State on branch `phase0-skeleton` (not merged to `main`, the maintainer's choice):
+State of `main` (phases 0–4 and SIMD merged on 2026-11-02, published as 0.0.0); work continues on branches:
 
 * **Done, phases 0–2:** package layout, strict binary reader and validator (`src/waboros/frontend/`), the
   spec-suite runner (the metric), and the `pyc` target complete for the core group (spec core: `pyc`
-  20509 pass, 89 expected failures; wasmtime oracle 63 782 over all claimed directories). `pyc` is frozen
-  for new features and gets correctness fixes only.
+  20532 pass, 66 expected failures; the oracle, Wasmtime, 63 911 pass over all claimed directories, GC included). `pyc` is frozen
+  for new features and gets correctness fixes only (except the proposals that land on every target
+  together, and S0010, the maintainer's exception for speed).
 * **Phase 3 (`jit-x86_64`, `docs/specs/S0002` step 3) done, including step 6, the final review (S0002, S0003 implemented):**
   3a ABI, 3b integer core, 3c SSE2 floats with `memory.grow`, 3d tables, `call_indirect`, reference
   types and bulk memory, 3e tail calls, typed function references and tags, 3f function imports
   through records (D32), step 4 the fallback to `pyc` with `JitUnavailableWarning` (D31), step 5 the
-  ISA gate in CI. `jit-x86_64` fails exactly what `pyc` fails in the core group (20509 pass on both)
+  ISA gate in CI. `jit-x86_64` fails exactly what `pyc` fails in the core group (20532 pass on both)
   and `auto` selects it; CoreMark 17 526 vs PoC `w2jit2` 17 662 it/s (99.2 %). Phase 3 went beyond the
   "integer core" (floats, tables) because the goal is completeness (D25).
 * **Phase 4 done:** multi-memory on both targets; `jit-aarch64` on native arm64 runners at parity with `pyc`
   (interface frozen, D39); the macOS arm64 follow-ups (the python.org CPython runs the JIT); Android x86_64
   checked in CI (RISKS R2).
-* **Phase 5 under way, SIMD first** (`docs/specs/S0005-simd.md`, D41): the front end and `pyc` are done and
-  `pyc` claims `simd/`; `jit-x86_64` compiles every operator with SSE2 only and claims `simd/` at
-  parity with `pyc` (5d3); `jit-aarch64` compiles every operator in NEON and claims `simd/` too (5e2);
-  SIMD is complete (5a-5f: the benchmark and the review are done) and the rename to `waboros` is done (D40).
-  **Next, per `docs/ROADMAP.md`:** the merge to main and publishing (the maintainer's step), then
-  phase 5 continues: guard pages (D29), the rest of the opcode set; the public API only in phase 6.
+* **Phase 5 under way** (`docs/ROADMAP.md`): SIMD is complete on all three targets (`docs/specs/S0005-simd.md`,
+  D41) and the rename to `waboros` is done (D40). Guard pages are complete (S0006, D44): `auto` gives them on
+  Linux glibc and musl x86-64, Linux glibc aarch64, macOS, Windows and Android x86-64, explicit checks
+  elsewhere. Platform tests run through cibuildwheel (`platforms.yml`), and `pyc` has a bits mode for
+  32-bit x86 (D46). Scalar code generation (S0007) is implemented (steps 1 and 3). Relaxed SIMD and wide arithmetic (S0008) and memory64 with table64 (S0009) are implemented on all three targets. The JIT memory semantics are written once over a
+  per-architecture low layer ([S0011](docs/specs/S0011-jit-low-layer.md), implemented, D53), the `pyc` `_br`
+  ladders ([S0010](docs/specs/S0010-pyc-branch-emission.md)) are implemented (CoreMark +9-10 %, switch VM x2.5),
+  and exceptions with `exnref` ([S0012](docs/specs/S0012-exceptions.md), implemented, D52) are claimed on all
+  three targets. **Next:** GC on top of the low layer, then the artifact format, then threads
+  (`docs/WASM-PROPOSALS.md`); the public API only in phase 6.
+  Native JIT targets are x86-64, aarch64 and riscv64 (planned); every other architecture runs `pyc` (D48).
 
 1. **Read** this page, then `docs/BENCHMARKS.md`, then `docs/ARCHITECTURE.md` and the spec of the step
    in `docs/specs/`. Skip `docs/API.md` and `docs/FEATURES.md` until phase 6.
@@ -114,9 +120,10 @@ State on branch `phase0-skeleton` (not merged to `main`, the maintainer's choice
    internal engine interface, with Wasmtime behind the same interface as the oracle. The work is a loop:
    take the largest group of failures for the current target, fix it, the number grows. `pyc` is the
    semantic floor every other target must match; `tools/spec_diff.py` shows the gap between two targets.
-4. **The JIT** keeps explicit bounds checks and baseline x86-64 only until phase 5 (D24, D29). The
-   second architecture (aarch64 on native arm64 runners, phase 4) comes **before** the opcode set is
-   widened: it is what proves the split, and the interface is frozen after it.
+4. **The JIT** emits baseline instructions only (D24); bounds checks are guard pages where verified and
+   explicit elsewhere (D44, S0006). The
+   second architecture (aarch64 on native arm64 runners, phase 4) came **before** the opcode set was
+   widened: it proved the split, and the interface was frozen after it (D39).
 5. **Only then** the public runtime API in the shape of wasmtime-py, WASI (fusedwasi is the candidate
    host), the cache and serialized files (thin/fat), the CLI.
 6. The PoC (`poc/`) stays runnable for comparisons (commands in `CLAUDE.md`).
@@ -142,7 +149,7 @@ a test. "Measure, do not estimate."
 | how it is built | `docs/ARCHITECTURE.md`, `docs/TARGETS.md` |
 | the order of work | `docs/ROADMAP.md` |
 | how it is tested | `docs/TESTING.md` |
-| why a choice was made | `docs/DECISIONS.md` (D1–D41) |
+| why a choice was made | `docs/DECISIONS.md` (D1–D51) |
 | what went wrong before | `docs/LESSONS.md` |
 | risks and possible answers | `docs/RISKS.md` |
 | the JIT artifact contract | `docs/ARTIFACT.md` |

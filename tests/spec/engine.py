@@ -39,6 +39,7 @@ class TrapCode(Enum):
     BAD_SIGNATURE = auto()
     TABLE_OUT_OF_BOUNDS = auto()
     NULL_REFERENCE = auto()
+    UNCAUGHT_EXCEPTION = auto()  # an exception escaped to the host (S0012, Q4)
 
 
 class EngineError(Exception):

@@ -2,7 +2,7 @@
 title: JIT artifact, ISA levels and the context ABI
 kind: reference
 status: current
-updated: 2026-11-02
+updated: 2026-11-05
 ---
 
 # JIT artifact, ISA levels and the context ABI
@@ -31,7 +31,8 @@ the CPU cannot run.
 |---|---|---|
 | x86-64 | **x86-64-v1**: SSE, SSE2 (every x86-64 CPU) | `x86-64-v2` (SSE3, SSSE3, SSE4.1, SSE4.2, POPCNT), `x86-64-v3` (AVX, AVX2, BMI1/2, LZCNT, FMA, MOVBE), single features by name |
 | aarch64 | **ARMv8.0-A** with FP and Advanced SIMD (NEON) | `lse` (v8.1 atomics), `fp16`, `dotprod`, `rcpc`, … by name |
-| later | each new architecture defines its baseline here before its first release | |
+| riscv64 | planned (D48, the third JIT architecture, after `arm64.wasm`); defines its baseline here before its first release | RVV 1.0 as an optional level |
+| later | none planned: every other architecture runs `pyc` (D48) | |
 
 Rules:
 
@@ -74,7 +75,7 @@ Wasmtime does; see [ARTIFACT-CONTAINER.md](ARTIFACT-CONTAINER.md) (maintainer's 
 | `arch` | u16 | 1 = x86-64, 2 = aarch64, 3 = riscv64, … (registry in this file) |
 | `isa_level` | u16 | per architecture: 1 = baseline, 2 = v2, 3 = v3, … |
 | `isa_features` | u64 | bitset of extra features (registry per architecture) |
-| `flags` | u32 | code-affecting options: fuel, epoch/interrupt polling, bounds-check mode, … |
+| `flags` | u32 | code-affecting options: fuel, epoch/interrupt polling, bounds-check mode, … Bit 0 `BOUNDS_GUARD` and bits 8–15 `GUARD_LOG2` are fixed by S0006; the package computes them (`FLAGS` in `guard.py`) but serializes no artifact before the phase-5 spec |
 | `compiler` | str | `waboros <version> <target> <target version>` |
 | `module_sha256` | 32 bytes | hash of the wasm bytes |
 | `config_sha256` | 32 bytes | hash of every code-affecting option |
@@ -91,11 +92,11 @@ Wasmtime does; see [ARTIFACT-CONTAINER.md](ARTIFACT-CONTAINER.md) (maintainer's 
 | 5 | `IMPORTS` | function imports: module, name, type index, context slot; memory/table/global imports with their types |
 | 6 | `EXPORTS` | name → kind + index |
 | 7 | `MEMORIES` | per memory: min, max, page size, 64-bit, shared |
-| 8 | `TABLES` | per table: element type, min, max |
+| 8 | `TABLES` | per table: element type, min, max, address type (i32 or i64, S0009) |
 | 9 | `GLOBALS` | per global: type, mutability, initial value (or the import it comes from) |
 | 10 | `SEGMENTS` | data and element segments: active (target, offset) or passive, bytes / function indices |
 | 11 | `START` | start function index, if any |
-| 12 | `TRAPMAP` | code offset ranges → wasm function index + wasm byte offset (for `Trap.frames`) |
+| 12 | `TRAPMAP` | code offset ranges → wasm function index + wasm byte offset (for `Trap.frames`); with the guard flag also the fault map, `{fault_offset, resume_offset}` per memory instruction ([S0006](specs/S0006-guard-pages.md), "Artifact"). Neither is written to a file yet |
 | 13 | `RELOCS` | empty in version 1 (code is position-independent); reserved for copy-and-patch |
 | 14 | `WASM` | optional: the original wasm bytes. Its presence makes a **fat** file (below) |
 | 0xFFFF | `CHECKSUM` | sha256 of everything before it |
@@ -141,7 +142,7 @@ the phase-3 meaning of each word and the register roles are in [S0003](specs/S00
 
 | index | name | direction | meaning |
 |---|---|---|---|
-| 0 | `SAVED_SP` | internal | zero in phase 3 (traps return through frames); kept for the phase-5 fault handler |
+| 0 | `SAVED_SP` | internal | zero (traps return through frames, and the guard-page fault handler resumes at a stub, S0006, so neither uses it); kept reserved |
 | 1 | `TRAP_CODE` | code → host | written by the trampoline when it returns a non-zero status |
 | 2 | `INTERRUPT` | host → code | non-zero: the code returns `INTERRUPT` at its next poll (any thread may set it) |
 | 3 | `FUEL` | both | remaining fuel (signed), when compiled with fuel |
@@ -151,14 +152,18 @@ the phase-3 meaning of each word and the register roles are in [S0003](specs/S00
 | 7 | `HOST_ERROR` | host → code | the status of the current host call: the bridge presets 13, the host function writes its status last (D34) |
 | 8 | `HOST_BRIDGE` | host → code | address of the host-call bridge for the host's calling convention |
 | 9 | `TAIL_SWITCH` | host → code | address of the cross-context tail-call trampoline (below; D30) |
-| 10–15 | reserved | | zero |
-| 16 … | per memory *i*: `base`, `size_bytes` (2 words) | host ↔ code | imported memories first; the base never moves (4 GiB reserved, committed on grow); code that keeps a memory in registers (x86-64: memory 0 in r13/r14) reloads them after every host call, any other memory is read here at each access |
+| 10 | `EXCEPTION` | host → code | address of the store's pending-exception word: the exnref of the exception in flight, valid only while status 14 propagates (S0012) |
+| 11 | `EXN_REFILL` | host → code | the exception arena's refill service (a host function, signature below; S0012) |
+| 12, 13 | `ARENA_CURSOR`, `ARENA_LIMIT` | host → code | addresses of the store's arena cursor (next free byte) and limit (end of the current chunk); code advances the cursor (S0012) |
+| 14–15 | reserved | | zero |
+| 16 … | per memory *i*: `base`, `size_bytes` (2 words) | host ↔ code | imported memories first; an i32 memory's base never moves (4 GiB + 32 MiB reserved, committed on grow; S0006); an i64 memory's base and `size_bytes` may both change during any host call or libcall (a `memory.grow` that moves it; D50, S0009: an amendment of v1 without a bump), so code keeps neither across a call: code that keeps a memory in registers (x86-64: memory 0 in r13/r14; aarch64: x26/x25) reloads them after every host call, any other memory is read here at each access |
 | … | per table *i*: `base`, `size` (2 words) | host ↔ code | `base`: the element words (one per element), `size`: elements; `table.grow` may move the elements, so code reads both words at each use and never keeps them across a host call. A `funcref` element (and value) is 0 (null) or the address of a function record (below); an `externref` element is a host handle (0 = null) |
 | … | per global *i*: 1 word (2 for v128) | both | imported globals: a pointer to the owner's word instead |
 | … | per function import *i*: 1 word | host → code | address of a host function (signature below) |
-| … | per libcall *j*: 1 word | host → code | a runtime service, same signature as an import, in a fixed order, all six words in every context: 0 `memory.grow`, 1 `table.grow`, 2 `table.init`, 3 `elem.drop`, 4 `memory.init`, 5 `data.drop`; never computation (D25). The operands are in the slots, the instruction's immediates (table, segment) after them; the memory index of `memory.grow` and `memory.init` only when the module has more than one memory |
+| … | per libcall *j*: 1 word | host → code | a runtime service, same signature as an import, in a fixed order, all six words in every context: 0 `memory.grow`, 1 `table.grow`, 2 `table.init`, 3 `elem.drop`, 4 `memory.init`, 5 `data.drop`; never computation (D25). The operands are in the slots, the instruction's immediates (table, segment) after them; the memory index of `memory.grow` and `memory.init` only when the module has more than one memory. Operands and results have the address width of the memory or table they name (S0009, an amendment of v1 without a bump, Q4): for an i64 memory the delta, the old size and its failure −1 of `memory.grow` and the destination of `memory.init` are 64-bit values (−1 is `2⁶⁴−1`), for an i32 one they are i32 zero-extended as before; `table.grow` and `table.init` of an i64 table the same way (S0009 step 3) |
 | … | per signature *k*: 1 word | host → code | the canonical type id of a type the module's `call_indirect`s name (equal for equivalent types of every module of the process, never 0) |
 | … | per function record *r*: 3 words | host → code | `{code address, canonical type id, context address}` of every function import and of every function the module can take a reference to (`ref.func`, segments): a defined one; an import from another instance of the same store (its code and context: a direct call); a host function (the module's thunk, which calls the import's word through the bridge). `call_indirect` checks bounds, null and the type id, then calls `code` with r15 = `context` (and that context's memory words); `call` and `return_call` of an import go through the import's record the same way (D32) |
+| … | per tag *t*: 1 word | host → code | the tag's identity: non-zero, unique in the process, imported tags first; an imported tag has its exporter's value, so a `catch` compares identities, never indices (S0012) |
 
 Offsets of the variable part follow from the counts in the artifact, in exactly this order.
 
@@ -170,6 +175,21 @@ exception). Its C return value is ignored (D34). Compiled code calls it through 
 (`ctx[HOST_BRIDGE]`), which saves the pool registers the host convention lets a callee clobber,
 presets `ctx[HOST_ERROR]` to 13, returns the word as the call's status and puts back the word's
 previous value (an enclosing host call's preset): a host function that does not finish fails the call.
+
+**Exceptions** (S0012, D52; an amendment of version 1 without a bump, as D34). An exception travels
+as status `14` returned through frames, as a trap does; inside a `try_table` a call site's non-zero
+status goes to the try_table's landing pad, which dispatches only 14 and passes every other status
+on. An **exception object** is 8-byte words `{tag identity, payload words…}`, the payload in slot
+form (a v128 two words, low half first); an `exnref` is its address, null 0. Objects live in the
+store's **arena**: chunks that never move, kept until the store is dropped. `throw` bumps the
+cursor (word 12's target) by the object's size in code, checks it against the limit (word 13's
+target), writes the object, stores its address in the pending word (word 10's target) and returns
+14. Only when the chunk is full does it call `EXN_REFILL` through the bridge with `slots[0]` = the
+words it needs; the service makes a new chunk of at least that size, points the cursor and limit
+at it and returns 0, and the code allocates again. The first chunk comes with the store. The three
+targets are store words, not context words, because every context of a store allocates from the
+same arena. At an entry, status 14 is the host's `Trap(UNCAUGHT_EXCEPTION)` with the tag and the
+values; a host function never returns 14 (a re-raised `UNCAUGHT_EXCEPTION` trap is status 13).
 
 **Tail calls** (D30). A `return_call*` puts its arguments at its own frame base, drops its native
 frame and jumps, so both stacks stay constant. When the callee's function record names another
@@ -204,7 +224,7 @@ the same 64-bit little-endian words for every architecture.
 | 3 | `INTEGER_DIVISION_BY_ZERO` | 11 | `OUT_OF_FUEL` |
 | 4 | `INTEGER_OVERFLOW` | 12 | `INTERRUPT` |
 | 5 | `STACK_OVERFLOW` | 13 | `HOST_ERROR` (waboros) |
-| 6 | `BAD_CONVERSION_TO_INTEGER` | 14 | `UNCAUGHT_EXCEPTION` |
+| 6 | `BAD_CONVERSION_TO_INTEGER` | 14 | `UNCAUGHT_EXCEPTION` (inside code: an exception in flight) |
 | 7 | `INDIRECT_CALL_TO_NULL` | 15 | `HEAP_MISALIGNED` |
 
 **Versioning rules**

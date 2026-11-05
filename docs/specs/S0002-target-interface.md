@@ -6,7 +6,7 @@ status: implemented
 superseded_by:
 related: [D5, D6, D10, D16, D17, D18, D23, D24, S0001, S0003]
 owner: maintainer
-updated: 2026-11-02
+updated: 2026-11-05
 ---
 
 # S0002 Target interface
@@ -34,10 +34,12 @@ class TrapCode(IntEnum):    # numbers and names of ARTIFACT.md part 3 (Wasmtime'
     UNREACHABLE = 1; MEMORY_OUT_OF_BOUNDS = 2; INTEGER_DIVISION_BY_ZERO = 3; INTEGER_OVERFLOW = 4
     STACK_OVERFLOW = 5; BAD_CONVERSION_TO_INTEGER = 6; INDIRECT_CALL_TO_NULL = 7
     BAD_SIGNATURE = 8; TABLE_OUT_OF_BOUNDS = 9; NULL_REFERENCE = 10; INTERRUPT = 12
+    UNCAUGHT_EXCEPTION = 14
 
 class Trap(Exception):      # the only trap type of the package; targets raise nothing else for traps
     def __init__(self, code: TrapCode, message: str = "") -> None: ...
     code: TrapCode
+    exn: tuple[object, tuple[object, ...]] | None   # UNCAUGHT_EXCEPTION only: (tag, payload)
 
 class Unsupported(Exception):       # a valid module this target cannot compile (yet)
     def __init__(self, target: str, feature: str) -> None: ...
@@ -52,7 +54,7 @@ HostFunc: TypeAlias = Callable[[Sequence[Raw]], Sequence[Raw]]   # wrapped by th
 
 @dataclass(frozen=True)
 class Extern:               # a resolved import, already type-checked by the runtime
-    kind: Literal["func", "memory", "table", "global"]
+    kind: Literal["func", "memory", "table", "global", "tag"]
     owner: str | None       # target name of the exporting instance; None for host objects
     value: object           # HostFunc | target-specific handle (opaque to other targets)
 
@@ -120,9 +122,13 @@ table/segment initialisation) are called through the host bridge. A module witho
 verdict (`validated = False`) is `Unsupported` on a JIT. `auto` selects `jit-<arch>` only when its
 expected failures equal `pyc`'s in the claimed groups (until then a readiness guard keeps it off). A target never special-cases another.
 
-**Threads and depth.** One thread per store: `StoreState` records the owner on first entry and
-raises `RuntimeError` on entry from another thread; nesting (wasm → host → wasm) on the owner thread
-is allowed. Depth is bounded by each target (D10): `pyc` as ARCHITECTURE.md describes; JIT S0003.
+**Threads and depth.** One thread per store: `StoreState` records the owner on first entry (the
+first claim is atomic: of two threads entering a fresh store, one wins and the other gets
+`RuntimeError`) and raises `RuntimeError` on entry from another thread, before it changes any of the
+store's state (counters read before the check are written back only by the owner thread); nesting (wasm → host → wasm) on the owner thread is allowed. JIT
+`Memory.grow`, `Table.grow` and instantiation also refuse a thread other than the owner; on a store
+with no owner yet they hold a claim only while they run, so a store built on one thread can run on
+another (S0009 step 2b). Depth is bounded by each target (D10): `pyc` as ARCHITECTURE.md describes; JIT S0003.
 
 **Spec runner.** `tests/spec/pyc_engine.py` and a new `tests/spec/jit_engine.py` become thin S0001
 adapters over `select`/`compile`/`instantiate`/`call`: signed ↔ `Raw` conversion, `Trap` →
@@ -255,3 +261,23 @@ weights itself until then.
 * 2026-11-01 (phase 4, S0004): a second JIT target, `jit-aarch64`; the JIT glue moved to `common/target.py` (`JitTarget`: `arch`, `machines`, `probe_code`, `backend`, `trampolines`). Readiness guard restored: a target with `complete = False` is never chosen by `auto`, which keeps `pyc` with the third D31 message; an explicit engine still runs it. `complete` is read with a default of True (`getattr`: `PycTarget` does not define it, so it stays out of the `Target` Protocol).
 * 2026-11-02 (S0005, 5c1): the backend interface gained `simd(f, op, dst, args, imm)` (D39 amendment, D41); `supported` also lists the `0xFD000 + sub` codes a backend compiles. `abi.assemble()` of each architecture returns bytes and `instance.load_trampolines` seals them, so the compiler side imports nothing of the host side.
 * 2026-11-02 (S0005, after 5e2): the backend interface gained `move_v128(dst, src)` (second D39 amendment): the core moves v128 pairs whole (locals, constants, `select`).
+* 2026-11-02 (S0007 step 3): a fourth operand kind, `AddK` (a pinned i32 plus a constant mod 2³²), accepted only by `move` and as the `load`/`store` address (D39 amendment A).
+* 2026-11-04 (S0009 step 2a): required keyword-only `a64` on the eleven memory and table methods and
+  `lo` (the declared minimum in bytes) on `load`, `store` and `simd` (D39 amendment B).
+* 2026-11-04 (S0009 step 2b): the first claim of the owner is atomic (`StoreState.claim`, under a
+  lock); the JIT restores the counters only on the owner thread (a refused entry used to write back
+  counters it read before the check, LESSONS 78); JIT `Memory.grow`, `Table.grow` and instantiation
+  check it too, with a claim that an entry alone makes permanent (`release`). `pyc` behaviour is
+  unchanged apart from the atomic first claim.
+* 2026-11-05 (S0012 step 1): `Extern.kind` gains `"tag"`. Until the targets own tag identity
+  (S0012 steps 2-3) `link.resolve` builds the value itself, `(exporting instance, tag index)`, checks
+  the tag type as a function import's, and never calls `TargetInstance.export` for a tag; the targets
+  ignore a tag import when instantiating. A body with `throw`, `throw_ref` or `try_table` is
+  `Unsupported("exceptions")` on every target (`supports()`).
+* 2026-11-05 (S0012 steps 2-5): supersedes the S0012 step 1 entry above. `TrapCode` gains
+  `UNCAUGHT_EXCEPTION = 14` and `Trap` gains `exn: tuple[tag, tuple[Raw | RefVal, ...]]`, set only
+  for that code, with the payload as `call` returns values on the target. A body with `throw`,
+  `throw_ref` or `try_table` is no longer `Unsupported("exceptions")`: all three targets compile it.
+  A tag `Extern`'s `value` is `(exporting instance, tag index)` from `link.resolve`, each target
+  resolves it to its own tag; `TargetInstance.export` of a tag returns the target's tag; a tag of
+  another target is a `LinkError`.

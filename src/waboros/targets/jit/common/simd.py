@@ -162,10 +162,10 @@ def select(fn: "core._Func") -> None:
 
 def global_get(fn: "core._Func", op: int, word: int, indirect: bool) -> None:
     if op == 0x23:
-        fn.b.simd(fn.f, op, Slot(_top(fn)), (), (word, indirect))
+        fn.b.simd(fn.f, op, Slot(_top(fn)), (), (word, indirect), a64=False, lo=0)
         _push2(fn)
     else:
-        fn.b.simd(fn.f, op, None, (_pair(fn),), (word, indirect))
+        fn.b.simd(fn.f, op, None, (_pair(fn),), (word, indirect), a64=False, lo=0)
 
 
 def op(fn: "core._Func", ins: Sequence[Any]) -> None:
@@ -179,8 +179,10 @@ def op(fn: "core._Func", ins: Sequence[Any]) -> None:
     args.reverse()
     h = len(fn.st)
     imm: tuple[int, ...] = ()
+    a64, lo = False, 0
     if o.imm in (fs.MEM, fs.MEMLANE):
         imm = (ins[1], fn.m.layout.memory(ins[3]), *ins[4:])
+        a64, lo = fn.a64(ins[3])
     elif o.imm == fs.LANE:
         imm = (ins[1],)
     elif o.imm == fs.SHUFFLE:
@@ -191,7 +193,7 @@ def op(fn: "core._Func", ins: Sequence[Any]) -> None:
     elif o.res:
         fn.need_tos()
         dst = fn.TOS
-    fn.b.simd(fn.f, ins[0], dst, tuple(args), imm)
+    fn.b.simd(fn.f, ins[0], dst, tuple(args), imm, a64=a64, lo=lo)
     fn.maxh = max(fn.maxh, h + SCRATCH)
     if o.res == V128:
         _push2(fn)

@@ -1,6 +1,7 @@
 # pyright: reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false
 """S0002 step 1: `pyc` behind the Target interface (select, link, instantiate, call)."""
 
+import sys
 import threading
 from collections.abc import Mapping, Sequence
 
@@ -97,6 +98,58 @@ def test_keyboard_interrupt_comes_out_unchanged() -> None:
         inst.call(_func(mod, inst, "run"), [])
 
 
+@pytest.mark.parametrize("raises", [False, True])  # the host returns, or raises ValueError
+@pytest.mark.parametrize("nested", [False, True])
+def test_async_exception_at_every_delivery_point_restores_the_depth(
+    nested: bool, raises: bool
+) -> None:
+    """A signal handler runs at a function's entry or after a C call. Raise KeyboardInterrupt at
+    each Python function entry and each builtin's `c_return` of one export call (wasm -> host
+    [-> wasm -> host]), in turn (the profiler does not see type calls or backward jumps). Every
+    call gives the right result or KeyboardInterrupt, and the store's depth is back to 0 (D34;
+    before: one at the entry of `store.leave()` in `_run`'s finally left the depth raised)."""
+
+    def h0(_: Sequence[Raw]) -> list[Raw]:
+        r = inst.call(b, []) if nested else [7]
+        if raises:
+            raise ValueError("h")
+        return r
+
+    store = StoreState()
+    mod, inst = _make(TWO_HOSTS, {"env": {"h0": h0, "h1": lambda _: [7]}}, store)
+    a, b = _func(mod, inst, "a"), _func(mod, inst, "b")
+    at = [0, 0, 0]  # the point to raise at, points passed, raised
+
+    def prof(frame: object, ev: str, arg: object) -> None:
+        if ev in ("call", "c_return"):
+            at[1] += 1
+            if at[1] == at[0]:
+                sys.setprofile(None)
+                at[2] = 1
+                raise KeyboardInterrupt
+
+    bad = list[tuple[int, str, int]]()
+    while True:
+        at[:] = [at[0] + 1, 0, 0]
+        sys.setprofile(prof)
+        try:
+            k = "ok" if inst.call(a, []) == [7] and not raises else "wrong result"
+        except KeyboardInterrupt:
+            k = "KeyboardInterrupt"
+        except ValueError as e:
+            k = "ok" if raises and str(e) == "h" else repr(e)
+        except BaseException as e:
+            k = repr(e)
+        finally:
+            sys.setprofile(None)
+        if not at[2]:
+            break
+        if k not in ("ok", "KeyboardInterrupt") or store.depth:
+            bad.append((at[0], k, store.depth))
+            store.depth = 0
+    assert at[0] > 5 and not bad, bad
+
+
 def test_host_result_is_raw() -> None:
     mod, inst = _make(CALL_HOST, {"env": {"h": lambda _: [0xFFFFFFFF]}})
     assert inst.call(_func(mod, inst, "run"), []) == [0xFFFFFFFF]
@@ -130,6 +183,7 @@ def test_link_errors() -> None:
         link.resolve(parse(immutable), prov)
 
 
+@pytest.mark.skipif(sys.platform == "emscripten", reason="Pyodide cannot start threads")
 def test_one_thread_per_store() -> None:
     store = StoreState()
     store.enter()

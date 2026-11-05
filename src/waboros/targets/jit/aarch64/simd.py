@@ -58,7 +58,7 @@ def _forms() -> None:
                            ("cmhi", 1, 6, ALL), ("cmge", 0, 7, ALL), ("cmhs", 1, 7, ALL),
                            ("cmeq", 1, 0x11, ALL), ("mul", 0, 0x13, "8h 4s"),
                            ("sqrdmulh", 1, 0x16, "8h"), ("sshl", 0, 8, ALL), ("ushl", 1, 8, ALL),
-                           ("addp", 0, 0x17, "4s"), ("and", 0, 3, "16b")):  # fmt: skip
+                           ("addp", 0, 0x17, "8h 4s"), ("and", 0, 3, "16b")):  # fmt: skip
         same(mn, u, opc, ts)
     for t in ALL.split():
         misc("abs", 0, 0xB, 1, SZ[t], t, t)
@@ -109,7 +109,8 @@ def _forms() -> None:
         for mn, u, a1, opc in (("fadd", 0, 0, 0x1A), ("fsub", 0, 1, 0x1A), ("fmul", 1, 0, 0x1B),
                                ("fdiv", 1, 0, 0x1F), ("fmax", 0, 0, 0x1E), ("fmin", 0, 1, 0x1E),
                                ("fcmeq", 0, 0, 0x1C), ("fcmge", 1, 0, 0x1C),
-                               ("fcmgt", 1, 1, 0x1C)):  # fmt: skip
+                               ("fcmgt", 1, 1, 0x1C), ("fmla", 0, 0, 0x19),
+                               ("fmls", 0, 1, 0x19)):  # fmt: skip
             word = 0x4E200400 | u << 29 | a1 << 23 | sz << 22 | opc << 11
             FORMS[f"{mn}.{t}"] = (word, f"{mn} v{{d}}.{t}, v{{n}}.{t}, v{{m}}.{t}")
         for mn, u, a1, opc in (("fabs", 0, 1, 0xF), ("fneg", 1, 1, 0xF), ("fsqrt", 1, 1, 0x1F),
@@ -183,6 +184,26 @@ PROG.update({
     "f32x4.demote_f64x2_zero": "fcvtn.2s 0 0", "f64x2.promote_low_f32x4": "fcvtl.2d 0 0",
     "i8x16.swizzle": "tbl1.16b 0 0 1",  # an index >= 16 gives 0, as in wasm
 })  # fmt: skip
+# relaxed SIMD (S0008, D49): the deterministic profile; 10 operators take the program of their
+# equivalent, laneselect the bitselect path; madd/nmadd fused as Wasmtime on aarch64 (v2 = c is
+# the accumulator: fmla c + a*b, fmls c - a*b); the dot products: products of sign-extended bytes
+# (exact in 16 bits), added pairwise with wrap-around
+for _r, _e in (("i8x16.relaxed_swizzle", "i8x16.swizzle"),
+               ("i32x4.relaxed_trunc_f32x4_s", "i32x4.trunc_sat_f32x4_s"),
+               ("i32x4.relaxed_trunc_f32x4_u", "i32x4.trunc_sat_f32x4_u"),
+               ("i32x4.relaxed_trunc_f64x2_s_zero", "i32x4.trunc_sat_f64x2_s_zero"),
+               ("i32x4.relaxed_trunc_f64x2_u_zero", "i32x4.trunc_sat_f64x2_u_zero"),
+               *((f"{_sh}.relaxed_{_o}", f"{_sh}.{_o}") for _sh in ("f32x4", "f64x2")
+                 for _o in ("min", "max")),
+               ("i16x8.relaxed_q15mulr_s", "i16x8.q15mulr_sat_s")):  # fmt: skip
+    PROG[_r] = PROG[_e]
+PROG.update({
+    "f32x4.relaxed_madd": "fmla.4s 2 0 1", "f32x4.relaxed_nmadd": "fmls.4s 2 0 1",
+    "f64x2.relaxed_madd": "fmla.2d 2 0 1", "f64x2.relaxed_nmadd": "fmls.2d 2 0 1",
+    "i16x8.relaxed_dot_i8x16_i7x16_s": "smull.8h 2 0 1; smull2.8h 3 0 1; addp.8h 0 2 3",
+    "i32x4.relaxed_dot_i8x16_i7x16_add_s": "smull.8h 3 0 1; smull2.8h 4 0 1; addp.8h 0 3 4;"
+                                           " saddlp.4s 0 0; add.4s 0 0 2",
+})  # fmt: skip
 SHUFFLE = (("tbl2.16b", 3, 0, 2),)  # v0, v1 = a, b (a consecutive table); v2 = the lanes
 INS_D1 = 0x4E181C00  # ins (mov) vd.d[1], xn
 W8 = 0x8040201008040201  # bit i of byte i
@@ -240,6 +261,11 @@ ALL_TRUEC = {size: _parse(p) for size, p in ALL_TRUE.items()}
 LOADC = {k: _parse(p) for k, p in LOADS.items()}
 OTHER = {"i64x2.mul", "i8x16.shuffle", *(f"v128.{k}" for k in LOADS)}
 OTHER.update(f"{sh}.{o}" for sh in ARR for o in ("bitmask", "all_true"))
+# S0008: relaxed operators lowered by the inline path of their equivalent (opcode -> its kind)
+INLINE = {
+    fs.BASE + s: "bitselect" for s, o in fs.OPS.items() if o.name.endswith("relaxed_laneselect")
+}
+OTHER.update(fs.OPS[op - fs.BASE].name for op in INLINE)
 SUPPORTED = (
     MOVES | set(CODE) | set(SHIFTC) | {fs.BASE + s for s, o in fs.OPS.items() if o.name in OTHER}
 )
@@ -328,7 +354,7 @@ def move(a: Asm, dst: Slot, src: Slot | Imm) -> None:
 
 def emit(
     b: "Backend", f: "Frame", op: int, dst: Dst | None, args: tuple[Operand, ...],
-    imm: tuple[int, ...],
+    imm: tuple[int, ...], a64: bool, lo: int,
 ) -> None:  # fmt: skip
     a = b.a
     if op in (0x23, 0x24):  # (word, indirect): an imported global is a pointer to the owner's
@@ -344,6 +370,7 @@ def emit(
             ldst_q(a, False, 0, g, off)
         return
     kind, size, signed = shape(op)
+    kind = INLINE.get(op, kind)
     if op in CODE:
         for i, x in enumerate(args):
             ldst_q(a, True, i, FRAME, _slot(x))
@@ -368,7 +395,8 @@ def emit(
         ldst_q(a, False, run(a, SHUFFLE), FRAME, _slot(dst))
         return
     if kind in LOADC:  # 8 bytes into d0 (the upper half zeroed), then the extend
-        base, index, off = b._bounds(f, args[0], imm[0], 8, imm[1])
+        base, index, off = b._bounds(f, args[0], imm[0], 8, imm[1], a64, lo)
+        b._fault_point()  # S0006: each access below is marked just before its instruction
         ld_d(a, 0, base, off, index)
         ldst_q(a, False, run(a, LOADC[kind]), FRAME, _slot(dst))
         return
@@ -400,23 +428,27 @@ def emit(
         return
     acc: tuple[int, int | None, int] = (0, None, 0)  # the memory access, if any
     if kind in ("load", "store", "load_splat", "load_zero", "load_lane", "store_lane"):
-        acc = b._bounds(f, args[0], imm[0], size, imm[1])  # the address read first (x9-x12)
+        acc = b._bounds(f, args[0], imm[0], size, imm[1], a64, lo)  # the address read first
     base, index, off = acc
     if kind == "load":
+        b._fault_point()
         ldst_q(a, True, 0, base, off, index)
         ldst_q(a, False, 0, FRAME, _slot(dst))
     elif kind == "store":
         ldst_q(a, True, 0, FRAME, _slot(args[1]))
+        b._fault_point()
         ldst_q(a, False, 0, base, off, index)
     elif kind in ("splat", "load_splat"):
         if kind == "splat":
             r = b._r(args[0], 10, size == 8)
         else:
             r = 10
+            b._fault_point()
             _mem(a, True, r, acc, size)
         dup(a, 0, r, size)
         ldst_q(a, False, 0, FRAME, _slot(dst))
     elif kind == "load_zero":  # built in d0 (the upper half zeroed), one 16-byte store
+        b._fault_point()
         _mem(a, True, 10, acc, size)
         a.fmov_to(0, 10)
         ldst_q(a, False, 0, FRAME, _slot(dst))
@@ -428,11 +460,13 @@ def emit(
         _copy(a, _slot(args[0]), _slot(dst))
         _lane(a, False, r, _slot(dst, imm[0] * size), size)
     elif kind == "load_lane":  # dst overlaps the vector operand (one slot up): copied whole
+        b._fault_point()
         _mem(a, True, 10, acc, size)
         _copy(a, _slot(args[1]), _slot(dst))
         _lane(a, False, 10, _slot(dst, imm[2] * size), size)
     elif kind == "store_lane":
         _lane(a, True, 13, _slot(args[1], imm[2] * size), size)
+        b._fault_point()
         _mem(a, False, 13, acc, size)
     elif kind in VOP or kind == "bitselect":
         for i, x in enumerate(args):

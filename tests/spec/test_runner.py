@@ -132,6 +132,8 @@ class FakeEngine:
     def call(self, instance: Instance, name: str, args: Sequence[Value]) -> list[Value]:
         if name == "trap":
             raise Trap(TrapCode.INTEGER_OVERFLOW)
+        if name == "throw":
+            raise Trap(TrapCode.UNCAUGHT_EXCEPTION)
         return self.results[name]
 
     def get_global(self, instance: Instance, name: str) -> Value:
@@ -215,13 +217,23 @@ def test_traps_and_links(tmp_path: Path) -> None:
         {"type": "assert_unlinkable", "line": 5, "filename": "u.wasm", "module_type": "binary"},
         {"type": "assert_uninstantiable", "line": 6, "filename": "t.wasm", "text": "unreachable"},
         {"type": "assert_exception", "line": 7, "action": act},
+        {"type": "assert_exception", "line": 8, "action": {**act, "field": "throw"}},
     ]
     files = {"m.wasm": b"ok", "u.wasm": b"unlinkable", "t.wasm": b"trap"}
     res = run_commands(tmp_path, cmds, files)
-    assert [r.status for r in res] == ["pass", "pass", "fail", "fail", "pass", "pass", "fail"]
+    assert [r.status for r in res] == [
+        "pass",
+        "pass",
+        "fail",
+        "fail",
+        "pass",
+        "pass",
+        "fail",
+        "pass",
+    ]
     assert res[2].reason == "trap INTEGER_OVERFLOW, expected UNREACHABLE"
     assert res[3].reason == "unknown trap text: no such text"
-    assert res[6].reason == "unsupported command"
+    assert res[6].reason == "trap INTEGER_OVERFLOW, expected UNCAUGHT_EXCEPTION"
 
 
 def test_xfail_parsing(tmp_path: Path) -> None:
@@ -333,7 +345,9 @@ def test_claims(tmp_path: Path) -> None:
     assert claims.claimed("wasmtime", "gc") and claims.claimed("wasmtime", "simd")
     assert claims.claimed("pyc", "simd") and claims.claimed("jit-x86_64", "simd")
     assert claims.claimed("jit-aarch64", "simd")  # since S0005 step 5e2
-    assert not claims.claimed("pyc", "memory64") and not claims.claimed("nope", "gc")
+    assert claims.claimed("pyc", "memory64")  # since S0009 step 1
+    assert claims.claimed("jit-x86_64", "memory64")  # both JITs since S0009 step 3
+    assert claims.claimed("jit-aarch64", "memory64") and not claims.claimed("nope", "gc")
 
 
 def _xfail_keys(engine: str, both: Sequence[str]) -> set[str]:

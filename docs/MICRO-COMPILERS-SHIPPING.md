@@ -2,7 +2,7 @@
 title: Shipping pre-compiled micro-compilers - bootstrap becomes a fallback and a check
 kind: reference
 status: draft
-updated: 2026-11-02
+updated: 2026-11-03
 ---
 
 # Shipping pre-compiled micro-compilers: bootstrap as a fallback, not a step
@@ -16,7 +16,7 @@ implementation**: it belongs to the micro-compiler spec, after phase 5 fixes the
 
 A micro-compiler compiled to native code is an **ordinary JIT artifact** ([ARTIFACT.md](ARTIFACT.md)).
 By D23 an artifact is tied to an architecture and an ISA level, **not to an operating system**: the
-same file runs on Linux, macOS, Windows, the BSDs and Android, because our own loader maps it and
+same file runs on Linux, macOS, Windows and Android (the BSDs are not a target now), because our own loader maps it and
 both entry trampolines are inside. So the wheel can carry, as plain data files, one pre-compiled
 micro-compiler per architecture next to its `.wasm`:
 
@@ -84,6 +84,59 @@ shipped `.wasm` byte for byte, and the package works without it.** This deserves
 when micro-compilers land (amending the "no native dependency" wording of BRIEF.md, not the rule:
 the package still imports only the standard library and still runs where the files are absent).
 
+## The toolchain can be wasm too (checked by the maintainer)
+
+A micro-compiler module is built for `wasm32-unknown-unknown` (freestanding: `-nostdlib`, its own
+allocator, no WASI imports), as the corpus (`poc/bench/corpus/`) and meld-core already are. The
+compiler that builds it can itself be a wasm program:
+
+`natify-sh/py-wasmhost`, `examples/wasmclang.py`, runs **clang and lld compiled to WebAssembly**
+(the wasm-clang project of Ben Smith, Apache-2.0: clang 31 MB and lld 19 MB of wasm, LLVM 8.0.1,
+WASI `wasi_unstable`, with `memfs.wasm` as an in-memory file system) and builds, then runs:
+
+1. a **freestanding** C module (no libc, no WASI; `--no-entry --allow-undefined --export=...`),
+   which is exactly the shape of a micro-compiler;
+2. a WASI C program against the sysroot's libc;
+3. a C++ program with libc++.
+
+Recorded runs (py-wasmhost README and BACKLOG): Wasmtime, wasm3 and Node; on an iPhone in Pythonista
+through `jscontext` (22 s, the C++ link 16 s of it); it aborts on Bun 1.4.2 (a Bun bug). Not in CI.
+
+So the whole chain is wasm, from source to native compiler:
+
+```
+clang.wasm + wasm-ld.wasm   (one file each, the same bytes on every host)
+  -> x64.wasm / arm64.wasm / riscv64.wasm   (wasm32-unknown-unknown, no WASI)
+     -> the micro-compiler compiles itself -> a native artifact
+        -> compiles everything else
+```
+
+What it gives:
+
+* **Requirement 4 of MICRO-COMPILERS.md in its strongest form**: the toolchain is a file with a
+  fixed sha256 and gives the same bytes on Linux, macOS, Windows, Pyodide or a phone; the host's
+  system compiler and libc stop mattering.
+* **No native binary to trust** between the source and the native compiler (the idea of Diverse
+  Double-Compiling and bootstrappable builds, with wasm as the base).
+* Eventually the toolchain runs on waboros itself, once WASI is bound (fusedwasi supports
+  `wasi_unstable` too, `fusedwasi.p1.wasi_p1_unstable`; its in-memory file system,
+  `State(filesystem=...)`, can take memfs's place).
+
+Points to settle:
+
+* **The LLVM version.** wasm-clang is LLVM 8 (2019). Its `wasm32` output is close to MVP, which
+  suits requirement 2 (only features every waboros target runs), but its `-Oz` is older than the
+  clang 18 that builds the corpus, so modules may be larger. A newer clang built to wasm (with LLD)
+  would have to be produced and pinned; none was found on PyPI (`yowasp-clang`, `yowasp-llvm`: 404 on
+  2026-11-02).
+* **Determinism of clang itself**: the same flags, no absolute paths (`-ffile-prefix-map`, no debug
+  info or a fixed `-fdebug-prefix-map`), `SOURCE_DATE_EPOCH`. A CI check: the wasm clang and a
+  native clang of the **same LLVM version** build the same micro-compiler sources to byte-identical
+  `.wasm`.
+* **Speed**: tens of MB of wasm to compile first. On the JIT this is seconds to a minute (Wasmtime
+  and `jscontext` numbers above); on `pyc` it is impractical. Running the toolchain is a
+  release/CI step or a one-off, not something a user's first import does.
+
 ## Size
 
 Roughly the core plus one backend per file (MICRO-COMPILERS.md estimates ~3-3.5k lines of
@@ -91,6 +144,16 @@ Zig/C/Rust per micro-compiler): a few hundred KB of `.wasm` and of native code p
 measured. Three architectures add in the order of 1-2 MB uncompressed to the wheel. If that matters,
 the pre-compiled files can move to an optional extra (`waboros[compilers]`) while the `.wasm` stays
 in the main wheel.
+
+## Bounds-check mode of the shipped files
+
+A micro-compiler takes the bounds mode (explicit checks or guard pages, S0006) as an input, like the
+ISA level; which one an artifact uses is the host's choice, because guard code relies on the host's
+reservation and fault handler (D29, D44). The **shipped pre-compiled micro-compilers use explicit
+checks**: they then run on any host, including other-language hosts (D36) and hosts that may not
+install a signal handler, with no contract beyond the loader. A host that supports guard pages may
+compile a guard variant for itself. A new architecture's micro-compiler starts with explicit checks
+only (D29).
 
 ## Open questions for the spec
 

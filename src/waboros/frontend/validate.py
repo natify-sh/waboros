@@ -16,8 +16,11 @@ from waboros.frontend import simd
 from waboros.frontend.binary import decode
 
 I32, I64, F32, F64, FUNCREF, EXTERNREF = 0x7F, 0x7E, 0x7D, 0x7C, 0x70, 0x6F
+EXNREF, NOEXNREF = 0x69, 0x74  # (ref null exn), (ref null noexn); heap types -23 and -12
+EXN = (0, -23)  # (ref exn)
 UNKNOWN = 0  # the type of a value popped from a polymorphic stack
 MAX_PAGES, MAX_TABLE = 65536, 0xFFFFFFFF
+MAX_PAGES64, MAX_TABLE64 = 1 << 48, 0xFFFFFFFFFFFFFFFF  # i64 memories and tables (memory64)
 
 
 class Invalid(Exception):
@@ -119,7 +122,6 @@ def _numeric() -> None:
 
 
 _numeric()
-BULK3 = (I32, I32, I32)  # memory.copy / fill / init
 
 
 def _limits(lim: tuple[int, int | None], cap: int, what: str) -> None:
@@ -135,18 +137,22 @@ def _vt(t, ntypes: int):
     if t.__class__ is tuple:
         if t[1] >= ntypes:
             raise Invalid("unknown type")
-        if t[1] < -17:
+        if t[1] < -17 and t[1] != -23:
             raise _Unsupported("heap type")
     return t
 
 
 def _isref(t) -> bool:
-    return t.__class__ is tuple or t in (FUNCREF, EXTERNREF)
+    return t.__class__ is tuple or t in (FUNCREF, EXTERNREF, EXNREF, NOEXNREF)
+
+
+_NN = {FUNCREF: (1, -16), EXTERNREF: (1, -17), EXNREF: (1, -23), NOEXNREF: (1, -12)}
 
 
 def _nn(t):
-    """(nullable, heap type) of a reference type: funcref is (1, -16), externref (1, -17)."""
-    return (1, -16) if t == FUNCREF else (1, -17) if t == EXTERNREF else t
+    """(nullable, heap type) of a reference type: funcref is (1, -16), externref (1, -17), exnref
+    (1, -23), nullexnref (1, -12)."""
+    return _NN[t] if t in _NN else t
 
 
 def functype_key(types: list, i: int, stack: tuple = ()) -> tuple:
@@ -176,6 +182,7 @@ def _match(types: list, a, b) -> bool:
     return (
         ah == bh
         or (bh == -16 and ah >= 0)
+        or (bh == -23 and ah == -12)
         or (ah >= 0 and bh >= 0 and functype_key(types, ah) == functype_key(types, bh))
     )
 
@@ -188,9 +195,9 @@ def _ref(c, ht: int):
     """Reference type of a `ref.null` heap type (-16: func, -17: extern, else a type index)."""
     if ht >= len(c.types):
         raise Invalid("unknown type")
-    if ht < -17:
+    if ht < -17 and ht != -23:
         raise _Unsupported("heap type")
-    return FUNCREF if ht == -16 else EXTERNREF if ht == -17 else (1, ht)
+    return {-16: FUNCREF, -17: EXTERNREF, -23: EXNREF, -12: NOEXNREF}.get(ht, (1, ht))
 
 
 class _Ctx:
@@ -201,7 +208,10 @@ class _Ctx:
         imps = mod["imports"]
         self.ftidx = [i[3] for i in imps if i[0] == "func"] + mod["funcs"]
         self.funcs = [self.types[t] for t in self.ftidx]
+        self.tags = [i[3] for i in imps if i[0] == "tag"] + mod["tags"]  # type index of every tag
         self.ttypes = mod["ttypes"]
+        self.maddr = mod["maddr"]  # address type of every memory / table
+        self.taddr = mod["taddr"]
         self.nmems = sum(1 for i in imps if i[0] == "mem") + len(mod["mems"])
         self.gtypes = [i[3][0] for i in imps if i[0] == "global"] + [g[0] for g in mod["globals"]]
         self.gmut = [i[3][1] for i in imps if i[0] == "global"] + [g[1] for g in mod["globals"]]
@@ -278,15 +288,12 @@ def _validate(mod: dict) -> None:
             raise Invalid("unknown type")
     c = _Ctx(mod)
     nimpg = sum(1 for i in imps if i[0] == "global")
-    for im in imps:
-        if im[0] == "table":
-            _limits(im[3], MAX_TABLE, "table")
-        elif im[0] == "mem":
-            _limits(im[3], MAX_PAGES, "memory")
-    for lim in mod["tables"]:
-        _limits(lim, MAX_TABLE, "table")
-    for lim in mod["mems"]:
-        _limits(lim, MAX_PAGES, "memory")
+    tl = [im[3] for im in imps if im[0] == "table"] + mod["tables"]
+    ml = [im[3] for im in imps if im[0] == "mem"] + mod["mems"]
+    for lim, at in zip(tl, c.taddr, strict=True):
+        _limits(lim, MAX_TABLE if at == I32 else MAX_TABLE64, "table")
+    for lim, at in zip(ml, c.maddr, strict=True):
+        _limits(lim, MAX_PAGES if at == I32 else MAX_PAGES64, "memory")
     # function references allowed in function bodies: those named outside of them (spec: C.refs)
     for _, _, _, items in mod["elem_info"]:
         c.refs.update(e[1] for e in items if e[0] == "func")
@@ -308,13 +315,13 @@ def _validate(mod: dict) -> None:
                 raise Invalid("type mismatch")
         elif not _match(c.types, _const(c, init, nimpg), t):
             raise Invalid("type mismatch")
-    for ti in mod["tags"]:  # an exception tag: a function type without results
+    for ti in c.tags:  # an exception tag: a function type without results
         if ti >= nt:
             raise Invalid("unknown type")
         if types[ti][1]:
             raise Invalid("non-empty tag result type")
     seen = set()
-    counts = (len(c.funcs), len(c.ttypes), c.nmems, ng, len(mod["tags"]))
+    counts = (len(c.funcs), len(c.ttypes), c.nmems, ng, len(c.tags))
     for name, kind, idx in mod["exports"]:
         if name in seen:
             raise Invalid("duplicate export name")
@@ -332,7 +339,7 @@ def _validate(mod: dict) -> None:
                 raise Invalid("unknown table")
             if not _match(c.types, rt, c.ttypes[ti]):
                 raise Invalid("type mismatch")
-            if _const(c, off, ng) != I32:
+            if _const(c, off, ng) != c.taddr[ti]:
                 raise Invalid("type mismatch")
         for e in items:
             if not _match(c.types, _const(c, e, ng), rt):
@@ -341,7 +348,7 @@ def _validate(mod: dict) -> None:
         if mi is not None:
             if mi >= c.nmems:
                 raise Invalid("unknown memory")
-            if _const(c, off, ng) != I32:
+            if _const(c, off, ng) != c.maddr[mi]:
                 raise Invalid("type mismatch")
     nimpf = len(c.funcs) - len(mod["funcs"])
     for k, ((locs, _), insns) in enumerate(zip(mod["codes"], mod["insns"], strict=True)):
@@ -406,20 +413,23 @@ def _body(c: _Ctx, lt: list, nparams: int, results: list, insns: list[tuple]) ->
             raise Invalid("unknown table")
         return ttypes[t]
 
-    def need_mem(mi: int = 0) -> None:
+    def need_mem(mi: int = 0) -> int:  # the address type of memory `mi`
         if mi >= c.nmems:
             raise Invalid("unknown memory")
+        return c.maddr[mi]
 
     for at, ins in enumerate(insns):
         op = ins[0]
         sig = OPSIG.get(op)
         if sig is not None:
             if 0x28 <= op <= 0x3E:
-                need_mem(ins[3])
+                at = need_mem(ins[3])
                 if ins[2] > ALIGN[op]:
                     raise Invalid("alignment must not be larger than natural")
-                if ins[1] > 0xFFFFFFFF:
+                if ins[1] > 0xFFFFFFFF and at == I32:
                     raise Invalid("offset out of range")
+                if at != I32:  # the address is the last operand type
+                    sig = (sig[0][:-1] + (at,), sig[1])
             fr = ctl[-1]
             for t in sig[0]:
                 if len(vals) > fr[3]:
@@ -445,7 +455,7 @@ def _body(c: _Ctx, lt: list, nparams: int, results: list, insns: list[tuple]) ->
                 inits.append(ins[1])
             if op == 0x22:
                 vals.append(lt[ins[1]])
-        elif op in (0x02, 0x03, 0x04):
+        elif op in (0x02, 0x03, 0x04, 0x1F):
             if op == 0x04:
                 pop(I32)
             bt = ins[1]
@@ -455,7 +465,24 @@ def _body(c: _Ctx, lt: list, nparams: int, results: list, insns: list[tuple]) ->
                 bt = types[bt[1]]
             for t in bt[1]:
                 _vt(t, ntypes)
+            if op == 0x1F:  # each clause: what it passes must match its label (outside the block)
+                for kind, tag, lab in ins[2]:
+                    if tag is not None and tag >= len(c.tags):
+                        raise Invalid("unknown tag")
+                    ts = [*types[c.tags[tag]][0]] if tag is not None else []
+                    if kind & 1:
+                        ts.append(EXN)
+                    if not _rmatch(types, ts, label(lab)):
+                        raise Invalid("type mismatch")
             enter(op, bt[0], bt[1])
+        elif op == 0x08:
+            if ins[1] >= len(c.tags):
+                raise Invalid("unknown tag")
+            popn(types[c.tags[ins[1]]][0])
+            unreachable()
+        elif op == 0x0A:
+            pop(EXNREF)
+            unreachable()
         elif op == 0x05:
             f = exit_()
             if f[0] != 0x04:
@@ -502,7 +529,7 @@ def _body(c: _Ctx, lt: list, nparams: int, results: list, insns: list[tuple]) ->
                 raise Invalid("type mismatch")
             if ins[1] >= len(types):
                 raise Invalid("unknown type")
-            pop(I32)
+            pop(c.taddr[ins[2]])
             ps, rs = types[ins[1]]
             popn(ps)
             if op == 0x11:
@@ -561,19 +588,18 @@ def _body(c: _Ctx, lt: list, nparams: int, results: list, insns: list[tuple]) ->
                 pop(gtypes[ins[1]])
         elif op == 0x25:
             t = table(ins[1])
-            pop(I32)
+            pop(c.taddr[ins[1]])
             vals.append(t)
         elif op == 0x26:
             t = table(ins[1])
             pop(t)
-            pop(I32)
+            pop(c.taddr[ins[1]])
         elif op == 0x3F:
-            need_mem(ins[1])
-            vals.append(I32)
+            vals.append(need_mem(ins[1]))
         elif op == 0x40:
-            need_mem(ins[1])
-            pop(I32)
-            vals.append(I32)
+            at = need_mem(ins[1])
+            pop(at)
+            vals.append(at)
         elif op == 0xD0:
             vals.append(_ref(c, ins[1]))
         elif op == 0xD1:
@@ -611,38 +637,46 @@ def _body(c: _Ctx, lt: list, nparams: int, results: list, insns: list[tuple]) ->
                 raise Invalid("unknown elem segment")
             if not _match(types, c.etypes[ins[1]], table(ins[2])):
                 raise Invalid("type mismatch")
-            popn(list(BULK3))
+            at = c.taddr[ins[2]]
+            popn([at, I32, I32])
         elif op == 0xFC0D:
             if ins[1] >= len(c.etypes):
                 raise Invalid("unknown elem segment")
         elif op == 0xFC0E:
             if not _match(types, table(ins[2]), table(ins[1])):
                 raise Invalid("type mismatch")
-            popn(list(BULK3))
+            ad, as_ = c.taddr[ins[1]], c.taddr[ins[2]]
+            popn([ad, as_, I32 if I32 in (ad, as_) else I64])
         elif op == 0xFC0F:
             t = table(ins[1])
-            pop(I32)
+            at = c.taddr[ins[1]]
+            pop(at)
             pop(t)
-            vals.append(I32)
+            vals.append(at)
         elif op == 0xFC10:
             table(ins[1])
-            vals.append(I32)
+            vals.append(c.taddr[ins[1]])
         elif op == 0xFC11:
             t = table(ins[1])
-            pop(I32)
+            at = c.taddr[ins[1]]
+            pop(at)
             pop(t)
-            pop(I32)
+            pop(at)
         elif op in (0xFC08, 0xFC09):
             if ins[1] >= c.ndatas:
                 raise Invalid("unknown data segment")
             if op == 0xFC08:
-                need_mem(ins[2])
-                popn(list(BULK3))
-        elif op in (0xFC0A, 0xFC0B):
-            need_mem(ins[1])
-            if op == 0xFC0A:
-                need_mem(ins[2])
-            popn(list(BULK3))
+                popn([need_mem(ins[2]), I32, I32])
+        elif op == 0xFC0A:  # memory.copy: the length has the narrower address type
+            ad, as_ = need_mem(ins[1]), need_mem(ins[2])
+            popn([ad, as_, I32 if I32 in (ad, as_) else I64])
+        elif op == 0xFC0B:
+            at = need_mem(ins[1])
+            popn([at, I32, at])
+        elif 0xFC13 <= op <= 0xFC16:  # wide arithmetic: two i64 results (S0008)
+            for _ in range(4 if op < 0xFC15 else 2):
+                pop(I64)
+            vals.extend((I64, I64))
         elif op >= simd.BASE:
             simd.validate(ins, pop, vals.append, need_mem)
         else:

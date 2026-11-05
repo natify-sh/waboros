@@ -6,26 +6,27 @@ in place); operand-stack entry i lives in slot L + i when it is materialised. Re
 0..m on return. A wasm call puts the callee's frame at the first argument (frame overlap).
 
 The operand stack is lazy: an entry is a constant, a local, the value in the backend's `tos`
-register (at most one entry), a materialised slot, or a pending compare (only ever on top; it is
+register (at most one entry), a materialised slot, a pending compare (only ever on top; it is
 consumed whole by `br_if`/`if`/`select`/`eqz`, else turned into a value before anything else is
-emitted). Every instruction that can trap is emitted when it is reached, so `drop`, `select` and
+emitted), or an i32 pinned local plus a constant (`ADDK`, S0007 K: one instruction where it is
+consumed). Every instruction that can trap is emitted when it is reached, so `drop`, `select` and
 branches never discard a trap (LESSONS 28). At every control-flow edge the whole stack is in
-slots, and pinned locals never move, so merges need no reconciliation.
+slots, and pinned locals never move, so merges need no reconciliation; a function return instead
+moves its results straight into slots 0..m (S0007).
 
 Test-only switch: `WABOROS_JIT_NOPIN=all` or `=<function indices>` compiles those functions without
 pinned locals (bisecting a pinning bug; D25 rules out mixing targets per function).
 """
 
 import os
-import struct
 from collections import Counter
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from waboros.targets.base import TrapCode, Unsupported, ValidModule
 from waboros.targets.jit.common import simd
-from waboros.targets.jit.common.backend import NEGATE, Backend, Imm, Operand, Reg, Slot
+from waboros.targets.jit.common.backend import NEGATE, AddK, Backend, Imm, Operand, Reg, Slot
 from waboros.targets.jit.common.context import (
     DATA_DROP,
     ELEM_DROP,
@@ -41,7 +42,7 @@ NUM = (I32, I64, F32, F64)
 WIDE = (I64, F64)
 NARROW = (I32, F32)  # everything else (i64, f64, references) is a 64-bit value
 M32, M64 = 0xFFFFFFFF, (1 << 64) - 1
-CONST, LOCAL, TOS, SLOT, CMP = range(5)
+CONST, LOCAL, TOS, SLOT, CMP, ADDK = range(6)
 SLOTE = (SLOT, None)
 Entry = tuple[int, Any]
 
@@ -104,11 +105,15 @@ CONTROL = (
     0xD5,
     0xD6,
 )  # tail calls, typed function references
+# wide arithmetic (S0008): name and operand count; in a backend's `supported` with its `wide`
+WIDEOPS = {0xFC13: ("add128", 4), 0xFC14: ("sub128", 4), 0xFC15: ("mul_wide_s", 2),
+           0xFC16: ("mul_wide_u", 2)}  # fmt: skip
 TABLES = (0x11, 0x25, 0x26, 0xD0, 0xD1, 0xD2, *range(0xFC08, 0xFC12))  # incl. bulk memory
 SUPPORTED = frozenset(
     (*CONTROL, *range(0x20, 0x25), *range(0x41, 0x46), 0x50, *BINOPS, *CMPS, *UNOPS, *LOADS,
      *STORES, *REINTERPRET, *FCMPS, *FUNOPS, *FBINOPS, *CONVERTS, 0x3F, 0x40, *TABLES)
 )  # fmt: skip
+EXN = frozenset((0x08, 0x0A, 0x1F))  # throw, throw_ref, try_table (S0012): a backend's own set
 # abstract heap types a reference may have here: func, extern and their bottom types nofunc,
 # noextern (all one word: a record address / host handle, 0 = null)
 HEAPS = (-16, -17, -13, -14)
@@ -116,14 +121,16 @@ HEAPS = (-16, -17, -13, -14)
 
 def feature(op: int) -> str:
     """The name an `Unsupported` carries for an opcode this core does not compile (yet)."""
-    return f"opcode {op:#x}"
+    return "exceptions" if op in (0x08, 0x0A, 0x1F) else f"opcode {op:#x}"
 
 
-def type_ok(t: Any) -> str | None:
-    """None if values of type `t` are compiled here (numbers, function and extern references),
-    else the feature."""
+def type_ok(t: Any, exn: bool = False) -> str | None:
+    """None if values of type `t` are compiled here (numbers, function and extern references,
+    exnref with `exn`), else the feature."""
     if t in NUM or t in (0x70, 0x6F) or t.__class__ is tuple and (t[1] >= 0 or t[1] in HEAPS):
         return None
+    if t in (0x69, 0x74) or t.__class__ is tuple and t[1] in (-23, -12):
+        return None if exn else "exceptions"
     return "simd" if t == 0x7B else "GC types"
 
 
@@ -131,9 +138,10 @@ def unsupported(mod: ValidModule, ops: frozenset[int]) -> str | None:
     """The first feature of `mod` that a backend compiling the opcodes `ops` cannot, or None. v128
     is compiled where the backend compiles some SIMD operator (S0005)."""
     vec = any(op >= 0xFD000 for op in ops)
+    exn = EXN <= ops
 
     def bad(t: Any) -> str | None:
-        return None if vec and t == simd.V128 else type_ok(t)
+        return None if vec and t == simd.V128 else type_ok(t, exn)
 
     if not mod.get("validated"):
         return "module not fully validated"
@@ -152,7 +160,7 @@ def unsupported(mod: ValidModule, ops: frozenset[int]) -> str | None:
             if op not in ops:
                 return feature(op)
             ts: Sequence[Any] = ()
-            if op in (0x02, 0x03, 0x04) and ins[1][0] != "idx":
+            if op in (0x02, 0x03, 0x04, 0x1F) and ins[1][0] != "idx":
                 ts = (*ins[1][0], *ins[1][1])
             elif op == 0x1B and len(ins) > 1:  # typed select
                 ts = ins[1]
@@ -160,18 +168,6 @@ def unsupported(mod: ValidModule, ops: frozenset[int]) -> str | None:
                 if bad(t):
                     return bad(t)
     return None
-
-
-def f32_bits(x: float) -> int:
-    """A decoded f32 constant (a NaN carries its payload << 29 in the double, binary._f32c)."""
-    if x != x:
-        q = struct.unpack("<Q", struct.pack("<d", x))[0]
-        return (q >> 32) & 0x80000000 | 0x7F800000 | (q >> 29) & 0x7FFFFF
-    return struct.unpack("<I", struct.pack("<f", x))[0]
-
-
-def f64_bits(x: float) -> int:
-    return struct.unpack("<Q", struct.pack("<d", x))[0]
 
 
 @dataclass
@@ -186,6 +182,8 @@ class Compiled:
     thunks: dict[
         int, int
     ]  # imported function -> code offset of its host thunk (its record if host)
+    flags: int = 0  # artifact header flags: guard.BOUNDS_GUARD | GUARD_LOG2 << 8 (S0006)
+    faults: list[tuple[int, int]] = field(default_factory=lambda: [])  # S0006 fault map
 
 
 @dataclass(slots=True)
@@ -198,6 +196,7 @@ class _Ctl:
     dst: int  # first slot a branch to this label writes its values to
     else_label: Any = None
     used: bool = False
+    outer: Any = None  # try_table: Frame.error outside it (S0012)
 
 
 @dataclass
@@ -212,6 +211,12 @@ class _Mod:
     nimpg: int
     records: dict[int, int]  # function index -> record
     sigs: dict[int, int]  # type index -> signature word
+    # per memory (imports first): i64 address type, declared minimum in bytes if i64 else 0;
+    # per table: i64 index type (D39 amendment B, S0009)
+    m64: list[bool] = field(default_factory=list[bool])
+    mlo: list[int] = field(default_factory=list[int])
+    t64: list[bool] = field(default_factory=list[bool])
+    tagw: list[int] = field(default_factory=list[int])  # payload slots of each tag (S0012)
 
 
 def compile_module(mod: ValidModule, b: Backend[Any, Any], target: str) -> Compiled:
@@ -235,13 +240,19 @@ def compile_module(mod: ValidModule, b: Backend[Any, Any], target: str) -> Compi
     layout = Layout(
         memories=nmem, tables=len(mod["ttypes"]),
         globals=len(gimps) + len(mod["globals"]), imports=len(fimps), sigs=len(sigs),
-        records=len(refd), wide=wide,
+        records=len(refd), wide=wide, tags=sum(im[0] == "tag" for im in imps) + len(mod["tags"]),
     )  # fmt: skip
     m = _Mod(
         b, mod["types"], fimps + mod["funcs"], len(fimps), [b.new_label() for _ in mod["funcs"]],
         layout, gimps + [g[0] for g in mod["globals"]], len(gimps),
         {f: r for r, f in enumerate(sorted(refd))}, {t: k for k, t in enumerate(sigs)},
     )  # fmt: skip
+    mins = [im[3][0] for im in imps if im[0] == "mem"] + [mt[0] for mt in mod["mems"]]
+    m.m64 = [at == I64 for at in mod["maddr"]]
+    m.mlo = [mn << 16 if w else 0 for mn, w in zip(mins, m.m64, strict=True)]
+    m.t64 = [at == I64 for at in mod["taddr"]]
+    tts: list[int] = [im[3] for im in imps if im[0] == "tag"] + mod["tags"]
+    m.tagw = [simd.width(m.types[ti][0]) for ti in tts]
     nopin = os.environ.get("WABOROS_JIT_NOPIN", "")
     funcs: list[tuple[int, int]] = []
     for k, ((locs, _), insns) in enumerate(zip(mod["codes"], mod["insns"], strict=True)):
@@ -277,7 +288,9 @@ class _Func:
         self.maxh = 0
         self.dead = False
         self.dead_depth = 0
+        self.tos_taken = False  # an operand of the current instruction is in `tos` (LESSONS 32)
         self.f: Any = None  # the backend's frame, from run()
+        self.pads: list[tuple[Any, Any, list[tuple[int, int | None, _Ctl]]]] = []  # S0012, cold
 
     def choose_pins(self) -> dict[int, int]:
         """Integer locals by uses weighted by loop depth (as w2jit2), as many as the pool holds."""
@@ -286,7 +299,7 @@ class _Func:
         kinds: list[int] = []
         for ins in self.insns:
             op = ins[0]
-            if op in (0x02, 0x03, 0x04):
+            if op in (0x02, 0x03, 0x04, 0x1F):
                 kinds.append(op)
                 depth += op == 0x03
             elif op == 0x0B and kinds:
@@ -311,6 +324,12 @@ class _Func:
             return self.TOS
         assert k == SLOT
         return Slot(self.L + i)
+
+    def opnd_k(self, e: Entry, i: int) -> Operand | AddK:
+        """`opnd`, an ADDK entry as an `AddK` (only for `move` and a load/store address)."""
+        if e[0] == ADDK:
+            return AddK(self.pins[e[1][0]], e[1][1])
+        return self.opnd(e, i)
 
     def push(self, e: Entry) -> None:
         st = self.st
@@ -339,16 +358,35 @@ class _Func:
             self.uncmp()
         self.spill_tos()
 
-    def pop(self) -> Operand:
+    def pop_k(self) -> Operand | AddK:
+        """The top operand; an ADDK entry stays an `AddK` (for `move` or a load/store address)."""
         st = self.st
         if st[-1][0] == CMP:
             self.uncmp()
         e = st.pop()
-        return self.opnd(e, len(st))
+        if e[0] == TOS:
+            self.tos_taken = True
+        return self.opnd_k(e, len(st))
+
+    def pop(self) -> Operand:
+        """The top operand; an ADDK entry is computed into `tos`, or into its own slot when an
+        operand of this instruction is in `tos` already (LESSONS 32, S0007 `tos_taken`)."""
+        x = self.pop_k()
+        if not isinstance(x, AddK):
+            return x
+        dst: Reg | Slot = Slot(self.L + len(self.st))
+        if not self.tos_taken:
+            self.spill_tos()
+            dst, self.tos_taken = self.TOS, True
+        self.b.move(dst, x, False)
+        return dst
 
     def pop_cond(self) -> tuple[str, Operand, Operand, bool]:
         if self.st[-1][0] == CMP:
-            return self.st.pop()[1]
+            c = self.st.pop()[1]
+            if self.TOS in (c[1], c[2]):
+                self.tos_taken = True
+            return c
         return ("ne", self.pop(), Imm(0), False)
 
     def flush(self) -> None:
@@ -358,20 +396,38 @@ class _Func:
             self.uncmp()
         for i, e in enumerate(st):
             if e[0] != SLOT:
-                self.b.move(Slot(self.L + i), self.opnd(e, i), True)
+                self.b.move(Slot(self.L + i), self.opnd_k(e, i), e[0] != ADDK)
                 st[i] = SLOTE
 
     def set_local(self, j: int, tee: bool) -> None:
-        src = self.pop()
+        src = self.pop_k()
         dst = self.loc(j)
         for i, e in enumerate(self.st):  # earlier reads of local j keep the old value
-            if e[0] == LOCAL and e[1] == j:
-                self.b.move(Slot(self.L + i), dst, True)
+            if e[0] == LOCAL and e[1] == j or e[0] == ADDK and e[1][0] == j:
+                self.b.move(Slot(self.L + i), self.opnd_k(e, i), e[0] == LOCAL)
                 self.st[i] = SLOTE
         if src != dst:
             self.b.move(dst, src, self.ltypes[j] in WIDE)
         if tee:
             self.push((LOCAL, j))
+
+    def fold_addk(self, sub: bool) -> bool:
+        """i32.add/sub of a pinned local (or an ADDK of one) and a constant becomes one ADDK
+        entry (S0007 K); False if the operands are not of that shape."""
+        st = self.st
+        x, y = st[-2], st[-1]
+        if not sub and x[0] == CONST:
+            x, y = y, x
+        if y[0] != CONST:
+            return False
+        if x[0] == LOCAL and x[1] in self.pins:
+            j, k = x[1], 0
+        elif x[0] == ADDK:
+            j, k = x[1]
+        else:
+            return False
+        st[-2:] = [(ADDK, (j, (k - y[1] if sub else k + y[1]) & M32))]
+        return True
 
     # ------------------------------------------------------------------ control
     def arity(self, c: _Ctl) -> int:
@@ -423,16 +479,35 @@ class _Func:
         del self.st[c.h :]
         self.st += [SLOTE] * c.nparams
 
+    def ret(self, c: _Ctl) -> None:
+        """The results straight into slots 0..n (S0007, "Returns"). The entries below them are
+        not flushed: each is a value already computed or a compare, so nothing can trap (LESSONS
+        28). Several results fall back to flush + moves when a source is a slot in 0..n other
+        than its own (writing one result would overwrite another's source)."""
+        st, n = self.st, c.nres
+        if n and st[-1][0] == CMP:
+            self.uncmp()
+        base = len(st) - n
+        srcs = [self.opnd_k(st[base + k], base + k) for k in range(n)]
+        if any(isinstance(s, Slot) and s.k < n and s.k != k for k, s in enumerate(srcs)):
+            self.flush()
+            self.moves(c)
+            return
+        for k, s in enumerate(srcs):  # never writes tos, a pin or a source slot
+            self.b.move(Slot(k), s, not isinstance(s, AddK))
+
     def end(self) -> None:
         c = self.ctl.pop()
-        if not self.dead:
-            self.flush()
         if c.kind == "func":
             if not self.dead:
-                self.moves(c)
+                self.ret(c)
             self.b.bind(c.label)
             self.b.ret_ok(self.f)
             return
+        if not self.dead:
+            self.flush()
+        if c.outer is not None:  # try_table: the calls after it go where they went before
+            self.f.error = c.outer
         if c.kind == "if":  # no else: the false path arrives with the parameters as results
             self.b.bind(c.else_label)
         if c.kind != "loop":
@@ -444,8 +519,11 @@ class _Func:
 
     def br(self, depth: int) -> None:
         c = self.ctl[-1 - depth]
-        self.flush()
-        self.moves(c)
+        if c.kind == "func":  # return: br_if and br_table to it are unchanged (S0007 Q7)
+            self.ret(c)
+        else:
+            self.flush()
+            self.moves(c)
         self.b.jump(c.label)
         c.used, self.dead = True, True
 
@@ -508,7 +586,8 @@ class _Func:
         self.flush()
         h0 = len(self.st) - n
         del self.st[h0:]
-        b.call_indirect(self.f, m.layout.table(table), m.layout.sig(m.sigs[ti]), index, self.L + h0)
+        lay, a64 = m.layout, self.t64(table)
+        b.call_indirect(self.f, lay.table(table), lay.sig(m.sigs[ti]), index, self.L + h0, a64=a64)
         self.st += [SLOTE] * nres
         self.maxh = max(self.maxh, h0 + max(n, nres))
 
@@ -542,7 +621,8 @@ class _Func:
         elif op == 0x13:
             assert x is not None
             lay = m.layout
-            b.tail_indirect(self.f, lay.table(ins[2]), lay.sig(m.sigs[ti]), x, src, n)
+            t, a64 = lay.table(ins[2]), self.t64(ins[2])
+            b.tail_indirect(self.f, t, lay.sig(m.sigs[ti]), x, src, n, a64=a64)
         else:
             assert x is not None
             b.tail_ref(self.f, x, src, n)
@@ -590,6 +670,13 @@ class _Func:
         several memories (a one-memory module's code stays as it was; S0003)."""
         return [mi] if self.m.layout.memories > 1 else []
 
+    def a64(self, mi: int) -> tuple[bool, int]:
+        """(i64 address type, declared minimum in bytes if i64 else 0) of memory `mi`."""
+        return self.m.m64[mi], self.m.mlo[mi]
+
+    def t64(self, ti: int) -> bool:
+        return self.m.t64[ti]
+
     def pop3(self) -> tuple[Operand, Operand, Operand]:
         """Three operands of a bulk operation; `tos` is free afterwards (the backend uses it)."""
         z = self.pop()
@@ -597,6 +684,59 @@ class _Func:
         x = self.pop()
         self.need_tos()
         return x, y, z
+
+    # ------------------------------------------------------------------ exceptions (S0012)
+    # Option A: an exception is status 14 returned through frames. Inside a try_table every call
+    # site's non-zero-status branch goes to the try_table's landing pad (Frame.error), emitted
+    # cold after the body; the pad passes on every other status and tries the clauses in order,
+    # as V8 Liftoff's CatchCase chain (tag of the caught object against the instance's tag, then
+    # unpack, catch_ref appends the reference, then br) and Winch's emit_try_table_end (catch
+    # targets marked as branch targets at entry, the stack cut back to the try_table's height).
+    def try_table(self, bt: Any, clauses: Sequence[tuple[int, int | None, int]]) -> None:
+        targets: list[tuple[int, int | None, _Ctl]] = []
+        for kind, tag, lab in clauses:  # labels are counted outside the try_table
+            c = self.ctl[-1 - lab]
+            c.used = True
+            targets.append((kind, tag, c))
+        self.enter(0x02, bt)
+        pad = self.b.new_label()
+        self.ctl[-1].outer = self.f.error
+        self.pads.append((pad, self.f.error, targets))
+        self.f.error = pad
+
+    def landing_pads(self) -> None:
+        """Payload words straight into the label's slots, then the exnref; a miss of every
+        clause goes on to the enclosing pad (or the epilogue) with the status still 14."""
+        b, lay = self.b, self.m.layout
+        for pad, outer, targets in self.pads:
+            b.landing(self.f, pad, outer)
+            for kind, tag, c in targets:
+                n, miss = 0, None
+                if tag is not None:
+                    miss = b.new_label()
+                    b.exn_match(lay.tag(tag), miss)
+                    n = self.m.tagw[tag]
+                    for k in range(n):
+                        b.exn_field(Slot(c.dst + k), k)
+                if kind & 1:
+                    b.exn_load(Slot(c.dst + n))
+                b.jump(c.label)
+                if miss is None:
+                    break
+                b.bind(miss)
+            else:
+                b.jump(outer)
+
+    def throw(self, t: int) -> None:
+        """The payload (slots h0..h0+n) becomes a new object of the store's arena, in machine
+        code; the slot above it carries the size to the refill service when the chunk is full."""
+        n = self.m.tagw[t]
+        self.flush()
+        h0 = len(self.st) - n
+        self.b.throw(self.f, self.m.layout.tag(t), self.L + h0, n)
+        self.maxh = max(self.maxh, h0 + n + 1)
+        del self.st[h0:]
+        self.dead = True
 
     # ------------------------------------------------------------------ the pass
     def run(self, far: bool) -> bool:
@@ -614,8 +754,9 @@ class _Func:
         tos, push, pop = self.TOS, self.push, self.pop
         for ins in self.insns:
             op = ins[0]
+            self.tos_taken = False
             if self.dead:  # skip to the end (or else) of the block that became unreachable
-                if op in (0x02, 0x03, 0x04):
+                if op in (0x02, 0x03, 0x04, 0x1F):
                     self.dead_depth += 1
                 elif op == 0x0B:
                     if self.dead_depth:
@@ -630,6 +771,8 @@ class _Func:
                     simd.get_local(self, ins[1])
                 else:
                     push((LOCAL, ins[1]))
+            elif (op == 0x6A or op == 0x6B) and self.fold_addk(op == 0x6B):
+                pass
             elif op in BINOPS:
                 name, w = BINOPS[op]
                 y = pop()
@@ -654,14 +797,16 @@ class _Func:
                     self.set_local(ins[1], op == 0x22)
             elif op in LOADS:
                 size, signed, w = LOADS[op]
-                addr = pop()
+                addr = self.pop_k()
                 self.need_tos()
-                b.load(f, size, signed, w, tos, addr, ins[1], lay.memory(ins[3]))
+                a64, lo = self.a64(ins[3])
+                b.load(f, size, signed, w, tos, addr, ins[1], lay.memory(ins[3]), a64=a64, lo=lo)
                 push((TOS, None))
             elif op in STORES:
                 v = pop()
-                addr = pop()
-                b.store(f, STORES[op], addr, ins[1], v, lay.memory(ins[3]))
+                addr = self.pop_k()
+                a64, lo = self.a64(ins[3])
+                b.store(f, STORES[op], addr, ins[1], v, lay.memory(ins[3]), a64=a64, lo=lo)
             elif op == 0x45 or op == 0x50:
                 if self.st[-1][0] == CMP:
                     cond, x, y, w = self.st[-1][1]
@@ -676,6 +821,13 @@ class _Func:
                 push((TOS, None))
             elif op in (0x02, 0x03, 0x04):
                 self.enter(op, ins[1])
+            elif op == 0x1F:
+                self.try_table(ins[1], ins[2])
+            elif op == 0x08:
+                self.throw(ins[1])
+            elif op == 0x0A:  # a reference is never a pending compare
+                b.throw_ref(f, self.pop())
+                self.dead = True
             elif op == 0x0B:
                 self.end()
             elif op == 0x0D:
@@ -715,9 +867,9 @@ class _Func:
             elif op == 0x0F:
                 self.br(len(self.ctl) - 1)
             elif op == 0x43:
-                push((CONST, f32_bits(ins[1])))
+                push((CONST, ins[1]))
             elif op == 0x44:
-                push((CONST, f64_bits(ins[1])))
+                push((CONST, ins[1]))
             elif op in FBINOPS:
                 name, w = FBINOPS[op]
                 y = pop()
@@ -773,25 +925,27 @@ class _Func:
             elif op == 0x25:
                 x = pop()
                 self.need_tos()
-                b.table_get(f, tos, self.m.layout.table(ins[1]), x)
+                b.table_get(f, tos, self.m.layout.table(ins[1]), x, a64=self.t64(ins[1]))
                 push((TOS, None))
             elif op == 0x26:
                 v = pop()
                 x = pop()
                 self.need_tos()
-                b.table_set(f, self.m.layout.table(ins[1]), x, v)
+                b.table_set(f, self.m.layout.table(ins[1]), x, v, a64=self.t64(ins[1]))
             elif op == 0xFC10:
                 self.need_tos()
                 b.ctx_load(tos, self.m.layout.table(ins[1]) + 1, False)
                 push((TOS, None))
             elif op == 0xFC11:
-                b.table_fill(f, self.m.layout.table(ins[1]), *self.pop3())
+                b.table_fill(f, lay.table(ins[1]), *self.pop3(), a64=self.t64(ins[1]))
             elif op == 0xFC0E:
-                b.table_copy(f, lay.table(ins[1]), lay.table(ins[2]), *self.pop3())
+                a2 = (self.t64(ins[1]), self.t64(ins[2]))
+                b.table_copy(f, lay.table(ins[1]), lay.table(ins[2]), *self.pop3(), a64=a2)
             elif op == 0xFC0B:
-                b.memory_fill(f, *self.pop3(), lay.memory(ins[1]))
+                b.memory_fill(f, *self.pop3(), lay.memory(ins[1]), a64=self.a64(ins[1])[0])
             elif op == 0xFC0A:
-                b.memory_copy(f, *self.pop3(), lay.memory(ins[1]), lay.memory(ins[2]))
+                a2 = (self.a64(ins[1])[0], self.a64(ins[2])[0])
+                b.memory_copy(f, *self.pop3(), lay.memory(ins[1]), lay.memory(ins[2]), a64=a2)
             elif op == 0xFC0F:  # (init, delta) + table -> old size or -1
                 self.service(TABLE_GROW, 2, [ins[1]], 1)
             elif op == 0xFC0C:  # (d, s, n) + segment, table
@@ -804,9 +958,17 @@ class _Func:
                 self.service(DATA_DROP, 0, [ins[1]], 0)
             elif op in REINTERPRET or op == 0x01:
                 pass
+            elif op in WIDEOPS:  # two i64 results, low first, into the operands' first slots
+                name, n = WIDEOPS[op]
+                args = [pop() for _ in range(n)][::-1]
+                self.need_tos()
+                b.wide(name, Slot(L + len(self.st)), tuple(args))
+                push(SLOTE)
+                push(SLOTE)
             elif op >= 0xFD000:
                 simd.op(self, ins)
             else:  # unsupported() already refused it
                 raise AssertionError(f"opcode {op:#x}")
         assert not self.ctl
+        self.landing_pads()
         return b.func_end(f, L + self.maxh)

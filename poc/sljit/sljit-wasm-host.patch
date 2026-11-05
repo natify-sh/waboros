@@ -1,0 +1,35 @@
+diff -ru a/sljitConfigInternal.h b/sljitConfigInternal.h
+--- a/sljitConfigInternal.h	2026-11-03 22:16:42.110123143 +0000
++++ b/sljitConfigInternal.h	2026-11-03 22:16:42.115786354 +0000
+@@ -391,8 +391,8 @@
+ typedef __int64 sljit_sw;
+ #endif
+ #else /* !_WIN32 */
+-typedef unsigned long int sljit_uw;
+-typedef long int sljit_sw;
++typedef unsigned long long sljit_uw;
++typedef long long sljit_sw;
+ #endif /* _WIN32 */
+ #endif
+ 
+diff -ru a/sljitNativeX86_common.c b/sljitNativeX86_common.c
+--- a/sljitNativeX86_common.c	2026-11-03 22:16:42.111172653 +0000
++++ b/sljitNativeX86_common.c	2026-11-03 22:16:42.115644528 +0000
+@@ -457,6 +457,8 @@
+ 		mov [esi + 12], edx
+ 	}
+ 
++#elif defined(__wasm__)
++	info[0] = info[1] = info[2] = info[3] = 0; /* baseline: no cpuid on a wasm host */
+ #else
+ 
+ 	__asm__ __volatile__ (
+@@ -520,6 +522,8 @@
+ 		mov xcr0, eax
+ 	}
+ 
++#elif defined(__wasm__)
++	xcr0 = 0;
+ #else
+ 
+ 	__asm__ (

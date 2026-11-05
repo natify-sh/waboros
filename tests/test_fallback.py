@@ -67,7 +67,7 @@ def test_mdwe_forbids_executable_memory() -> None:
     if not sys.platform.startswith("linux"):
         pytest.skip("MDWE is Linux-only")
     child = textwrap.dedent("""
-        import ctypes, sys, warnings
+        import ctypes, platform, sys, warnings
         libc = ctypes.CDLL(None, use_errno=True)
         if libc.prctl(65, 1, 0, 0, 0) != 0:
             sys.exit(77)
@@ -76,11 +76,13 @@ def test_mdwe_forbids_executable_memory() -> None:
             warnings.simplefilter("always")
             order = base.target_order("auto")
             base.target_order("auto")
-        why = base.TARGETS["jit-x86_64"]().probe()
+        # the warning explains the JIT target of this machine, if it has one
+        host = [n for n, m in base._MACHINES.items() if platform.machine().lower() in m]
+        why = base.TARGETS[host[0]]().probe() if host else "no JIT target for"
         assert why, why
         assert order == ["pyc"], order
         assert [x.category for x in w] == [base.JitUnavailableWarning], w
-        assert why in str(w[0].message)
+        assert why in str(w[0].message), (why, str(w[0].message))
         from tests.test_target_pyc import F32_ID
         from waboros.frontend.binary import parse
         from waboros.frontend.validate import validate

@@ -2,7 +2,7 @@
 title: ISA levels above the baseline - how to grow, operator by operator
 kind: reference
 status: draft
-updated: 2026-11-02
+updated: 2026-11-04
 ---
 
 # ISA levels above the baseline: a per-operator map
@@ -109,6 +109,17 @@ instructions, S: 4-12, L: longer or no direct form), and a status: **implemented
 * The aarch64 side has almost nothing to gain at 128 bits (ARMv8.0 NEON already has `tbl`,
   `frint*`, `cnt`); its later levels matter for other features (LSE atomics for threads, ARMv8.2
   dot product for relaxed SIMD).
-* Relaxed SIMD (follow-up spec, S0005 Q7) is the place where levels matter most: its operators are
-  defined to let each ISA use its fastest form (FMA, `pshufb` semantics, dot products), so its spec
-  should start with this table.
+* Relaxed SIMD (S0005 Q7) is the place where levels matter most: its operators are defined to let
+  each ISA use its fastest form (FMA, `pshufb` semantics, dot products). Its spec, S0008 (D49), took
+  the baseline and left the levels to this table.
+* **Decided for the first relaxed-SIMD step (maintainer, 2026-11-04): the deterministic profile of
+  Wasm 3.0 for 16 of the 20 operators** (every one takes the first of its allowed results: swizzle
+  out of range 0, trunc saturating, min/max and q15mulr as the plain operators, dot the plain signed
+  dot product), so each maps onto an operator we already have, the same on every target and in
+  `pyc`. **`relaxed_madd`/`relaxed_nmadd` are native per target, as Wasmtime**: fused on `jit-aarch64`
+  (`fmla`/`fmls`), unfused on `jit-x86_64` (the baseline has no FMA) and on `pyc`. x86-64 FMA comes
+  with x86-64-v3 (FMA3, with AVX2), not with v2. Done at the baseline on all three targets (S0008
+  steps 1-2): each JIT's table maps the 20 operators. **When ISA levels above the baseline are adopted,
+  revisit relaxed SIMD**: a "native" mode (FMA on x86-64-v3, `pshufb` swizzle, hardware dot
+  products) is where levels would pay, and it changes results across hosts (pyc stops being a
+  bit-exact oracle for those operators, D35's cross-host identity needs the level in the artifact).

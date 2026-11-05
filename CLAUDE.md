@@ -96,6 +96,8 @@ Context:     <what exists, which files; what was tried and ruled out>
 Read first:  <the 1–3 documents or files that matter; not the whole docs/>
 Scope:       <files/directories that may change>      Out of scope: <what must not change>
 Budget:      <~N lines of diff; stop and report if more is needed>
+Rows:        <per-OS code only (D47): the OS rows touched; for each beyond Linux glibc x86-64,
+              the exception (a-d) and its evidence>
 Acceptance:  <exact commands + expected result, e.g. pytest -k "i64 and pyc" → 0 failures;
               CoreMark still passes its self-check; BENCHMARKS row added if speed changed>
 Docs:        <the documents this step makes untrue and must update (docs/STANDARDS.md, "Which
@@ -141,9 +143,11 @@ uv run python tools/run_coremark_jit.py poc/in/core.wasm   # CoreMark on the pac
 python3 tools/check_docs.py                # documents follow docs/STANDARDS.md
 python3 tools/features.py --check          # feature table is consistent
 uv run python tools/stack_info.py          # thread stack bounds the JIT uses
-uv run python tools/isa_all.py [--target jit-aarch64]   # ISA gate over every compiled spec module, claimed directories or not
+uv run python tools/isa_all.py [--target jit-aarch64]   # ISA gate: every JIT blob of every compiled spec module has only baseline instructions (needs GNU objdump)
 uv run python tools/jit_dump.py --target jit-aarch64 OUT.txt   # sha256 list for the D35 cross-compile diff
-uv run python tools/isa_all.py             # ISA gate: every JIT blob has only x86-64-v1 instructions (needs GNU objdump)
+uv run python tools/fuzz.py --targets pyc,jit,wasmtime --minutes 5   # differential fuzz (wasm-tools smith); tools/fuzz.py N SEED is the pyc branch-emission mode
+uv run python tools/bench_throw.py         # throw cost per target (S0012)
+uv run python tools/run_corpus.py          # corpus of real C libraries against hashlib/zlib/Wasmtime
 uv run python tools/no_exec.py -- <cmd>    # run <cmd> with executable memory forbidden (Linux >= 6.3, MDWE)
 ```
 

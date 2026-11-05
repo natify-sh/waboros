@@ -1,6 +1,7 @@
 """The runtime side of the JIT ABI (docs/specs/S0003), shared by every architecture: the context,
 the value stack, both stack limits, the entry call with status -> `Trap`, host callbacks that never
-raise, nested entries, interrupt, linear memories (reserved, committed on grow, never moved).
+raise, nested entries, interrupt, linear memories (reserved, committed on grow; an i32 one never
+moves, an i64 one moves only inside a grow past its reservation, S0009).
 
 An `Instance` runs code assembled elsewhere (hand-built in the ABI tests); a `JitInstance` runs a
 compiled module (common/compiler.py)."""
@@ -15,13 +16,18 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 from waboros.frontend import validate
+from waboros.runtime.link import LinkError
 from waboros.runtime.store import StoreState
 from waboros.targets.base import Extern, HostError, HostFunc, Raw, Trap, TrapCode
-from waboros.targets.jit.common import simd
-from waboros.targets.jit.common.compiler import M32, M64, NARROW, Compiled, f32_bits, f64_bits
+from waboros.targets.jit.common import guard, simd
+from waboros.targets.jit.common.compiler import I64, M32, M64, NARROW, Compiled
 from waboros.targets.jit.common.context import (
+    ARENA_CURSOR,
+    ARENA_LIMIT,
     DATA_DROP,
     ELEM_DROP,
+    EXCEPTION,
+    EXN_REFILL,
     HOST_BRIDGE,
     HOST_ERROR,
     INTERRUPT,
@@ -30,6 +36,7 @@ from waboros.targets.jit.common.context import (
     MEMORY_INIT,
     NSTACK_LIMIT,
     RECORD,
+    STATUS_EXCEPTION,
     STATUS_HOST_ERROR,
     STATUS_INTERRUPT,
     TABLE_GROW,
@@ -43,15 +50,24 @@ from waboros.targets.jit.common.execmem import ExecMem, Reservation, load
 ENTRY = ctypes.CFUNCTYPE(ctypes.c_int32, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)
 HOST = ctypes.CFUNCTYPE(ctypes.c_int32, ctypes.c_void_p, ctypes.c_void_p)
 VSTACK_BYTES = 1 << 20  # per store
-MEMORY_RESERVATION = (
-    1 << 32
-)  # Wasmtime's default `memory_reservation` (crates/environ/src/tunables.rs)
+# Wasmtime's default `memory_reservation` (crates/environ/src/tunables.rs) and its 64-bit
+# `memory_guard_size`, for every memory in either mode, so any memory serves guard code (S0006)
+MEMORY_RESERVATION = guard.RESERVATION
 MAX_PAGES = 1 << 16
+MAX_PAGES64 = (1 << 48) - 1  # an i64 memory's byte size fits the 64-bit size word (S0009)
+# an i64 memory (S0009), as Wasmtime 50.0.1 reserves one (measured): `memory_reservation`,
+# `memory_reservation_for_growth`, and the guard as a tail; read at each use (the tests lower them)
+RESERVATION64 = 1 << 32
+GROWTH64 = 2 << 30
+TAIL64 = guard.GUARD
+PAGE = 1 << 16
 DEFAULT_BUDGET = 512 << 10  # Wasmtime's default `max_wasm_stack` (D6)
 UNKNOWN_STACK_BUDGET = 128 << 10  # when the thread's stack bounds cannot be read or are implausible
 PLAUSIBLE_STACK = 1 << 30  # more stack than this below the entry: the bounds are not trusted
 TABLE_LIMIT = 10_000_000  # elements: pyc's cap (D27), so both targets fail the same table.grow
-_TRAP_STATUSES = frozenset(TrapCode)  # the statuses a host `Trap` may return as itself
+# the statuses a host `Trap` may return as itself; a re-raised UNCAUGHT_EXCEPTION is a host error
+# (S0012): status 14 comes only from JIT code
+_TRAP_STATUSES = frozenset(TrapCode) - {TrapCode.UNCAUGHT_EXCEPTION}
 _TYPE_IDS: dict[Any, int] = {}  # canonical function type ids of the process (structural keys)
 _TYPE_IDS_LOCK = threading.Lock()  # stores on different threads register types concurrently
 
@@ -69,7 +85,36 @@ def mask(t: Any) -> int:
 
 
 def isref(t: Any) -> bool:
-    return t.__class__ is tuple or t in (0x70, 0x6F)
+    return t.__class__ is tuple or t in (0x70, 0x6F, 0x69, 0x74)
+
+
+def isexn(t: Any) -> bool:
+    return t in (0x69, 0x74) or t.__class__ is tuple and t[1] in (-23, -12)
+
+
+ARENA_WORDS = 8192  # exception objects are bump-allocated in chunks of 64 KiB (S0012 Q3)
+_TAG_IDS = iter(range(1, 1 << 63))  # tag identities of the process (S0012), never 0
+_TAG_LOCK = threading.Lock()
+
+
+class Tag:
+    """A tag's handle on the JIT targets (S0012): its identity, which code compares, and its
+    parameter types (of the defining module) to read a payload."""
+
+    __slots__ = ("id", "params", "store")
+
+    def __init__(self, params: Sequence[Any], store: object) -> None:
+        with _TAG_LOCK:
+            self.id = next(_TAG_IDS)
+        self.params, self.store = tuple(params), store
+
+
+@dataclass(frozen=True)
+class ExnRef:
+    """A non-null exnref outside the code: the address of an exception object of its store."""
+
+    addr: int
+    store: object
 
 
 def isextern(t: Any) -> bool:
@@ -106,16 +151,36 @@ class _StoreStacks:
         self.vsp = self.vstack.addr  # next free slot: above the innermost host call's slots
         self.nlimit = 0
         self.active = 0  # JIT entries in progress (wasm -> host -> wasm nests them)
+        self.guard = False  # guard-mode code in the store: check the handler at every entry
         # reference values at the boundary (S0002: opaque objects, None = null): an externref is
         # a handle (index + 1) of the object kept here for the store's lifetime; a funcref is a
         # record address, seen by the host as a `FuncRef` (one object per address)
         self.externs: list[object] = []
         self.extern_ids: dict[int, int] = {}
         self.funcrefs: dict[int, FuncRef] = {}
+        # exceptions (S0012): {pending exnref, arena cursor, arena limit}, which context words
+        # 10, 12 and 13 point to; code bumps objects {tag, payload words} from the arena's last
+        # chunk. Chunks never move and are kept until the store is dropped (Q3); the first comes
+        # with the store, so only a throw that fills one calls into Python (`refill`).
+        self.exn = (ctypes.c_uint64 * 3)()
+        self.chunks: list[ctypes.Array[ctypes.c_uint64]] = []
+        self.new_chunk(ARENA_WORDS)
+        self.exnrefs: dict[int, ExnRef] = {}
+        self.tags: dict[int, Tag] = {}  # every tag of the store by identity
+        self.refill: Any = None  # context word EXN_REFILL (a ctypes callback)
+
+    def new_chunk(self, words: int) -> None:
+        c = (ctypes.c_uint64 * words)()
+        self.chunks.append(c)
+        self.exn[1], self.exn[2] = ctypes.addressof(c), ctypes.addressof(c) + 8 * words
 
     def to_raw(self, t: Any, v: object) -> int:
         if v is None:
             return 0
+        if isexn(t):
+            if not isinstance(v, ExnRef) or self.exnrefs.get(v.addr) is not v:
+                raise TypeError(f"not an exception reference of this store: {v!r}")
+            return v.addr
         if not isextern(t):
             # only a reference this store handed out: a record of another store would run on that
             # store's context and value stack, a forged address anywhere (LESSONS 35)
@@ -133,6 +198,8 @@ class _StoreStacks:
             return None
         if isextern(t):
             return self.externs[r - 1]
+        if isexn(t):
+            return self.exnrefs.setdefault(r, ExnRef(r, self))
         ref = self.funcrefs.get(r)
         if ref is None:
             ref = self.funcrefs[r] = FuncRef(r, self)
@@ -150,6 +217,24 @@ def _stacks(store: StoreState) -> _StoreStacks:
     if not isinstance(store.target_state, _StoreStacks):
         store.target_state = _StoreStacks()
     return store.target_state
+
+
+def _refill_service(store: StoreState, st: _StoreStacks) -> Any:
+    """Context word EXN_REFILL (S0012): slots[0] = the words a throw needs; a new arena chunk of
+    at least that many. Status 0 written last (D34); 13 with the error pending if it fails."""
+
+    def refill(ctx: int, slots: int) -> int:
+        status = STATUS_HOST_ERROR
+        try:
+            st.new_chunk(max(ARENA_WORDS, ctypes.c_uint64.from_address(slots).value))
+            status = 0
+        except BaseException as e:
+            store.pending = e
+        finally:
+            ctypes.c_uint64.from_address(ctx + 8 * HOST_ERROR).value = status  # last
+        return 0
+
+    return HOST(refill)
 
 
 _thread = threading.local()
@@ -240,33 +325,94 @@ def native_budget(sp: int, low: int | None, budget: int) -> int:
 
 
 class Memory:
-    """A 32-bit linear memory: 4 GiB of address space reserved, pages committed on grow; the base
-    never changes. `grow` rewrites the size word of every context bound to it."""
+    """A linear memory, pages committed on grow; `grow` rewrites the words of every context bound
+    to it (`users`). An i32 memory has 4 GiB + GUARD of address space (S0006) and its base never
+    changes. An i64 memory (`a64`, S0009) reserves RESERVATION64 + TAIL64 (a min above
+    RESERVATION64: min + GROWTH64 + TAIL64) and moves when a grow does not fit: wasm code reaches a
+    grow only through the bridge, and reloads (memory 0) or rereads (others) the words after it."""
 
-    def __init__(self, pages: int, maximum: int | None) -> None:
-        self.res = Reservation(MEMORY_RESERVATION, pages << 16)
+    def __init__(self, pages: int, maximum: int | None, *, a64: bool = False) -> None:
+        self.a64 = a64
+        if not a64:
+            try:  # a commit limit (Windows' paging file, a container) refuses the min cleanly
+                self.res = Reservation(MEMORY_RESERVATION, pages << 16)
+            except OSError:
+                raise MemoryError(f"failed to reserve {MEMORY_RESERVATION} bytes") from None
+            self.max = MAX_PAGES if maximum is None else min(maximum, MAX_PAGES)
+        else:
+            if pages > MAX_PAGES64:
+                raise MemoryError(f"memory minimum size of {pages} pages exceeds memory limits")
+            m = pages << 16
+            size = (RESERVATION64 if m <= RESERVATION64 else m + GROWTH64) + TAIL64
+            try:
+                self.res = Reservation(size, m)
+            except OSError:
+                raise MemoryError(f"failed to reserve {size} bytes") from None
+            self.max = MAX_PAGES64 if maximum is None else min(maximum, MAX_PAGES64)
         self.pages = pages
-        self.max = MAX_PAGES if maximum is None else min(maximum, MAX_PAGES)
+        self.mask = M64 if a64 else M32  # of memory.grow's result (-1 at the address width)
         self.declared = maximum  # the type's maximum, for import checks
-        self.store: object = None  # the owning StoreState (set by JitInstance)
+        self.store: StoreState | None = None  # the owning store (set by JitInstance)
         self.users: list[tuple[ctypes.Array[ctypes.c_uint64], int]] = []
+        self.retired: list[Reservation] = []  # held while a move rewrites the contexts
 
     def bind(self, ctx: "ctypes.Array[ctypes.c_uint64]", word: int) -> None:
-        ctx[word], ctx[word + 1] = self.res.addr, self.pages << 16
+        ctx[word] = self.res.addr  # base before size, as everywhere (S0009)
+        ctx[word + 1] = self.pages << 16
         self.users.append((ctx, word))
 
     def grow(self, delta: int) -> int:
-        """memory.grow: the old size in pages, or -1."""
-        old = self.pages
-        if delta > self.max - old:
-            return -1
+        """memory.grow: the old size in pages, or -1. Another thread than the store's raises
+        RuntimeError before anything changes (one thread per store, S0002)."""
+        took = self.store.claim() if self.store is not None else False
         try:
-            self.res.commit((old + delta) << 16)
+            old = self.pages
+            if delta > self.max - old:
+                return -1
+            if not self.a64 or (old + delta) << 16 <= self.res.size - TAIL64:
+                try:
+                    self.res.commit((old + delta) << 16)
+                except OSError:
+                    return -1
+                self.pages = old + delta
+                for ctx, word in self.users:  # the base too, first: no context keeps a stale
+                    ctx[word] = self.res.addr  # base under a larger size
+                    ctx[word + 1] = self.pages << 16
+                return old
+            return self._move(old, old + delta)
+        finally:
+            if self.store is not None:
+                self.store.release(took)
+
+    def _move(self, old: int, new: int) -> int:
+        """Grow an i64 memory past its reservation (S0009): a new one, the written pages copied,
+        every context rewritten, the old one freed. A failure changes nothing, and so does an
+        asynchronous exception (KeyboardInterrupt): the rewrite is all or nothing."""
+        try:
+            res = Reservation((new << 16) + GROWTH64 + TAIL64, new << 16)
         except OSError:
             return -1
-        self.pages = old + delta
-        for ctx, word in self.users:
-            ctx[word + 1] = self.pages << 16
+        zero = bytes(PAGE)
+        for p in range(self.res.addr, self.res.addr + (old << 16), PAGE):
+            page = ctypes.string_at(p, PAGE)
+            if page != zero:  # new pages read as zero; a never-written one costs no RSS here
+                ctypes.memmove(res.addr + p - self.res.addr, page, PAGE)
+        prev = self.res
+        self.retired += [prev, res]  # both stay mapped until every context names one of them
+        try:
+            self.res, self.pages = res, new
+            for ctx, word in self.users:
+                ctx[word] = res.addr  # base first: (new base, old size) is safe
+                ctx[word + 1] = new << 16
+        except BaseException:  # every context back to (old base, old size)
+            for ctx, word in self.users:
+                ctx[word + 1] = old << 16  # size first: never (old base, new size)
+                ctx[word] = prev.addr
+            self.res, self.pages = prev, old
+            del self.retired[-2:]  # a second interruption leaves both here: a leak, no unmap
+            raise
+        del self.retired[-2:]
+        prev.free()
         return old
 
 
@@ -275,12 +421,19 @@ class Table:
     ctypes array that grows by reallocation; `grow` rewrites the base and size words of every
     context bound to it (code reads them at each use and never across a host call)."""
 
-    def __init__(self, size: int, maximum: int | None, init: int = 0, store: object = None) -> None:
+    def __init__(
+        self, size: int, maximum: int | None, init: int = 0, store: object = None, *,
+        a64: bool = False,
+    ) -> None:  # fmt: skip
         self.size, self.declared, self.store = size, maximum, store
+        self.mask = M64 if a64 else M32  # of table.grow's result and active element offsets
         self.max = min(TABLE_LIMIT, M32 if maximum is None else maximum)
-        self.buf = (ctypes.c_uint64 * max(size, 1))()
-        if init:
-            self.buf[:size] = [init] * size
+        try:  # a minimum that cannot be allocated: Wasmtime's error, as pyc's (S0009)
+            self.buf = (ctypes.c_uint64 * max(size, 1))()
+            if init:
+                self.buf[:size] = [init] * size
+        except (MemoryError, OverflowError):
+            raise MemoryError(f"out of memory (failed to allocate {8 * size} bytes)") from None
         self.users: list[tuple[ctypes.Array[ctypes.c_uint64], int]] = []
 
     def bind(self, ctx: "ctypes.Array[ctypes.c_uint64]", word: int) -> None:
@@ -288,10 +441,20 @@ class Table:
         self.users.append((ctx, word))
 
     def grow(self, delta: int, init: int) -> int:
-        """table.grow: the old size, or -1 (as u32)."""
+        """table.grow: the old size, or -1 at the table's address width (S0009). Another thread
+        than the store's raises RuntimeError before anything changes."""
+        st = cast(StoreState | None, self.store)
+        took = st.claim() if st is not None else False
+        try:
+            return self._grow(delta, init)
+        finally:
+            if st is not None:
+                st.release(took)
+
+    def _grow(self, delta: int, init: int) -> int:
         old = self.size
         if delta > self.max - old:
-            return M32
+            return self.mask
         if old + delta > len(self.buf):
             buf = (ctypes.c_uint64 * max(old + delta, 2 * len(self.buf)))()
             ctypes.memmove(buf, self.buf, 8 * old)
@@ -355,6 +518,11 @@ class Instance:
         self.ctx[TAIL_SWITCH] = tramp.tail_switch
         st = _stacks(store)  # call_indirect may enter this context without `call`: limits now
         self.ctx[NSTACK_LIMIT], self.ctx[VSTACK_LIMIT] = st.nlimit, st.vtop
+        if st.refill is None:
+            st.refill = _refill_service(store, st)
+        exn = ctypes.addressof(st.exn)  # S0012: in every context (throw_ref needs no tag)
+        self.ctx[EXCEPTION], self.ctx[ARENA_CURSOR], self.ctx[ARENA_LIMIT] = exn, exn + 8, exn + 16
+        self.ctx[EXN_REFILL] = ctypes.cast(st.refill, ctypes.c_void_p).value or 0
         self.code: ExecMem = load(code)
         self.entry = ENTRY(tramp.entry)
         self.callbacks = [HOST(self._host(*im)) for im in imports]  # kept alive here
@@ -364,9 +532,12 @@ class Instance:
             mem.bind(self.ctx, self.layout.memory(i))
         if memories:  # delta, then the memory index if there are several (S0003)
             many = len(memories) > 1
-            grow = HOST(
-                self._host(lambda a: [memories[a[1] if many else 0].grow(a[0])], 1 + many, [M32])
-            )
+
+            def grow_(a: Sequence[Raw]) -> list[Raw]:  # -1 at the memory's address width
+                m = memories[a[1] if many else 0]
+                return [m.grow(a[0]) & m.mask]
+
+            grow = HOST(self._host(grow_, 1 + many, [M64]))
             self.callbacks.append(grow)  # a runtime service (libcall), not a computation (D25)
             self.ctx[self.layout.libcall(MEMORY_GROW)] = (
                 ctypes.cast(grow, ctypes.c_void_p).value or 0
@@ -385,9 +556,14 @@ class Instance:
     def call(self, func_index: int, args: Sequence[Raw]) -> list[Raw]:
         offset, nres = self.funcs[func_index - self.nimports]
         store, st, ctx = self.store, _stacks(self.store), self.ctx
-        depth, active = store.depth, st.active  # restored as they were, whatever interrupts us
+        # restored as they were, whatever interrupts us, but only by the owner: a thread that
+        # enter() refuses writes nothing (LESSONS 78). `me` is read here: the finally makes no
+        # call, where a signal handler could raise before the restore (D34)
+        me, depth, active = threading.get_ident(), store.depth, st.active
         try:
             store.enter()
+            if st.guard:  # records cross within a store: any entry may reach guard code
+                guard.check()
             st.active += 1
             if st.active == 1:  # no JIT frame below, whatever the store's depth
                 st.vsp = st.vstack.addr
@@ -407,7 +583,10 @@ class Instance:
                 raise self._error(status)
             return list(slots[:nres])
         finally:
-            st.active, store.depth = active, depth
+            if store.owner == me:
+                st.active, store.depth = active, depth
+                if not depth:  # outermost: no frame below waits for a host exception (D34)
+                    store.pending = None
 
     def _nstack_limit(self, frame: int) -> int:
         """At the first JIT entry on the stack: the stack pointer as wasm code sees it (the
@@ -434,10 +613,26 @@ class Instance:
                 for inst in self.store.instances:
                     if isinstance(inst, Instance):
                         inst.ctx[INTERRUPT] = 0
+        if status == STATUS_EXCEPTION:
+            return self._uncaught()
         try:
             return Trap(TrapCode(status))
         except ValueError:
             return RuntimeError(f"JIT code returned status {status}")
+
+    def _uncaught(self) -> BaseException:
+        """Status 14 at an entry: `Trap(UNCAUGHT_EXCEPTION)` with (tag, payload values as `call`
+        returns them on this target), read from the pending object (S0012 Q4)."""
+        st = _stacks(self.store)
+        addr = st.exn[0]
+        tag = st.tags.get(ctypes.c_uint64.from_address(addr).value) if addr else None
+        if tag is None:
+            return RuntimeError("JIT code returned status 14 without an exception")
+        raw = list((ctypes.c_uint64 * simd.width(tag.params)).from_address(addr + 8))
+        vals = zip(tag.params, simd.join(tag.params, raw), strict=True)
+        t = Trap(TrapCode.UNCAUGHT_EXCEPTION, "thrown Wasm exception")
+        t.exn = (tag, tuple(st.from_raw(p, v) if isref(p) else v for p, v in vals))
+        return t
 
     def _host(self, f: HostFunc, nparams: int, masks: Sequence[int]) -> Callable[[int, int], int]:
         """The status of a host call is context word HOST_ERROR, which the bridge presets to 13
@@ -470,8 +665,13 @@ class Instance:
             status = STATUS_HOST_ERROR
             try:
                 status = serve(slots)
-            except BaseException as e:
+                why = st.guard and not status and guard.broken()  # back into guard code
+                if why:
+                    store.pending = RuntimeError(f"{guard.LOST} ({why})")
+                    status = STATUS_HOST_ERROR
+            except BaseException as e:  # after serve() too (guard.broken()): the call fails
                 store.pending = store.pending or e
+                status = STATUS_HOST_ERROR
             finally:
                 st.vsp = saved
                 ctypes.c_uint64.from_address(ctx + 8 * HOST_ERROR).value = status  # last
@@ -569,6 +769,7 @@ class JitInstance(Instance):
         tables: list[Table] = []
         self.gaddr: list[int] = []
         self.cells: list[GlobalCell] = []  # keeps the owners of imported globals alive
+        self.tags: list[Tag] = []
         for im, ext in zip(mod["imports"], imports, strict=True):
             _check_store(store, im[0], ext.value)
             if im[0] == "func":
@@ -582,12 +783,26 @@ class JitInstance(Instance):
                 hosts.append((f, simd.width(ps), _masks(rs)))
             elif im[0] == "mem":
                 memories.append(cast(Memory, ext.value))
+                if memories[-1].pages < im[3][0]:  # the i64 bounds check relies on it (S0009)
+                    raise LinkError(f"incompatible import type {im[1]}.{im[2]}")
             elif im[0] == "table":
                 tables.append(cast(Table, ext.value))
-            else:
+            elif im[0] == "global":
                 self.cells.append(cast(GlobalCell, ext.value))
+            elif im[0] == "tag":  # (exporting instance, tag index): the exporter's tag (S0012)
+                src, idx = cast(Any, ext.value)
+                if not isinstance(src, JitInstance):  # a tag of another target is not ours
+                    raise LinkError(f"incompatible import type {im[1]}.{im[2]}")
+                tag = cast(Tag, src.tags[idx])
+                if tag.store is not store:
+                    raise ValueError("tag import belongs to another store")
+                self.tags.append(tag)
+        for ti in mod["tags"]:
+            self.tags.append(Tag(types[ti][0], store))
+        for tag in self.tags:
+            st.tags[tag.id] = tag
         for mt in mod["mems"]:
-            memories.append(Memory(*mt))
+            memories.append(Memory(*mt, a64=mod["maddr"][len(memories)] == I64))
             memories[-1].store = store
         self.ftypes: list[int] = [im[3] for im in mod["imports"] if im[0] == "func"] + mod["funcs"]
         self.gtypes = [im[3][0] for im in mod["imports"] if im[0] == "global"]
@@ -595,6 +810,12 @@ class JitInstance(Instance):
         ng = len(self.gtypes)
         super().__init__(store, tramp, c.code, c.funcs, hosts, memories, ng, c.layout)
         lay, ctx = self.layout, self.ctx
+        if c.flags & guard.BOUNDS_GUARD:  # before any of its code can run (S0006)
+            guard.add_code(self.code, c.faults)
+            for m in memories:  # an i64 memory has no fault point and may move (S0009)
+                if not m.a64:
+                    guard.add_reservation(m.res)
+            st.guard = True
         base = ctypes.addressof(ctx)
         self.records = {f: base + 8 * lay.record(r) for r, f in enumerate(c.records)}
         for f, addr in self.records.items():
@@ -609,6 +830,8 @@ class JitInstance(Instance):
             ctx[word : word + RECORD] = list(rec)
         for k, ti in enumerate(c.sigs):
             ctx[lay.sig(k)] = type_id(types, ti)
+        for t, tag in enumerate(self.tags):
+            ctx[lay.tag(t)] = tag.id
         for i in range(ng):
             word = lay.global_(i)
             if i < len(self.cells):
@@ -622,7 +845,8 @@ class JitInstance(Instance):
                     ctx[word] = self._const(init) & mask(t)
                 self.gaddr.append(base + 8 * word)
         for (mn, mx), init in zip(mod["tables"], mod["tinit"], strict=True):
-            tables.append(Table(mn, mx, 0 if init is None else self._const(init), store))
+            at = mod["taddr"][len(tables)] == I64
+            tables.append(Table(mn, mx, 0 if init is None else self._const(init), store, a64=at))
         for i, t in enumerate(tables):
             t.bind(ctx, lay.table(i))
         self.tables = tables
@@ -639,13 +863,13 @@ class JitInstance(Instance):
         if self.datas and memories:
             services.append((MEMORY_INIT, self._memory_init, 4 + (len(memories) > 1), 0))
         for j, fn, nargs, nres in services:  # runtime services (libcalls), not computation (D25)
-            cb = HOST(self._host(fn, nargs, [M32] * nres))
+            cb = HOST(self._host(fn, nargs, [M64] * nres))  # table.grow: masked by the table
             self.callbacks.append(cb)
             ctx[lay.libcall(j)] = ctypes.cast(cb, ctypes.c_void_p).value or 0
         segs: list[tuple[int, Any, Any, Any]] = mod["elem_info"]
         for i, ((ti, off, _, _), mode) in enumerate(zip(segs, mod["elem_mode"], strict=True)):
             if mode == "active":
-                tables[ti].write(self._const(off) & M32, self.elems[i])
+                tables[ti].write(self._const(off) & tables[ti].mask, self.elems[i])
             if mode != "passive":
                 self.elems[i] = []
         for i, ((off, data), mi) in enumerate(zip(mod["datas"], mod["data_mem"], strict=True)):
@@ -661,12 +885,8 @@ class JitInstance(Instance):
 
     def _const(self, e: tuple[Any, ...]) -> int:
         k = e[0]
-        if k in ("i32", "i64", "v128"):
+        if k in ("i32", "i64", "f32", "f64", "v128"):
             return e[1]
-        if k == "f32":
-            return f32_bits(e[1])
-        if k == "f64":
-            return f64_bits(e[1])
         if k == "global":
             g: int = e[1]
             return self._read_global(g)
@@ -708,7 +928,8 @@ class JitInstance(Instance):
 
     def call(self, func_index: int, args: Sequence[Raw]) -> list[Raw]:
         if func_index < self.nimports:
-            depth = self.store.depth  # an exported import: the host function itself (refs: objects)
+            # an exported import: the host function itself (refs: objects); `me` as in Instance.call
+            me, depth = threading.get_ident(), self.store.depth
             try:
                 self.store.enter()
                 return list(self.hosts[func_index](args))
@@ -717,7 +938,10 @@ class JitInstance(Instance):
                     raise e.exc from None
                 raise
             finally:
-                self.store.depth = depth
+                if self.store.owner == me:  # as in Instance.call
+                    self.store.depth = depth
+                    if not depth:
+                        self.store.pending = None
         ps, rs = self.module["types"][self.ftypes[func_index]]
         if not any(isref(t) or t == simd.V128 for t in (*ps, *rs)):
             return super().call(func_index, args)
@@ -740,6 +964,8 @@ class JitInstance(Instance):
                 return Extern("memory", self.owner, self.memories[idx])
             if kind == 3:
                 return Extern("global", self.owner, GlobalCell(self.gaddr[idx], self))
+            if kind == 4:
+                return Extern("tag", self.owner, self.tags[idx])
         raise LookupError(f"no export {name}")
 
     def limits(self, name: str) -> tuple[int, int | None]:

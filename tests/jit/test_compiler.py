@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 from tests.jit import native, native_jit, need
+from tests.watcache import wat2wasm as wat
 from waboros.frontend.binary import parse
 from waboros.frontend.validate import validate
 from waboros.runtime import link
@@ -25,15 +26,6 @@ from waboros.targets.jit.common.compiler import Compiled
 ROOT = Path(__file__).resolve().parents[2]
 M32, M64 = 0xFFFFFFFF, (1 << 64) - 1
 JIT = native_jit()
-
-
-def wat(text: str) -> bytes:
-    try:
-        import wasmtime
-    except ImportError:
-        wasmtime = None
-    need(wasmtime, "wasmtime (wat2wasm)")
-    return bytes(wasmtime.wat2wasm(text))  # pyright: ignore[reportOptionalMemberAccess]
 
 
 @pytest.fixture(autouse=True)
@@ -161,6 +153,36 @@ def test_integer_operators_match_pyc(t: str, pins: None) -> None:
     assert checked > 5000
 
 
+@pytest.mark.parametrize("t", ["i32", "i64"])
+def test_add_sub_as_lea_match_pyc(t: str, pins: None) -> None:
+    """add/sub of a local and an immediate (fits disp32 or not) and add of two registers: the i32
+    result must wrap mod 2**32 and stay zero-extended (LESSONS 5). Written for S0007 L (one lea,
+    reverted 2026-11-04); kept as edge-case coverage of the add/sub paths."""
+    ks = [0, 1, -1, 0x7FFFFFFF, -0x80000000, 0x80000000, M32]
+    if t == "i64":
+        ks += [-0x80000001, 1 << 32, 0x123456789A, -(1 << 63), (1 << 63) - 1]
+    ext = "(i64.extend_i32_u)" if t == "i32" else ""
+    funcs = [f'(func (export "r") (param {t} {t}) (result i64) '
+             f"({t}.add (local.get 0) ({t}.mul (local.get 1) ({t}.const 3))) {ext})"]  # fmt: skip
+    for p, q in ((0, 1), (1, 0), (1, 1)):  # two pinned registers (rbp as base swaps to index)
+        funcs.append(f'(func (export "rr{p}{q}") (param {t} {t}) (result i64) '
+                     f"({t}.add (local.get {p}) (local.get {q})) {ext})")  # fmt: skip
+    for i, k in enumerate(ks):
+        for op in ("add", "sub"):
+            funcs.append(f'(func (export "{op}{i}") (param {t} {t}) (result i64) '
+                         f"({t}.{op} (local.get 0) ({t}.const {k})) {ext})")  # fmt: skip
+            funcs.append(f'(func (export "{op}{i}/tos") (param {t} {t}) (result i64) '
+                         f"({t}.{op} ({t}.mul (local.get 1) (local.get 0)) ({t}.const {k})) "
+                         f"{ext})")  # fmt: skip
+    wasm = wat("(module " + "\n".join(funcs) + ")")
+    jit, pyc = build(wasm), build(wasm, "pyc")
+    edge = EDGE32 if t == "i32" else EDGE64
+    for name in [n for n, k, _ in jit.mod["exports"] if k == 0]:
+        for a in edge:
+            for b in (1, 3, a):
+                assert outcome(jit, name, a, b) == outcome(pyc, name, a, b), (name, a, b)
+
+
 @pytest.mark.parametrize("t,bits", [("i32", 32), ("i64", 64)])
 def test_division_edge_cases(t: str, bits: int) -> None:
     jit = build(
@@ -277,6 +299,47 @@ def test_traps_are_never_dropped() -> None:
     assert trap_of(jit, "br", 0) is TrapCode.INTEGER_DIVISION_BY_ZERO
 
 
+RETURNS = """(module (memory 1)
+  (func (export "swap") (param i32 i64) (result i64 i32) (local.get 1) (local.get 0))
+  (func (export "swap_ret") (param i32 i32) (result i32 i32)
+    (block (local.get 1) (local.get 0) (return)) (unreachable))
+  (func (export "rot3") (param i32 i32 i32) (result i32 i32 i32)
+    (local.get 2) (local.get 0) (local.get 1))
+  (func (export "in_place") (param i32 i32) (result i32 i32) (local.get 0) (local.get 1))
+  (func (export "mixed") (param i32 i32) (result i32 i64 i32 i32)
+    (i32.add (local.get 0) (local.get 1)) (i64.const -5) (local.get 1)
+    (i32.lt_s (local.get 0) (local.get 1)))
+  (func (export "below") (param i32 i32) (result i32 i32)
+    (i32.mul (local.get 0) (i32.const 3)) (local.get 1) (local.get 0) (return))
+  (func (export "load_below") (param i32) (result i32)
+    (i32.load (local.get 0)) (i32.const 7) (return))
+  (func (export "div_below") (param i32) (result i32)
+    (block (result i32) (i32.div_s (i32.const 1) (local.get 0)) (i32.const 7) (return)))
+  (func (export "cmp") (param i32 i32) (result i32) (i32.lt_s (local.get 0) (local.get 1)))
+  (func (export "high") (param i32 i32 i32) (result i32) (local.get 2))
+  (func (export "v128") (param i32) (result v128 i32)
+    (i32x4.splat (local.get 0)) (i32.add (local.get 0) (i32.const 1))))"""
+
+
+def test_returns_match_pyc(pins: None) -> None:
+    """S0007 "Returns": results go straight to slots 0..m (a compare on top, a slot source at or
+    above m, a v128); with locals in slots, a swap falls back to flush + moves; a trapping entry
+    below the results still traps (LESSONS 28)."""
+    wasm = wat(RETURNS)
+    jit, pyc = build(wasm), build(wasm, "pyc")
+    cases: list[tuple[str, tuple[int, ...]]] = [
+        ("swap", (3, -9)), ("swap_ret", (1, 2)), ("rot3", (1, 2, 3)), ("in_place", (4, 5)),
+        ("mixed", (1, 2)), ("mixed", (5, -2)), ("below", (6, 7)),
+        ("load_below", (0,)), ("load_below", (65536,)), ("div_below", (0,)), ("div_below", (2,)),
+        ("cmp", (1, 2)), ("cmp", (2, 1)), ("high", (1, 2, 3)), ("v128", (7,)),
+    ]  # fmt: skip
+    for name, args in cases:
+        assert outcome(jit, name, *args) == outcome(pyc, name, *args), (name, args)
+    assert jit("rot3", 1, 2, 3) == [3, 1, 2] and jit("swap", 3, 9) == [9, 3]
+    assert trap_of(jit, "load_below", 65536) is TrapCode.MEMORY_OUT_OF_BOUNDS
+    assert trap_of(jit, "div_below", 0) is TrapCode.INTEGER_DIVISION_BY_ZERO
+
+
 def test_deep_recursion_is_stack_overflow() -> None:
     jit = build(
         wat("""(module
@@ -346,6 +409,51 @@ def test_loads_and_stores_match_pyc(pins: None) -> None:
             got = outcome(jit, name, *args)
             assert got == outcome(pyc, name, *args), (name, a)
             assert jit("L64", 92) == pyc("L64", 92) and jit("L64", 65520) == pyc("L64", 65520)
+
+
+ADDK = """(module (memory 1) (data (i32.const 0) "\\01\\02\\03\\04\\05\\06\\07\\08\\09")
+  (func (export "o0") (param i32) (result i32) (i32.load (i32.add (local.get 0) (i32.const -4))))
+  (func (export "o4") (param i32) (result i32)
+    (i32.load offset=4 (i32.add (i32.const -4) (local.get 0))))
+  (func (export "s4") (param i32 i32) (result i32)
+    (i32.store offset=4 (i32.sub (i32.add (local.get 0) (i32.const 1)) (i32.const 5)) (local.get 1))
+    (i32.load (i32.const 0)))
+  (func (export "ops") (param i32 i32) (result i32)
+    (i32.sub (i32.add (local.get 0) (i32.const 3)) (i32.sub (local.get 1) (i32.const 1))))
+  (func (export "sel") (param i32 i32) (result i32)
+    (select (i32.add (local.get 0) (i32.const 1)) (i32.add (local.get 1) (i32.const 2))
+      (i32.lt_u (i32.mul (local.get 0) (local.get 1)) (i32.const 9))))
+  (func (export "tee") (param i32) (result i32)
+    (i32.add (i32.add (local.get 0) (i32.const 8))
+      (i32.sub (local.get 0) (local.tee 0 (i32.add (local.get 0) (i32.const 4))))))
+  (func (export "set") (param i32) (result i32) (local i32)
+    (local.set 1 (i32.add (local.get 0) (i32.const -1)))
+    (i32.add (local.get 0) (i32.const 1)) (local.set 0 (i32.const 0)) (local.get 1) (i32.add))
+  (func (export "br") (param i32) (result i32)
+    (block (result i32) (br_if 0 (i32.add (local.get 0) (i32.const 5)) (local.get 0))
+      (drop) (i32.store8 (i32.add (local.get 0) (i32.const 1))
+        (i32.add (local.get 0) (i32.const 2)))
+      (i32.load8_u (i32.add (local.get 0) (i32.const 1))))))"""
+
+
+def test_addk_wraps_before_the_offset_and_matches_pyc(pins: None) -> None:
+    """S0007 K: local + k (k = 2**32 - 4) wraps in 32 bits before the memarg offset is added (k is
+    never folded into the offset); ADDK entries as operands of one instruction (LESSONS 32), across
+    a tee and a set of their local, as branch values and as store values."""
+    wasm = wat(ADDK)
+    jit, pyc = build(wasm), build(wasm, "pyc")
+    oob = TrapCode.MEMORY_OUT_OF_BOUNDS
+    assert trap_of(jit, "o0", 0) is oob and jit("o0", 4) == [0x04030201]
+    assert trap_of(jit, "o4", 0) is oob and jit("o4", 4) == [0x08070605]  # 0xFFFFFFFC + 4 = 2**32
+    assert trap_of(jit, "s4", 0, 7) is oob and trap_of(pyc, "s4", 0, 7) is oob
+    cases = [("o0", (a,)) for a in (0, 3, 4, 8, 65536, 65539, 65540)]
+    cases += [("o4", (a,)) for a in (0, 3, 4, 65532, 65536)]
+    cases += [("s4", (a, 0x11223344)) for a in (0, 4, 65532, 65533, 65536, M32)]
+    cases += [(n, (a, b)) for n in ("ops", "sel") for a in (0, 1, 3, M32) for b in (0, 2, M32)]
+    cases += [(n, (a,)) for n in ("tee", "set", "br") for a in (0, 1, 7, 65534, M32)]
+    for name, args in cases:
+        assert outcome(jit, name, *args) == outcome(pyc, name, *args), (name, args)
+    assert jit("s4", 4, 7) == [0x04030201] and jit("o0", 8) == [7]
 
 
 def test_globals_and_imported_globals() -> None:
@@ -519,5 +627,19 @@ def test_isa_check_on_compiled_code(tmp_path: Path) -> None:
 
 def test_core_names_no_architecture() -> None:
     """D26: the shared core imports nothing architecture- or target-specific."""
-    src = (ROOT / "src/waboros/targets/jit/common/compiler.py").read_text(encoding="utf-8")
+    from waboros.targets.jit.common import compiler  # the installed file: no checkout on Android
+
+    src = Path(compiler.__file__).read_text(encoding="utf-8")
     assert "x86" not in src and "targets.pyc" not in src
+
+
+def test_instantiating_another_architectures_code_raises() -> None:
+    """Compiling for a foreign architecture is allowed (D35); instantiating it must raise, never
+    run the code (on a 32-bit or wasm host it crashed the process: platforms run, WAT cache)."""
+    other = "jit-aarch64" if JIT == "jit-x86_64" else "jit-x86_64"
+    t = base.TARGETS[other]()
+    mod = parse(wat('(module (func (export "f") (result i32) i32.const 7))'))
+    validate(mod)
+    compiled = t.compile(mod)
+    with pytest.raises(RuntimeError, match="cannot run here"):
+        t.instantiate(compiled, link.resolve(mod, {}), StoreState())

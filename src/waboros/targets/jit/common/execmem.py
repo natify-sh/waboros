@@ -12,11 +12,13 @@ Linux maps it `PROT_BTI` where the CPU reports BTI (landing pads enforced). macO
 entitlement refuses the mapping. x86-64 needs none of this."""
 
 import ctypes
+import errno
 import mmap
 import os
 import platform
 import sys
 import weakref
+from collections.abc import Callable
 from typing import Any
 
 ARM64 = platform.machine().lower() in ("aarch64", "arm64")
@@ -32,7 +34,9 @@ class ExecMem:
         self.sealed = False
         # unmapped when unreachable: records cross only within a store, which keeps its
         # instances (and so their code areas) alive while any of its code can run
-        self._release = weakref.finalize(self, _free, self.addr, self.size)
+        self._release: weakref.finalize[..., Any] = weakref.finalize(
+            self, _free, self.addr, self.size
+        )
         self._release.atexit = False  # a daemon thread may still run this code at exit
 
     def write(self, code: bytes) -> None:
@@ -52,17 +56,22 @@ class ExecMem:
         self.addr = 0
         self._release()
 
+    def on_free(self, first: Callable[[], None]) -> None:
+        _on_free(self, first)
+
 
 class Reservation:
     """Address space reserved up front (no access), committed read-write from its start on demand;
-    it never moves (LESSONS 7). Linear memories (4 GiB each, Wasmtime's default reservation) and
-    value stacks."""
+    it never moves (LESSONS 7: an i64 memory that outgrows it gets a new one, S0009). Linear
+    memories (4 GiB + 32 MiB for an i32 one, Wasmtime's 64-bit defaults) and value stacks."""
 
     def __init__(self, size: int, commit: int = 0) -> None:
+        if not 0 <= size < 1 << 63:  # ctypes would truncate it for c_size_t silently (LESSONS 77)
+            raise OSError(errno.ENOMEM, f"reservation of {size} bytes")
         self.size = size
         self.committed = 0
         self.addr = _reserve(size)
-        self._release = weakref.finalize(self, _free, self.addr, size)
+        self._release: weakref.finalize[..., Any] = weakref.finalize(self, _free, self.addr, size)
         self._release.atexit = False  # a daemon thread may still use this memory at exit
         self.commit(commit)
 
@@ -79,6 +88,24 @@ class Reservation:
     def free(self) -> None:
         self.addr = 0
         self._release()
+
+    def on_free(self, first: Callable[[], None]) -> None:
+        _on_free(self, first)
+
+
+def _on_free(area: "ExecMem | Reservation", first: Callable[[], None]) -> None:
+    """`first()` runs right before the area is unmapped (S0006: its fault-registry entry goes
+    before the address can be reused)."""
+    area._release.detach()  # pyright: ignore[reportPrivateUsage]
+    area._release = weakref.finalize(area, _free_after, first, area.addr, area.size)  # pyright: ignore[reportPrivateUsage]
+    area._release.atexit = False  # pyright: ignore[reportPrivateUsage]
+
+
+def _free_after(first: Callable[[], None], addr: int, size: int) -> None:
+    try:
+        first()
+    finally:
+        _free(addr, size)
 
 
 def load(code: bytes) -> ExecMem:

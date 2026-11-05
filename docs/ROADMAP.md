@@ -2,7 +2,7 @@
 title: Roadmap
 kind: reference
 status: current
-updated: 2026-11-02
+updated: 2026-11-05
 ---
 
 # Roadmap
@@ -60,6 +60,10 @@ The order below is **staging, not scope**: it follows what the modules that exis
 6. **function references** and **GC** — needed by Kotlin, Dart, OCaml, Java-to-wasm; less by C/Rust.
 7. **relaxed SIMD**.
 8. Outside 3.0: **wide arithmetic**, **threads** (shared memory, atomics), **custom page sizes**.
+   For threads: JIT atomics on aarch64 need `ldaxr`/`stlxr` loops at the ARMv8.0 baseline (LSE is an
+   ISA variant above it, D42); a shared memory must never move on `grow` (the guard-page reservation
+   of 4 GiB + 32 MiB gives that, to be checked with shared memories); CLAUDE.md's "one thread per
+   store" rule has to be revisited, since several threads use one shared memory.
 
 Tier 3 proposals (branch-hinting, stack-switching, compact-imports) after all of these. Sources and
 counters: TESTING.md, "Sources of truth and the completeness counters".
@@ -77,15 +81,15 @@ lacks a feature reports it through `Target.supports` and the module runs on anot
 | phase | counters (TESTING.md) |
 |---|---|
 | 1 | `assert_invalid` / `assert_malformed` of the pinned spec suite pass (the validator) |
-| 2 | the `core` group (`test/core/*.wast`, the 2.0 features plus typed function references and tail calls) passes on `pyc` (CPython and PyPy), plus the `bulk-memory` directory; the rest are listed expected failures (`pyc`: 20509 pass in `core`, 89 expected failures) |
-| 3 | the `core` group passes on `jit-x86_64` exactly as on `pyc` (met: the same 20509 pass and the same 89 expected failures; the scope went past the integer core, D25); the backend interface is written down and the PoC's x86-64 code is split into the shared core and the backend (S0002, S0003; step 6 review done); CoreMark not worse than the PoC (met: 17 526 vs `w2jit2` 17 662 it/s, 99.2 %, BENCHMARKS.md) |
+| 2 | the `core` group (`test/core/*.wast`, the 2.0 features plus typed function references and tail calls) passes on `pyc` (CPython and PyPy), plus the `bulk-memory` directory; the rest are listed expected failures (`pyc`: 20532 pass in `core`, 66 expected failures) |
+| 3 | the `core` group passes on `jit-x86_64` exactly as on `pyc` (met: the same 20509 pass and the same 89 expected failures on 2026-11-01, 20532 and 66 since exceptions; the scope went past the integer core, D25); the backend interface is written down and the PoC's x86-64 code is split into the shared core and the backend (S0002, S0003; step 6 review done); CoreMark not worse than the PoC (met: 17 526 vs `w2jit2` 17 662 it/s, 99.2 %, BENCHMARKS.md) |
 | 4 | the same integer-core spec commands pass on the second architecture (aarch64 on native arm64 CI runners); the size of its backend is recorded; the interface is changed where it leaked x86-64 and then frozen |
-| 5 | the same spec commands pass on every JIT target as on `pyc` for the stages it claims (`simd/` is claimed by `pyc` since 5b; the JITs claim it at 5d3 and 5e2, S0005); differential fuzzing finds no divergence over an agreed number of hours |
+| 5 | the same spec commands pass on every JIT target as on `pyc` for the stages it claims (`simd/` is claimed by `pyc` since 5b; the JITs claim it at 5d3 and 5e2, S0005); every divergence found by the nightly differential fuzzing is triaged: fixed, or recorded as a known deviation (maintainer, 2026-11-04) |
 | 6 | the public API is covered by tests of its own plus differential runs against wasmtime (its API used as the oracle, not as a goal); the WASI testsuite (p1) passes; the CLI runs the commands of API.md |
 | later | each new proposal enters with its spec tests green on every target that claims it |
 
 ## Phase 0 — repository from the PoC
-*Status: done (branch `phase0-skeleton`, not merged to `main`).*
+*Status: done (branch `phase0-skeleton`, merged to `main` on 2026-11-02 with phases 1-4 and SIMD; 0.0.0 published).*
 
 * Package layout of ARCHITECTURE.md; move the PoC's reader, decoder and stack-to-tree builder out of
   `w2py.py` into `frontend/` and `ir/`; the code generators become `targets/pyc` and `targets/jit/x86_64`.
@@ -103,7 +107,7 @@ lacks a feature reports it through `Target.supports` and the module runs on anot
   weights, effect order, trap points, call graph); documented in code.
 
 ## Phase 2 — `pyc` target complete
-*Status: done for the core group (spec core: `pyc` 20509 pass, 89 expected failures, same as `jit-x86_64`; the `bulk-memory` directory 7482 of 7485 also passes on `pyc`); frozen for new features except the proposals that land on `pyc` and the JITs together (multi-memory, D37; SIMD, S0005), correctness fixes only.*
+*Status: done for the core group (spec core: `pyc` 20532 pass, 66 expected failures, same as `jit-x86_64`; the `bulk-memory` directory 7483 of 7485 also passes on `pyc`, 2 expected failures); frozen for new features except the proposals that land on `pyc` and the JITs together (multi-memory, D37; SIMD, S0005; relaxed SIMD and wide arithmetic, S0008; memory64, S0009), correctness fixes only; one exception for speed: S0010, the `_br` ladders (maintainer, 2026-11-04; step 0 done 2026-11-05: the experiment's pass gives CoreMark +11-13 % on CPython 3.11 and 3.13, +7 % on 3.14, none on PyPy, the switch VM ×2.2-2.5 on CPython, sink carrying the CoreMark gain; spec, corpus and fuzz unchanged; BENCHMARKS.md, "`pyc`: `_br` ladders (S0010 step 0)"; implemented 2026-11-05: sink at emission, CoreMark +9-10 % on 3.11/3.13, +6 % on 3.14, switch VM ×2.5).*
 
 * All core features of FEATURES.md, SIMD correct before fast (done in phase 5, step 5b, S0005); NaN rules settled against the oracle.
 * Trap conversion at the boundary; stack-depth counter and `STACK_OVERFLOW`; re-entrancy.
@@ -176,34 +180,116 @@ lacks a feature reports it through `Target.supports` and the module runs on anot
   or `auto` falls back to `pyc` with the D31 warning and the reason is recorded (RISKS R2).
   Status: done. (1) The macOS arm64 job runs the spec suite and `auto` (4e). (2) The python.org
   3.13.17 CPython runs the JIT: its hardened runtime carries `disable-executable-page-protection`
-  (CI job `macos-pythonorg`, RISKS R2).
+  (the former CI job `macos-pythonorg`, RISKS R2; now the macOS cells of `platforms.yml`).
 
 ## Phase 5 — JIT completion
-*Status: in progress (2026-11-02), SIMD done: step by step ([S0005](specs/S0005-simd.md), approved, D41). Done: 5a front end (decode and validate v128); 5b `pyc` runs every operator and claims `simd/` (25 990 commands, 0 failures); 5c1 v128 in the JIT core (two slots per v128, `Layout.wide`, the `simd` method: the D39 amendment) and 5c2 every data-movement operator, on both JITs; 5d1 and 5d2 the class-D and class-S operators on `jit-x86_64` with SSE2 only; 5d3 the 10 class-L operators (`shuffle`, `swizzle`, rounding), so `jit-x86_64` compiles all 236 and claims `simd/` at parity with `pyc` (25 481 runnable commands pass; the claimed run 54 385 pass, 91 expected failures, as `pyc`); 5e1 the 138 integer operators on `jit-aarch64` in ARMv8.0-A NEON; 5e2 the other 54 (float arithmetic, compares, conversions, rounding, `shuffle`, `swizzle`), so `jit-aarch64` also compiles all 236 and claims `simd/` at parity with `pyc` (its claimed run under QEMU 54 385 pass, 91 expected failures, as `pyc`). Both JITs claim `simd`. SIMD is complete and correct on all targets; the SIMD benchmark is done (BENCHMARKS.md). The speed fix is done (2026-11-02, the D39 amendment `move_v128`: v128 locals, constants, `select` and splats move as one 16-byte access on both JITs, so store-to-load forwarding works; `jit-x86_64` matmul 12.10 → 2.17 µs and scan 3.81 → 0.64, both now faster than their scalar builds; BENCHMARKS.md). 5f, the review of 5c–5e, found no correctness defect: SIMD is done (5a–5f). Next, after the maintainer's merge to main and publishing: guard pages (D29), then relaxed SIMD, memory64, exceptions, GC, the artifact format with the container question (ARTIFACT-CONTAINER.md).*
+*Status: in progress (2026-11-05). Done: SIMD (5a-5f) and the rename to `waboros` (D40); guard pages (S0006 complete); platform tests through cibuildwheel; the `pyc` bits mode (D46); S0007 (implemented: steps 1 and 3, step 2 reverted); S0008 (relaxed SIMD and wide arithmetic, implemented); the reconnaissance (3b below: done, unify through [S0011](specs/S0011-jit-low-layer.md)); S0011 (implemented 2026-11-05, D53: the JIT memory semantics written once over a per-architecture low layer); S0010 (`pyc`, implemented 2026-11-05: sink at emission; CoreMark +9-10 % on 3.11/3.13, +6 % on 3.14; switch VM x2.5); memory64 is done (S0009 implemented: `pyc` and both JITs claim `memory64`); exceptions with `exnref` (S0012, implemented 2026-11-05, D52: `pyc` and both JITs claim `exceptions/`, 100 pass / 8 expected failures that need GC types; the fuzz findings triaged and fixed). Open: GC, threads and the artifact format (below).*
+
+* **SIMD** ([S0005](specs/S0005-simd.md), approved, D41), done: 5a front end (decode and validate v128); 5b `pyc` runs every operator and claims `simd/` (25 990 commands, 0 failures); 5c1 v128 in the JIT core (two slots per v128, `Layout.wide`, the `simd` method: the D39 amendment) and 5c2 every data-movement operator, on both JITs; 5d1-5d3 `jit-x86_64` compiles all 236 operators with SSE2 only and claims `simd/` at parity with `pyc` (the claimed run: 54 385 pass, 91 expected failures); 5e1-5e2 `jit-aarch64` compiles all 236 in ARMv8.0-A NEON and claims `simd/` at parity (QEMU run: the same numbers); the SIMD benchmark (BENCHMARKS.md); the speed fix of 2026-11-02 (the D39 amendment `move_v128`: v128 locals, constants, `select` and splats move as one 16-byte access, so store-to-load forwarding works; `jit-x86_64` matmul 12.10 -> 2.17 µs, scan 3.81 -> 0.64); 5f, the review of 5c-5e, found no correctness defect.
+* **Guard pages** ([S0006](specs/S0006-guard-pages.md), D44, D45), complete: steps 1-5 and 7 done, step 6 (the artifact) moved to the artifact-format spec. `auto` gives guard pages on Linux glibc x86-64 and aarch64, Linux musl x86-64, macOS x86-64 and arm64, Windows x64 and arm64 and Android x86-64 (verified by CI runs 41610392553, 41633456821, 41640149866 and 41708608127); explicit checks elsewhere (Linux musl aarch64, which needs libgcc's `__clear_cache`; Android arm64); `WABOROS_JIT_BOUNDS=explicit` opts out. Stores rely on guard pages as in Wasmtime (D45: a store split by an emulator may tear; checking them was measured and rejected). CoreMark, guard against explicit checks: x86-64 +9.35 %, native aarch64 +11.4 % (BENCHMARKS.md). Per-OS work grows by exception only (D47).
+* **Platform tests through cibuildwheel**, done (below): `platforms.yml` and `ci/harness/` test the installed wheel on every platform of the map in TARGETS.md that is on; `ci.yml` keeps what needs a source checkout.
+* **`pyc` bits mode** (D46), done (below): f32/f64 as int bit patterns, the default on 32-bit x86; i686 CPython 3.13 has 0 spec failures.
+* **Scalar code generation** ([S0007](specs/S0007-scalar-codegen.md), implemented 2026-11-04): step 1 done (results straight to slots 0..m on return; calls benchmark `fib` -19 %, `leaf` -4 to -6 %, within the run spread); step 2 (add/sub as one `lea` on x86-64) reverted on 2026-11-04: under the placement control it gave no kernel gain once step 3 was in, and CoreMark's +1.3 % was within the spread (BENCHMARKS.md); step 3 kept (`local + const` as one operand on both JITs; scalar `addsat` -18 %, `scan` -9 %, `nearest` -11 %; CoreMark +0.9 %, within the spread, so its acceptance item is missed: kept on the kernels' gain by the orchestrator). Step 1b (a block that ends the function writes its results to slots 0..m) was measured and dropped (correct, but `fib` not faster beyond code placement, BENCHMARKS.md); steps 5 and 7 were measured and dropped (BENCHMARKS.md); steps 4 and 6 are not done (maintainer's decision); step 8, the review, found no correctness defect.
+* **Next** (maintainer, 2026-11-03), in this order: (1) S0007 to the end, done (step 5, once-used parameters: measured and dropped, BENCHMARKS.md; step 7, R: measured and dropped, BENCHMARKS.md; step 2, L: reverted after re-measurement; steps 6 and 4 (Z): not done, maintainer's decision; step 8, the review: no defect); (2) relaxed SIMD and wide arithmetic as one small parity step, done ([S0008](specs/S0008-relaxed-simd-wide-arithmetic.md), implemented 2026-11-04, D49; `pyc` and both JITs claim both; the step-4 review found no correctness defect); (3) memory64 (with `table64`), before exceptions ([S0009](specs/S0009-memory64.md): step 1 done 2026-11-04, `pyc` claims `memory64`; JIT steps 2a, 2b and 3 done, both JITs claim `memory64`; step 4, `spectest.table64`, done: implemented, 8 658 pass / 2 xfail (GC) on each); (3b) a reconnaissance before exceptions (maintainer, 2026-11-04): a low per-architecture layer under the D39 semantics for one group (memory: loads, stores, bounds checks) on x86-64 and aarch64; if speed holds, the wasm semantics move into one shared layer before exceptions and GC are written, else the backends stay as they are and the numbers are recorded (LESSONS 76). Done 2026-11-04: a scratch prototype (the bounds checks once, about ten low-layer operations per architecture) gave byte-identical CoreMark code on both architectures in both bounds modes, 4 of 5 979 modules different (`address64.0-3`), spec parity, compile time +3-4 % (BENCHMARKS.md, "JIT low layer"); identical bytes were accepted as the speed evidence, so no timed run. Decision (maintainer, 2026-11-04): unify, as its own step under a new contract, [S0011](specs/S0011-jit-low-layer.md) "JIT low layer" (approved 2026-11-05; implemented 2026-11-05: steps 1-4; step 4 removed the switch and the per-backend bodies and moved the bulk operators' operand rules into the shared layer, in aarch64's order per operator, so aarch64 code is unchanged and x86-64 changes by a reorder in the 70 `memory.copy` modules): the memory bounds checks plus the bulk-memory and table end checks (`_end_check`) and the element check (`_element`); compile-time bound +5 %; the four `address64` differences accepted; the `thin` variant not measured. The decision is D53; (4) exceptions, which may start in parallel with S0011 (per backend, as today; [S0012](specs/S0012-exceptions.md), approved 2026-11-05: status propagation as for traps, no handler tables; steps 0-4 done 2026-11-05: the runner, the front end and validator, `pyc`, `jit-x86_64` (D52: objects bumped from a store arena in code, about 12 ns per throw caught one frame up) and `jit-aarch64`, each claiming `exceptions/` at 100 pass / 8 xfail; step 5, the review, done and the fuzz findings triaged; implemented 2026-11-05); (5) GC ([S0013](specs/S0013-gc.md), draft 2026-11-05: a per-store GC heap as a hidden i32 memory with u32 references, lowered once in the shared core over D39 methods, non-moving mark-sweep with a conservative value-stack scan, `pyc` on Python objects; awaits approval); (6) the artifact format, one LIR vocabulary and the C loader, then `arm64.wasm`; (7) threads, then the flag-only proposals (WASM-PROPOSALS.md). In parallel: the corpus. Differential fuzzing (maintainer, 2026-11-04): a nightly scheduled CI job, outside `ci` and `platforms` and never blocking, runs `tools/fuzz.py` (it exists since S0010 step 0, comparing `pyc` with `pyc` + `bropt.py`, TESTING.md; since 2026-11-05 its mode `--targets pyc,jit,wasmtime` compares `pyc`, `jit-x86_64` in guard and explicit mode and Wasmtime, and the job is `fuzz-nightly.yml`) for 1-2 hours; a divergent module is not fixed at once but kept as a run artifact with a short description (which targets differ, on which export), and the findings are triaged before each large spec closes (exceptions, GC) and before phase 5 ends. The project-wide campaign with WASI stays in phase 6.
 
 Order (maintainer, 2026-11-01): SIMD (S0005) -> the rename to `waboros` with the packaging for publishing (LICENSE,
 setuptools + setuptools-scm, coverage/publish workflows, dependabot; D40)
-as its own step (D40, done 2026-11-02) -> guard pages (D29) -> the rest below.
+as its own step (D40, done 2026-11-02) -> guard pages (D29; done 2026-11-03) -> the rest below.
 
 * What remains of the opcode set, in stages (TARGETS.md), on **every** JIT target in step:
-  SIMD (under way, above), memory64, relaxed SIMD, exceptions, GC, then the later proposals. What a backend lacks is
+  SIMD (done, S0005), memory64 (done, S0009), relaxed SIMD (done, S0008), exceptions (done, S0012), GC; then, extending the list
+  (maintainer, 2026-11-03; [WASM-PROPOSALS.md](WASM-PROPOSALS.md): the goal is parity with Wasmtime's
+  defaults, then its flags): **wide arithmetic** (done, S0008) and **threads** (both on by default in Wasmtime 50),
+  then the flag-only proposals, each behind an option of ours: custom page sizes, compact imports,
+  stack switching, shared-everything threads. What a backend lacks is
   `unsupported` until it is written (D25). Floats, tables, `memory.grow`, bulk memory, reference types,
   multi-value and tail calls were done in phase 3.
+  For the GC spec: at every call the operand stack is in slots (values are flushed before calls, as before; S0007 added no temporaries), but pinned locals stay in pool registers across calls; either
+  reference-typed locals are never pinned, or stack maps cover the pinned registers.
+* **Platform tests through cibuildwheel** (maintainer, 2026-11-03; before S0006 step 5, Android):
+  waboros is one pure wheel, but cibuildwheel runs a test command on every platform of the map in
+  TARGETS.md (Android emulator x86_64, iOS simulator, musllinux, the QEMU architectures i686, armv7,
+  ppc64le, s390x, riscv64, Pyodide). It refuses a pure wheel, so a small test-only harness package
+  with an empty C extension that depends on waboros is built per platform and runs our tests (the
+  pattern of py-wasmext's coremark example). Publishing does not use cibuildwheel (maintainer): the
+  one `py3-none-any` wheel is still built by `uv build` in `publish.yml`. The waboros wheel under
+  test is built from the repository root by cibuildwheel's `before-build` hook and found by the
+  test environment through `PIP_FIND_LINKS` (as py-wasmext does for Android and Pyodide), so
+  waboros's own packaging is not touched. Per-platform test commands carry pytest flags and
+  environment (`WABOROS_JIT_BOUNDS=guard|explicit`, `WABOROS_JIT_REQUIRE=1`, `-k` subsets), so most of
+  the CI test matrix moves there, not only the platform jobs (the spec cache and WAT-compiled modules
+  are prepared on the host and shipped with the tests where a sandbox has no network or wasmtime).
+  The aim is one matrix over every target the project supports: the Python versions (cp311 to
+  cp315, the free-threaded builds, PyPy if cibuildwheel still builds it), every OS and architecture
+  of the map, and every JIT variant (`jit-x86_64`, `jit-aarch64`, each in guard and explicit mode;
+  `pyc` where there is no JIT); a platform is supported when its cell is green.
+  Done (2026-11-03): the harness in `ci/harness/` and `.github/workflows/platforms.yml`, run on every push and
+  pull request like `ci`; it is the only place where macOS, Windows and Android are tested, and it also runs
+  the spec suite on the JIT platforms (`ci/harness/spec.py`). The `os`, `macos-pythonorg` and `android` jobs and the
+  macOS and Windows legs of `arm64` left `ci.yml`.
+  Principle (maintainer, 2026-11-03): the matrix is as narrow as it can be without losing a
+  behaviour difference that matters now; ppc64le, riscv64, s390x and iOS are off (armv7l joined the arm job natively later) (the same
+  `pyc`; riscv64 gets a micro-compiler later, the others never, D48). A platform is added deliberately, and its own issues are
+  dealt with then, not by fixing micro-bugs on every target now. The jobs are grouped by runner
+  (cibuildwheel runs several architectures and Python versions per job); the exotic architectures
+  stay reachable as optional jobs (armv7l native on the arm runner; ppc64le, s390x, riscv64 one
+  QEMU runner each), run on request and non-blocking. Later (maintainer, 2026-11-03): once Wasm 3.0
+  is covered on `pyc` and both JITs and the context ABI and the artifact format are frozen, the work
+  splits into parallel tracks (one agent on WASI, another on a compiler for a further platform),
+  and a platform taken on that way makes its job (QEMU or other) mandatory. Which Python versions and
+  platforms `pyc` needs is decided by a measurement of where its behaviour actually differs.
+  cibuildwheel itself is a dev dependency (`uv add --dev cibuildwheel`: its version is pinned in
+  `uv.lock`, CI runs `uv run cibuildwheel`, dependabot updates it).
+  It replaced the hand-made Android, macOS and Windows jobs and added the pyc-only platforms; the jobs that need our own tools or emulator flags stay (QEMU `qemu64`
+  without SSE3+, QEMU with BTI enforced, D35 dumps, MDWE, the objdump/llvm-mc ISA gates, native
+  CoreMark). Where wasmtime has no wheel (Android, Pyodide, Linux i686 and armv7l) the WAT of the tests is read
+  from a cache filled on the host (`tests/watcache.py`, TESTING.md); tests that need the oracle skip.
+* **`pyc`: host-dependent results** (maintainer, 2026-11-03). Measured over CPython 3.11-3.15(t), PyPy,
+  i686, armv7, aarch64 and s390x ([PYC-PLATFORMS.md](PYC-PLATFORMS.md)). Done: `f32.demote_f64` and
+  `sqrt` of a signalling NaN give a quiet NaN on every host (3.14, PyPy: 0 failures), and `OverflowError`
+  is mapped to the out-of-bounds trap (i686: 244 -> 88 failures). Done (D46): a `pyc` generation mode
+  that carries f32/f64 as int bit patterns, chosen at import by a probe on 32-bit x86 (x87 quiets
+  signalling NaNs in any Python float); i686 CPython 3.13: 0 failures, 64-bit output unchanged.
 * **Guard pages with a JIT-emitted signal handler** (`poc/w2jit_guard.py`: +20–25 % on CoreMark, the gap
-  to Cranelift was mostly the bounds checks), per OS and architecture (Linux/BSD `sigaction` +
+  to Cranelift was mostly the bounds checks), per OS and architecture (Linux `sigaction` +
   `ucontext` offsets, macOS also SIGBUS, Windows a vectored exception handler), `sigaltstack` per thread
-  for stack overflow; the default where the handler is verified, explicit checks the fallback and the
-  only mode of a new architecture (D29); bounds-check elimination where guard pages are not available.
+  for stack overflow; the default where verified (D44, which supersedes D43's opt-in), explicit checks the
+  only mode of a new architecture; the steps in S0006 (done: Linux glibc x86-64 and aarch64, Linux musl x86-64, macOS, Windows x64 and arm64, Android x86_64; the artifact step moved to the artifact-format spec);
+  bounds-check elimination where guard pages are not available.
+* **Code placement** (after S0007, done; LESSONS 51): a loop's speed moves by up to ±10 % when
+  code before it changes size (S0007 step 1, `swizzle`, on a Xeon). Two hypotheses were tested apart:
+  (1) loop-header alignment to 16 or 32 bytes with NOPs; (2) Intel's JCC erratum (a branch that
+  crosses or ends on a 32-byte boundary is not cached in the decoded-µop cache). **x86-64: done
+  (2026-11-05), not implemented** (BENCHMARKS.md, "Code placement on x86-64"; LESSONS 85): on the dev
+  VM's Xeon (Emerald Rapids, not in the erratum's list) both are refuted as stated; speed follows the
+  hot loop's offset mod 64. Inner-loop headers aligned to 64 gave CoreMark +5.3 % but `swizzle` 18 % slower
+  and the corpus geomean −0.9 %, for +10 % code, so it fails the rule (a gain over CoreMark, the kernels and
+  the corpus beyond the spread; maintainer, 2026-11-05). Alignment to 32 (CoreMark about +4 % in two
+  sessions) only if revisited. **aarch64: open**: measured natively on the CI arm runners, a `PAD`
+  sweep in 4-byte steps over 0..124 bytes, then alignment to 16, 32 and 64.
 * Trap frames, fuel and epoch checks (the interrupt word is polled already, phase 3); Ctrl+C via the
   waiting main thread.
+* **Entry bookkeeping without a restore in a `finally`** (D51): on PyPy a `KeyboardInterrupt` at a
+  JIT entry or exit can leave the store's depth and `active` raised; derive them instead (for
+  example reset when the outermost entry finds no JIT frame below), then drop the PyPy skip of D34's
+  stochastic test.
+* **The JIT compilers as AOT-compiled wasm modules** ([JIT-AS-WASM.md](JIT-AS-WASM.md), draft,
+  maintainer 2026-11-05): port, then replace the Python backends; a decision point (Dn) once the
+  artifact format below is fixed; criterion byte identity and portability to non-Python hosts.
+* **One LIR vocabulary** before porting to the micro-compilers (MICRO-COMPILERS.md): the operation
+  names that are strings today in several places become one enumerated list, defined once,
+  together with fixing the artifact format in this phase; in C or Zig they become enums anyway, so
+  one list is ported instead of several naming schemes.
 * The contract of ARTIFACT.md (format v1, context ABI v1, baseline-ISA sequences, CPU feature
   detection) is **fixed here**, after two architectures have shaped it, together with artifact
   serialization; the C reference loader runs in CI and the runtime services are specified (D36). The
   container (our own or ELF64, [ARTIFACT-CONTAINER.md](ARTIFACT-CONTAINER.md)) is decided in that spec first.
-* Win64 hardening (the second entry trampoline and `VirtualAlloc` exist; CI runs `tests/jit` on
-  `windows-latest` and `macos-26-intel` and both are green, TARGETS.md; Windows ACG is open, RISKS R2);
+* Win64 hardening (the second entry trampoline and `VirtualAlloc` exist; `platforms.yml` runs the tests and the spec suite on
+  Windows x64 and ARM64 and macOS x86-64 and arm64, TARGETS.md; Windows ACG is open, RISKS R2);
   macOS arm64 and Windows on ARM are done in phase 4.
-* Differential fuzzing against wasmtime (`wasm-smith`) from the first widened stage on.
+* Differential fuzzing against wasmtime (`wasm-smith`): the nightly non-blocking job `fuzz-nightly.yml` runs it (`tools/fuzz.py --targets`; TESTING.md; findings triaged, not fixed at once). With a corpus
+  of real programs, the scalar-gap investigation and WASI through fusedwasi, all of which can run
+  beside phase 5: [REAL-PROGRAMS.md](REAL-PROGRAMS.md) (maintainer's note, draft).
 
 ## Phase 6 — runtime API, WASI, CLI
 *Status: not started.*
@@ -232,29 +318,36 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29) -> the rest below.
 ## Phase 8 — more architectures
 *Status: not started.*
 
-* armv7, mips32el (Ingenic X2000), ppc64le, loongarch64 and whichever of aarch64 / riscv64 phase 4 did
-  not take — by hand or by copy-and-patch, CI under QEMU user-mode. Each is added by a backend, the
-  encoder test and the integer-core spec commands; the shared core does not change.
+* **riscv64 only** (D48): as a micro-compiler on the proven core after `arm64.wasm`
+  (MICRO-COMPILERS.md); CI under QEMU user-mode. It is added by a micro-compiler, the encoder test
+  and the integer-core spec commands; the shared core does not change. s390x, armv7, mips32el,
+  ppc64le, loongarch64, i686 and the rest stay on `pyc` (s390x was excluded by the maintainer; the
+  reasons are in D48).
+* **Later, not a first priority (D48 amendment): the sljit track.** One D39 backend on sljit's API
+  under the ported core, shipped as `sljit-<arch>.wasm`, may give those architectures a JIT,
+  verified against `pyc` under QEMU ([SLJIT-BACKEND.md](SLJIT-BACKEND.md), `poc/sljit/`). Its first
+  step (the sljit backend for x86-64 under our core) was done as a proof of concept on 2026-11-04:
+  spec parity and about 100 % of our backend on CoreMark (SLJIT-BACKEND.md).
 
 ## Open questions
 1. **Minimum Python.** Resolved by D19: 3.11 (the PoC's 3.8 and 3.4 `--legacy` measurements stay as
    history).
-2. **The WASI host.** fusedwasi's Python twin (candidate: 0.1.0a1 is runtime-independent and runs on
+2. **The WASI host.** fusedwasi's Python twin (candidate; 0.1.0b1-b3 released 2026-11-05, D8, with the limits of a preopen on Windows; 0.1.0a1 was runtime-independent and ran on
    wasmtime, wasm3 and wasmext, D8; not tried with waboros yet),
    an own implementation, or another; and what WASI means on MicroPython (open question 6).
 3. **Parallelism of `pyc` guests**: yield points only, or also subinterpreters (3.12+/3.14),
    free-threaded builds, a process with shared memory (ARCHITECTURE.md, "Long calls and the GIL")?
 4. **Wasmtime options with no meaning here** (`cranelift_*`, `profiler`, `signals_based_traps`, …):
    accept and ignore, or reject?
-5. **NaN payloads in `pyc`**: Python floats keep the payload in most paths but not all (f32 rounding
-   through `struct`); follow the spec's canonical/arithmetic NaN rules only, or carry bit patterns?
+5. **NaN payloads in `pyc`**: settled by D46: a mode that carries f32/f64 as int bit patterns, the default
+   only where the host's floats quiet a signalling NaN (32-bit x86); elsewhere Python floats stay.
 6. **WASI on MicroPython**: a slim twin, or fusedwasi compiled to wasm and translated by waboros itself
    (then each language/target needs only a thin layer of OS primitives)?
-7. **Pyodide**: `pyc` runs there today; a separate target later (maintainer). The experiment in
+7. **Pyodide**: `pyc` runs there today; a separate track later (maintainer), not a JIT target (D48). The experiment in
    [PYODIDE.md](PYODIDE.md): the guest rewritten into an Emscripten side module and loaded with
    `ctypes.CDLL` runs CoreMark at 92–95 % of direct `WebAssembly` in Node, sharing Pyodide's heap;
    open: isolation (bounds checks), traps, grow, tables, D25 parity, browsers.
-8. **Free-threaded CPython (no GIL)**: shared memories and atomics in `pyc` need real synchronisation.
+8. **Free-threaded CPython (no GIL)**: shared memories and atomics in `pyc` need real synchronisation. Plan (maintainer, 2026-11-04): the threads spec ("Next", item 7) carries a free-threaded section: an audit of all process-wide mutable state (registries, caches, counters, the store claim) for races without the GIL, the synchronisation of shared memories and atomics in `pyc`, and a stress test on 3.15t (several stores in parallel; a shared memory with atomics).
 9. **Name** — settled by D40: the project is `waboros`; the rename was done on 2026-11-02.
 10. **Version skew** — settled by D18: no embedded runtime, exact match or regenerate; fat files carry
    the wasm. Left: the known-bad compiler list (where it lives, how it is updated).

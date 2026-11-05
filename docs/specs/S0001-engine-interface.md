@@ -108,6 +108,7 @@ expected entry `{"type": "either", "values": [v, ...]}` matches when any `v` mat
 | `assert_return` | `call` / `get_global` | results match `expected` |
 | `assert_trap` | `call` | `Trap` whose code is the text's code (table below) |
 | `assert_exhaustion` | `call` | `Trap(STACK_OVERFLOW)` |
+| `assert_exception` | `call` | `Trap(UNCAUGHT_EXCEPTION)` (Wasmtime-py: a `Trap` without code, message "thrown Wasm exception") |
 | `assert_malformed`, `assert_invalid` | `load` | `LoadError` |
 | `module_type: text` without `binary_filename` | none | status `skip` (no WAT parser in scope) |
 | `assert_unlinkable` | `load`, `instantiate` | `LinkError` from `instantiate` |
@@ -304,3 +305,5 @@ result and on an xpass).
 * 2026-10-30: links to the upstream v128 issues (wasmtime-py#348, wasmtime#15088).
 * 2026-11-01: an expected trap text is matched to a code by prefix (longest table key), not exactly: `bulk.wast:221` expects "uninitialized element 2"; the `pyc` expected-failure reasons are the actual failure reasons (no hand-written ones that no longer matched).
 * 2026-11-02: status `implemented` (the runner has used this interface since phase 1).
+* 2026-11-04 (S0008 step 1): a second pin, `PROPOSAL_FILES` in `fetch.py` (one file of a proposal repository at a commit, sha256 checked, recorded in the manifest; `wide-arithmetic/wide-arithmetic.wast`, 109 commands, in `counts.json`); the oracle Config gains `wasm_relaxed_simd_deterministic` and `wasm_wide_arithmetic`; Wasmtime and `pyc` claim `wideArithmetic`, `pyc` claims `relaxedSimd`.
+* 2026-11-05 (S0012 step 0): `assert_exception` (an exception escapes to the host) and `TrapCode.UNCAUGHT_EXCEPTION`; the Wasmtime adapter maps its code-less "thrown Wasm exception" trap to it; the 18 `exceptions/` xfail entries `unsupported command` of Wasmtime are gone.

@@ -6,7 +6,7 @@ status: implemented
 superseded_by:
 related: [D10, D14, D23, D24, D25, D26, D29, D30, D31, D32, D34, D35, D36, D37, R2, R3, R6, S0002, S0003]
 owner: maintainer
-updated: 2026-11-02
+updated: 2026-11-05
 ---
 
 # S0004 jit-aarch64, the second architecture (phase 4, integer core)
@@ -288,7 +288,7 @@ Header: `arch` = 2 (aarch64), `isa_level` = 1 (ARMv8.0-A with FP and Advanced SI
 * **CI**: a new job on `ubuntu-24.04-arm` (native; QEMU stays for architectures without runners,
   ROADMAP): `pytest tests/jit` with `WABOROS_JIT_REQUIRE=1`, the spec runs (wasmtime oracle, `pyc`,
   `jit-aarch64`, `auto`), `tools/no_exec.py` fallback, `tools/stack_info.py`, the ISA gate, the
-  cross-compilation diff, CoreMark. `macos-latest` (arm64) and `windows-11-arm` run the same job (decision 2 of the Changes).
+  cross-compilation diff, CoreMark. `macos-latest` (arm64) and `windows-11-arm` ran the same job (decision 2 of the Changes); since 2026-11-03 the `arm64` job is Linux only and those two run the harness cells of `platforms.yml` (D47).
 * **Without arm64 hardware** (checked in this container, Ubuntu 24.04 x86-64):
   `apt-get install qemu-user libc6-arm64-cross libgcc-s1-arm64-cross`, then
   `uv python install cpython-3.13-linux-aarch64-gnu`, then
@@ -464,4 +464,14 @@ Resolved by the maintainer on 2026-11-01 (see Changes); none open.
 * 2026-11-01: answered — the python.org 3.13.17 macOS CPython (hardened runtime) runs `jit-aarch64`: it carries `disable-executable-page-protection`; probe None, `auto` → `jit-aarch64`, ABI tests pass (RISKS R2). Phase 4 complete.
 * 2026-11-02: the D31 message for an incomplete JIT says "its expected failures differ from pyc's"
   instead of "integer core only" (no longer true once floats and the rest landed).
-* 2026-11-02: status implemented (phase 4 done: steps 4a-4e, the review, the macOS follow-ups; ROADMAP). The frozen interface of D39 was amended twice, by S0005: the `simd` method and the v128 operand meaning (step 5c1, both backends), then `move_v128` (after the SIMD benchmark investigation; DECISIONS D39).
+* 2026-11-02: status implemented (phase 4 done: steps 4a-4e, the review, the macOS follow-ups; ROADMAP). The frozen interface of D39 was amended three times: twice by S0005 (the `simd` method and the v128 operand meaning, step 5c1, both backends; then `move_v128`, after the SIMD benchmark investigation) and once by S0007 (amendment A, step 3; see the 2026-11-04 line below); DECISIONS D39.
+* 2026-11-02: measured for S0006's musl step: the stock `python:3.13-alpine` arm64 image (Alpine
+  3.24.3, musl 1.2.6) has no libgcc, so `__clear_cache` is missing: the probe fails ("no
+  instruction-cache flush function") and `auto` gives `pyc` with the D31 warning. After `apk add
+  libgcc` the JIT runs (spec suite under QEMU 8.2.2: 54 385 pass, 91 expected failures). The
+  "own I-cache routine" alternative above is the open way to musl without libgcc.
+* 2026-11-04: D39 amendment A (S0007 step 3): the operand kind `AddK` (a pinned i32 plus a constant mod 2³²) is accepted by the aarch64 `move` and as the `load`/`store` address (one `add`/`sub` into the index scratch `w9`, or into the destination); nothing else of this spec changed.
+* 2026-11-04: S0008 step 2 (relaxed SIMD) adds NEON forms `fmla`/`fmls` (vector, `.4s`, `.2d`) and `addp .8h` to `aarch64/simd.py`'s `FORMS`, each checked against `llvm-mc` (`test_neon_forms_match_llvm_mc`); all ARMv8.0-A.
+* 2026-11-05: S0012 step 4 (exceptions, D52): the frame's `error` label and the six exception
+  methods; the call sites' `cbnz w0` goes to `error` (the epilogue outside a `try_table`, so code
+  without one is unchanged). `jit-aarch64` claims `exceptions/`.

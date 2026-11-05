@@ -35,6 +35,38 @@ class JitX86_64Target(JitTarget):
     def trampolines(self) -> "Trampolines":
         return trampolines()
 
+    # S0006 steps 1, 3, 4, 5 and musl
+    guard_rows = frozenset({"linux-glibc", "linux-musl", "darwin", "win32", "android"})
+    # `auto` gives guard here (D44; CI `jit`, glibc and musl;
+    # darwin: CI run 41610392553, `os (macos-26-intel)`;
+    # win32: CI run 41640149866, `os (windows-latest)`;
+    # android: CI run 41708608127, the `Android` cell of platforms.yml, x86_64 emulator, step 5)
+    verified = frozenset({"linux-glibc", "linux-musl", "darwin", "win32", "android"})
+
+    def guard_backend(self) -> Any:
+        from waboros.targets.jit.x86_64.backend import Backend
+
+        return Backend(guard=True)
+
+    def fault_handler(
+        self,
+        tables: int,
+        prev: int,
+        sigaction: int,
+        reraise: int,
+        darwin: bool = False,
+        windows: bool = False,
+        bionic: bool = False,
+    ) -> bytes:
+        from waboros.targets.jit.x86_64.abi import fault_handler
+        from waboros.targets.jit.x86_64.encoder import Asm
+
+        a = Asm()
+        fault_handler(
+            a, tables, prev, sigaction, reraise, darwin=darwin, windows=windows, bionic=bionic
+        )
+        return a.finish()
+
 
 @cache
 def trampolines() -> "Trampolines":

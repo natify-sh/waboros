@@ -2,7 +2,7 @@
 title: Risks and possible solutions
 kind: log
 status: current
-updated: 2026-11-02
+updated: 2026-11-05
 ---
 
 # Risks and possible solutions
@@ -51,7 +51,7 @@ known-bad versions can force recompilation.
 **Status at HEAD: partly mitigated.** Mitigated on x86-64 Linux: the W^X executable-memory probe and the
 fallback to `pyc` with `JitUnavailableWarning` (D31; proved with executable memory forbidden by
 `tools/no_exec.py` in the CI `spec` job and `tests/test_fallback.py`); CET IBT (`endbr64` at every
-indirectly reachable entry, `backend.py`) and CET shadow stacks (traps return through frames, S0003). aarch64: `bti c` landing pads are emitted and the tests run under QEMU with BTI enforced; PAC is not used (S0004). macOS `MAP_JIT` under a hardened runtime: answered for python.org CPython (the JIT runs, row below). Android: answered for x86_64 in an `untrusted_app` process (the JIT runs, row below); arm64 has no CI job. Open: Windows ACG (the Windows and macOS x64 CI jobs run `tests/jit`).
+indirectly reachable entry, `backend.py`) and CET shadow stacks (traps return through frames, S0003). aarch64: `bti c` landing pads are emitted and the tests run under QEMU with BTI enforced; PAC is not used (S0004). macOS `MAP_JIT` under a hardened runtime: answered for python.org CPython (the JIT runs, row below; the macOS cells of `platforms.yml` keep checking it). Android: answered for x86_64 in an `untrusted_app` process (the JIT runs, row below; the Android cell of `platforms.yml`); arm64 is built but not run (no emulator on arm64 runners), so it stays explicit. Open: Windows ACG (the Windows cells of `platforms.yml` run `tests/jit` in a default process, which does not enable ACG).
 
 The direction is clear: more systems forbid writable-and-executable memory, and CPUs add control-flow
 integrity that hand-made code must respect.
@@ -60,8 +60,8 @@ integrity that hand-made code must respect.
 |---|---|---|---|
 | iOS / iPadOS (Pythonista) | no JIT for third-party apps | JIT impossible | `pyc`; maybe a system engine (R3, JavaScriptCore) |
 | macOS on Apple Silicon | executable memory needs `MAP_JIT` and per-thread write/execute switching (`pthread_jit_write_protect_np`); hardened-runtime apps need a JIT entitlement | works if the interpreter binary allows it; depends on how it is signed | ctypes calls for `MAP_JIT` + toggling; probe; fall back to `pyc` |
-| macOS arm64, python.org CPython | notarized, hardened-runtime build (`flags=0x10000(runtime)`) | **the JIT runs** (CI job `macos-pythonorg`, run 41349579025, python.org 3.13.17 pinned by sha256, PSF-signed): the binary has `com.apple.security.cs.disable-executable-page-protection` (also `disable-library-validation`, `allow-dyld-environment-variables`, `debugger`, `get-task-allow`, `automation.apple-events`; no `allow-jit`), the probe returns None, `auto` selects `jit-aarch64` with no warning and the aarch64 ABI tests pass (56 passed) | if a future python.org build drops that entitlement, the job fails and `auto` falls back to `pyc` with the D31 warning; non-hardened CPython (uv, Homebrew, pyenv) is unaffected |
-| Android app process | SELinux policy of `untrusted_app` (anonymous executable memory, `execmem`; apps cannot execute files from their data directory since Android 10, which does not touch our `mmap` path) and the kernel's own limits | **x86_64: allowed** (CI run 41351056918, job `android`): in the testbed app (python.org CPython 3.14.10, target API 35, `aosp_atd` x86_64 emulator, SELinux context `u:r:untrusted_app`) the `jit-x86_64` probe succeeds, `auto` selects it with no warning, CoreMark passes its self-check (15 424 it/s on the emulator: not a benchmark) and the JIT tests pass (75 passed, 5 skipped); logcat shows no `execmem` denial. The job keeps checking it on every push and passes either way (JIT, or `pyc` with one `JitUnavailableWarning`). Termux is a different, permissive environment and proves nothing for apps | probe; fall back; `arm64_v8a` is not checked in CI (no emulator on GitHub arm64 runners), so the aarch64 answer comes from a device |
+| macOS arm64, python.org CPython | notarized, hardened-runtime build (`flags=0x10000(runtime)`) | **the JIT runs** (run 41349579025 of the former CI job `macos-pythonorg`: python.org 3.13.17 pinned by sha256, PSF-signed; since then the macOS cells of `platforms.yml`, which use python.org CPython, run `tests/jit` on every push): the binary has `com.apple.security.cs.disable-executable-page-protection` (also `disable-library-validation`, `allow-dyld-environment-variables`, `debugger`, `get-task-allow`, `automation.apple-events`; no `allow-jit`), the probe returns None, `auto` selects `jit-aarch64` with no warning and the aarch64 ABI tests pass (56 passed) | if a future python.org build drops that entitlement, the macOS cells of `platforms.yml` (which use the python.org CPython) fail and `auto` falls back to `pyc` with the D31 warning; non-hardened CPython (uv, Homebrew, pyenv) is unaffected |
+| Android app process | SELinux policy of `untrusted_app` (anonymous executable memory, `execmem`; apps cannot execute files from their data directory since Android 10, which does not touch our `mmap` path) and the kernel's own limits | **x86_64: allowed** (CI run 41351056918 of the former job `android`; the Android cell of `platforms.yml` repeats it, run 41708608127): in the testbed app (python.org CPython 3.14.10, target API 35, `aosp_atd` x86_64 emulator, SELinux context `u:r:untrusted_app`) the `jit-x86_64` probe succeeds, `auto` selects it with no warning, CoreMark passes its self-check (15 424 it/s on the emulator: not a benchmark) and the JIT tests pass (75 passed, 5 skipped); logcat shows no `execmem` denial. The Android cell of `platforms.yml` keeps running the JIT tests on every push. Termux is a different, permissive environment and proves nothing for apps | probe; fall back; `arm64_v8a` is not checked in CI (no emulator on GitHub arm64 runners), so the aarch64 answer comes from a device |
 | Linux, hardened | SELinux `deny_execmem`, PaX/grsecurity `MPROTECT`, systemd `MemoryDenyWriteExecute=yes` | `mmap`/`mprotect` to executable fails | probe; fall back; document for service authors |
 | Windows | Arbitrary Code Guard (process mitigation, opt-in) blocks dynamic code | same | probe; fall back |
 | Pyodide / browsers | no native code at all | JIT impossible | `pyc`, or the browser's `WebAssembly` (ROADMAP open question 7) |
@@ -80,7 +80,8 @@ the spec core passes on `jit-x86_64` and `jit-aarch64` like on `pyc`; the ISA ga
 compiled module of both targets, SIMD ones included; SIMD code also runs on an SSE2-only CPU under
 QEMU (`qemu64`) in CI; the independent final review of phase 3 is done (S0002 step 6) and the SIMD
 steps are read by a `reviewer` one by one (S0005). Open: differential fuzzing against wasmtime
-(phase 5), and the review of the SIMD steps as a whole (S0005, 5f).
+(phase 5: `tools/fuzz.py` exists since S0010 step 0 for `pyc` against `pyc`; the JITs and Wasmtime, as a
+nightly non-blocking job, follow, ROADMAP "Next"). The review of the SIMD steps as a whole (S0005, 5f) found no correctness defect.
 
 **Risk.** Encoding mistakes, register-allocation mistakes and missed checks are not exceptions but
 wrong results or sandbox escapes. The PoC already met three silent bugs (LESSONS.md 1, 2, 5).
@@ -154,8 +155,35 @@ know, otherwise recompile" is the simplest robust rule. It needs the wasm at han
 
 ## R6. A signal handler of our own (guard pages in the JIT)
 
-**Status at HEAD: open, not started in the package.** `jit-x86_64` uses explicit bounds checks only; guard
-pages and the handler are phase 5 (D29).
+**Status at HEAD: mitigated where guard pages are the default, open elsewhere. S0006 is implemented (steps 1-5 and 7; step 6, the artifact flag, moved to the artifact-format spec of phase 5). Guard pages are the default (`auto`) on Linux glibc x86-64 and aarch64, Linux musl x86-64, macOS, Windows x64 and arm64, and Android x86_64 (CI run 41708608127); Linux musl aarch64 and Android arm64 use explicit checks. Open or documented: emulators that tear a split store, crash reporters and debuggers in front of the handler (below), and the C loader's handler (D36).** S0006 step 1:
+guard code on `jit-x86_64`; step 2 the same on `jit-aarch64` (`aarch64/abi.py`, verified under QEMU and on the native
+arm64 runner; CoreMark +11.4 % there, BENCHMARKS.md). The handler is emitted machine code (`x86_64/abi.py`, `aarch64/abi.py`) reading this copy's registry
+(`common/guard.py`), chaining every fault it does not claim (tests: `tests/jit/test_guard.py`, foreign faults
+with and without `faulthandler`, a broken chain, a foreign chaining handler, wasmtime above ours, two copies of
+the package in either order). Since D44 `auto` is the default: guard on the verified rows (Linux glibc x86-64
+and aarch64, Linux musl x86-64, macOS and Windows x64 and arm64, Android x86-64),
+explicit elsewhere; `WABOROS_JIT_BOUNDS=explicit` installs nothing. macOS x86-64 and arm64 (step 3): a handler
+on SIGSEGV and SIGBUS, built from xnu's sources without a macOS machine; CI's macOS steps ran the spec suite and
+`test_guard.py` in guard mode and passed (run 41610392553), so the row is verified. **Not detected** (rule A, S0006 Changes):
+faulthandler that was already enabled when ours was installed (as under pytest), then disabled and re-enabled
+while a library's handler is above ours; a guard fault then reaches faulthandler through that library and ends
+the process (139). faulthandler enabled only after ours, under any foreign handler, is detected (the Q1 error). A
+straddling store may write its in-bounds part before the fault where a store is split (QEMU's TCG, possibly box64
+or FEX; Arm, RISC-V); on x86-64 this is accepted as in Wasmtime (D45, LESSONS 50): native faults are precise, and
+CI's qemu64 steps run in explicit mode. aarch64 follows the same rule (D45): under QEMU a straddling 16-byte
+store wrote its first 8 bytes, and native Arm hardware is allowed to do the same. Under FEX or box64 on an Arm server an x86-64 Python sees
+x86_64 and glibc, the verified row, so `auto` turns guard pages on exactly where a store may tear;
+Wasmtime does not detect this either. Open: detect an emulator (`/proc/cpuinfo`, FEX's and box64's
+environment variables) and fall back to explicit, or keep it a documented limitation (D45). The same
+holds for Rosetta 2 (an x86-64 Python on Apple Silicon reports x86_64 on the verified `darwin` row) and
+Prism (an x64 Python on Windows on Arm reports AMD64 on the verified `win32` row): `auto` gives guard
+pages there, and no CI job runs them; their fault delivery and store tearing are unverified. Windows x64
+and arm64 (S0006 step 4): a vectored exception handler (offsets from the Windows SDK headers), verified by CI
+runs 41633456821 (`arm64 (windows-11-arm)`) and 41640149866 (`os (windows-latest)`), jobs now in `platforms.yml`; `win32` is a verified
+row, so `auto` gives guard there. Android x86_64 (S0006 step 5): bionic's
+32-byte `struct sigaction`, installed through ART's libsigchain (below); `tests/jit/test_android.py` in the
+Android cell of `platforms.yml`, verified by CI run 41708608127. Open: Linux musl aarch64 (no
+`__clear_cache` without libgcc, S0004). Android arm64 stays explicit, a documented limitation (S0006).
 
 Guard pages need a SIGSEGV handler in the process (ARCHITECTURE.md, "Memory"); the PoC emits it as
 machine code. Risks and possible answers:
@@ -166,26 +194,102 @@ machine code. Risks and possible answers:
   platform, verified by a test that traps on purpose; explicit checks where no entry exists.
 * **Other handlers in the process**: `faulthandler`, other runtimes (wasmtime-py, wasmext modules,
   JVM/.NET embedded), a later `sigaction` by someone else that replaces ours. Answer: chain to the
-  previous handler (the PoC does), re-check at each entry that ours is still installed (cheap
-  `sigaction` query) and fall back to explicit checks if not; never install when the user asks not to.
+  previous handler (the PoC does), re-check at each entry and after each host call (a `sigaction`
+  query) and raise when the chain is recognisably broken (SIG_DFL/SIG_IGN, a handler inside the
+  interpreter's own image by `dladdr` — faulthandler, the `signal` module —, faulthandler enabled
+  after ours under a foreign handler, a Python-level handler set after ours; S0006 Q1, rule A); any other handler is assumed to chain, as Wasmtime assumes;
+  never install when the user asks not to (`explicit` installs nothing).
 * **Threads**: the handler is per process; the fault address and the code range identify the module,
   so it works from any thread; stack-overflow detection needs `sigaltstack` per thread (not done).
 * **A fault not of ours inside our code range** (a bug of the JIT): becomes a wasm trap instead of a
-  crash. Answer: only addresses inside a reservation are taken; differential tests against Wasmtime.
-* **Several modules**: one handler with a table of (reservation, code range, stub), or one per module
-  chained — the PoC has one per module.
+  crash. Answer: only fault points of the fault map with an address inside a reservation are taken
+  (S0006); differential tests against Wasmtime.
+* **Several modules**: one handler per copy of the package with a table of code ranges (fault maps)
+  and reservations; several copies chain (S0006 Q8 as revised; tested with a renamed copy).
 * **CET / BTI**: the handler is entered indirectly by the kernel; with IBT enforced it needs `endbr64`
   (R2).
+* **Android: ART's libsigchain sits in front** (S0006 step 5). In an app process it interposes `sigaction`
+  and owns the kernel's SIGSEGV action: ours becomes its "user" action, called after ART's fault manager
+  (which takes only faults in ART's own generated code on a Runnable thread) and debuggerd's GWP-ASan hook.
+  This holds only while we call libsigchain's `sigaction` (the one `ctypes.CDLL(None)` finds; a raw
+  syscall, or bionic's own symbol, would put ours in front and a later `EnsureFrontOfChain` would make our
+  saved action point back into the chain). `test_android.py` checks that the kernel's action is still
+  libsigchain's after our install. Residual: the SIG_DFL path makes libsigchain log with a stack unwind
+  inside the handler (only when the process is ending); a debuggable app with libsigchain's hooks off
+  makes `sigaction` a no-op, which `broken()` reads as SIG_DFL (`auto` gives explicit); rule A has no
+  interpreter image there (`CDLL(None)` does not see libpython), so the conservative step-1 rule applies.
+* **macOS: Mach exceptions come first.** A fault is an `EXC_BAD_ACCESS` Mach exception before it becomes
+  a signal, so a debugger or a crash reporter on a thread or task exception port (Breakpad, Crashpad,
+  Sentry's native SDK) sees every guard fault before our handler. One that returns `KERN_FAILURE` lets
+  the signal through; one that terminates the process defeats guard mode (`WABOROS_JIT_BOUNDS=explicit`
+  is the answer). lldb stops at each guard trap (lldb 15 and later can pass them with
+  `settings set platform.plugin.darwin.ignored-exceptions EXC_BAD_ACCESS`; not checked here). Wasmtime
+  moved to Mach ports for this reason (its `machports.rs`, issue 2456); we keep signals (S0006 Q5) until a
+  user's crash reporter breaks them. Wasmtime itself, with its default Mach ports, installs no signal
+  handler, so in one process with it ours stays on top.
+* **macOS: sent signals look like faults** (LESSONS 57): xnu gives a sent SIGSEGV/SIGBUS a positive
+  `si_code`, and its `si_addr` is the thread's last page-fault address (x86-64 `es.faultvaddr`, arm64
+  `es.far`; `bsd/dev/{i386,arm}/unix_signal.c`). For a thread running memory-heavy wasm that address is
+  routinely inside a reservation, so a `kill -BUS`/`-SEGV` that lands while the PC is on a fault point
+  becomes a `MEMORY_OUT_OF_BOUNDS` trap and the signal is swallowed. Accepted, as in Wasmtime, which
+  decides by the PC alone. A previous SIG_DFL/SIG_IGN is always followed by `raise`. For a real fault and SIG_DFL, the pending signal ends the process before the instruction runs again, with the same signal. With SIG_IGN, xnu's `threadsignal` drops the signal, so a real fault runs again forever (a 100 % CPU hang): xnu's behaviour without us too, not a regression (Linux force-unignores a fault signal).
+* **Windows: a vectored list instead of a chain** (S0006 step 4). Our handler is added first
+  (`AddVectoredExceptionHandler(1, h)`) and only the holder of the returned handle can remove it, so
+  nothing can unhook or replace it and `broken()` is always None there; but any handler added later with
+  `first = 1` runs before ours. One that returned `EXCEPTION_CONTINUE_EXECUTION` for a guard fault, or
+  ended the process, would defeat guard mode; none is known (Wasmtime's claims only faults of its own
+  wasm on the thread; ctypes' `__except` is frame-based and comes after every vectored handler).
+  **faulthandler is a vectored handler too** (CPython `Modules/faulthandler.c`, 3.13): enabled after
+  ours it sits in front, prints "Windows fatal exception: access violation" and a traceback for every
+  guard fault, disables its SIGSEGV handler and passes the fault on, so the trap still happens but
+  stderr would fill with false "fatal" reports (LESSONS 59). Answer (the maintainer's option A): the
+  check before each entry and after each host call sees faulthandler turned on since the last check
+  and puts ours in front again (add, then remove the old entry; tested). Enabled before ours (pytest,
+  `-X faulthandler`) it stays behind and silent. Still running before ours: faulthandler disabled and
+  re-enabled between two checks while it was already on (the state reads the same; the false reports
+  return, tested); and any other vectored handler added later with `first = 1`, e.g. another
+  runtime's trap handler (Wasmtime's, a .NET or JVM runtime hosted in the process) or another waboros
+  copy installed later. Those seen so far pass faults they do not own on, so they cost a call, not a
+  trap. A long JIT call on one thread that makes no host calls does not see faulthandler enabled by another thread meanwhile: its guard faults bring the false reports until its next entry or host-call return. Vectored **continue** handlers run after a
+  handler returns `EXCEPTION_CONTINUE_EXECUTION`; one that ends the process for every exception (Go's
+  runtime does, per Wasmtime's `vectored_exceptions.rs`) would end it on a guard trap. Wasmtime adds a
+  continue handler of its own in front for this; we do not (no Go embedding in a Python process seen).
+  A debugger gets every guard fault as a first-chance exception before any vectored handler and must
+  pass it on unhandled (in WinDbg, e.g., `sxd av`; not checked here), like lldb on macOS.
+* **Windows: CFG and CET.** python.exe is neither CFG-instrumented nor CETCOMPAT (read from the PE
+  headers of python.org 3.13.9 and 3.14.0, x64 and arm64, and of uv's 3.13.18: no `GUARD_CF`, no
+  `IMAGE_DLLCHARACTERISTICS_EX_CET_COMPAT`; the bundled `vcruntime140.dll` has both, as a control), so
+  neither CFG nor user shadow stacks are on in a default Python process. Were CFG on, ntdll's call of a
+  vectored handler is checked against the CFG bitmap, and `VirtualProtect` to an executable protection
+  marks the whole area as valid targets by default (Microsoft, "Memory Protection Constants",
+  `PAGE_TARGETS_NO_UPDATE`), which is how `common/execmem.py` seals code. Under user shadow stacks,
+  setting a new `Rip` in the context is subject to context-IP validation, and resuming in the same
+  frame does not help: CI's `windows-latest` has user CET, and a child with shadow stacks forced on
+  (strict, IP validation) died with 0xC0000409 at its first guard trap (run 41633456821; LESSONS 61).
+  Answer: under that policy the runtime registers every resume address with
+  `SetProcessDynamicEHContinuationTargets` before the code runs and removes them when the code is freed;
+  where the policy also says CetDynamicApisOutOfProcOnly (it did there, unasked) or the API is missing,
+  guard mode is refused and `auto` gives explicit. A process that turns validation on after our
+  install is not covered (the policy is read once). The forced-CET test checks both cases.
+* **macOS arm64: `MAP_JIT` write mode and PAC.** The handler's code is `MAP_JIT` memory, which a thread
+  cannot execute while it is in write mode (`pthread_jit_write_protect_np(0)`). A fault on such a
+  thread (another library's JIT writing its code) cannot run our handler and faults again inside the
+  signal delivery; on xnu a fault while its signal is blocked stays pending (`threadsignal`, read, not
+  measured), so this may hang rather than crash. Our own write windows are copies into fresh pages and
+  cannot fault. The handler writes no JIT memory, only the signal context. The saved PC is unsigned in an
+  arm64 process (CPython's builds are arm64 or universal2, not arm64e): its threads run with user JOP
+  disabled and sigreturn takes the state as written (`osfmk/arm64/status.c`). An arm64e host would need
+  the PC signed; it is not supported.
 
 ## R5. Other known risks (detailed elsewhere)
 
 | risk | where |
 |---|---|
-| scope: feature parity with Wasmtime (SIMD, GC, exceptions, threads, memory64) is large | FEATURES.md, ROADMAP.md |
+| scope: feature parity with Wasmtime (GC, threads; SIMD, memory64 and exceptions are done) is large | FEATURES.md, ROADMAP.md |
 | `pyc` speed ceiling on CPython (~1.5–2× the PoC at best) | DECISIONS.md D4, BENCHMARKS.md |
 | long calls: GIL in `pyc`, uninterruptible machine code | ARCHITECTURE.md, "Long calls and the GIL" |
 | deep recursion in `pyc` | ARCHITECTURE.md, "Calls, stack depth and recursion" |
 | the WASI host is undecided | ROADMAP.md, open question 2 |
 | `mpy-cross` 1.29.0 miscompiles very large native functions | LESSONS.md 17 |
-| maintaining several architectures | TARGETS.md, copy-and-patch |
+| maintaining several architectures | TARGETS.md, D48 (native JIT only x86-64, aarch64, riscv64; the rest run `pyc`), copy-and-patch |
 | a host function on a very small thread (a few hundred KiB) needing more than half its stack can overflow the C stack on CPython < 3.14 (no C-stack check), as it would without wasm | S0003 (native limit), step-3a review |

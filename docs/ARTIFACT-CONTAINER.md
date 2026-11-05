@@ -2,7 +2,7 @@
 title: The artifact container - our own format or ELF (as Wasmtime does)
 kind: reference
 status: draft
-updated: 2026-11-02
+updated: 2026-11-03
 ---
 
 # The artifact container: our own format or an ELF container
@@ -22,7 +22,7 @@ means a `format_version` bump, plus changes to the C reference loader and to eve
      OS, because the loader is ours;
    * Android 10+ does not let apps execute files from their data directory and iOS does not allow
      it at all. Our anonymous `mmap` path is what passes in the Android app process (RISKS R2, CI
-     job `android`);
+     the Android cell of `platforms.yml`);
    * a file on disk (temp dirs, `noexec` mounts, cleanup), dynamic linking against runtime symbols,
      the OS loader's policies.
 2. **ELF as a container only**, parsed by our own loader (Python and the C reference loader),
@@ -80,7 +80,7 @@ Every file is `ET_REL` with OS/ABI `0xc8`, on Linux, macOS and Windows alike. Wh
 | 2 `ENTRIES` | symbols `__waboros_entry_sysv`, `__waboros_entry_win64`, … in `.symtab` |
 | 3 `FUNCS` | `.symtab` entries (`STT_FUNC`, offset and size; names from the name section or `wasm[N]`) + `.waboros.funcs` for type index and frame size |
 | 4-11 `TYPES` … `START` | `.waboros.types`, `.waboros.imports`, … the same payloads, one section each |
-| 12 `TRAPMAP` | `.waboros.traps` |
+| 12 `TRAPMAP` (frames and, with `BOUNDS_GUARD`, the guard fault map) | `.waboros.traps` |
 | 13 `RELOCS` | real `SHT_RELA` sections if copy-and-patch ever needs relocations |
 | 14 `WASM` (fat file) | `.waboros.wasm` |
 | `CHECKSUM` | `.waboros.checksum` (sha256 of the file with this section's bytes zeroed), or dropped in favour of `module_sha256` + `config_sha256` |
@@ -111,15 +111,16 @@ normal behaviour.
   rule and a test.
 * **The ELF class.** ELF64 for x86-64, aarch64 and riscv64: the tools read `EM_X86_64` in
   ELFCLASS32 as the x32 ABI and aarch64 ELF32 as ILP32, so a 32-bit class there would mislead them.
-  For the deferred 32-bit architectures (i686, armv7, mips32el) there are two options:
+  *History (D48: no 32-bit JIT is planned, so this is moot).* For the 32-bit architectures (i686,
+  armv7, mips32el) there were two options:
   (1) ELF32 with `EM_386` / `EM_ARM` / `EM_MIPS`, so that `objdump` disassembles them as native code
   (the loader then reads both classes, a few dozen lines); (2) ELF64 everywhere, as Wasmtime does
   even for `pulley32` (above) - one reader, but GNU tools may refuse a 32-bit `e_machine` in an
   ELF64 file, which defeats the point of using ELF. Our 32-bit code is native, so (1) fits better;
-  decide with the 32-bit design.
+  decide with the 32-bit design (none is planned).
 * **Byte order**: fix `EI_DATA` to little-endian for every target (as ARTIFACT.md's container is
-  today), or follow the target as Wasmtime does. It matters only for a big-endian target (s390x,
-  deferred).
+  today), or follow the target as Wasmtime does. It matters only for a big-endian target (s390x; it runs `pyc`, D48, so
+  this is moot unless that is reopened).
 * `pyc` and `mpy` artifacts (ARTIFACT.md, "Other targets") would also live in the container, with an
   `e_machine` of `EM_NONE` and their own `.waboros.*` code section. That is a little odd but harmless;
   alternatively, keep the current container for them.
@@ -136,3 +137,17 @@ Q: container of format v1. (a) our own (as written), (b) ELF64 `ET_REL` with a p
 `.waboros.*` sections (Wasmtime's model), (c) our own format plus an export tool that writes an ELF
 for inspection only. (c) gets the tooling without a contract change, but then the shipped artifact
 and the inspected one are two different files, which is weaker for D36 and the micro-compilers.
+
+## Also open: the file extension
+
+D18 names serialized files `<name>.<target>.<ext>` with `.w2a`, "a working extension until the
+project has a name". The project is now waboros (D40), so the extension is decided together with the
+container: e.g. `.wab` for our own container, or an ELF-flavoured name if (b) is chosen. The header,
+not the name, stays authoritative; the name carries what decides whether a file can run (target, ISA
+level, and the bounds mode: guard or explicit, S0006).
+
+## Also open: the guard flag and the fault map
+
+S0006 step 6 (the `BOUNDS_GUARD` flag and the fault map in `TRAPMAP` in the serialized artifact, and
+the C loader's fault handler) moved to the phase-5 artifact-format spec, to be done with the
+container chosen here. The package builds both in memory today and writes neither to a file.

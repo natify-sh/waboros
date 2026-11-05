@@ -20,7 +20,10 @@
         "customPageSizes": null,
         "esmIntegration": null,
         "exceptions": null,
-        "exceptionsFinal": null,
+        "exceptionsFinal": [
+          "partial",
+          "102/110 over exceptions/; xfail 8 (exceptions/cast 5, exceptions/tag 3); mostly: no current module"
+        ],
         "extendedConst": true,
         "extendedNameSection": null,
         "flexibleVectors": null,
@@ -32,16 +35,16 @@
         "jsPrimitiveBuiltins": null,
         "jsStringBuiltins": null,
         "jspi": null,
-        "memory64": null,
+        "memory64": [
+          "partial",
+          "8717/8719 over memory64/; xfail 2 (memory64/table_init64 2); mostly: LoadError: NotImplementedError: rec / sub / struct / array types"
+        ],
         "memoryControl": null,
         "moreArrayConstructors": null,
         "multibyteArrayAccess": null,
         "multiMemory": true,
         "multiValue": true,
-        "mutableGlobals": [
-          "partial",
-          "431/439 over global+imports+exports; xfail 8 (imports 8); mostly: LoadError: NotImplementedError: tag import"
-        ],
+        "mutableGlobals": true,
         "numericValuesInWat": null,
         "profiles": null,
         "referenceTypes": [
@@ -49,7 +52,7 @@
           "397/431 over ref_func+ref_is_null+ref_null+ref+table_get+table_set+table_grow+table_size+table+select; xfail 34 (ref_null 34); mostly: no current module"
         ],
         "relaxedDeadCodeValidation": null,
-        "relaxedSimd": null,
+        "relaxedSimd": true,
         "roundingVariants": null,
         "saturatedFloatToInt": true,
         "sharedEverythingThreads": null,
@@ -64,7 +67,7 @@
         "typedFunctionReferences": true,
         "wasmCApi": null,
         "webContentSecurityPolicy": null,
-        "wideArithmetic": null
+        "wideArithmetic": true
       }
     },
     "waboros jit-x86_64": {
@@ -86,7 +89,10 @@
         "customPageSizes": null,
         "esmIntegration": null,
         "exceptions": null,
-        "exceptionsFinal": null,
+        "exceptionsFinal": [
+          "partial",
+          "102/110 over exceptions/; xfail 8 (exceptions/cast 5, exceptions/tag 3); mostly: no current module"
+        ],
         "extendedConst": true,
         "extendedNameSection": null,
         "flexibleVectors": null,
@@ -98,16 +104,16 @@
         "jsPrimitiveBuiltins": null,
         "jsStringBuiltins": null,
         "jspi": null,
-        "memory64": null,
+        "memory64": [
+          "partial",
+          "8717/8719 over memory64/; xfail 2 (memory64/table_init64 2); mostly: LoadError: NotImplementedError: rec / sub / struct / array types"
+        ],
         "memoryControl": null,
         "moreArrayConstructors": null,
         "multibyteArrayAccess": null,
         "multiMemory": true,
         "multiValue": true,
-        "mutableGlobals": [
-          "partial",
-          "431/439 over global+imports+exports; xfail 8 (imports 8); mostly: LoadError: NotImplementedError: tag import"
-        ],
+        "mutableGlobals": true,
         "numericValuesInWat": null,
         "profiles": null,
         "referenceTypes": [
@@ -115,7 +121,7 @@
           "397/431 over ref_func+ref_is_null+ref_null+ref+table_get+table_set+table_grow+table_size+table+select; xfail 34 (ref_null 34); mostly: no current module"
         ],
         "relaxedDeadCodeValidation": null,
-        "relaxedSimd": null,
+        "relaxedSimd": true,
         "roundingVariants": null,
         "saturatedFloatToInt": true,
         "sharedEverythingThreads": null,
@@ -130,7 +136,7 @@
         "typedFunctionReferences": true,
         "wasmCApi": null,
         "webContentSecurityPolicy": null,
-        "wideArithmetic": null
+        "wideArithmetic": true
       }
     },
     "waboros jit-aarch64": {
@@ -152,7 +158,10 @@
         "customPageSizes": null,
         "esmIntegration": null,
         "exceptions": null,
-        "exceptionsFinal": null,
+        "exceptionsFinal": [
+          "partial",
+          "102/110 over exceptions/; xfail 8 (exceptions/cast 5, exceptions/tag 3); mostly: no current module"
+        ],
         "extendedConst": true,
         "extendedNameSection": null,
         "flexibleVectors": null,
@@ -164,16 +173,16 @@
         "jsPrimitiveBuiltins": null,
         "jsStringBuiltins": null,
         "jspi": null,
-        "memory64": null,
+        "memory64": [
+          "partial",
+          "8717/8719 over memory64/; xfail 2 (memory64/table_init64 2); mostly: LoadError: NotImplementedError: rec / sub / struct / array types"
+        ],
         "memoryControl": null,
         "moreArrayConstructors": null,
         "multibyteArrayAccess": null,
         "multiMemory": true,
         "multiValue": true,
-        "mutableGlobals": [
-          "partial",
-          "431/439 over global+imports+exports; xfail 8 (imports 8); mostly: LoadError: NotImplementedError: tag import"
-        ],
+        "mutableGlobals": true,
         "numericValuesInWat": null,
         "profiles": null,
         "referenceTypes": [
@@ -181,7 +190,7 @@
           "397/431 over ref_func+ref_is_null+ref_null+ref+table_get+table_set+table_grow+table_size+table+select; xfail 34 (ref_null 34); mostly: no current module"
         ],
         "relaxedDeadCodeValidation": null,
-        "relaxedSimd": null,
+        "relaxedSimd": true,
         "roundingVariants": null,
         "saturatedFloatToInt": true,
         "sharedEverythingThreads": null,
@@ -196,7 +205,7 @@
         "typedFunctionReferences": true,
         "wasmCApi": null,
         "webContentSecurityPolicy": null,
-        "wideArithmetic": null
+        "wideArithmetic": true
       }
     }
   }

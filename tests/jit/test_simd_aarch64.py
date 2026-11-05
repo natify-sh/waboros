@@ -32,7 +32,7 @@ def _module() -> tuple[str, dict[str, list[tuple[int, ...]]]]:
     for op in sorted(v.SUPPORTED - v.MOVES):
         o = fs.OPS[op - fs.BASE]
         n, res = o.name, "v128" if o.res == fs.V else "i32"
-        if o.imm == fs.SHUFFLE:  # its own test below
+        if o.imm == fs.SHUFFLE or len(o.pops) == 3:  # own tests: below, test_relaxed_simd.py
             continue
         if o.imm == fs.MEM:  # an extending load: edges of memory 0, an offset, a constant
             ok = [(a,) for a in (0, 1, 65527, 65528, 65529, 0xFFFFFFFF)]
@@ -77,7 +77,7 @@ def test_operators_match_pyc(pins: str, monkeypatch: pytest.MonkeyPatch) -> None
                 got, want = [_nan_class(name, g) for g in got], [_nan_class(name, w) for w in want]
             assert got == want, (key, [hex(a) for a in args], got, want)
     assert run(jit, "v128.load8x8_s", 65529) is TrapCode.MEMORY_OUT_OF_BOUNDS
-    assert len(v.SUPPORTED) == 236  # every operator (S0005)
+    assert len(v.SUPPORTED) == 256  # every operator (S0005, S0008)
 
 
 def test_shuffle_swizzle_and_rounding_match_pyc(monkeypatch: pytest.MonkeyPatch) -> None:

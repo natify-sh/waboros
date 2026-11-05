@@ -5,9 +5,9 @@ x16/x17 for indirect branches and offsets no immediate takes, v0/v1 for popcnt a
 first, then x2-x8 (saved by the bridge).
 
 i32 values stay zero-extended: 32-bit (w) forms write the whole register (LESSONS 5). Only
-`cmp/cmn/ccmp/fcmp` write the flags, and each compare is emitted right before its consumer
-(LESSONS 1). ARMv8.0 only (D24): division checked explicitly (sdiv/udiv do not trap), popcnt
-through NEON, trapping float truncations checked before `fcvtz*`.
+`cmp/cmn/ccmp/fcmp` and `wide`'s `adds/subs` write the flags, each emitted right before its
+consumer (LESSONS 1). ARMv8.0 only (D24): division checked explicitly (sdiv/udiv do not trap),
+popcnt through NEON, trapping float truncations checked before `fcvtz*`.
 
 Far mode (S0004): a conditional branch reaches ±1 MiB. `func_end` reports a function in which one
 does not; compiled again with `far`, every conditional branch to a label becomes `b.!cond` over
@@ -32,12 +32,18 @@ from waboros.targets.jit.aarch64.encoder import (
     bitmask,
     invert,
 )
-from waboros.targets.jit.common.backend import SWAP, Dst, Imm, Operand, Reg, Slot
-from waboros.targets.jit.common.compiler import SUPPORTED
+from waboros.targets.jit.common import lower
+from waboros.targets.jit.common.backend import SWAP, AddK, Dst, Imm, Operand, Reg, Slot
+from waboros.targets.jit.common.compiler import EXN, SUPPORTED, WIDEOPS
 from waboros.targets.jit.common.context import (
+    ARENA_CURSOR,
+    ARENA_LIMIT,
+    EXCEPTION,
+    EXN_REFILL,
     HOST_BRIDGE,
     INTERRUPT,
     NSTACK_LIMIT,
+    STATUS_EXCEPTION,
     STATUS_INTERRUPT,
     TAIL_SWITCH,
     VSTACK_LIMIT,
@@ -64,17 +70,22 @@ class Frame:
     vcheck: int  # position of the `movz/movk x16, #8 * frame_slots` pair
     traps: dict[int, Label] = field(default_factory=lambda: {})
     start: int = 0  # code offset of the function
+    error: Label = field(init=False)  # a call's non-zero status: `unwind` or a landing pad
 
 
 class Backend:
     pool = POOL
     tos = 0
-    supported = SUPPORTED | v128.SUPPORTED
+    supported = SUPPORTED | v128.SUPPORTED | frozenset(WIDEOPS) | EXN
 
-    def __init__(self) -> None:
+    def __init__(self, *, guard: bool = False) -> None:
         self.a = Asm()
         self.far = False
         self.tables: list[tuple[Label, list[Label], int]] = []  # (table, pads, code offset)
+        self.guard = guard  # S0006: accesses the reservation's guard catches go unchecked
+        self.faults: list[tuple[int, int]] = []  # (fault offset, resume offset), by `finish`
+        self._faults: list[tuple[int, Label]] = []
+        self._oob: Label | None = None  # the stub of the unchecked access `_bounds` just formed
 
     def new_label(self) -> Label:
         return self.a.label()
@@ -112,6 +123,7 @@ class Backend:
         a.bind(label)
         a.bti("c")  # reached by blr from the entry and records, by br x16/x17 from tail calls
         f = Frame(pins, 16 + (len(pins) + 1) // 2 * 16, a.label(), 0, start=a.pos(label))
+        f.error = f.unwind
         a.pair(False, FP, LR, SP, -f.size, "pre")
         a.mov(FP, SP)
         self._pins(f, False)
@@ -147,8 +159,10 @@ class Backend:
         return not a.out_of_range(f.start)
 
     def rewind(self, pos: int) -> None:
+        """Drop the code from `pos` on, with its jump tables and fault points (S0006)."""
         self.a.rewind(pos)
         self.tables = [t for t in self.tables if t[2] < pos]
+        self._faults = [x for x in self._faults if x[0] < pos]
 
     def finish(self) -> tuple[bytes, int]:
         """The code, then the data area: jump tables of 32-bit offsets of their pads from the
@@ -158,6 +172,7 @@ class Backend:
         for table, pads, _ in self.tables:
             a.bind(table)
             a.buf += b"".join(struct.pack("<i", a.pos(p) - a.pos(table)) for p in pads)
+        self.faults = [(pos, a.pos(stub)) for pos, stub in self._faults]
         try:
             return a.finish(), data
         except OutOfRange as e:  # code beyond ±128 MiB of a bl/b: refused, not a crash (S0004)
@@ -207,7 +222,7 @@ class Backend:
         self.a.bl(label)
         if shift_slots:
             self._add_k(FRAME, FRAME, -8 * shift_slots)
-        self._cbz(0, f.unwind, wide=False, nz=True)
+        self._cbz(0, f.error, wide=False, nz=True)
 
     def host_thunk(self, word: int) -> int:
         at = len(self.a.buf)
@@ -223,7 +238,7 @@ class Backend:
         a.ld(16, CTX, 8 * HOST_BRIDGE)
         a.blr(16)
         abi.reload_memory(a)  # memory.grow may have run
-        self._cbz(0, f.unwind, wide=False, nz=True)
+        self._cbz(0, f.error, wide=False, nz=True)
 
     def call_record(self, f: Frame, word: int, shift_slots: int) -> None:
         """A function import, through its record in context word `word` (D30): the callee runs
@@ -235,7 +250,7 @@ class Backend:
         self._enter_record(16)
         if shift_slots:
             self._add_k(FRAME, FRAME, -8 * shift_slots)
-        self._cbz(0, f.unwind, wide=False, nz=True)
+        self._cbz(0, f.error, wide=False, nz=True)
 
     def _enter_record(self, r: int) -> None:
         """Call the function record at x<r> on its context (x28 saved in a 16-byte frame)."""
@@ -272,8 +287,25 @@ class Backend:
         self.a.mov_imm(scratch, v, wide)
         return scratch
 
-    def move(self, dst: Dst, src: Operand, wide: bool) -> None:
+    def _addk(self, d: int, o: AddK) -> None:
+        """d = (o.id + o.k) mod 2**32, zero-extended (S0007 K): one 32-bit add/sub of an imm12
+        (optionally lsl #12), else the constant through x16 and a 32-bit add. No flags."""
+        a, neg = self.a, -o.k & M32
+        if _imm12(o.k):
+            a.addsub_imm("add", d, o.id, o.k, False)
+        elif _imm12(neg):
+            a.addsub_imm("sub", d, o.id, neg, False)
+        else:
+            a.mov_imm(16, o.k, False)
+            a.addsub("add", d, o.id, 16, False)
+
+    def move(self, dst: Dst, src: Operand | AddK, wide: bool) -> None:
         """A register gets the operand's width (32-bit zero-extends); a slot always gets 64 bits."""
+        if isinstance(src, AddK):
+            self._addk(dst.id if isinstance(dst, Reg) else 16, src)
+            if isinstance(dst, Slot):
+                self._word(False, 16, FRAME, 8 * dst.k)
+            return
         if isinstance(dst, Reg):
             if isinstance(src, Imm):
                 self.a.mov_imm(dst.id, src.value & (M64 if wide else M32), wide)
@@ -342,6 +374,22 @@ class Backend:
             a.madd(dst.id, 11, yr, xr, w, sub=True)
         else:
             a.dp2(div, dst.id, xr, yr, w)
+
+    def wide(self, op: str, dst: Slot, args: tuple[Operand, ...]) -> None:
+        """S0008: the operands into registers first (x9-x12; loads and moves leave the flags),
+        then adds/adc or subs/sbc back to back (after subs C = NOT borrow, as sbc takes it), or
+        mul plus umulh/smulh; both results through x13/x14 into their slots."""
+        a = self.a
+        rs = [self._r(x, 9 + i, True) for i, x in enumerate(args)]
+        if op in ("add128", "sub128"):
+            sub = op == "sub128"
+            a.addsub("subs" if sub else "adds", 13, rs[0], rs[2])
+            a.adc(14, rs[1], rs[3], sub=sub)
+        else:
+            a.madd(13, rs[0], rs[1], ZR)
+            a.mulh(14, rs[0], rs[1], op == "mul_wide_s")
+        self._word(False, 13, FRAME, 8 * dst.k)
+        self._word(False, 14, FRAME, 8 * dst.k + 8)
 
     def unop(self, op: str, dst: Reg, x: Operand, wide: bool) -> None:
         a, d, w = self.a, dst.id, wide
@@ -455,53 +503,164 @@ class Backend:
         self.a.bfm("ubfm", dst.id, self._mem(mem)[1], 16, 63)  # lsr #16
 
     def _bounds(
-        self, f: Frame, addr: Operand, offset: int, size: int, mem: int
+        self, f: Frame, addr: Operand | AddK, offset: int, size: int, mem: int, a64: bool, lo: int
     ) -> tuple[int, int | None, int]:
-        """The bounds check (R3: the one place memory safety rests on). addr + offset (< 2**33)
-        and its end are computed in 64 bits, so nothing wraps; the end must be <= the memory's
-        size or the access traps. A register address is copied with a 32-bit move first, so its
-        upper half cannot matter. Returns the access as (base, index register or None, offset)."""
-        a = self.a
-        base, limit = self._mem(mem)
+        """The bounds check (R3), written once in `lower.bounds` (S0011). Returns the access as
+        (base, index register or None, offset). In guard mode (S0006) an access the guard
+        catches has no check, and the caller marks its one memory instruction with
+        `_fault_point`."""
+        assert self._oob is None, "an unchecked access without its fault point"
         oob = self._stub(f, TrapCode.MEMORY_OUT_OF_BOUNDS)
-        if isinstance(addr, Imm):
-            ea = (addr.value & M32) + offset
-            if _imm12(ea + size):
-                a.addsub_imm("subs", ZR, limit, ea + size)
-            else:
-                a.mov_imm(10, ea + size)
-                a.cmp(limit, 10)
-            self._bcc("lo", oob)
-            if not ea % size and ea // size < 1 << 12:
-                return base, None, ea
-            a.mov_imm(9, ea)
-            return base, 9, 0
-        if isinstance(addr, Reg):
-            a.mov(9, addr.id, False)
-        else:
-            self._r(addr, 9, False)
+        return lower.bounds(self, oob, addr, offset, size, mem, a64, lo)
+
+    # ---------------------------------------------------------------- low layer (S0011)
+    # The operations `lower` composes; each fits its immediates to the encoding (imm12,
+    # optionally lsl #12, else through x16 or x10; LESSONS 83). Only x9, x10, x16 (x11/x12 for a
+    # memory other than 0; x17 for a context word past 4095 or a frame slot past the scaled
+    # imm12 range; x13-x15 by `ll_three`, `ll_addr`, `ll_elem_addr`) are written; flags are
+    # live only inside `ll_jcmp`, `ll_jcmp_imm`, `ll_add_jc`
+    # and `ll_check_sum`.
+    IDX: int = 9
+    TMP: int = 10
+
+    ll_mem = _mem  # no frame of its own: the bounds check is on the compiler's hot path
+
+    def ll_fault_next(self, label: Label) -> None:
+        self._oob = label
+
+    def ll_jump(self, label: Label) -> None:
+        self.a.b(label)
+
+    def ll_index32(self, addr: Operand | AddK) -> int:
+        self.move(Reg(9), addr, False)  # a w-register write: zero-extends
+        return 9
+
+    def ll_index64(self, addr: Operand) -> int:
+        return self._r(addr, 9, True)
+
+    def ll_fold(self, r: int, offset: int, size: int) -> tuple[int, int]:
+        """No [base, index, #disp] form: x9 = r + offset unless offset is 0."""
         if offset:
-            self._add_k(9, 9, offset)
-        a.addsub_imm("add", 10, 9, size)
-        a.cmp(10, limit)
-        self._bcc("hi", oob)
-        return base, 9, 0
+            self._add_k(9, r, offset)
+            return 9, 0
+        return r, 0
+
+    def ll_add(self, dst: int, src: int, k: int) -> int:
+        self._add_k(dst, src, k)  # dst = src + k mod 2**64: add/sub imm12, else via x16
+        return dst
+
+    def ll_add_jc(self, dst: int, src: int, k: int, label: Label) -> int:
+        """dst = src + k (0 <= k < 2**64) by `adds` (imm12, else via x16); `b.hs label` on the
+        carry out of 64 bits."""
+        if _imm12(k):
+            self.a.addsub_imm("adds", dst, src, k)
+        else:
+            self.a.mov_imm(16, k)
+            self.a.addsub("adds", dst, src, 16)
+        self._bcc("hs", label)
+        return dst
+
+    def ll_jcmp(self, cond: str, x: int, y: int, label: Label) -> None:
+        self.a.cmp(x, y)
+        self._bcc(CC[cond], label)
+
+    def ll_jcmp_imm(self, cond: str, x: int, v: int, label: Label) -> None:
+        """x cond v, 0 <= v < 2**64: `subs xzr, x, #imm12`, else v into x10 and `cmp`."""
+        if _imm12(v):
+            self.a.addsub_imm("subs", ZR, x, v)
+        else:
+            self.a.mov_imm(10, v)
+            self.a.cmp(x, 10)
+        self._bcc(CC[cond], label)
+
+    def ll_access(
+        self, base: int, r: int | None, disp: int, size: int
+    ) -> tuple[int, int | None, int]:  # fmt: skip
+        """(base, index, offset): no r: [base, #disp] when disp is a multiple of size below
+        4096 * size (the scaled form), else x9 = disp; with r and disp: x9 = r + disp."""
+        if r is None:
+            if not disp % size and disp // size < 1 << 12:
+                return base, None, disp
+            self.a.mov_imm(9, disp)
+            return base, 9, 0
+        if disp:
+            self._add_k(9, r, disp)
+            r = 9
+        return base, r, 0
+
+    def ll_check_sum(self, r: int, n: int, limit: int, label: Label, wide: bool) -> None:
+        """x9 = r + n; `wide`: `adds` and `b.hs label` on the carry; x9 > limit: `label`."""
+        self.a.addsub("adds" if wide else "add", 9, r, n)
+        if wide:
+            self._bcc("hs", label)
+        self.a.cmp(9, limit)
+        self._bcc("hi", label)
+
+    def ll_index(self, addr: Operand, wide: bool) -> int:
+        """x9 = addr: 64 bits, or an i32 zero-extended (a w-register write); any operand kind."""
+        if not wide and isinstance(addr, Reg):
+            self.a.mov(9, addr.id, False)  # even from x9 itself (LESSONS 5)
+        else:
+            self.move(Reg(9), addr, wide)
+        return 9
+
+    def ll_ctx_word(self, word: int) -> int:
+        """x10 = context word `word` (ldr, scaled imm12 up to word 4095, else via x17)."""
+        self._word(True, 10, CTX, 8 * word)
+        return 10
+
+    def ll_element(self, word: int, r: int) -> tuple[int, int]:
+        """(x10, r): x10 = context word `word`, the element at [x10, r, lsl #3]."""
+        self._word(True, 10, CTX, 8 * word)
+        return 10, r
+
+    def ll_three(
+        self, x: Operand, y: Operand, z: Operand, wx: bool, wy: bool, wz: bool
+    ) -> tuple[int, int, int]:  # fmt: skip
+        """x13 = x, x14 = y, x15 = z (i32 zero-extended by a w-register write, LESSONS 5; 64-bit
+        if `wx`/`wy`/`wz`): no operand is in x13-x15, so the order is free (LESSONS 32)."""
+        for r, o, w in ((13, x, wx), (14, y, wy), (15, z, wz)):
+            if w:
+                self.move(Reg(r), o, True)
+            else:
+                self._u32(r, o)
+        return 13, 14, 15
+
+    def ll_addr(self, r: int, base: int) -> None:
+        """r = base + r: `add r, r, base` (x26, or x11 read by `ll_mem`)."""
+        self.a.addsub("add", r, r, base)
+
+    def ll_elem_addr(self, r: int, word: int) -> None:
+        """r = [context word `word`] + 8 r: `ldr x10, …` as `ll_ctx_word`; `add r, x10, r, lsl
+        #3`."""
+        self._word(True, 10, CTX, 8 * word)
+        self.a.addsub("add", r, 10, r, sh="lsl", amount=3)
+
+    def _fault_point(self) -> None:
+        """The next instruction is the access `_bounds` formed: in guard mode, a fault point
+        (S0006 fault map); in explicit mode nothing."""
+        if self._oob is not None:
+            self._faults.append((len(self.a.buf), self._oob))
+            self._oob = None
 
     def load(
-        self, f: Frame, size: int, signed: bool, wide: bool, dst: Reg, addr: Operand, offset: int,
-        mem: int,
+        self, f: Frame, size: int, signed: bool, wide: bool, dst: Reg, addr: Operand | AddK,
+        offset: int, mem: int, *, a64: bool, lo: int,
     ) -> None:  # fmt: skip
-        base, index, off = self._bounds(f, addr, offset, size, mem)
+        base, index, off = self._bounds(f, addr, offset, size, mem, a64, lo)
+        self._fault_point()
         if index is None:
             self.a.ld(dst.id, base, off, size, signed, wide)
         else:
             self.a.ld_idx(dst.id, base, index, size, signed, wide)
 
     def store(
-        self, f: Frame, size: int, addr: Operand, offset: int, src: Operand, mem: int
+        self, f: Frame, size: int, addr: Operand | AddK, offset: int, src: Operand, mem: int, *,
+        a64: bool, lo: int,
     ) -> None:  # fmt: skip
-        base, index, off = self._bounds(f, addr, offset, size, mem)
+        base, index, off = self._bounds(f, addr, offset, size, mem, a64, lo)
         r = self._r(src, 13, size == 8)
+        self._fault_point()  # one instruction per store (S0006)
         if index is None:
             self.a.st(r, base, off, size)
         else:
@@ -523,9 +682,10 @@ class Backend:
             self._word(False, r, CTX, 8 * word)
 
     def simd(
-        self, f: Frame, op: int, dst: Dst | None, args: tuple[Operand, ...], imm: tuple[int, ...]
+        self, f: Frame, op: int, dst: Dst | None, args: tuple[Operand, ...], imm: tuple[int, ...],
+        *, a64: bool, lo: int,
     ) -> None:  # fmt: skip
-        v128.emit(self, f, op, dst, args, imm)
+        v128.emit(self, f, op, dst, args, imm, a64, lo)
 
     def move_v128(self, dst: Slot, src: Slot | Imm) -> None:
         v128.move(self.a, dst, src)
@@ -640,36 +800,20 @@ class Backend:
         else:
             self.move(Reg(r), o, False)
 
-    def _element(self, f: Frame, word: int, index: Operand) -> None:
-        """x9 = index, bounds-checked against the table's size; x10 = the elements' base."""
-        self._u32(9, index)
-        self._word(True, 10, CTX, 8 * word + 8)
-        self.a.cmp(9, 10)
-        self._bcc("hs", self._stub(f, TrapCode.TABLE_OUT_OF_BOUNDS))
-        self._word(True, 10, CTX, 8 * word)
+    def _element(self, f: Frame, word: int, index: Operand, a64: bool) -> None:
+        """The element check, written once in `lower.element` (S0011): x9 = the index, x10 =
+        the elements' base."""
+        lower.element(self, self._stub(f, TrapCode.TABLE_OUT_OF_BOUNDS), word, index, a64)
 
-    def table_get(self, f: Frame, dst: Reg, word: int, index: Operand) -> None:
-        self._element(f, word, index)
+    def table_get(self, f: Frame, dst: Reg, word: int, index: Operand, *, a64: bool) -> None:
+        self._element(f, word, index, a64)
         self.a.ld_idx(dst.id, 10, 9, 8, scaled=True)
 
-    def table_set(self, f: Frame, word: int, index: Operand, value: Operand) -> None:
-        self._element(f, word, index)
+    def table_set(
+        self, f: Frame, word: int, index: Operand, value: Operand, *, a64: bool
+    ) -> None:  # fmt: skip
+        self._element(f, word, index, a64)
         self.a.st_idx(self._r(value, 11, True), 10, 9, 8, scaled=True)
-
-    def _three(self, x: Operand, y: Operand, z: Operand, wy: bool) -> None:
-        """x13 = x, x14 = y, x15 = z (i32 zero-extended; y 64-bit if `wy`)."""
-        self._u32(13, x)
-        if wy:
-            self.move(Reg(14), y, True)
-        else:
-            self._u32(14, y)
-        self._u32(15, z)
-
-    def _end_check(self, f: Frame, r: int, limit: int, code: int) -> None:
-        """x<r> + x15 (both < 2**35, no wrap in 64 bits) must not exceed x<limit>."""
-        self.a.addsub("add", 9, r, 15)
-        self.a.cmp(9, limit)
-        self._bcc("hi", self._stub(f, code))
 
     def _copy(self, unit: int) -> None:
         """Copy x15 bytes from [x14] to [x13] as memmove does: backwards when the destination is
@@ -711,26 +855,21 @@ class Backend:
         a.bind(done)
 
     def memory_copy(
-        self, f: Frame, d: Operand, s: Operand, n: Operand, dmem: int, smem: int
+        self, f: Frame, d: Operand, s: Operand, n: Operand, dmem: int, smem: int, *,
+        a64: tuple[bool, bool],
     ) -> None:  # fmt: skip
-        """Both ranges are checked before any byte moves (no partial copy); the direction is
-        chosen by the real addresses (the two indices may name one memory)."""
-        a, oob = self.a, TrapCode.MEMORY_OUT_OF_BOUNDS
-        self._three(d, s, n, False)
-        base, limit = self._mem(dmem)  # another memory than 0: x11/x12, read again below
-        self._end_check(f, 13, limit, oob)
-        a.addsub("add", 13, 13, base)
-        base, limit = self._mem(smem)
-        self._end_check(f, 14, limit, oob)
-        a.addsub("add", 14, 14, base)
+        """The checks in `lower.memory_copy`; the direction is chosen by the real addresses
+        (the two indices may name one memory)."""
+        oob = self._stub(f, TrapCode.MEMORY_OUT_OF_BOUNDS)
+        lower.memory_copy(self, oob, d, s, n, dmem, smem, a64)  # x13, x14, x15
         self._copy(1)
 
-    def memory_fill(self, f: Frame, d: Operand, v: Operand, n: Operand, mem: int) -> None:
+    def memory_fill(
+        self, f: Frame, d: Operand, v: Operand, n: Operand, mem: int, *, a64: bool
+    ) -> None:  # fmt: skip
         a = self.a
-        self._three(d, v, n, False)
-        base, limit = self._mem(mem)
-        self._end_check(f, 13, limit, TrapCode.MEMORY_OUT_OF_BOUNDS)
-        a.addsub("add", 13, 13, base)
+        oob = self._stub(f, TrapCode.MEMORY_OUT_OF_BOUNDS)
+        lower.memory_fill(self, oob, d, v, n, mem, a64)  # x13, x14, x15
         a.logic_imm("and", 14, 14, 0xFF, False)
         a.mov_imm(9, 0x0101010101010101)
         a.madd(14, 14, 9, ZR)  # the byte in all eight
@@ -750,13 +889,11 @@ class Backend:
         a.b(f1)
         a.bind(done)
 
-    def table_fill(self, f: Frame, word: int, i: Operand, v: Operand, n: Operand) -> None:
+    def table_fill(
+        self, f: Frame, word: int, i: Operand, v: Operand, n: Operand, *, a64: bool
+    ) -> None:  # fmt: skip
         a = self.a
-        self._three(i, v, n, True)
-        self._word(True, 10, CTX, 8 * word + 8)
-        self._end_check(f, 13, 10, TrapCode.TABLE_OUT_OF_BOUNDS)
-        self._word(True, 10, CTX, 8 * word)
-        a.addsub("add", 13, 10, 13, sh="lsl", amount=3)
+        lower.table_fill(self, self._stub(f, TrapCode.TABLE_OUT_OF_BOUNDS), word, i, v, n, a64)
         loop, done = a.label(), a.label()
         a.bind(loop)
         a.cbz(15, done)
@@ -767,26 +904,21 @@ class Backend:
         a.bind(done)
 
     def table_copy(
-        self, f: Frame, dst: int, src: int, d: Operand, s: Operand, n: Operand
+        self, f: Frame, dst: int, src: int, d: Operand, s: Operand, n: Operand, *,
+        a64: tuple[bool, bool],
     ) -> None:  # fmt: skip
-        a, oob = self.a, TrapCode.TABLE_OUT_OF_BOUNDS
-        self._three(d, s, n, False)
-        for r, word in ((13, dst), (14, src)):
-            self._word(True, 10, CTX, 8 * word + 8)
-            self._end_check(f, r, 10, oob)
-        for r, word in ((13, dst), (14, src)):
-            self._word(True, 10, CTX, 8 * word)
-            a.addsub("add", r, 10, r, sh="lsl", amount=3)
-        a.bfm("ubfm", 15, 15, 61, 60)  # lsl #3
+        oob = self._stub(f, TrapCode.TABLE_OUT_OF_BOUNDS)
+        lower.table_copy(self, oob, dst, src, d, s, n, a64)  # x13, x14, x15
+        self.a.bfm("ubfm", 15, 15, 61, 60)  # lsl #3
         self._copy(8)
 
     # ---------------------------------------------------------------- indirect calls
-    def _table_record(self, f: Frame, table: int, sig: int, index: Operand) -> None:
+    def _table_record(self, f: Frame, table: int, sig: int, index: Operand, a64: bool) -> None:
         """x15 = the function record of element `index`: bounds (TABLE_OUT_OF_BOUNDS), null
         (INDIRECT_CALL_TO_NULL), its canonical type id against the signature word (BAD_SIGNATURE),
         in the spec's order (Wasmtime's codes)."""
         a = self.a
-        self._element(f, table, index)
+        self._element(f, table, index, a64)
         a.ld_idx(15, 10, 9, 8, scaled=True)
         self._cbz(15, self._stub(f, TrapCode.INDIRECT_CALL_TO_NULL))
         self._word(True, 9, CTX, 8 * sig)
@@ -805,12 +937,12 @@ class Backend:
         self._enter_record(15)
         if shift_slots:
             self._add_k(FRAME, FRAME, -8 * shift_slots)
-        self._cbz(0, f.unwind, wide=False, nz=True)
+        self._cbz(0, f.error, wide=False, nz=True)
 
     def call_indirect(
-        self, f: Frame, table: int, sig: int, index: Operand, shift_slots: int
+        self, f: Frame, table: int, sig: int, index: Operand, shift_slots: int, *, a64: bool
     ) -> None:  # fmt: skip
-        self._table_record(f, table, sig, index)  # the index is read before x27 moves
+        self._table_record(f, table, sig, index, a64)  # the index is read before x27 moves
         self._call_x15(f, shift_slots)
 
     def call_ref(self, f: Frame, ref: Operand, shift_slots: int) -> None:
@@ -852,9 +984,9 @@ class Backend:
         a.br(17)
 
     def tail_indirect(
-        self, f: Frame, table: int, sig: int, index: Operand, src: int, n: int
+        self, f: Frame, table: int, sig: int, index: Operand, src: int, n: int, *, a64: bool
     ) -> None:  # fmt: skip
-        self._table_record(f, table, sig, index)
+        self._table_record(f, table, sig, index, a64)
         self._tail(f, src, n)
         self.a.mov(16, 15)
         self._tail_record()
@@ -869,3 +1001,77 @@ class Backend:
         self._tail(f, src, n)
         self._add_k(16, CTX, 8 * word)
         self._tail_record()
+
+    # ---------------------------------------------------------------- exceptions (S0012)
+    # As x86-64 (D52): at a landing pad the status is in w0 and only pins are live (every
+    # exception arrives at a call site); these use x9-x12 (x16/x17 through _word/_add_k for
+    # offsets no immediate takes) and keep w0. Only `landing`/`exn_match`/`throw` write the
+    # flags, each right before its b.cond (LESSONS 1). Pads are reached by direct branches only:
+    # no BTI pad.
+    def landing(self, f: Frame, pad: Label, outer: Label) -> None:
+        self.a.bind(pad)
+        self.a.addsub_imm("subs", ZR, 0, STATUS_EXCEPTION, False)
+        self._bcc("ne", outer)
+
+    def _exn(self) -> None:
+        """x9 = the pending object: {tag identity, payload words...}."""
+        self.a.ld(9, CTX, 8 * EXCEPTION)
+        self.a.ld(9, 9)
+
+    def exn_load(self, dst: Slot) -> None:
+        self._exn()
+        self._word(False, 9, FRAME, 8 * dst.k)
+
+    def exn_match(self, word: int, miss: Label) -> None:
+        self._exn()
+        self.a.ld(9, 9)
+        self._word(True, 10, CTX, 8 * word)
+        self.a.cmp(9, 10)
+        self._bcc("ne", miss)
+
+    def exn_field(self, dst: Slot, k: int) -> None:
+        self._exn()
+        self._word(True, 10, 9, 8 + 8 * k)
+        self._word(False, 10, FRAME, 8 * dst.k)
+
+    def throw(self, f: Frame, word: int, base: int, n: int) -> None:
+        """A new object {tag identity (context word `word`), slots base..base+n} bumped from the
+        store's arena chunk, made the pending exception: status 14 to `f.error`, no Python. A full
+        chunk: the refill service through the bridge (slot base+n = the words needed), then
+        again. Writes x0, x1, x9-x12, x16, x17."""
+        a = self.a
+        again, refill = a.label(), a.label()
+        a.bind(again)
+        a.ld(9, CTX, 8 * ARENA_CURSOR)  # the cursor's address
+        a.ld(10, 9)  # the object
+        self._add_k(11, 10, 8 * (1 + n))
+        a.ld(12, CTX, 8 * ARENA_LIMIT)
+        a.ld(12, 12)
+        a.cmp(11, 12)
+        self._bcc("hi", refill)
+        a.st(11, 9)
+        self._word(True, 12, CTX, 8 * word)
+        a.st(12, 10)
+        for k in range(n):  # word for word: a v128 is its two slots, low half first
+            self._word(True, 12, FRAME, 8 * (base + k))
+            self._word(False, 12, 10, 8 + 8 * k)
+        a.ld(9, CTX, 8 * EXCEPTION)
+        a.st(10, 9)
+        a.mov_imm(0, STATUS_EXCEPTION, wide=False)
+        a.b(f.error)
+        a.bind(refill)  # after a b: no fall-through path runs this
+        a.mov_imm(9, 1 + n)
+        self._word(False, 9, FRAME, 8 * (base + n))
+        self.call_host(f, EXN_REFILL, base + n)
+        a.b(again)
+
+    def throw_ref(self, f: Frame, x: Operand) -> None:
+        """Null traps (NULL_REFERENCE, not catchable); else the object becomes the one in flight.
+        x is read before w0 is written (it may be in x0, LESSONS 32)."""
+        a = self.a
+        r = self._r(x, 9, True)
+        self._cbz(r, self._stub(f, TrapCode.NULL_REFERENCE))
+        a.ld(10, CTX, 8 * EXCEPTION)
+        a.st(r, 10)
+        a.mov_imm(0, STATUS_EXCEPTION, wide=False)
+        a.b(f.error)

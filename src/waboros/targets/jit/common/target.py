@@ -1,7 +1,9 @@
 """The glue every `jit-<arch>` target shares (S0002, S0004): the probe (map a tiny function W^X and
 call it), `supports`, `compile` through the one-pass core with the architecture's backend, and
 `instantiate` with its trampolines. An architecture gives its machine names, the probe function,
-its `Backend` and its trampolines.
+its `Backend` and its trampolines; one with guard pages (S0006) also its guard-mode backend, the
+fault handler's code and the host rows it has a handler for (`guard_rows`) and where that handler
+is verified (`verified`: `auto` picks guard only there).
 
 Test-only: `WABOROS_JIT_DUMP=<dir>` writes each compiled module's code as `<dir>/<sha1>.<data>.bin`,
 where `<data>` is the offset of its data area (for tools/isa_check.py `--data`)."""
@@ -28,6 +30,8 @@ class JitTarget:
     machines: tuple[str, ...]  # platform.machine().lower() values of this architecture
     version = 0
     complete = True  # False: `auto` does not select it (D25, S0004)
+    guard_rows: frozenset[str] = frozenset()  # host rows with a fault handler (S0006)
+    verified: frozenset[str] = frozenset()  # rows where WABOROS_JIT_BOUNDS=auto gives guard
 
     def probe_code(self) -> bytes:
         """A function `int f(void)` returning 42."""
@@ -39,8 +43,29 @@ class JitTarget:
     def trampolines(self) -> "Trampolines":
         raise NotImplementedError
 
-    def probe(self) -> str | None:
-        """None if this architecture's code can be mapped W^X and called here; else the reason."""
+    def guard_backend(self) -> Any:
+        """The backend in guard mode (S0006); only where `guard_rows` is not empty."""
+        raise NotImplementedError
+
+    def fault_handler(
+        self,
+        tables: int,
+        prev: int,
+        sigaction: int,
+        reraise: int,
+        darwin: bool = False,
+        windows: bool = False,
+        bionic: bool = False,
+    ) -> bytes:
+        """The fault handler's code for this host (S0006, x86_64/abi.py `fault_handler`).
+        `darwin`: macOS's signal context and two saved actions at `prev`, SIGSEGV's then
+        SIGBUS's (step 3). `windows`: a vectored exception handler; `prev`, `sigaction` and
+        `reraise` are unused (step 4). `bionic`: `prev` is bionic's struct sigaction (step 5)."""
+        raise NotImplementedError
+
+    def foreign(self) -> str | None:
+        """The reason this process cannot run this architecture's code, or None. Compiling for
+        another architecture is allowed (D35); running it never is (it would crash the process)."""
         if (
             platform.machine().lower() not in self.machines
             or sys.maxsize < 1 << 32
@@ -48,6 +73,13 @@ class JitTarget:
         ):
             bits = sys.maxsize.bit_length() + 1
             return f"not an {self.arch} process ({platform.machine()}, {bits} bit)"
+        return None
+
+    def probe(self) -> str | None:
+        """None if this architecture's code can be mapped W^X and called here; else the reason."""
+        why = self.foreign()
+        if why:
+            return why
         try:
             from waboros.targets.jit.common.execmem import load
 
@@ -66,9 +98,15 @@ class JitTarget:
         return unsupported(module, self.backend().supported)
 
     def compile(self, module: ValidModule) -> object:
+        from waboros.targets.jit.common import guard
         from waboros.targets.jit.common.compiler import compile_module
 
-        c = compile_module(module, self.backend(), self.name)
+        if guard.wanted(self):
+            b = self.guard_backend()
+            c = compile_module(module, b, self.name)
+            c.flags, c.faults = guard.FLAGS, b.faults
+        else:
+            c = compile_module(module, self.backend(), self.name)
         dump = os.environ.get("WABOROS_JIT_DUMP")
         if dump:
             name = f"{hashlib.sha1(c.code).hexdigest()}.{c.data_start}.bin"
@@ -78,7 +116,19 @@ class JitTarget:
     def instantiate(
         self, compiled: object, imports: Sequence[Extern], store: "StoreState"
     ) -> TargetInstance:
+        from waboros.targets.jit.common import guard
         from waboros.targets.jit.common.compiler import Compiled
         from waboros.targets.jit.common.instance import JitInstance
 
-        return JitInstance(store, self.trampolines(), cast(Compiled, compiled), imports, self.name)
+        why = self.foreign()
+        if why:
+            raise RuntimeError(f"{self.name} cannot run here: {why}")
+        if cast(Compiled, compiled).flags & guard.BOUNDS_GUARD:
+            guard.install(self)  # before anything of the instance exists; raises where none
+        took = store.claim()  # binds to memories no other thread may grow meanwhile (S0009)
+        try:
+            return JitInstance(
+                store, self.trampolines(), cast(Compiled, compiled), imports, self.name
+            )
+        finally:
+            store.release(took)

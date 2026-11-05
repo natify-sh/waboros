@@ -20,7 +20,7 @@ CC = {
     "s": 8, "ns": 9, "p": 10, "np": 11, "l": 12, "ge": 13, "le": 14, "g": 15,
 }  # fmt: skip
 ALU = {"add": 0, "or": 1, "adc": 2, "sbb": 3, "and": 4, "sub": 5, "xor": 6, "cmp": 7}
-UNARY = {"not": 2, "neg": 3, "mul": 4, "div": 6, "idiv": 7}  # F7 /ext
+UNARY = {"not": 2, "neg": 3, "mul": 4, "imul": 5, "div": 6, "idiv": 7}  # F7 /ext
 SHIFT = {"rol": 0, "ror": 1, "shl": 4, "shr": 5, "sar": 7}
 BT = {"bt": 4, "bts": 5, "btr": 6, "btc": 7}  # 0F BA /ext ib; 0F A3+8*(ext-4) /r
 SSE = {"sqrt": 0x51, "and": 0x54, "or": 0x56, "xor": 0x57, "add": 0x58, "mul": 0x59, "sub": 0x5C,
@@ -89,6 +89,13 @@ class Asm:
         if self._labels[label.id] is not None:
             raise ValueError(f"label {label.id} bound twice")
         self._labels[label.id] = len(self.buf)
+
+    def position(self, label: Label) -> int:
+        """The offset a bound label stands for (the fault map's resume offsets, S0006)."""
+        pos = self._labels[label.id]
+        if pos is None:
+            raise ValueError(f"label {label.id} never bound")
+        return pos
 
     def _rel(self, label: Label, size: int) -> None:
         self._fixups.append((len(self.buf), size, label))
@@ -255,7 +262,8 @@ class Asm:
         self._imm(v, 1 if short else 4)
 
     def unary(self, op: str, dst: Reg | Mem, w: bool = False) -> None:
-        """not/neg; mul/div/idiv of rdx:rax (or edx:eax) by dst."""
+        """not/neg; mul/imul (one operand: rdx:rax = rax * dst) and div/idiv of rdx:rax (or edx:eax)
+        by dst."""
         self._op(b"\xf7", UNARY[op], dst, w)
 
     def shift(self, op: str, dst: Reg | Mem, count: int | None, w: bool = False) -> None:

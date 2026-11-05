@@ -3,9 +3,10 @@
 of the `0xFD` prefix and the validator of its operators. Shared by every target.
 
 An instruction is the tuple `(0xFD000 + sub, immediates...)` (0xFD00 + sub would collide with a
-later 0xFE prefix, S0005 Q6). Immediates: memory ops `(offset, align, mem)`, lane ops `(lane,)`,
+later 0xFE prefix, S0005 Q6). Relaxed SIMD (sub 0x100..0x113, S0008) is 20 operators of their own.
+Immediates: memory ops `(offset, align, mem)`, lane ops `(lane,)`,
 lane memory ops `(offset, align, mem, lane)`, `v128.const` `(value,)` (an int in [0, 2^128), lane 0
-in the low bits), `i8x16.shuffle` `(lanes,)` (16 bytes). Relaxed SIMD (sub 0x100..0x113) is a gap.
+in the low bits), `i8x16.shuffle` `(lanes,)` (16 bytes).
 """
 
 from typing import NamedTuple
@@ -137,6 +138,18 @@ def _build() -> None:
     _run(0xF8, "i32x4.trunc_sat_f32x4_s i32x4.trunc_sat_f32x4_u f32x4.convert_i32x4_s "
          "f32x4.convert_i32x4_u i32x4.trunc_sat_f64x2_s_zero i32x4.trunc_sat_f64x2_u_zero "
          "f64x2.convert_low_i32x4_s f64x2.convert_low_i32x4_u", U, V)  # fmt: skip
+    # relaxed SIMD (S0008): every one its own operator, no aliasing; each target maps it itself
+    _put(0x100, "i8x16.relaxed_swizzle", NONE, B, V)
+    _run(0x101, "i32x4.relaxed_trunc_f32x4_s i32x4.relaxed_trunc_f32x4_u "
+         "i32x4.relaxed_trunc_f64x2_s_zero i32x4.relaxed_trunc_f64x2_u_zero", U, V)  # fmt: skip
+    for sub, nm in ((0x105, "f32x4.relaxed_madd"), (0x106, "f32x4.relaxed_nmadd"),
+                    (0x107, "f64x2.relaxed_madd"), (0x108, "f64x2.relaxed_nmadd"),
+                    (0x109, "i8x16.relaxed_laneselect"), (0x10A, "i16x8.relaxed_laneselect"),
+                    (0x10B, "i32x4.relaxed_laneselect"), (0x10C, "i64x2.relaxed_laneselect"),
+                    (0x113, "i32x4.relaxed_dot_i8x16_i7x16_add_s")):  # fmt: skip
+        _put(sub, nm, NONE, (V, V, V), V)
+    _run(0x10D, "f32x4.relaxed_min f32x4.relaxed_max f64x2.relaxed_min f64x2.relaxed_max "
+         "i16x8.relaxed_q15mulr_s i16x8.relaxed_dot_i8x16_i7x16_s", B, V)  # fmt: skip
 
 
 _build()
@@ -147,8 +160,6 @@ def decode(r):
     sub = r.u()
     e = OPS.get(sub)
     if e is None:
-        if 0x100 <= sub <= 0x113:  # relaxed SIMD: valid, not supported (a gap, not malformed)
-            raise NotImplementedError(f"relaxed simd opcode {sub:#x}")
         raise _b.Malformed(f"illegal opcode 0xfd {sub}")
     ins = (BASE + sub,)
     if e.imm in (MEM, MEMLANE):
@@ -179,21 +190,23 @@ def const(r):
 
 def validate(ins, pop, push, need_mem):
     """Type one operator: `pop(expected)` and `push(type)` act on the validator's operand stack,
-    `need_mem(index)` checks that the memory exists."""
+    `need_mem(index)` checks that the memory exists and returns its address type."""
     from waboros.frontend.validate import Invalid  # validate imports this module
 
     e = OPS[ins[0] - BASE]
+    pops = e.pops
     if e.imm in (MEM, MEMLANE):
-        need_mem(ins[3])
+        at = need_mem(ins[3])
         if ins[2] > e.align:
             raise Invalid("alignment must not be larger than natural")
-        if ins[1] > 0xFFFFFFFF:
+        if ins[1] > 0xFFFFFFFF and at == I32:
             raise Invalid("offset out of range")
+        pops = (at, *pops[1:])  # the address operand has the memory's address type
     if e.imm in (LANE, MEMLANE) and ins[-1] >= e.n:
         raise Invalid("invalid lane index")
     if e.imm == SHUFFLE and max(ins[1]) >= 32:
         raise Invalid("invalid lane index")
-    for t in reversed(e.pops):
+    for t in reversed(pops):
         pop(t)
     if e.res:
         push(e.res)

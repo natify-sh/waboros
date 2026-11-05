@@ -113,7 +113,8 @@ def test_entry_args_and_results(tramp: Trampolines, n: int, wide: bool) -> None:
     assert inst.call(0, args) == [sum(args) & mask]
 
 
-TRAPS = [*TrapCode.__members__.values()]
+# status 14 means "an exception is in flight" (S0012): no trap stub returns it
+TRAPS = [c for c in TrapCode.__members__.values() if c is not TrapCode.UNCAUGHT_EXCEPTION]
 
 
 @pytest.mark.parametrize("code", TRAPS, ids=[c.name for c in TRAPS])

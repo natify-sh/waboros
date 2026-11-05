@@ -11,4 +11,6 @@
   (global (export "global_f32") f32 (f32.const 666.6))
   (global (export "global_f64") f64 (f64.const 666.6))
   (table (export "table") 10 20 funcref)
+  ;; reference interpreter, interpreter/host/spectest.ml: table64 is an i64 table, limits 10 20
+  (table (export "table64") i64 10 20 funcref)
   (memory (export "memory") 1 2))

@@ -2,13 +2,14 @@
 title: Pyodide - running a guest wasm as an Emscripten side module (experiment)
 kind: reference
 status: draft
-updated: 2026-11-01
+updated: 2026-11-03
 ---
 
 # Pyodide: a guest wasm as an Emscripten side module, loaded with `ctypes.CDLL`
 
 An experiment for ROADMAP open question 7 (Pyodide), by the maintainer: an experiment, not a design
-decision. **Nothing here is approved for implementation**; it would be a separate target later. It
+decision. **Nothing here is approved for implementation**. D48 makes Pyodide a track of its own: not a JIT
+target and not on the architecture list; `pyc` runs there today (a cell of `platforms.yml`). It
 shows that in Pyodide a guest module can run at near browser-engine speed in the same process as
 Python, entered through `ctypes`, with only the standard library on the Python side. The rewriter
 used a dev tool (`wasm-tools`). A real target would emit the bytes itself.

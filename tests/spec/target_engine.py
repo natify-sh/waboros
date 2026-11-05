@@ -110,9 +110,9 @@ class TargetEngine:
         try:
             try:
                 mod = parse(wasm)
+                validate(mod)
             except (ImplLimit, NotImplementedError) as e:  # not a verdict on the module
                 raise LoadError(f"{type(e).__name__}: {e}") from None
-            validate(mod)
             try:
                 target = base.select(mod, self.order)
                 compiled = target.compile(mod)  # NotImplementedError is a target gap

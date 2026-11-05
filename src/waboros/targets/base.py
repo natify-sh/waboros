@@ -27,6 +27,7 @@ class TrapCode(IntEnum):
     TABLE_OUT_OF_BOUNDS = 9
     NULL_REFERENCE = 10
     INTERRUPT = 12
+    UNCAUGHT_EXCEPTION = 14  # S0012: a wasm exception reached an entry (inside code: status 14)
 
 
 class Trap(Exception):
@@ -35,6 +36,7 @@ class Trap(Exception):
     def __init__(self, code: TrapCode, message: str = "") -> None:
         super().__init__(message or code.name)
         self.code = code
+        self.exn: Any = None  # UNCAUGHT_EXCEPTION: (tag handle, payload values)
 
 
 class Unsupported(Exception):
@@ -67,7 +69,7 @@ ValidModule: TypeAlias = dict[str, Any]  # parse() + validate() of the front end
 class Extern:
     """A resolved import, already type-checked by the runtime."""
 
-    kind: Literal["func", "memory", "table", "global"]
+    kind: Literal["func", "memory", "table", "global", "tag"]
     owner: str | None  # target name of the exporting instance; None for host objects
     value: object  # HostFunc | target-specific handle (opaque to other targets)
 
@@ -91,6 +93,11 @@ class Target(Protocol):
     def instantiate(
         self, compiled: object, imports: Sequence[Extern], store: "StoreState"
     ) -> TargetInstance: ...  # segments, start; may raise Trap
+
+
+def throws(module: ValidModule) -> bool:
+    """The module has `throw`, `throw_ref` or `try_table` in a body (exceptions, S0012)."""
+    return any(i[0] in (0x08, 0x0A, 0x1F) for insns in module["insns"] for i in insns)
 
 
 def _pyc() -> Target:

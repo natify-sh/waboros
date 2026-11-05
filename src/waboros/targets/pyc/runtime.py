@@ -1,7 +1,7 @@
 # pyright: basic, reportArgumentType=false, reportOptionalMemberAccess=false, reportAttributeAccessIssue=false, reportSelfClsParameterName=false
 """Runtime helpers imported by generated `pyc` modules (D18); ported from the poc/w2py.py prelude."""
 
-import struct as _st, math as _m
+import struct as _st, math as _m, os as _os
 
 from waboros.targets.base import Trap, TrapCode
 
@@ -41,12 +41,50 @@ def _f32(x):
         return _m.copysign(INF, x)
 
 
+def _demote(x):
+    """f32.demote_f64: a NaN becomes an arithmetic NaN (quiet bit set); pack('<f') keeps the
+    signalling bit on CPython 3.14+ and PyPy (docs/PYC-PLATFORMS.md)."""
+    return _f32(x * 1.0) if x != x else _f32(x)
+
+
 def _grow(M, maxpages, n):
     old = len(M) >> 16
     if old + n > maxpages:
         return 0xFFFFFFFF
     M.extend(bytes(n << 16))
     return old
+
+
+def _grow64(M, maxpages, n):  # an i64 memory: -1 also when the host cannot allocate (memory64)
+    old = len(M) >> 16
+    if old + n > maxpages:
+        return 0xFFFFFFFFFFFFFFFF
+    try:
+        M.extend(bytes(n << 16))
+    except (MemoryError, OverflowError):
+        return 0xFFFFFFFFFFFFFFFF
+    return old
+
+
+def _mem64(pages):
+    """An i64 memory of `pages` pages; a minimum that cannot be provided is a MemoryError."""
+    if pages >= 1 << 48:  # Wasmtime's message
+        raise MemoryError("memory minimum size of %d pages exceeds memory limits" % pages)
+    try:
+        return _Mem(pages << 16)
+    except (MemoryError, OverflowError):
+        raise MemoryError(
+            "failed to allocate %d bytes for a memory of %d pages" % (pages << 16, pages)
+        ) from None
+
+
+def _tnew(n):
+    """The elements of a table with a large minimum (S0009): an allocation that fails is
+    Wasmtime's out-of-memory error, never an OverflowError."""
+    try:
+        return [None] * n
+    except (MemoryError, OverflowError):
+        raise MemoryError("out of memory (failed to allocate %d bytes)" % (n * 8)) from None
 
 
 def _mcopy(D, S, d, s, n):
@@ -68,6 +106,12 @@ def _eseg(T, o, fs):
     T[o : o + len(fs)] = fs
 
 
+def _eseg64(T, o, fs):
+    if o + len(fs) > len(T):
+        raise Trap(TrapCode.TABLE_OUT_OF_BOUNDS, "out of bounds table access")
+    T[o : o + len(fs)] = fs
+
+
 def _tget(T, i):
     if i >= len(T):
         raise Trap(TrapCode.TABLE_OUT_OF_BOUNDS, "out of bounds table access")
@@ -80,11 +124,19 @@ def _tset(T, i, v):
     T[i] = v
 
 
-def _tgrow(TX, n, v):
+def _tgrow(TX, v, n):
     old = len(TX.t)
     # the cap is Wasmtime's default table limit (10M elements)
     if old + n > (0xFFFFFFFF if TX.max is None else TX.max) or old + n > 10000000:
         return 0xFFFFFFFF
+    TX.t.extend([v] * n)
+    return old
+
+
+def _tgrow64(TX, v, n):  # D27: the same cap of 10M elements
+    old = len(TX.t)
+    if old + n > (0xFFFFFFFFFFFFFFFF if TX.max is None else TX.max) or old + n > 10000000:
+        return 0xFFFFFFFFFFFFFFFF
     TX.t.extend([v] * n)
     return old
 
@@ -109,6 +161,12 @@ def _tinit(T, S, d, s, n):
 
 def _dseg(M, o, d):
     o &= 0xFFFFFFFF
+    if o + len(d) > len(M):
+        raise Trap(TrapCode.MEMORY_OUT_OF_BOUNDS, "out of bounds memory access")
+    M[o : o + len(d)] = d
+
+
+def _dseg64(M, o, d):
     if o + len(d) > len(M):
         raise Trap(TrapCode.MEMORY_OUT_OF_BOUNDS, "out of bounds memory access")
     M[o : o + len(d)] = d
@@ -181,6 +239,37 @@ class _TC:
     def __init__(self, f, a):
         self.f = f
         self.a = a
+
+
+class _Tag:
+    """An exception tag (S0012); compared with `is`, an imported tag is the exporter's object."""
+
+    __slots__ = ("ps",)
+
+    def __init__(self, ps):
+        self.ps = ps  # the parameter types, for the payload a host sees (`_run`)
+
+
+class _Thrown(Exception):
+    """A wasm exception in flight, and the value of an exnref. `try_table` catches only this class:
+    traps, host exceptions and RecursionError pass through, as in Wasmtime."""
+
+    __slots__ = ("tag", "vals")
+
+    def __init__(self, tag, vals):
+        self.tag = tag
+        self.vals = vals
+
+
+def _rethrow(x):
+    """throw_ref: a null exnref traps; the traceback and context are dropped so that rethrowing the
+    same object in a loop does not grow a chain."""
+    if x is None:
+        raise Trap(TrapCode.NULL_REFERENCE, "null reference")
+    if not isinstance(x, _Thrown):
+        raise TypeError(f"not an exception reference: {x!r}")
+    x.__traceback__ = x.__context__ = x.__cause__ = None
+    raise x
 
 
 def _pc(x):
@@ -275,6 +364,8 @@ def _fdiv(a, b):
 
 
 def _fsqrt(x):
+    if x != x:  # PyPy's math.sqrt keeps the signalling bit
+        return x * 1.0
     if x < 0:
         return NAN
     return _m.sqrt(x)
@@ -406,8 +497,24 @@ def _f64_i64(x):
     return _st.unpack("<d", _st.pack("<Q", x))[0]
 
 
+def _keeps_snan():
+    return (
+        _i32_f32(_f32_i32(0x7FA00001)) == 0x7FA00001
+        and _i64_f64(_f64_i64(0x7FF0000000000001)) == 0x7FF0000000000001
+    )
+
+
+# a host whose floats quiet a signalling NaN (32-bit x86, x87) gets generated code that carries
+# f32/f64 as int bit patterns (codegen ModGen.fb); WABOROS_PYC_FBITS=1/0 forces the mode
+FBITS = _os.environ.get("WABOROS_PYC_FBITS", "") == "1" or (
+    _os.environ.get("WABOROS_PYC_FBITS", "") != "0" and not _keeps_snan()
+)
+
+
 _NAMES = [
-    n for n in dir() if n.startswith("_") and not n.startswith("__") and n not in ("_st", "_m")
+    n
+    for n in dir()
+    if n.startswith("_") and not n.startswith("__") and n not in ("_st", "_m", "_os")
 ]
 __all__ = _NAMES + [
     "Trap",

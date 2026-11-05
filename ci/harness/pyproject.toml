@@ -1,0 +1,104 @@
+# Test-only package: it exists so that cibuildwheel builds a platform wheel and runs our tests on
+# every platform of docs/TARGETS.md. Never published. Run from the repository root:
+#   uv run cibuildwheel ci/harness \
+#       --output-dir ci/wheelhouse --only cp313-manylinux_x86_64
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "waboros-ci-harness"
+version = "0"
+requires-python = ">=3.11"
+# Found through PIP_FIND_LINKS / UV_FIND_LINKS (the wheel built from the repository root). The
+# ">=0.0.1.dev0" matters: setuptools-scm versions are dev versions, which pip and uv skip unless a
+# specifier names one; without it the placeholder 0.0.0 on PyPI is installed instead of our wheel,
+# and a build without git (version 0.0.0) fails here instead of testing the wrong code.
+dependencies = ["waboros>=0.0.1.dev0"]
+
+# setup.py tags the wheel py3-none-<platform> (no C); packages = [] : the wheel holds no module
+[tool.setuptools]
+packages = []
+
+[tool.cibuildwheel]
+# Common to every platform: macOS and Windows use it as it is. A job narrows it from the workflow
+# with CIBW_ARCHS (and CIBW_BUILD where clearer); per-platform tables follow, then the overrides for
+# what is finer than a platform.
+# The Pythons are the minimal matrix of where pyc differs (research: 3.14 and PyPy differ in f32 NaN
+# demotion, 32-bit differs in address range and x87 NaN; 3.11-3.13 are identical, and a free-threaded
+# build behaves as the GIL one): the oldest and the newest free-threaded one. cibuildwheel 4.3.5 builds
+# the free-threaded cp315t without an `enable` group.
+build = "cp311-* cp315t-*"
+build-frontend = "build[uv]"
+# The wheel under test, built from the repository root into ci/deps (found by pip via PIP_FIND_LINKS;
+# [tool.cibuildwheel.linux] gives the path inside the container, the workflow sets it elsewhere).
+before-build = "pip wheel --no-deps --wheel-dir {project}/ci/deps {project}"
+# auditwheel refuses a wheel without an ELF file, and there is nothing to repair
+repair-wheel-command = ""
+test-requires = ["pytest", "wasmtime==50.0.1", "wasm-tools-package==1.262.0.0", "pywasm"]
+# The JIT platforms run the tests that compile JIT code once per bounds mode (guard, explicit), in
+# one pytest run: the mode is a pytest option (tests/conftest.py), not an environment variable, so it
+# is the same in sh, cmd and the Android app, where cibuildwheel has no test-environment. Windows runs
+# test-command through cmd.exe (cibuildwheel util/cmd.py shell()).
+test-command = "pytest {project}/tests --jit-bounds=guard,explicit -q -rs -p no:cacheprovider"
+
+[tool.cibuildwheel.linux]
+# x86_64 glibc: oldest, 3.14, newest free-threaded; musl x86_64: one (the musl guard row); i686: one
+# (the 32-bit pyc cell); aarch64 glibc: oldest and newest free-threaded; armv7l (native on the arm runner, pyc only): cp313; no musl aarch64, no musl i686.
+build = """
+    cp311-manylinux_x86_64 cp314-manylinux_x86_64 cp315t-manylinux_x86_64
+    cp313-musllinux_x86_64 cp313-manylinux_i686
+    cp311-manylinux_aarch64 cp315t-manylinux_aarch64 cp313-manylinux_armv7l
+"""
+# The container sees /project; the tests run in the same environment:
+environment = { PIP_FIND_LINKS = "/project/ci/deps", UV_FIND_LINKS = "/project/ci/deps" }  # pip and uv
+environment-pass = ["WABOROS_JIT_REQUIRE"]  # from the job, if set
+
+[tool.cibuildwheel.macos]
+# The build venv (build[uv]) has no pip, and the free-threaded python.org framework puts no `pip` on
+# PATH (run 5: cp311 passed, cp315t "pip: command not found"); uv is on the runner (setup-uv).
+before-build = "uv build --wheel --out-dir {project}/ci/deps {project}"
+
+# Android runs the tests inside an app: no shell, no {project}; the tests are copied in. Both bounds
+# modes, as on the other JIT platforms. No wasmtime wheel there (ROADMAP): the tests that need the
+# oracle skip, WAT is read from tests/wat_cache (filled on the host, docs/TESTING.md);
+# tests/jit/test_android.py checks the app itself (the JIT and `auto` in an app
+# process, guard faults through ART's libsigchain, CoreMark's self-check; S0006 step 5).
+[tool.cibuildwheel.android]
+build = "cp313-*"
+test-skip = "*-android_arm64_v8a"  # the emulator has the runner's architecture: x86_64 only
+test-requires = ["pytest"]
+test-sources = ["tests", "tools", "docs", "poc/in/core.wasm", "poc/bench/switch/vm.wasm", "poc/bench/corpus/hash.wasm", "poc/bench/corpus/mono.wasm", "poc/bench/corpus/zip.wasm"]  # docs: tests/test_features.py copies it; the wasm: tests/test_pyc_branches.py
+test-command = "python -m pytest tests --jit-bounds=guard,explicit -q -rs -p no:cacheprovider --ignore=tests/spec"
+
+# Pyodide: pyc only, no wasmtime wheel.
+[tool.cibuildwheel.pyodide]
+build = "cp313-*"
+test-requires = ["pytest"]
+test-command = "pytest {project}/tests -q -rs -p no:cacheprovider --ignore={project}/tests/spec"
+
+# Finer than a platform. Linux aarch64: `auto` (guard on glibc, explicit on musl, which has no guard
+# mode there) and explicit.
+[[tool.cibuildwheel.overrides]]
+select = "*-manylinux_aarch64"
+test-command = "pytest {project}/tests --jit-bounds=auto,explicit -q -rs -p no:cacheprovider"
+
+# The spec suite (ci/harness/spec.py: wasmtime, pyc, the JIT in guard and explicit mode, auto) runs
+# once per JIT platform, after the tests, on one Python: cp311 (musl x86_64 has only cp313). The
+# overrides are in this order because a later one wins: the aarch64 glibc cell keeps its modes.
+[[tool.cibuildwheel.overrides]]
+select = ["cp311-manylinux_x86_64", "cp313-musllinux_x86_64", "cp311-macosx_*", "cp311-win_*"]
+test-command = "pytest {project}/tests --jit-bounds=guard,explicit -q -rs -p no:cacheprovider && python {project}/ci/harness/spec.py"
+
+[[tool.cibuildwheel.overrides]]
+select = "cp311-manylinux_aarch64"
+test-command = "pytest {project}/tests --jit-bounds=auto,explicit -q -rs -p no:cacheprovider && python {project}/ci/harness/spec.py"
+
+# Linux i686 and armv7l (32-bit) and the optional exotic jobs (ppc64le, s390x, riscv64; under QEMU): no JIT here, no
+# wheels of wasmtime / wasm-tools, no uv wheels: no oracle (those tests skip); WAT comes from
+# tests/wat_cache. tests/spec needs the spec cache and the oracle.
+[[tool.cibuildwheel.overrides]]
+select = ["*_i686", "*_armv7l", "*_ppc64le", "*_s390x", "*_riscv64"]
+build-frontend = "build"
+test-requires = ["pytest"]
+test-command = "pytest {project}/tests -q -rs -p no:cacheprovider --ignore={project}/tests/spec"

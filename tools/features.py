@@ -46,7 +46,8 @@ SPEC = {
     "bulkMemory": ["bulk-memory/"],
     "exceptionsFinal": ["exceptions/"],
     "gc": ["gc/"],
-    **{k: [] for k in ("exceptions", "threads", "customPageSizes", "wideArithmetic")},
+    "wideArithmetic": ["wide-arithmetic/"],
+    **{k: [] for k in ("exceptions", "threads", "customPageSizes")},
 }
 
 

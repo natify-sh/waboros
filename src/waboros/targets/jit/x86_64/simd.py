@@ -253,6 +253,27 @@ for _sh, _p, _w, _k, _one in (("f32x4", "ps", "d", 0x4B0000004B000000, 25),
         f"{_sh}.trunc": _head + _r0.format(1) + _fix.format(5, "sub") + _tail,  # |x| < r: r - 1
         f"{_sh}.nearest": _head + _r0.format(1) + _tail,
     })  # fmt: skip
+# relaxed SIMD (S0008, D49): the deterministic profile; 9 operators take the program of their
+# equivalent, swizzle and laneselect the inline paths (`OTHER`); madd/nmadd unfused (no FMA in
+# SSE2): c - a*b for nmadd; the dot products sum sign-extended byte products (exact in 16 bits),
+# wrapping: odd bytes by psraw 8, even ones by psllw 8 then psraw 8 (xmm2 = c in dot_add)
+for _r, _e in (("i32x4.relaxed_trunc_f32x4_s", "i32x4.trunc_sat_f32x4_s"),
+               ("i32x4.relaxed_trunc_f32x4_u", "i32x4.trunc_sat_f32x4_u"),
+               ("i32x4.relaxed_trunc_f64x2_s_zero", "i32x4.trunc_sat_f64x2_s_zero"),
+               ("i32x4.relaxed_trunc_f64x2_u_zero", "i32x4.trunc_sat_f64x2_u_zero"),
+               *((f"{_sh}.relaxed_{_o}", f"{_sh}.{_o}") for _sh in ("f32x4", "f64x2")
+                 for _o in ("min", "max")),
+               ("i16x8.relaxed_q15mulr_s", "i16x8.q15mulr_sat_s")):  # fmt: skip
+    PROG[_r] = PROG[_e]
+_DOT = ("movaps {t} 0; psrawi {t} 8; movaps {u} 1; psrawi {u} 8; pmullw {t} {u}; psllwi 0 8;"
+        " psrawi 0 8; psllwi 1 8; psrawi 1 8; pmullw 0 1; paddw 0 {t}")  # fmt: skip
+PROG.update({
+    "f32x4.relaxed_madd": "mulps 0 1; addps 0 2", "f32x4.relaxed_nmadd": "mulps 0 1; subps 2 0",
+    "f64x2.relaxed_madd": "mulpd 0 1; addpd 0 2", "f64x2.relaxed_nmadd": "mulpd 0 1; subpd 2 0",
+    "i16x8.relaxed_dot_i8x16_i7x16_s": _DOT.format(t=2, u=3),
+    "i32x4.relaxed_dot_i8x16_i7x16_add_s": _DOT.format(t=3, u=4)
+    + "; " + PROG["i32x4.extadd_pairwise_i16x8_s"] + "; paddd 0 2",
+})  # fmt: skip
 # extending loads: 8 bytes by movq into xmm0, then the extend program
 LOADS = {"load8x8_s": PROG["i16x8.extend_low_i8x16_s"],
          "load8x8_u": PROG["i16x8.extend_low_i8x16_u"],
@@ -276,6 +297,11 @@ SHIFT.update({
 })  # fmt: skip
 OTHER = [f"{s}.{o}" for s in ("i8x16", "i16x8", "i32x4", "i64x2") for o in ("all_true", "bitmask")]
 OTHER.extend([*(f"v128.{k}" for k in LOADS), "i8x16.shuffle", "i8x16.swizzle"])
+# S0008: relaxed operators lowered by the inline path of their equivalent (opcode -> its kind)
+_INL = {f"{s}.relaxed_laneselect": "bitselect" for s in ("i8x16", "i16x8", "i32x4", "i64x2")}
+_INL["i8x16.relaxed_swizzle"] = "swizzle"
+INLINE = {fs.BASE + sub: _INL[o.name] for sub, o in fs.OPS.items() if o.name in _INL}
+OTHER.extend(fs.OPS[op - fs.BASE].name for op in INLINE)
 Step = tuple[str, int, int, int | None]
 
 
@@ -433,7 +459,7 @@ def move(a: Asm, dst: Slot, src: Slot | Imm) -> None:
 
 def emit(
     b: "Backend", f: "Frame", op: int, dst: Dst | None, args: tuple[Operand, ...],
-    imm: tuple[int, ...],
+    imm: tuple[int, ...], a64: bool, lo: int,
 ) -> None:  # fmt: skip
     global _SHUF
     a = b.a
@@ -446,6 +472,7 @@ def emit(
         movups(a, 0, _slot(dst) if op == 0x23 else g, True)
         return
     kind, size, signed = shape(op)
+    kind = INLINE.get(op, kind)
     if (op, LEVEL) in CODE:
         for i, x in enumerate(args):
             movups(a, i, _slot(x), False)
@@ -476,7 +503,9 @@ def emit(
         _copy(a, sc, _slot(dst))
         return
     if (kind, LEVEL) in LOADC:
-        movq_load(a, 0, b._bounds(f, args[0], imm[0], 8, imm[1]))
+        m = b._bounds(f, args[0], imm[0], 8, imm[1], a64, lo)
+        b._fault_point()  # S0006: each access below is marked just before its instruction
+        movq_load(a, 0, m)
         movups(a, run(a, LOADC[kind, LEVEL]), _slot(dst), True)
         return
     if (op, LEVEL) in SHIFTC:  # the count first: it may be in tos (LESSONS 32)
@@ -504,17 +533,21 @@ def emit(
         return
     m = Mem(RCX)  # the memory access, if any: bounds checked, the address read first
     if kind in ("load", "store", "load_splat", "load_zero", "load_lane", "store_lane"):
-        m = b._bounds(f, args[0], imm[0], size, imm[1])
+        m = b._bounds(f, args[0], imm[0], size, imm[1], a64, lo)
     if kind == "load":
+        b._fault_point()
         _copy(a, m, _slot(dst))
     elif kind == "store":
-        _copy(a, _slot(args[1]), m)
+        movups(a, 0, _slot(args[1]), False)
+        b._fault_point()
+        movups(a, 0, m, True)
     elif kind in ("splat", "load_splat", "load_zero"):
         if kind == "splat":  # the lane's bits zero-extended into rdx
             b.move(Reg(RDX), args[0], size == 8)
             if size < 4:
                 a.movzx(RDX, RDX, 8 * size)
         else:
+            b._fault_point()
             _ld(a, RDX, m, size)
         if kind != "load_zero" and size < 8:
             a.mov_imm(RCX, SPLAT[size], w=True)
@@ -535,11 +568,13 @@ def emit(
         _copy(a, _slot(args[0]), _slot(dst))
         _st(a, _slot(dst, imm[0] * size), RDX, size)
     elif kind == "load_lane":  # dst overlaps the vector operand (one slot up): copied whole
+        b._fault_point()
         _ld(a, RDX, m, size)
         _copy(a, _slot(args[1]), _slot(dst))
         _st(a, _slot(dst, imm[2] * size), RDX, size)
     elif kind == "store_lane":
         _ld(a, RDX, _slot(args[1], imm[2] * size), size)
+        b._fault_point()
         _st(a, m, RDX, size)
     elif kind == "not":
         movups(a, 0, _slot(args[0]), False)

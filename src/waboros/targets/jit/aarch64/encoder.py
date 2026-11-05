@@ -240,6 +240,14 @@ class Asm:
         """madd/msub d, n, m, a: d = a ± n * m (mul = madd with a = zr)."""
         self._rr(wide << 31 | 0x1B << 24, _rz(m), sub << 5 | _rz(a), _rz(n), _rz(d))
 
+    def adc(self, d: int, n: int, m: int, wide: bool = True, sub: bool = False) -> None:
+        """adc/sbc d, n, m: d = n + m + C, or n - m - 1 + C (C = NOT borrow after subs)."""
+        self._rr(wide << 31 | sub << 30 | 0xD0 << 21, _rz(m), 0, _rz(n), _rz(d))
+
+    def mulh(self, d: int, n: int, m: int, signed: bool) -> None:
+        """umulh/smulh d, n, m: the high 64 bits of the 128-bit product (64-bit only)."""
+        self._rr((0x4DA if signed else 0x4DE) << 21, _rz(m), 0x1F, _rz(n), _rz(d))
+
     def dp2(self, op: str, d: int, n: int, m: int, wide: bool = True) -> None:
         """udiv sdiv lslv lsrv asrv rorv (shift counts are taken modulo the width)."""
         self._rr(wide << 31 | 0xD6 << 21, _rz(m), DP2[op], _rz(n), _rz(d))

@@ -34,6 +34,35 @@ class JitAarch64Target(JitTarget):
     def trampolines(self) -> "Trampolines":
         return trampolines()
 
+    # S0006 steps 2, 3, 4
+    guard_rows = frozenset({"linux-glibc", "darwin", "win32"})
+    # `auto` gives guard here (D44; CI `arm64`, `jit`;
+    # darwin: CI run 41610392553, `arm64 (macos-latest)`;
+    # win32: CI run 41633456821, `arm64 (windows-11-arm)`)
+    verified = frozenset({"linux-glibc", "darwin", "win32"})
+
+    def guard_backend(self) -> Any:
+        from waboros.targets.jit.aarch64.backend import Backend
+
+        return Backend(guard=True)
+
+    def fault_handler(
+        self,
+        tables: int,
+        prev: int,
+        sigaction: int,
+        reraise: int,
+        darwin: bool = False,
+        windows: bool = False,
+        bionic: bool = False,
+    ) -> bytes:
+        from waboros.targets.jit.aarch64.abi import fault_handler
+        from waboros.targets.jit.aarch64.encoder import Asm
+
+        a = Asm()
+        fault_handler(a, tables, prev, sigaction, reraise, darwin=darwin, windows=windows)
+        return a.finish()
+
 
 @cache
 def trampolines() -> "Trampolines":

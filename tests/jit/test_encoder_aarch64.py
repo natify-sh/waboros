@@ -1,6 +1,7 @@
 """The aarch64 encoder, form by form, against `llvm-mc -triple=aarch64 -show-encoding` (S0004);
 runs on any host that has llvm-mc (the x86-64 `jit` job and the arm64 jobs)."""
 
+import itertools
 import os
 import re
 import shutil
@@ -40,7 +41,11 @@ def _llvm_objcopy() -> str | None:
     )
     for d in os.environ.get("PATH", "").split(os.pathsep):
         if not found and os.path.isdir(d):
-            found = next((str(Path(d) / f) for f in sorted(os.listdir(d), reverse=True)
+            try:
+                names = sorted(os.listdir(d), reverse=True)
+            except OSError:  # an unreadable directory on PATH (Android's /system_ext/bin)
+                continue
+            found = next((str(Path(d) / f) for f in names
                           if re.fullmatch(r"llvm-objcopy-\d+(\.exe)?", f)), None)  # fmt: skip
     return found or None
 
@@ -132,6 +137,11 @@ def forms() -> list[Form]:
             add(
                 f"{'msub' if sub else 'madd'} {r(1, w)}, {r(2, w)}, {r(30, w)}, {r(ZR, w)}",
                 lambda a, w=w, sub=sub: a.madd(1, 2, 30, ZR, w, sub),
+            )
+        for sub, (d, n, m) in itertools.product((False, True), ((1, 2, 30), (ZR, ZR, 7))):
+            add(
+                f"{'sbc' if sub else 'adc'} {r(d, w)}, {r(n, w)}, {r(m, w)}",
+                lambda a, w=w, sub=sub, d=d, n=n, m=m: a.adc(d, n, m, w, sub),
             )
         for op in DP2:
             add(
@@ -251,6 +261,9 @@ def forms() -> list[Form]:
                     text = f"{op} {g}, {v}{n}" if op.startswith("fcvt") else f"{op} {v}{n}, {g}"
                     add(text, lambda a, op=op, n=n, w=w, dbl=dbl: a.fcvt_int(
                         op, 30 - n if n < 31 else ZR, n, w, dbl))  # fmt: skip
+    for signed, (d, n, m) in itertools.product((False, True), ((0, 1, 2), (30, ZR, 17))):
+        add(f"{'smulh' if signed else 'umulh'} {r(d)}, {r(n)}, {r(m)}",
+            lambda a, s=signed, d=d, n=n, m=m: a.mulh(d, n, m, s))  # fmt: skip
     add("bti c", lambda a: a.bti("c"))
     add("bti j", lambda a: a.bti("j"))
     return out
