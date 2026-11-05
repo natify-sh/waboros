@@ -2,7 +2,7 @@
 title: Exception handling (exnref) on pyc, jit-x86_64 and jit-aarch64
 kind: spec
 id: S0012
-status: draft
+status: approved
 superseded_by:
 related: [D19, D25, D30, D32, D34, D35, D39, D47, D51, R2, R3, S0001, S0002, S0003, S0004, S0011]
 owner: maintainer
@@ -400,9 +400,14 @@ in a comment (REFERENCES.md).
 * **Q8 Legacy exceptions** (`try`, `catch`, `rethrow`, `delegate`). They are not in the pinned
   suite, Wasmtime 50 refuses them by default, and the oracle cannot enable them.
   Recommendation: **out of scope**. They stay `NotImplementedError` (a `LoadError` without a
-  kind). Revisit only if a toolchain we must run still emits them by default.
+  kind). Decision (maintainer, 2026-11-05): the legacy format is not planned.
 
 ## Changes
 * 2026-11-05: created (draft). Pinned-suite census, wasmtime-py 50 probes (host boundary,
   `throw_ref` of null, v128 payload, legacy refusal), and the cost of the status check after a call
   measured on the calls benchmark.
+* 2026-11-05: approved (maintainer). Q1 A, Q2 the v1 amendment without a bump, Q3 (a) now and (c)
+  with GC ((b) only for a real program, with a measurement), Q4 a `Trap` with code 14 internally
+  (the public shape follows wasmtime-py in phase 6), Q5, Q6 and Q7 as recommended, Q8 not planned.
+  Order kept: exceptions before GC (GC needs the S0011 low layer; exceptions need GC only to
+  reclaim exnrefs and for `cast.wast`).
