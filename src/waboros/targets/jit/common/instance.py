@@ -22,8 +22,12 @@ from waboros.targets.base import Extern, HostError, HostFunc, Raw, Trap, TrapCod
 from waboros.targets.jit.common import guard, simd
 from waboros.targets.jit.common.compiler import I64, M32, M64, NARROW, Compiled
 from waboros.targets.jit.common.context import (
+    ARENA_CURSOR,
+    ARENA_LIMIT,
     DATA_DROP,
     ELEM_DROP,
+    EXCEPTION,
+    EXN_REFILL,
     HOST_BRIDGE,
     HOST_ERROR,
     INTERRUPT,
@@ -32,6 +36,7 @@ from waboros.targets.jit.common.context import (
     MEMORY_INIT,
     NSTACK_LIMIT,
     RECORD,
+    STATUS_EXCEPTION,
     STATUS_HOST_ERROR,
     STATUS_INTERRUPT,
     TABLE_GROW,
@@ -60,7 +65,9 @@ DEFAULT_BUDGET = 512 << 10  # Wasmtime's default `max_wasm_stack` (D6)
 UNKNOWN_STACK_BUDGET = 128 << 10  # when the thread's stack bounds cannot be read or are implausible
 PLAUSIBLE_STACK = 1 << 30  # more stack than this below the entry: the bounds are not trusted
 TABLE_LIMIT = 10_000_000  # elements: pyc's cap (D27), so both targets fail the same table.grow
-_TRAP_STATUSES = frozenset(TrapCode)  # the statuses a host `Trap` may return as itself
+# the statuses a host `Trap` may return as itself; a re-raised UNCAUGHT_EXCEPTION is a host error
+# (S0012): status 14 comes only from JIT code
+_TRAP_STATUSES = frozenset(TrapCode) - {TrapCode.UNCAUGHT_EXCEPTION}
 _TYPE_IDS: dict[Any, int] = {}  # canonical function type ids of the process (structural keys)
 _TYPE_IDS_LOCK = threading.Lock()  # stores on different threads register types concurrently
 
@@ -78,7 +85,36 @@ def mask(t: Any) -> int:
 
 
 def isref(t: Any) -> bool:
-    return t.__class__ is tuple or t in (0x70, 0x6F)
+    return t.__class__ is tuple or t in (0x70, 0x6F, 0x69, 0x74)
+
+
+def isexn(t: Any) -> bool:
+    return t in (0x69, 0x74) or t.__class__ is tuple and t[1] in (-23, -12)
+
+
+ARENA_WORDS = 8192  # exception objects are bump-allocated in chunks of 64 KiB (S0012 Q3)
+_TAG_IDS = iter(range(1, 1 << 63))  # tag identities of the process (S0012), never 0
+_TAG_LOCK = threading.Lock()
+
+
+class Tag:
+    """A tag's handle on the JIT targets (S0012): its identity, which code compares, and its
+    parameter types (of the defining module) to read a payload."""
+
+    __slots__ = ("id", "params", "store")
+
+    def __init__(self, params: Sequence[Any], store: object) -> None:
+        with _TAG_LOCK:
+            self.id = next(_TAG_IDS)
+        self.params, self.store = tuple(params), store
+
+
+@dataclass(frozen=True)
+class ExnRef:
+    """A non-null exnref outside the code: the address of an exception object of its store."""
+
+    addr: int
+    store: object
 
 
 def isextern(t: Any) -> bool:
@@ -122,10 +158,29 @@ class _StoreStacks:
         self.externs: list[object] = []
         self.extern_ids: dict[int, int] = {}
         self.funcrefs: dict[int, FuncRef] = {}
+        # exceptions (S0012): {pending exnref, arena cursor, arena limit}, which context words
+        # 10, 12 and 13 point to; code bumps objects {tag, payload words} from the arena's last
+        # chunk. Chunks never move and are kept until the store is dropped (Q3); the first comes
+        # with the store, so only a throw that fills one calls into Python (`refill`).
+        self.exn = (ctypes.c_uint64 * 3)()
+        self.chunks: list[ctypes.Array[ctypes.c_uint64]] = []
+        self.new_chunk(ARENA_WORDS)
+        self.exnrefs: dict[int, ExnRef] = {}
+        self.tags: dict[int, Tag] = {}  # every tag of the store by identity
+        self.refill: Any = None  # context word EXN_REFILL (a ctypes callback)
+
+    def new_chunk(self, words: int) -> None:
+        c = (ctypes.c_uint64 * words)()
+        self.chunks.append(c)
+        self.exn[1], self.exn[2] = ctypes.addressof(c), ctypes.addressof(c) + 8 * words
 
     def to_raw(self, t: Any, v: object) -> int:
         if v is None:
             return 0
+        if isexn(t):
+            if not isinstance(v, ExnRef) or self.exnrefs.get(v.addr) is not v:
+                raise TypeError(f"not an exception reference of this store: {v!r}")
+            return v.addr
         if not isextern(t):
             # only a reference this store handed out: a record of another store would run on that
             # store's context and value stack, a forged address anywhere (LESSONS 35)
@@ -143,6 +198,8 @@ class _StoreStacks:
             return None
         if isextern(t):
             return self.externs[r - 1]
+        if isexn(t):
+            return self.exnrefs.setdefault(r, ExnRef(r, self))
         ref = self.funcrefs.get(r)
         if ref is None:
             ref = self.funcrefs[r] = FuncRef(r, self)
@@ -160,6 +217,24 @@ def _stacks(store: StoreState) -> _StoreStacks:
     if not isinstance(store.target_state, _StoreStacks):
         store.target_state = _StoreStacks()
     return store.target_state
+
+
+def _refill_service(store: StoreState, st: _StoreStacks) -> Any:
+    """Context word EXN_REFILL (S0012): slots[0] = the words a throw needs; a new arena chunk of
+    at least that many. Status 0 written last (D34); 13 with the error pending if it fails."""
+
+    def refill(ctx: int, slots: int) -> int:
+        status = STATUS_HOST_ERROR
+        try:
+            st.new_chunk(max(ARENA_WORDS, ctypes.c_uint64.from_address(slots).value))
+            status = 0
+        except BaseException as e:
+            store.pending = e
+        finally:
+            ctypes.c_uint64.from_address(ctx + 8 * HOST_ERROR).value = status  # last
+        return 0
+
+    return HOST(refill)
 
 
 _thread = threading.local()
@@ -443,6 +518,11 @@ class Instance:
         self.ctx[TAIL_SWITCH] = tramp.tail_switch
         st = _stacks(store)  # call_indirect may enter this context without `call`: limits now
         self.ctx[NSTACK_LIMIT], self.ctx[VSTACK_LIMIT] = st.nlimit, st.vtop
+        if st.refill is None:
+            st.refill = _refill_service(store, st)
+        exn = ctypes.addressof(st.exn)  # S0012: in every context (throw_ref needs no tag)
+        self.ctx[EXCEPTION], self.ctx[ARENA_CURSOR], self.ctx[ARENA_LIMIT] = exn, exn + 8, exn + 16
+        self.ctx[EXN_REFILL] = ctypes.cast(st.refill, ctypes.c_void_p).value or 0
         self.code: ExecMem = load(code)
         self.entry = ENTRY(tramp.entry)
         self.callbacks = [HOST(self._host(*im)) for im in imports]  # kept alive here
@@ -533,10 +613,26 @@ class Instance:
                 for inst in self.store.instances:
                     if isinstance(inst, Instance):
                         inst.ctx[INTERRUPT] = 0
+        if status == STATUS_EXCEPTION:
+            return self._uncaught()
         try:
             return Trap(TrapCode(status))
         except ValueError:
             return RuntimeError(f"JIT code returned status {status}")
+
+    def _uncaught(self) -> BaseException:
+        """Status 14 at an entry: `Trap(UNCAUGHT_EXCEPTION)` with (tag, payload values as `call`
+        returns them on this target), read from the pending object (S0012 Q4)."""
+        st = _stacks(self.store)
+        addr = st.exn[0]
+        tag = st.tags.get(ctypes.c_uint64.from_address(addr).value) if addr else None
+        if tag is None:
+            return RuntimeError("JIT code returned status 14 without an exception")
+        raw = list((ctypes.c_uint64 * simd.width(tag.params)).from_address(addr + 8))
+        vals = zip(tag.params, simd.join(tag.params, raw), strict=True)
+        t = Trap(TrapCode.UNCAUGHT_EXCEPTION, "thrown Wasm exception")
+        t.exn = (tag, tuple(st.from_raw(p, v) if isref(p) else v for p, v in vals))
+        return t
 
     def _host(self, f: HostFunc, nparams: int, masks: Sequence[int]) -> Callable[[int, int], int]:
         """The status of a host call is context word HOST_ERROR, which the bridge presets to 13
@@ -673,6 +769,7 @@ class JitInstance(Instance):
         tables: list[Table] = []
         self.gaddr: list[int] = []
         self.cells: list[GlobalCell] = []  # keeps the owners of imported globals alive
+        self.tags: list[Tag] = []
         for im, ext in zip(mod["imports"], imports, strict=True):
             _check_store(store, im[0], ext.value)
             if im[0] == "func":
@@ -690,8 +787,18 @@ class JitInstance(Instance):
                     raise LinkError(f"incompatible import type {im[1]}.{im[2]}")
             elif im[0] == "table":
                 tables.append(cast(Table, ext.value))
-            elif im[0] == "global":  # a tag import has nothing to wire before S0012 step 3
+            elif im[0] == "global":
                 self.cells.append(cast(GlobalCell, ext.value))
+            elif im[0] == "tag":  # (exporting instance, tag index): the exporter's tag (S0012)
+                src, idx = cast(Any, ext.value)
+                tag = cast(Tag, src.tags[idx])
+                if tag.store is not store:
+                    raise ValueError("tag import belongs to another store")
+                self.tags.append(tag)
+        for ti in mod["tags"]:
+            self.tags.append(Tag(types[ti][0], store))
+        for tag in self.tags:
+            st.tags[tag.id] = tag
         for mt in mod["mems"]:
             memories.append(Memory(*mt, a64=mod["maddr"][len(memories)] == I64))
             memories[-1].store = store
@@ -721,6 +828,8 @@ class JitInstance(Instance):
             ctx[word : word + RECORD] = list(rec)
         for k, ti in enumerate(c.sigs):
             ctx[lay.sig(k)] = type_id(types, ti)
+        for t, tag in enumerate(self.tags):
+            ctx[lay.tag(t)] = tag.id
         for i in range(ng):
             word = lay.global_(i)
             if i < len(self.cells):

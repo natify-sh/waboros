@@ -128,7 +128,8 @@ def test_entry_args_and_results(tramp: Trampolines, n: int, wide: bool) -> None:
     assert inst.call(0, args) == [sum(args) & mask]
 
 
-TRAPS = [*TrapCode.__members__.values()]
+# status 14 means "an exception is in flight" (S0012): no trap stub returns it
+TRAPS = [c for c in TrapCode.__members__.values() if c is not TrapCode.UNCAUGHT_EXCEPTION]
 
 
 @pytest.mark.parametrize("code", TRAPS, ids=[c.name for c in TRAPS])
@@ -144,6 +145,18 @@ def test_each_trap_code_and_instance_still_usable(tramp: Trampolines, code: Trap
         inst.call(0, [])
     assert exc.value.code is code and inst.ctx[TRAP_CODE] == code
     assert inst.call(1, []) == [7]
+
+
+def test_status_14_without_an_exception_is_an_error(tramp: Trampolines) -> None:
+    """Status 14 is "an exception is in flight" (S0012): with no object pending the entry reports
+    an error instead of reading through address 0."""
+
+    def body(b: Backend, f: Frame, ls: list[Label]) -> None:
+        b.trap(f, TrapCode.UNCAUGHT_EXCEPTION)
+
+    inst = build(StoreState(), tramp, [((), 1, 0, body)])
+    with pytest.raises(RuntimeError, match="status 14"):
+        inst.call(0, [])
 
 
 def chain(depth: int, last: Emit) -> list[tuple[tuple[int, ...], int, int, Emit]]:

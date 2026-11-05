@@ -86,14 +86,15 @@ Wasmtime.
 | word | name | direction | meaning |
 |---|---|---|---|
 | 10 | `EXCEPTION` | host → code | the address of the store's pending-exception word. The word holds the exnref of the exception in flight, valid only while status 14 propagates. One word per store, so an exception crosses contexts (a call through a function record, D32) |
-| 11 | `THROW` | host → code | the throw service: a host function with the libcall signature (`int32_t f(ctx, slots)`), called through the bridge |
+| 11 | `EXN_REFILL` | host → code | the arena refill service: a host function with the libcall signature (`int32_t f(ctx, slots)`), called through the bridge only when a throw finds the arena's chunk full (step 3, D52) |
+| 12, 13 | `ARENA_CURSOR`, `ARENA_LIMIT` | host → code | addresses of the store's arena cursor and limit (step 3, D52) |
 | … (after the function records) | per tag *t*: 1 word | host → code | the tag's identity: a non-zero value unique in the process, imported tags first. An imported tag has its exporter's value. |
 
 * The tag words are appended after the last group, so no existing offset moves.
-* Words 10 and 11 were reserved and zero, so a context without exceptions does not change.
-* **The throw service.** It is called with `eax`/`x0` = 11 and the slots pointing at
-  `[tag word, payload words…]`. It allocates an exception object, writes its address to the
-  pending word, and writes status 14 to `HOST_ERROR` as its last action (D34).
+* Words 10-13 were reserved and zero, so a context without exceptions does not change.
+* **`throw` runs no Python** (step 3, D52). The code bumps the object from the store's arena chunk,
+  writes the tag word and the payload, makes the object pending and returns 14. When the chunk is
+  full it calls word 11 through the bridge with `slots[0]` = the words needed and allocates again.
 * **The exception object** (JIT): 8-byte words `{tag identity, payload words…}`. The payload is in
   slot form: one word per value, two for a v128 with the low half first. The object belongs to
   the store, never moves, and lives until the store is dropped (Q3).
@@ -107,11 +108,13 @@ Wasmtime.
   Trap stubs and the interrupt poll keep `f.unwind`: they cannot be caught.
 * `landing(f, pad: L, outer: L)`: bind `pad`, then branch to `outer` unless the status is 14.
   `outer` is the enclosing landing pad or `f.unwind`. The status register is preserved.
-* `exn_load(dst: Reg)`: the exnref in flight, read through context word 10 (`ctx_load` with
-  `indirect=True`).
-* `exn_match(exn: Reg, word: int, miss: L)`: branch to `miss` unless the object's tag word equals
-  context word `word`. It preserves `exn` and the status register, and leaves no flags live.
-* `exn_field(dst: Slot, exn: Reg, k: int)`: payload word `k` into a slot.
+* `exn_load(dst: Slot)`: the exnref in flight, read through context word 10.
+* `exn_match(word: int, miss: L)`: branch to `miss` unless the pending object's tag word equals
+  context word `word`. It preserves the status register and leaves no flags live.
+* `exn_field(dst: Slot, k: int)`: payload word `k` of the pending object into a slot.
+* `throw(f, word: int, base: int, n: int)`: a new object `{context word word, slots base..base+n}`
+  from the arena, pending, status 14, jump to `f.error` (step 3: allocation needs registers the
+  core cannot name).
 * `throw_ref(f, x: Operand)`: trap `NULL_REFERENCE` if `x` is 0. Otherwise write `x` to the
   pending word, set the status to 14 and jump to `f.error`.
 
@@ -187,8 +190,8 @@ None. Nothing in this spec differs by operating system.
   object (`_TC`) out of the `try`, and the call runs in the driver loop outside it.
 * **Multi-value and v128.** A payload has any number of values of any type, copied word for word.
   v128 is checked with Wasmtime (scratch `t3.wat`: `(param v128 i32)`).
-* **State at a landing pad (JIT).** Every exception arrives at a call site: `throw` is the throw
-  service's call site and `throw_ref` jumps to `f.error`. At every call the operand stack is in
+* **State at a landing pad (JIT).** Every exception arrives at a call site, or from `throw` and
+  `throw_ref` of this frame, which jump to `f.error` themselves (step 3). At every call the operand stack is in
   slots (ROADMAP, phase 5). The callee's epilogue has restored the pool registers on the
   non-zero-status path too, because `.unwind` is the epilogue. `r12`/`x27` and the memory
   registers are restored at the call site before the status test (`call_direct`, `_call_record`,
@@ -423,3 +426,19 @@ in a comment (REFERENCES.md).
   on `pyc`: 100 pass, 2 skipped (text-format `assert_malformed`, as on every engine), 8 expected
   failures, 0 fail. The 15 `instance.wast` "unsupported: exceptions" lines left `pyc`'s file; the
   JITs keep them, and the D25 test ignores exactly those entries until steps 3-4.
+* 2026-11-05: step 3 done (`jit-x86_64`), with three changes approved by the maintainer at the plan
+  review:
+  * `exn_load`, `exn_match` and `exn_field` take no exnref register. At a pad the result register
+    holds the status and every pool register may be a pin, so each method re-reads word 10.
+  * `throw` allocates in machine code from a store arena (64 KiB chunks that never move, the first
+    one with the store). Word 11 is the refill service, and words 12 and 13 point to the arena's
+    cursor and limit, so no Python runs on a throw.
+  * A sixth backend method, `throw`.
+
+  Results:
+  * Spec `jit-x86_64`, guard and explicit: `exceptions/` 100 pass, 2 skipped, 8 expected failures
+    (as `pyc`), whole suite 0 fail; the 15 `instance.wast` lines left the expected failures.
+  * D35 lists: only the 11 modules with exception instructions differ; `jit-aarch64` and CoreMark
+    are unchanged.
+  * Not done: a throw caught in the same function as a plain jump (D52).
+  * Throw cost: BENCHMARKS.md.

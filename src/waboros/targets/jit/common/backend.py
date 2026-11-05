@@ -184,3 +184,17 @@ class Backend(Protocol[L, F]):
     ) -> None: ...  # fmt: skip
     def tail_ref(self, f: F, ref: Operand, src: int, n: int) -> None: ...
     def tail_record(self, f: F, word: int, src: int, n: int) -> None: ...
+
+    # exceptions (S0012, the D39 amendment; aarch64 in step 4). The frame's `error` label is where
+    # every call_* / call_host method sends a non-zero status: `unwind` outside a try_table (the
+    # core sets it, today's bytes), the innermost landing pad inside one. Trap stubs and the
+    # interrupt poll keep `unwind`. At a pad only the status register and pins are live; these
+    # methods keep the status register and leave no flags live.
+    def landing(self, f: F, pad: L, outer: L) -> None: ...  # bind pad; to outer unless status 14
+    def exn_match(self, word: int, miss: L) -> None: ...  # to miss unless tag == context word
+    def exn_field(self, dst: Slot, k: int) -> None: ...  # payload word k of the pending object
+    def exn_load(self, dst: Slot) -> None: ...  # the pending exnref
+    # a new object {tag word, slots base..base+n} from the store's arena (slot base+n carries the
+    # size to the refill service when the chunk is full), pending, status 14, to `error`
+    def throw(self, f: F, word: int, base: int, n: int) -> None: ...
+    def throw_ref(self, f: F, x: Operand) -> None: ...  # null: NULL_REFERENCE; else as `throw`

@@ -664,3 +664,21 @@ What went wrong or surprised us while building the PoC, so it is not found again
     record such a leaf, so the block is not a sink candidate. Likewise `return_call` inside a
     `try_table` must be `return _TC(...)` even for a direct call: `return f(x)` runs `f` inside the
     `try`. Found: S0012 step 2, 2026-11-05.
+91. **A set derived from an enum grows with the enum.** The JIT's host-call statuses were
+    `frozenset(TrapCode)`: "a host `Trap` with a wasm trap code returns that code". When S0012
+    step 2 added `UNCAUGHT_EXCEPTION = 14` to `TrapCode` for `pyc`, a host function's
+    `Trap(UNCAUGHT_EXCEPTION)` silently became status 14, which inside JIT code means "an exception
+    is in flight", with no object pending. Rule: a set of codes with a meaning is written out or
+    has its exceptions named next to it, and a new enum member is checked against every set built
+    from the enum. Found: S0012 step 3 plan, 2026-11-05.
+92. **A test through the public path cannot reach a lower layer's case.** `link.resolve` wraps every
+    host function so that any exception travels as `HostError`, so a test built through it never
+    reaches the JIT callback's `except Trap` branch. The mutation "a host `Trap(14)` becomes status
+    14" survived every such test and was caught only by a test that passes an unwrapped `HostFunc`.
+    Rule: a mutation that survives names the path no test reaches; the test goes in at that layer.
+    Found: S0012 step 3, 2026-11-05.
+93. **A mutation driver must survive its mutants.** A mutant that sent a later call back into the
+    landing pad looped forever, and pytest hung. Killing the driver with SIGTERM skipped its
+    `finally`, and the mutant stayed in the (scratch) tree. Rule: run each mutant in a subprocess
+    with a timeout, and count a hang as caught (LESSONS 80). Run the mutants on a copy of the tree,
+    never on the working tree. Found: S0012 step 3, 2026-11-05.

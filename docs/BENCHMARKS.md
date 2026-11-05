@@ -1267,3 +1267,37 @@ The values are ns per call (median of 11 rounds).
 * **Conclusion.** The check costs at most about 0.1 ns, about 0.2 cycles, per call, below the
   placement spread. S0012's option A adds no instruction to it. Options B and C would not remove
   it either while traps return through frames.
+
+## Exceptions: throw cost (S0012 step 3, 2026-11-05)
+
+One `throw` caught D frames up by a `catch` in a wasm loop (`$f0` calls `$f1` … `$f{D-1}` throws an
+i32; the payload is added up). The value is ns per throw-and-catch, the best of 5 runs of 20 000
+iterations (5 000 at D = 100).
+* "before": the plan's prototype, a throw service called through the host bridge for every throw
+  (object from a Python-side arena).
+* "after": this step, which allocates the object in machine code from the store's arena.
+
+The two were alternated, three rounds, in one session.
+* Machine: the dev VM (Intel Xeon @ 2.10 GHz, 4 vCPU), CPython 3.13.17, guard mode (the default),
+  wasmtime-py 50.0.1, branch `phase5` at S0012 step 3. Other agents may have been running.
+* Command: `uv run python tools/bench_throw.py` (`--targets jit-x86_64,pyc,wasmtime --frames
+  1,10,100 --rounds 3` are the defaults; `--nothrow` times the call chain alone). The table below
+  was taken with a scratch version of it, run once per target and D, while the "before" build
+  still existed. A run of the committed tool afterwards, same machine:
+  * throw-and-catch: D = 1 / 10 / 100: jit-x86_64 15 / 28 / 991, pyc 412 / 1357 / 11 536,
+    Wasmtime 194 / 487 / 3218;
+  * `--nothrow`, jit-x86_64: 2 / 23 / 984.
+
+| D | jit-x86_64 before | jit-x86_64 after | pyc | Wasmtime |
+|---|---|---|---|---|
+| 1 | 2121 / 2230 / 2139 | 13 / 12 / 12 | 419 / 419 | 192 / 196 |
+| 10 | 2450 / 2572 / 2366 | 39 / 40 / 32 | 1329 / 2067 | 956 / 795 |
+| 100 | 4041 / 4373 / 4007 | 1021 / 991 / 976 | 11857 / 11446 | 4020 / 5913 |
+
+* **Result.** At one frame a throw costs about 12 ns, 170 times less than through the bridge, and
+  16 times less than Wasmtime, whose throw is a runtime call that walks the frames (S0012, option C).
+* **The 100-frame number is call depth, not unwinding.** The same chain returning normally costs
+  2 / 19 / 1456 ns at D = 1 / 10 / 100 (`--nothrow`). A wasm call
+  chain 100 deep is that slow on this machine whether or not it throws.
+* **Memory.** Each throw keeps 8·(1 + payload words) bytes until the store is dropped: 16 bytes
+  here. One ctypes object per throw (the plan's first prototype) kept 137 bytes.

@@ -381,10 +381,13 @@ def _jits(complete: bool) -> list[str]:
 def test_the_jit_fails_exactly_what_pyc_fails(jit: str) -> None:
     """D25: `auto` selects a JIT whose probe succeeds, so its expected failures must equal pyc's
     in the directories both claim."""
+    from tests.spec.claims import claimed
+
     both = ("pyc", jit)
-    # exceptions (S0012): pyc runs them since step 2, the JITs say unsupported until steps 3-4
+    # exceptions (S0012): a JIT says unsupported until it claims them (aarch64: step 4)
     entries = run.read_xfail(_XFAIL / f"{jit}.txt")
     ahead = {k for k, r in entries.items() if r == _EXN_UNSUPPORTED}
+    ahead = set[str]() if claimed(jit, "exceptionsFinal") else ahead
     assert _xfail_keys(jit, both) - ahead == _xfail_keys("pyc", both)
 
 

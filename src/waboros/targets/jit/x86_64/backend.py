@@ -19,11 +19,16 @@ from typing import cast
 from waboros.targets.base import TrapCode
 from waboros.targets.jit.common import twolevel
 from waboros.targets.jit.common.backend import NEGATE, SWAP, AddK, Dst, Imm, Operand, Reg, Slot
-from waboros.targets.jit.common.compiler import SUPPORTED, WIDEOPS
+from waboros.targets.jit.common.compiler import EXN, SUPPORTED, WIDEOPS
 from waboros.targets.jit.common.context import (
+    ARENA_CURSOR,
+    ARENA_LIMIT,
+    EXCEPTION,
+    EXN_REFILL,
     HOST_BRIDGE,
     INTERRUPT,
     NSTACK_LIMIT,
+    STATUS_EXCEPTION,
     STATUS_INTERRUPT,
     TAIL_SWITCH,
     VSTACK_LIMIT,
@@ -68,6 +73,7 @@ class Frame:
     unwind: Label
     vcheck: int  # position of the disp32 of `lea rax, [r12 + 8 * frame_slots]`
     traps: dict[int, Label] = field(default_factory=lambda: {})
+    error: Label = field(init=False)  # a call's non-zero status: `unwind` or a landing pad
 
 
 def _slot(k: int) -> Mem:
@@ -85,7 +91,7 @@ def _imm32(o: Operand, wide: bool) -> int | None:
 class Backend:
     pool = POOL
     tos = RAX
-    supported = SUPPORTED | v128.SUPPORTED | frozenset(WIDEOPS)
+    supported = SUPPORTED | v128.SUPPORTED | frozenset(WIDEOPS) | EXN
 
     def __init__(self, check_align: bool = False, *, guard: bool = False) -> None:
         self.a = Asm()
@@ -121,6 +127,7 @@ class Backend:
         if pad:
             a.alu_imm("sub", RSP, 8, w=True)
         f = Frame(pins, pad, a.label(), 0)
+        f.error = f.unwind
         a.alu("cmp", RSP, Mem(R15, 8 * NSTACK_LIMIT), w=True)
         a.jcc("b", self._stub(f, TrapCode.STACK_OVERFLOW))
         a.lea(RAX, Mem(R12, 1 << 20))  # disp32, patched by func_end
@@ -1303,7 +1310,7 @@ class Backend:
         if shift_slots:
             a.lea(R12, Mem(R12, -8 * shift_slots))
         a.test(RAX, RAX)
-        a.jcc("ne", f.unwind)
+        a.jcc("ne", f.error)
 
     def _table_record(self, f: Frame, table: int, sig: int, index: Operand, a64: bool) -> None:
         """rdx = the function record of element `index`: bounds (TABLE_OUT_OF_BOUNDS), null
@@ -1346,7 +1353,7 @@ class Backend:
         if shift_slots:
             a.lea(R12, Mem(R12, -8 * shift_slots))
         a.test(RAX, RAX)
-        a.jcc("ne", f.unwind)
+        a.jcc("ne", f.error)
 
     def call_indirect(
         self, f: Frame, table: int, sig: int, index: Operand, shift_slots: int, *, a64: bool
@@ -1456,4 +1463,73 @@ class Backend:
         a.mov(R13, Mem(R15, MEM0), w=True)  # memory.grow may have run
         a.mov(R14, Mem(R15, MEM0 + 8), w=True)
         a.test(RAX, RAX)
-        a.jcc("ne", f.unwind)
+        a.jcc("ne", f.error)
+
+    # ---------------------------------------------------------------- exceptions (S0012)
+    # At a landing pad the status is in eax and only pins are live (every exception arrives at a
+    # call site); these use rcx/rdx and keep eax. The pending word is read again by each method
+    # (cold code): no register the core could name is free there.
+    def landing(self, f: Frame, pad: Label, outer: Label) -> None:
+        self.a.bind(pad)
+        self.a.alu_imm("cmp", RAX, STATUS_EXCEPTION)
+        self.a.jcc("ne", outer)
+
+    def _exn(self) -> None:
+        self.a.mov(RCX, Mem(R15, 8 * EXCEPTION), w=True)
+        self.a.mov(RCX, Mem(RCX), w=True)  # the object: {tag identity, payload words...}
+
+    def exn_load(self, dst: Slot) -> None:
+        self._exn()
+        self.a.mov(_slot(dst.k), RCX, w=True)
+
+    def exn_match(self, word: int, miss: Label) -> None:
+        self._exn()
+        self.a.mov(RCX, Mem(RCX), w=True)
+        self.a.alu("cmp", RCX, Mem(R15, 8 * word), w=True)
+        self.a.jcc("ne", miss)
+
+    def exn_field(self, dst: Slot, k: int) -> None:
+        self._exn()
+        self.a.mov(RDX, Mem(RCX, 8 + 8 * k), w=True)
+        self.a.mov(_slot(dst.k), RDX, w=True)
+
+    def throw(self, f: Frame, word: int, base: int, n: int) -> None:
+        """A new object {tag identity (context word `word`), slots base..base+n} bumped from the
+        store's arena chunk, made the pending exception: status 14 to `f.error`, no Python. A full
+        chunk: the refill service through the bridge (slot base+n = the words needed), then
+        again. Writes rax, rcx, rdx."""
+        a, size = self.a, 8 * (1 + n)
+        again, refill = a.label(), a.label()
+        a.bind(again)
+        a.mov(RCX, Mem(R15, 8 * ARENA_CURSOR), w=True)
+        a.mov(RAX, Mem(RCX), w=True)  # the object
+        a.lea(RDX, Mem(RAX, size))
+        a.mov(RCX, Mem(R15, 8 * ARENA_LIMIT), w=True)
+        a.alu("cmp", RDX, Mem(RCX), w=True)
+        a.jcc("a", refill)
+        a.mov(RCX, Mem(R15, 8 * ARENA_CURSOR), w=True)
+        a.mov(Mem(RCX), RDX, w=True)
+        a.mov(RCX, Mem(R15, 8 * word), w=True)
+        a.mov(Mem(RAX), RCX, w=True)
+        for k in range(n):  # word for word: a v128 is its two slots, low half first
+            a.mov(RCX, _slot(base + k), w=True)
+            a.mov(Mem(RAX, 8 + 8 * k), RCX, w=True)
+        a.mov(RCX, Mem(R15, 8 * EXCEPTION), w=True)
+        a.mov(Mem(RCX), RAX, w=True)
+        a.mov_imm(RAX, STATUS_EXCEPTION)
+        a.jmp(f.error)
+        a.bind(refill)  # after a jmp: no fall-through path runs this
+        a.mov_imm(_slot(base + n), 1 + n, w=True)
+        self.call_host(f, EXN_REFILL, base + n)
+        a.jmp(again)
+
+    def throw_ref(self, f: Frame, x: Operand) -> None:
+        """Null traps (NULL_REFERENCE, not catchable); else the object becomes the one in flight."""
+        a = self.a
+        self.move(Reg(RDX), x, True)  # x may be in rax (LESSONS 32)
+        a.test(RDX, RDX, w=True)
+        a.jcc("e", self._stub(f, TrapCode.NULL_REFERENCE))
+        a.mov(RCX, Mem(R15, 8 * EXCEPTION), w=True)
+        a.mov(Mem(RCX), RDX, w=True)
+        a.mov_imm(RAX, STATUS_EXCEPTION)
+        a.jmp(f.error)

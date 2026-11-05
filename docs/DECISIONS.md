@@ -2,7 +2,7 @@
 title: Decisions
 kind: log
 status: current
-updated: 2026-11-04
+updated: 2026-11-05
 ---
 
 # Decisions
@@ -860,3 +860,43 @@ deviation: the stochastic test is skipped on PyPy; the deterministic delivery-po
 model CPython's points, still run there. Closing it needs bookkeeping that does not rely on a
 restore in a `finally` (for example reset when the outermost entry finds no JIT frame below): a later
 item in ROADMAP.md, phase 5.
+
+### D52. JIT exceptions: status 14 through frames, objects bumped from a store arena in code, context ABI v1 amended
+Status: accepted (maintainer, 2026-11-05) · Date: 2026-11-05 · Supersedes: — · Evidence: S0012 step 3; `tests/jit/test_exceptions.py`; BENCHMARKS.md "Exceptions: throw cost"
+
+An exception crosses JIT frames as status 14 (`UNCAUGHT_EXCEPTION`), as traps do (S0012 Q1 A): each
+call site's existing `test eax, eax; jnz` goes to the frame's `error` label, which is the epilogue
+outside a `try_table` (code without one is byte-identical, D35 lists) and the innermost landing
+pad inside one. A pad dispatches only 14; traps, interrupts, host errors and stack overflows pass
+through, as in Wasmtime. Every `ret` matches its `call` (R2). The context ABI v1 is amended without
+a bump (S0012 Q2 (a), as D34 and D50; no artifact file exists yet): word 10 the address of the
+store's pending-exception word, 11 the arena refill service, 12 and 13 the addresses of the store's
+arena cursor and limit, one tag-identity word per tag after the records (ARTIFACT.md part 3).
+
+`throw` runs no Python (maintainer, plan review): the code bumps the object `{tag, payload}` from
+the store's arena chunk, makes it pending and returns 14; only a full chunk calls the refill
+service through the bridge. A first version called a throw service through the bridge for every
+throw (2.1-2.8 µs per throw caught one frame up; BENCHMARKS.md). Words 12 and 13 hold addresses,
+not the cursor and limit themselves, because every context of a store allocates from one arena: a
+per-context copy of the cursor would hand out the same memory twice. Chunks are 64 KiB, never
+move, and live until the store is dropped (S0012 Q3 (a): 8·(1 + payload words) bytes per throw; one
+ctypes object per throw kept 137 bytes for a one-word payload). That keeps every exception a program
+throws, where Wasmtime's collector frees unreachable ones: a deviation until GC (Q3 (c)).
+
+At an entry status 14 becomes `Trap(UNCAUGHT_EXCEPTION)` with `exn = (Tag, values)`; an exnref seen
+by the host is an opaque `ExnRef` of its store (S0012 Q4; the public shape is phase 6). A host
+function's `Trap(UNCAUGHT_EXCEPTION)` is a host error (status 13), so an exception that left wasm
+through a host frame is not caught again below it (wasmtime-py 50 behaves so). Before this step
+the host-call status set was `frozenset(TrapCode)`, which had admitted 14 since S0012 step 2
+(LESSONS 91).
+
+D39 amendment (S0012 Q5): the frame's `error` label and six backend methods, `landing`,
+`exn_match`, `exn_field`, `exn_load`, `throw` and `throw_ref`. `exn_match` and `exn_field` take
+no exnref register, unlike S0012's first text: at a pad the result register holds the status and
+every pool register may be a pin, so each method re-reads the pending word (maintainer, Q-A (a)).
+`throw` is a method because its allocation needs registers the core cannot name. x86-64 has them
+since S0012 step 3; aarch64 completes the amendment in step 4 (maintainer, Q-F). Until then its
+`supported` set has no exception opcode, its call sites keep `unwind` and its code is unchanged
+(D35 list identical). Not done: a `throw` caught in the same function as a plain jump. Two tags of
+different indices are the same tag when both are imports of one export, so the first matching
+clause is not always known at compile time. Nothing measured asks for it.

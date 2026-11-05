@@ -6,7 +6,7 @@ status: implemented
 superseded_by:
 related: [D10, D14, D15, D18, D23, D24, R2, R3, R6, S0002]
 owner: maintainer
-updated: 2026-11-04
+updated: 2026-11-05
 ---
 
 # S0003 JIT context ABI and entry (phase 3, x86-64)
@@ -40,13 +40,17 @@ it is not a new format. The runtime side is [S0002](S0002-target-interface.md).
 | 7 | `HOST_ERROR` | status of the current host call: preset to 13 by the bridge, written last by the host function (step 6, D34) |
 | 8 | `HOST_BRIDGE` | address of the host-call bridge for the host's convention |
 | 9 | `TAIL_SWITCH` | address of the cross-context tail-call trampoline (step 3e, D30) |
-| 10–15 | reserved | zero |
+| 10 | `EXCEPTION` | address of the store's pending-exception word (S0012) |
+| 11 | `EXN_REFILL` | the exception arena's refill service, called through the bridge (S0012) |
+| 12, 13 | `ARENA_CURSOR`, `ARENA_LIMIT` | addresses of the store's arena cursor and limit (S0012) |
+| 14–15 | reserved | zero |
 | 16 … | memory *i*: `base`, `size_bytes` | memory 0 also in r13/r14; any other read here at each access |
 | … | table *i*: `base`, `size` | element words (record address / extern handle, 0 = null); step 3d |
 | … | global *i*: 1 word | defined: the value; imported: a pointer to the owner's word (same target, S0002) |
 | … | function import *i*: 1 word | address of a host function (signature below) |
 | … | libcall *j*: 1 word | same signature; the runtime services the module uses (`memory.grow`, `table.grow`, segment init — never computation, D25), in a fixed order |
 | … | signature *k*, function record *r* | step 3d: canonical type ids for `call_indirect`; `{code, type id, context}` records (ARTIFACT.md part 3) |
+| … | tag *t* | the tag's identity, imported tags first (S0012) |
 
 ### Calling conventions
 ```c
@@ -372,3 +376,15 @@ uv run pytest tests/jit -k "entry or trap or reentry or host or interrupt or sta
   `base` and `size_bytes` may change during any host call or libcall (ARTIFACT.md part 3, a text
   amendment of version 1 without a bump). The code obligation is unchanged: memory 0's registers are
   reloaded after every bridge call, every other memory is read at each access.
+* 2026-11-05 (S0012 step 3, D52): exceptions on x86-64, an amendment of v1 without a bump. Words
+  10 (`EXCEPTION`), 11 (`EXN_REFILL`), 12 and 13 (`ARENA_CURSOR`, `ARENA_LIMIT`: addresses, since the
+  arena belongs to the store) and one identity word per tag after the records (ARTIFACT.md part 3).
+  An exception is status 14 returned through frames. Every call site's `jnz` goes to the frame's
+  `error` label: `unwind` outside a `try_table` (the code of a function without one is unchanged:
+  D35 lists), the innermost landing pad inside one; trap stubs and the interrupt poll keep `unwind`.
+  At a landing pad only eax (the status) and the pins are live: the operand stack is in slots, r12
+  and r13/r14/r15 were restored before the status test, the callee's epilogue popped its pins. A
+  pad compares eax with 14, then tries the clauses, each re-reading the pending word through word
+  10 (rcx/rdx only). `throw` bumps the object from the arena in code; only a full chunk goes
+  through the bridge (word 11). Status 14 at the trampoline becomes `Trap(UNCAUGHT_EXCEPTION)`; a
+  host function's `Trap(UNCAUGHT_EXCEPTION)` is a host error (13).

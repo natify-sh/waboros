@@ -25,6 +25,7 @@ CLAIMS: dict[str, frozenset[str]] = {
     | {"memory64", "exceptionsFinal"},
     "jit-x86_64": frozenset(
         {"bulkMemory", "multiMemory", "simd", "relaxedSimd", "wideArithmetic", "memory64"}
+        | {"exceptionsFinal"}
     ),  # parity with pyc (D25)
     "jit-aarch64": frozenset(
         {"bulkMemory", "multiMemory", "simd", "relaxedSimd", "wideArithmetic", "memory64"}

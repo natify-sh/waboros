@@ -1,20 +1,13 @@
 bulk-memory/table_init.wast:2272  LoadError: NotImplementedError: rec / sub / struct / array types
 bulk-memory/table_init.wast:2286  LookupError: no exported function run
-instance.wast:101  unsupported: exceptions
-instance.wast:102  unsupported: exceptions
-instance.wast:103  unsupported: exceptions
-instance.wast:104  unsupported: exceptions
-instance.wast:128  unsupported: exceptions
-instance.wast:15  unsupported: exceptions
-instance.wast:167  unsupported: exceptions
-instance.wast:168  unsupported: exceptions
-instance.wast:169  unsupported: exceptions
-instance.wast:170  unsupported: exceptions
-instance.wast:54  unsupported: exceptions
-instance.wast:55  unsupported: exceptions
-instance.wast:56  unsupported: exceptions
-instance.wast:57  unsupported: exceptions
-instance.wast:62  unsupported: exceptions
+exceptions/cast.wast:1  LoadError: NotImplementedError: opcode 0xfb (GC ref.test / ref.cast)
+exceptions/cast.wast:21  no current module
+exceptions/cast.wast:22  no current module
+exceptions/cast.wast:23  no current module
+exceptions/cast.wast:24  no current module
+exceptions/tag.wast:30  LoadError: NotImplementedError: rec / sub / struct / array types
+exceptions/tag.wast:40  LoadError: NotImplementedError: rec / sub / struct / array types
+exceptions/tag.wast:49  LoadError: NotImplementedError: rec / sub / struct / array types
 linking.wast:112  LinkError: incompatible import type Mref_ex.g-const-func
 memory64/table_init64.wast:2457  LoadError: NotImplementedError: rec / sub / struct / array types
 memory64/table_init64.wast:2471  LookupError: no exported function run

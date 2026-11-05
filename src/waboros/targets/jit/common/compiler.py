@@ -113,6 +113,7 @@ SUPPORTED = frozenset(
     (*CONTROL, *range(0x20, 0x25), *range(0x41, 0x46), 0x50, *BINOPS, *CMPS, *UNOPS, *LOADS,
      *STORES, *REINTERPRET, *FCMPS, *FUNOPS, *FBINOPS, *CONVERTS, 0x3F, 0x40, *TABLES)
 )  # fmt: skip
+EXN = frozenset((0x08, 0x0A, 0x1F))  # throw, throw_ref, try_table (S0012): a backend's own set
 # abstract heap types a reference may have here: func, extern and their bottom types nofunc,
 # noextern (all one word: a record address / host handle, 0 = null)
 HEAPS = (-16, -17, -13, -14)
@@ -123,13 +124,13 @@ def feature(op: int) -> str:
     return "exceptions" if op in (0x08, 0x0A, 0x1F) else f"opcode {op:#x}"
 
 
-def type_ok(t: Any) -> str | None:
-    """None if values of type `t` are compiled here (numbers, function and extern references),
-    else the feature."""
+def type_ok(t: Any, exn: bool = False) -> str | None:
+    """None if values of type `t` are compiled here (numbers, function and extern references,
+    exnref with `exn`), else the feature."""
     if t in NUM or t in (0x70, 0x6F) or t.__class__ is tuple and (t[1] >= 0 or t[1] in HEAPS):
         return None
     if t in (0x69, 0x74) or t.__class__ is tuple and t[1] in (-23, -12):
-        return "exceptions"
+        return None if exn else "exceptions"
     return "simd" if t == 0x7B else "GC types"
 
 
@@ -137,9 +138,10 @@ def unsupported(mod: ValidModule, ops: frozenset[int]) -> str | None:
     """The first feature of `mod` that a backend compiling the opcodes `ops` cannot, or None. v128
     is compiled where the backend compiles some SIMD operator (S0005)."""
     vec = any(op >= 0xFD000 for op in ops)
+    exn = EXN <= ops
 
     def bad(t: Any) -> str | None:
-        return None if vec and t == simd.V128 else type_ok(t)
+        return None if vec and t == simd.V128 else type_ok(t, exn)
 
     if not mod.get("validated"):
         return "module not fully validated"
@@ -158,7 +160,7 @@ def unsupported(mod: ValidModule, ops: frozenset[int]) -> str | None:
             if op not in ops:
                 return feature(op)
             ts: Sequence[Any] = ()
-            if op in (0x02, 0x03, 0x04) and ins[1][0] != "idx":
+            if op in (0x02, 0x03, 0x04, 0x1F) and ins[1][0] != "idx":
                 ts = (*ins[1][0], *ins[1][1])
             elif op == 0x1B and len(ins) > 1:  # typed select
                 ts = ins[1]
@@ -194,6 +196,7 @@ class _Ctl:
     dst: int  # first slot a branch to this label writes its values to
     else_label: Any = None
     used: bool = False
+    outer: Any = None  # try_table: Frame.error outside it (S0012)
 
 
 @dataclass
@@ -213,6 +216,7 @@ class _Mod:
     m64: list[bool] = field(default_factory=list[bool])
     mlo: list[int] = field(default_factory=list[int])
     t64: list[bool] = field(default_factory=list[bool])
+    tagw: list[int] = field(default_factory=list[int])  # payload slots of each tag (S0012)
 
 
 def compile_module(mod: ValidModule, b: Backend[Any, Any], target: str) -> Compiled:
@@ -236,7 +240,7 @@ def compile_module(mod: ValidModule, b: Backend[Any, Any], target: str) -> Compi
     layout = Layout(
         memories=nmem, tables=len(mod["ttypes"]),
         globals=len(gimps) + len(mod["globals"]), imports=len(fimps), sigs=len(sigs),
-        records=len(refd), wide=wide,
+        records=len(refd), wide=wide, tags=sum(im[0] == "tag" for im in imps) + len(mod["tags"]),
     )  # fmt: skip
     m = _Mod(
         b, mod["types"], fimps + mod["funcs"], len(fimps), [b.new_label() for _ in mod["funcs"]],
@@ -247,6 +251,8 @@ def compile_module(mod: ValidModule, b: Backend[Any, Any], target: str) -> Compi
     m.m64 = [at == I64 for at in mod["maddr"]]
     m.mlo = [mn << 16 if w else 0 for mn, w in zip(mins, m.m64, strict=True)]
     m.t64 = [at == I64 for at in mod["taddr"]]
+    tts: list[int] = [im[3] for im in imps if im[0] == "tag"] + mod["tags"]
+    m.tagw = [simd.width(m.types[ti][0]) for ti in tts]
     nopin = os.environ.get("WABOROS_JIT_NOPIN", "")
     funcs: list[tuple[int, int]] = []
     for k, ((locs, _), insns) in enumerate(zip(mod["codes"], mod["insns"], strict=True)):
@@ -284,6 +290,7 @@ class _Func:
         self.dead_depth = 0
         self.tos_taken = False  # an operand of the current instruction is in `tos` (LESSONS 32)
         self.f: Any = None  # the backend's frame, from run()
+        self.pads: list[tuple[Any, Any, list[tuple[int, int | None, _Ctl]]]] = []  # S0012, cold
 
     def choose_pins(self) -> dict[int, int]:
         """Integer locals by uses weighted by loop depth (as w2jit2), as many as the pool holds."""
@@ -292,7 +299,7 @@ class _Func:
         kinds: list[int] = []
         for ins in self.insns:
             op = ins[0]
-            if op in (0x02, 0x03, 0x04):
+            if op in (0x02, 0x03, 0x04, 0x1F):
                 kinds.append(op)
                 depth += op == 0x03
             elif op == 0x0B and kinds:
@@ -499,6 +506,8 @@ class _Func:
             return
         if not self.dead:
             self.flush()
+        if c.outer is not None:  # try_table: the calls after it go where they went before
+            self.f.error = c.outer
         if c.kind == "if":  # no else: the false path arrives with the parameters as results
             self.b.bind(c.else_label)
         if c.kind != "loop":
@@ -676,6 +685,59 @@ class _Func:
         self.need_tos()
         return x, y, z
 
+    # ------------------------------------------------------------------ exceptions (S0012)
+    # Option A: an exception is status 14 returned through frames. Inside a try_table every call
+    # site's non-zero-status branch goes to the try_table's landing pad (Frame.error), emitted
+    # cold after the body; the pad passes on every other status and tries the clauses in order,
+    # as V8 Liftoff's CatchCase chain (tag of the caught object against the instance's tag, then
+    # unpack, catch_ref appends the reference, then br) and Winch's emit_try_table_end (catch
+    # targets marked as branch targets at entry, the stack cut back to the try_table's height).
+    def try_table(self, bt: Any, clauses: Sequence[tuple[int, int | None, int]]) -> None:
+        targets: list[tuple[int, int | None, _Ctl]] = []
+        for kind, tag, lab in clauses:  # labels are counted outside the try_table
+            c = self.ctl[-1 - lab]
+            c.used = True
+            targets.append((kind, tag, c))
+        self.enter(0x02, bt)
+        pad = self.b.new_label()
+        self.ctl[-1].outer = self.f.error
+        self.pads.append((pad, self.f.error, targets))
+        self.f.error = pad
+
+    def landing_pads(self) -> None:
+        """Payload words straight into the label's slots, then the exnref; a miss of every
+        clause goes on to the enclosing pad (or the epilogue) with the status still 14."""
+        b, lay = self.b, self.m.layout
+        for pad, outer, targets in self.pads:
+            b.landing(self.f, pad, outer)
+            for kind, tag, c in targets:
+                n, miss = 0, None
+                if tag is not None:
+                    miss = b.new_label()
+                    b.exn_match(lay.tag(tag), miss)
+                    n = self.m.tagw[tag]
+                    for k in range(n):
+                        b.exn_field(Slot(c.dst + k), k)
+                if kind & 1:
+                    b.exn_load(Slot(c.dst + n))
+                b.jump(c.label)
+                if miss is None:
+                    break
+                b.bind(miss)
+            else:
+                b.jump(outer)
+
+    def throw(self, t: int) -> None:
+        """The payload (slots h0..h0+n) becomes a new object of the store's arena, in machine
+        code; the slot above it carries the size to the refill service when the chunk is full."""
+        n = self.m.tagw[t]
+        self.flush()
+        h0 = len(self.st) - n
+        self.b.throw(self.f, self.m.layout.tag(t), self.L + h0, n)
+        self.maxh = max(self.maxh, h0 + n + 1)
+        del self.st[h0:]
+        self.dead = True
+
     # ------------------------------------------------------------------ the pass
     def run(self, far: bool) -> bool:
         """Compile the function; False if the backend asks for far mode (S0004)."""
@@ -694,7 +756,7 @@ class _Func:
             op = ins[0]
             self.tos_taken = False
             if self.dead:  # skip to the end (or else) of the block that became unreachable
-                if op in (0x02, 0x03, 0x04):
+                if op in (0x02, 0x03, 0x04, 0x1F):
                     self.dead_depth += 1
                 elif op == 0x0B:
                     if self.dead_depth:
@@ -759,6 +821,13 @@ class _Func:
                 push((TOS, None))
             elif op in (0x02, 0x03, 0x04):
                 self.enter(op, ins[1])
+            elif op == 0x1F:
+                self.try_table(ins[1], ins[2])
+            elif op == 0x08:
+                self.throw(ins[1])
+            elif op == 0x0A:  # a reference is never a pending compare
+                b.throw_ref(f, self.pop())
+                self.dead = True
             elif op == 0x0B:
                 self.end()
             elif op == 0x0D:
@@ -901,4 +970,5 @@ class _Func:
             else:  # unsupported() already refused it
                 raise AssertionError(f"opcode {op:#x}")
         assert not self.ctl
+        self.landing_pads()
         return b.func_end(f, L + self.maxh)
