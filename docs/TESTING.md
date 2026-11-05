@@ -55,7 +55,7 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   `tests/spec/fetch.py` (`PROPOSAL_FILES`: one file at a commit, with its sha256; today
   `wide-arithmetic.wast` of `WebAssembly/wide-arithmetic`, S0008); it moves to the spec pin when merged. The contract is [S0001](specs/S0001-engine-interface.md).
 * One harness, many targets: the JSON commands (`module`, `register`, `assert_return`,
-  `assert_trap`, `assert_exhaustion`, `assert_invalid`, `assert_malformed`, `assert_unlinkable`,
+  `assert_trap`, `assert_exhaustion`, `assert_exception`, `assert_invalid`, `assert_malformed`, `assert_unlinkable`,
   `assert_uninstantiable`, `action`) are executed through the internal engine interface of S0001, one
   CLI run per engine (`python -m tests.spec.run --engine NAME`), never through the public API. Unlike pywasm, `assert_invalid` / `assert_malformed` are real tests
   of our validator.

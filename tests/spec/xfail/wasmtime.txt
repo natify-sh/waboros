@@ -43,24 +43,6 @@ ref_null.wast:80  wasmtime-py aborts on a typed reference in a signature (the pr
 ref_null.wast:81  wasmtime-py aborts on a typed reference in a signature (the process dies)
 
 # proposal subdirectories (S0001, 2026-10-30): single commands
-exceptions/throw.wast:39  unsupported command
-exceptions/throw.wast:40  unsupported command
-exceptions/throw.wast:42  unsupported command
-exceptions/throw.wast:43  unsupported command
-exceptions/throw.wast:44  unsupported command
-exceptions/throw.wast:46  unsupported command
-exceptions/throw.wast:47  unsupported command
-exceptions/throw_ref.wast:101  unsupported command
-exceptions/throw_ref.wast:104  unsupported command
-exceptions/throw_ref.wast:106  unsupported command
-exceptions/throw_ref.wast:108  unsupported command
-exceptions/throw_ref.wast:109  unsupported command
-exceptions/throw_ref.wast:115  unsupported command
-exceptions/throw_ref.wast:99  unsupported command
-exceptions/try_table.wast:292  unsupported command
-exceptions/try_table.wast:296  unsupported command
-exceptions/try_table.wast:334  unsupported command
-exceptions/try_table.wast:335  unsupported command
 exceptions/try_table.wast:464  wasmtime-py aborts on a typed reference in a signature (the process dies)
 exceptions/try_table.wast:465  wasmtime-py aborts on a typed reference in a signature (the process dies)
 exceptions/try_table.wast:466  wasmtime-py aborts on a typed reference in a signature (the process dies)

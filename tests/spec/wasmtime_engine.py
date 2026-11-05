@@ -158,5 +158,7 @@ class WasmtimeEngine:
     def _trap(e: wasmtime.Trap) -> Exception:
         code = e.trap_code
         if code is None:
+            if "thrown Wasm exception" in e.message:  # wasmtime-py 50 gives no code (S0012, Q4)
+                return Trap(TrapCode.UNCAUGHT_EXCEPTION, e.message)
             return e
         return Trap(TrapCode[code.name], e.message)  # a code with no member: KeyError, as is

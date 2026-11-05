@@ -290,6 +290,8 @@ class _FileRun:
                 raise Failure(f"got {got}")
         elif t == "assert_trap":
             self.expect_trap(c, lambda: self.act(c["action"]), trap_code(c["text"]))
+        elif t == "assert_exception":
+            self.expect_trap(c, lambda: self.act(c["action"]), TrapCode.UNCAUGHT_EXCEPTION)
         elif t == "assert_exhaustion":
             self.expect_trap(c, lambda: self.act(c["action"]), TrapCode.STACK_OVERFLOW)
         elif t in ("assert_malformed", "assert_invalid"):
