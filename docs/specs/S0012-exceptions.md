@@ -2,7 +2,7 @@
 title: Exception handling (exnref) on pyc, jit-x86_64 and jit-aarch64
 kind: spec
 id: S0012
-status: approved
+status: implemented
 superseded_by:
 related: [D19, D25, D30, D32, D34, D35, D39, D47, D51, R2, R3, S0001, S0002, S0003, S0004, S0011]
 owner: maintainer
@@ -476,3 +476,6 @@ in a comment (REFERENCES.md).
   * `tools/fuzz.py` cross mode enables smith exceptions, and compares a reference result as null or
     not (it was a `KeyError` that dropped the module). Fuzz numbers: `--targets pyc,jit,wasmtime --minutes 5 --seed 90000`: 3 637 modules generated, 3 636 compared, 1 timeout, 10 divergences, all of them `pyc` alone with a different trap code (the known trap-order class, triage); about half of the smith modules have `throw` or `try_table` (101 of the first 200 seeds, 35 with a tag), and none of the divergences has a tag.
   * No machine-code change: `tools/jit_dump.py` x86-64 is identical to before the step.
+* 2026-11-05: implemented. The fuzz findings were triaged before closing (ROADMAP): every
+  divergence was a `pyc` evaluation-order or naming defect outside the exception code and is fixed
+  (TESTING.md, LESSONS 95-96); a 3-minute cross-target run with exceptions enabled finds none.
