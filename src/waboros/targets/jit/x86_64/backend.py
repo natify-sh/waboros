@@ -866,9 +866,10 @@ class Backend:
         return Mem(RCX, disp)
 
     # ---------------------------------------------------------------- low layer (S0011)
-    # The operations `twolevel.bounds` composes; each fits its immediates to the encoding (the
-    # ranges are part of the contract, LESSONS 83). Only rcx and rdx are written; no flags are
-    # live after an operation but inside `ll_jcmp`, `ll_jcmp_imm` and `ll_add_jc`.
+    # The operations `twolevel` composes; each fits its immediates to the encoding (the ranges
+    # are part of the contract, LESSONS 83). Only rcx and rdx are written (`ll_check_sum`: its
+    # `r`, restored); no flags are live after an operation but inside `ll_jcmp`, `ll_jcmp_imm`,
+    # `ll_add_jc` and `ll_check_sum`.
     IDX: int = RCX
     TMP: int = RDX
 
@@ -981,6 +982,32 @@ class Backend:
         a.mov(RCX, base, w=True)
         return Mem(RCX, disp, r)
 
+    def ll_check_sum(self, r: int, n: int, limit: int | Mem, label: Label, wide: bool) -> None:
+        """r + n <= limit or `label`; `wide`: also a carry out of 64 bits. No register is free
+        (memory_copy: rax, rdx, rcx are its operands), so r is added in place and restored."""
+        a = self.a
+        a.alu("add", r, n, w=True)
+        if wide:
+            a.jcc("b", label)
+        a.alu("cmp", r, limit, w=True)
+        a.jcc("a", label)
+        a.alu("sub", r, n, w=True)
+
+    def ll_index(self, addr: Operand, wide: bool) -> int:
+        """rcx = addr: 64 bits, or an i32 zero-extended (`ll_index32`); any operand kind."""
+        if wide:
+            self.move(Reg(RCX), addr, True)
+            return RCX
+        return self.ll_index32(addr)
+
+    def ll_ctx_word(self, word: int) -> Mem:
+        return Mem(R15, 8 * word)  # disp32: the context has far fewer than 2**28 words
+
+    def ll_element(self, word: int, r: int) -> Mem:
+        """[base + 8 r], base = context word `word` in rdx."""
+        self.a.mov(RDX, Mem(R15, 8 * word), w=True)
+        return Mem(RDX, 0, r, 8)
+
     def _fault_point(self) -> None:
         """The next instruction is the access `_bounds` formed: in guard mode, a fault point
         (S0006 fault map); in explicit mode nothing."""
@@ -1074,6 +1101,9 @@ class Backend:
     def _element(self, f: Frame, word: int, index: Operand, a64: bool) -> Mem:
         """Bounds-check index (rcx) against the table's size; the element's address via rdx. An
         i64 index (S0009) is read by a 64-bit move: `cmp` with the 64-bit size word, no carry."""
+        if self.twolevel:  # S0011 step 2
+            oob = self._stub(f, TrapCode.TABLE_OUT_OF_BOUNDS)
+            return twolevel.element(self, oob, word, index, a64)
         a = self.a
         if a64:
             self.move(Reg(RCX), index, True)
@@ -1120,6 +1150,8 @@ class Backend:
     ) -> None:  # fmt: skip
         """r + rcx must not exceed `size`: both < 2**32 (no wrap in 64 bits), or with `carry`
         64-bit values whose sum may wrap (`jc`: out of bounds, S0009)."""
+        if self.twolevel:  # S0011 step 2
+            return twolevel.end_check(self, self._stub(f, code), r, RCX, size, carry)
         a = self.a
         a.alu("add", r, RCX, w=True)
         if carry:

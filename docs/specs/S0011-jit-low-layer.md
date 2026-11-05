@@ -123,14 +123,17 @@ operand has no displacement.
      so nothing wraps in 64 bits.
    * Return `ll_access(base, r, disp, size)`.
 
-`end_check(b, f, r, limit, code, wide)` (bulk memory and tables): trap `code` unless `r + n ≤ limit`,
-where `n` is the count register of the operation. Both operands are below 2³⁵ when not `wide`, so the
-sum cannot wrap. When `wide`, a carry out of 64 bits traps. Both ranges of a copy are checked before
-any write; that order stays in the per-backend callers. `r` is preserved.
+`end_check(b, oob, r, n, limit, wide)` (bulk memory and tables): trap to `oob` unless `r + n ≤ limit`,
+where `n` is the count register of the operation. When not `wide`, both operands are zero-extended
+i32 values (each below 2³², the sum below 2³³), so the sum cannot wrap. When `wide`, a carry out of
+64 bits traps. `r` is preserved. The width of each operand (`n` is wide only between two wide
+ranges) and the order (both ranges of a copy are checked before any write) stay in the per-backend
+callers until step 4 (Q2).
 
-`element(b, f, word, index, a64)`: the index goes into `IDX` as a 64-bit value (`a64`) or
-zero-extended, and is compared with the table's size word: `ge_u` traps `TABLE_OUT_OF_BOUNDS`. The
-result is the element's address, scaled by 8.
+`element(b, oob, word, index, a64)`: the index goes into `IDX` (`ll_index`) as a 64-bit value
+(`a64`) or zero-extended, copied even from a register, and is compared with the table's size word
+(`word + 1`): `ge_u` traps `TABLE_OUT_OF_BOUNDS`. The result is the element: 8 bytes at the
+elements' base (context word `word`) plus 8 · `IDX`.
 
 ### The low-layer contract
 Operand kinds:
@@ -158,8 +161,8 @@ General rules, for every op:
 
 | op | meaning | x86-64 | aarch64 |
 |---|---|---|---|
-| `IDX`, `TMP` | scratch registers for the index and the check | `rcx`, `rdx` | `x9`, `x10` (also `x16`; `x11`/`x12` for a memory other than 0) |
-| `ll_mem(mem)` → `(base, limit)` | the memory's base and size in bytes | memory 0: `r13`, `r14`; other: `Mem(r15, 8·mem)`, `Mem(r15, 8·mem+8)`; emits nothing | memory 0: `x26`, `x25`; other: `ldp x11, x12` (or two `ldr`) |
+| `IDX`, `TMP` | scratch registers for the index and the check | `rcx`, `rdx` | `x9`, `x10` (also `x16`; `x11`/`x12` for a memory other than 0; `x17` for a context word past 4095, and for a frame slot past the scaled imm12 range: slot 2048 for a 4-byte load, 4096 for an 8-byte one) |
+| `ll_mem(mem)` → `(base, limit)` | the memory's base and size in bytes | memory 0: `r13`, `r14`; other: `Mem(r15, 8·mem)`, `Mem(r15, 8·mem+8)`; emits nothing | memory 0: `x26`, `x25`; other: `ldp x11, x12` (or two `ldr`; past context word 4095 through `x17`) |
 | `ll_index32(a)` → `IDX` | `IDX = a mod 2³²`, zero-extended | `mov ecx, …` / `lea ecx, [id+k]` | `mov w9, …` / `add w9, wid, #k` (imm12, or via `x16`) |
 | `ll_index64(a)` → reg | the 64-bit index in a register | `Reg` itself, or `mov rcx, [slot]` | `Reg` itself, or `ldr x9, [slot]` |
 | `ll_fold(r, off, size)` → `(r', disp)` | the address `r + off` in the access form the architecture has | `(r, off)` if `off + size < 2³¹`; else `mov rdx, off; add rcx, rdx` (`r` = `rcx`) or `mov rcx, off; add rcx, r`, giving `(rcx, 0)` | `(r, 0)` if `off = 0`; else `x9 = r + off` (imm12 or `lsl #12`, or via `x16`), giving `(x9, 0)` |
@@ -170,11 +173,12 @@ General rules, for every op:
 | `ll_jump(L)` | unconditional | `jmp` | `b` |
 | `ll_access(base, r, disp, size)` → descriptor | the access `[base + r + disp]` | `r` none: `[base + disp]` if disp < 2³¹, else `mov rcx, imm64` and indexed; register base: `[base + r + disp]`; `Mem` base: `add rcx, base` (`r` = `rcx`) or `mov rcx, base` | `r` none: `[base, #disp]` if `disp % size = 0` and `disp / size < 4096`, else `mov x9, disp`; disp ≠ 0 with `r`: `x9 = r + disp`; then `[base, r]` |
 | `ll_fault_next(L)` | the next memory instruction is a guard fault point resuming at `L` (S0006) | sets the pending fault point | the same |
-| `ll_check_sum(r, n, limit, L, wide)` (step 2; Q2) | trap unless `r + n ≤ limit`; with `wide`, a carry traps; `r` preserved | `add r, n; [jb L;] cmp r, limit; ja L; sub r, n` | `add[s] x9, r, n; [b.hs L;] cmp x9, limit; b.hi L` |
-| `ll_ctx_word(w)` → handle, `ll_element(w, IDX)` → descriptor (step 2) | a table's size word, and the element address `base + 8·IDX` | `Mem(r15, 8w)`; `mov rdx, [r15+8w]`, giving `[rdx + rcx·8]` | `ldr x10, [ctx, #8w]`; `ldr x10, [ctx, #8w]`, giving `(x10, x9, lsl 3)` |
+| `ll_check_sum(r, n, limit, L, wide)` (step 2; Q2) | branch to `L` unless `r + n ≤ limit`; with `wide`, also on a carry out of 64 bits; `r` preserved; not `wide` requires `r + n < 2⁶⁴`; no immediate | `add r, n; [jb L;] cmp r, limit; ja L; sub r, n`: writes only `r` (`rax`/`rdx`, restored on the fall-through); `n` = `rcx`; `limit` `r14` or a context word | `add[s] x9, r, n; [b.hs L;] cmp x9, limit; b.hi L`: writes `x9`; `r` = `x13`/`x14`, `n` = `x15`; `limit` `x25`, `x12` or `x10` |
+| `ll_index(a, wide)` → `IDX` (step 2) | `IDX = a`, 64-bit (`wide`) or the i32 zero-extended; any `Imm`, `Reg`, `Slot`, copied even from a register (LESSONS 32) | `wide`: `mov rcx, …` (64-bit); else as `ll_index32` | `mov x9/w9, …`, `ldr`, or `mov_imm` |
+| `ll_ctx_word(w)` → handle (step 2) | context word `w` (a table's size word) | `Mem(r15, 8w)`, emits nothing (disp32) | `ldr x10, [ctx, #8w]` for w ≤ 4095, else `mov x17, 8w; ldr x10, [ctx, x17]` |
+| `ll_element(w, IDX)` → element (step 2) | 8 bytes at `[context word w] + 8·IDX` | `mov rdx, [r15+8w]`, giving `[rdx + rcx·8]` | `ldr x10, …` as `ll_ctx_word`, giving `(x10, x9)` read as `[x10, x9, lsl 3]` |
 
-The two step-2 rows are a design to be confirmed by step 2 (Q2). Their shapes are today's code.
-The rows above them were built and checked in the prototype.
+Every row was built and checked: steps 1 and 2 in the package.
 
 ### Fault points (S0006, D45)
 Unchanged. `ll_fault_next` records the pending point. The caller (`load`, `store`, `simd`) calls
@@ -262,7 +266,8 @@ are checked by their tests, not by identity.
   * use the `lo` fast path for `k > lo`;
   * drop "ends past 2⁶⁴";
   * drop the wide carry in `ll_check_sum`;
-  * use `gt_u` for `ge_u` in `element`.
+  * use `gt_u` for `ge_u` in `element`;
+  * read an i32 table index without zero-extending it (LESSONS 5).
   The script is a scratch tool, reported in the step, not committed.
 * **Compile time:** CoreMark plus the three corpus modules, median of 10 compiles, at least 10
   alternated pairs, switch on against off, both targets, both modes. Bound: **+5 %** (paired
@@ -275,9 +280,9 @@ Measurements run with no other agent benchmarking at the same time.
 | step | content | agent | acceptance | size (lines) |
 |---|---|---|---|---|
 | 1 | The memory bounds in the package behind the switch: `common/twolevel.py` with `bounds`; the low-layer ops of the contract table (the rows built in the prototype) in both backends; the `_bounds` hooks; the identity test; the boundary tests; CI steps | jit-engineer | Identity (only `address64.0-3`; CoreMark equal); Test plan "every step"; mutations caught; compile time ≤ +5 % | src ~260, tests ~80, CI ~10 |
-| 2 | `_end_check` and `_element` through the shared layer: `ll_check_sum`, `ll_ctx_word`, `ll_element` (Q2); hooks in both backends | jit-engineer | Identity with no new listed module; bulk, table and table64 tests and the spec suite with the switch; mutations; compile time | src ~90, tests ~30 |
+| 2 | `_end_check` and `_element` through the shared layer: `ll_check_sum`, `ll_index`, `ll_ctx_word`, `ll_element` (Q2); hooks in both backends | jit-engineer | Identity with no new listed module; bulk, table and table64 tests and the spec suite with the switch; mutations; compile time | src ~90, tests ~120 |
 | 3 | Review of steps 1-2 against this contract, without the implementers' reasoning: the R3 check, flags, registers, immediate ranges, fault points | reviewer | findings closed | — |
-| 4 | Switch-over: delete the old `_bounds`, `_bounds64`, `_guarded`, the per-backend `_end_check` and `_element` bodies and the switch; rename the module (Q1); the identity test becomes a one-time D35 comparison of the lists before and after | jit-engineer | D35 lists after the removal equal the switch-on lists; spec, tests and ISA gates as today; compile time re-measured | src about −250 +20 |
+| 4 | Switch-over: delete the old `_bounds`, `_bounds64`, `_guarded`, the per-backend `_end_check` and `_element` bodies and the switch; the end checks' callers' rules (operand widths, both ranges before any write) move into the shared layer (Q2); rename the module (Q1); the identity test becomes a one-time D35 comparison of the lists before and after | jit-engineer | D35 lists after the removal equal the switch-on lists; spec, tests and ISA gates as today; compile time re-measured | src about −250 +20 |
 
 A step that needs more than its size stops and reports. **Docs per step** (STANDARDS.md):
 * step 1: BENCHMARKS.md (compile time); LESSONS.md for a trap; this spec's Changes;
@@ -314,9 +319,11 @@ A step that needs more than its size stops and reports. **Docs per step** (STAND
 * **Q2 The end check as one fused op. Decided 2026-11-05 (maintainer): as recommended.** x86-64 has no free register in `memory_copy` (`rax`, `rdx`,
   `rcx` hold operands), so it adds in place and subtracts afterwards. Composing `ll_add` and
   `ll_jcmp` would need a scratch that does not exist there. Recommendation: one fused
-  `ll_check_sum(r, n, limit, L, wide)`, with the wasm rules (which operands are wide, when a carry
-  traps, which trap code, both ranges before any write) in the shared layer. Alternative: an
-  `ll_add_inplace` with an `ll_undo`, which is two ops for one meaning.
+  `ll_check_sum(r, n, limit, L, wide)`. Alternative: an `ll_add_inplace` with an `ll_undo`, which
+  is two ops for one meaning. Amended at step 2 (maintainer, 2026-11-05): the shared `end_check`
+  is the one `ll_check_sum` call; which operands are wide, the trap code and the order (both
+  ranges before any write) stay in the per-backend callers, which steps 1-3 do not edit. They
+  move into the shared layer at step 4, when the callers do (`lower.py`).
 * **Q3 The switch after step 4. Decided 2026-11-05 (maintainer): as recommended.** Recommendation: remove it. Unlike `WABOROS_PYC_BR`, the old code
   is deleted, so there is nothing to mix, and the D35 lists keep the comparison.
 * **Q4 The `address64` differences.** Accepted (maintainer, 2026-11-04). Removing them would take an
@@ -347,3 +354,28 @@ A step that needs more than its size stops and reports. **Docs per step** (STAND
   * i64 constants from 2³¹ to 2⁶⁴ − 8 in the boundary test.
 
   The CI step is in the `spec` job.
+* 2026-11-05: step 2 implemented: `end_check` and `element` in `common/twolevel.py`, the hooks
+  in `_end_check` and `_element` of both backends, and the ops `ll_check_sum`, `ll_index`,
+  `ll_ctx_word` and `ll_element`. The step-2 rows of the contract table are now confirmed. D35
+  lists: switch off equals the previous code, switch on equals the previous switch-on lists, on
+  both targets in both modes; no new listed module. Compile time is within the bound
+  (BENCHMARKS.md, "S0011 step 2 in the package"). The mutations of the test plan are caught, on
+  aarch64 under QEMU too. Changes against the text above (maintainer, 2026-11-05):
+  * G1: `ll_index` is a new op. `ll_index64` returns a register operand in place, but the element
+    check needs the index copied into `IDX`, since `table_set` then writes `rax` (LESSONS 32).
+  * G2: the aarch64 scratch registers include `x17` for a context word past 4095. That applies to
+    `ll_ctx_word` and `ll_element`, and to step 1's `ll_mem` for a memory whose words are there.
+  * G3: Q2's wording is amended: the shared `end_check` is one `ll_check_sum` call. The operand
+    widths and the order of the checks move into the shared layer at step 4, with their callers.
+  * G4: the signatures are `end_check(b, oob, r, n, limit, wide)` and
+    `element(b, oob, word, index, a64)`: the label is passed as in step 1, and `n` is explicit.
+  * G5: a narrow sum is below 2³³, not 2³⁵.
+  * G6: `LowLayer` has a fourth type variable, for the element `ll_element` returns. On aarch64
+    that is `(x10, x9)` with the scale, unlike `ll_access`'s triple.
+  * G7: one more mutation, an i32 table index read without zero-extension. It is caught by
+    `test_an_i32_address_ignores_the_upper_half`, which now also covers `table.get`, `table.set`
+    and `call_indirect`.
+  * New tests: the identity test covers bulk memory and the table operators (pinned and with
+    locals in slots) and 2 060 tables whose words cross context word 4096.
+    `test_end_and_element_checks_match_the_old_code` runs fills, copies and element accesses at
+    the bound, one past it and where the end wraps 2⁶⁴, switch on against off.

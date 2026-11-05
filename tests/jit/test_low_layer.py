@@ -85,6 +85,72 @@ I64_SAME = """(module (memory $c i64 1) (memory $d i64 2)
   (func (export "e") (param i64 i64) (i64.store8 $c offset=4095 (local.get 0) (local.get 1))))"""
 
 
+M32, PAGE, TS = 0xFFFFFFFF, 1 << 16, 4  # a memory of 1 page, tables of 4 elements
+MEMS = {"$a": False, "$b": False, "$c": True, "$d": True}  # memory 0, from context words; i64
+TABS = {"$t": False, "$u": False, "$w": True}  # table 0, a later table; a table64
+
+
+def _t(w: bool) -> str:
+    return "i64" if w else "i32"
+
+
+def _op(o: str, i: int, w: bool) -> str:
+    """Operand i: a local (`l`), a computed value in `tos` (`x`) or a constant (`k`, 1)."""
+    t = _t(w)
+    x = f"({t}.xor (local.get {i}) ({t}.const 0))"
+    return {"l": f"(local.get {i})", "x": x, "k": f"({t}.const 1)"}[o]
+
+
+def _bulk_text() -> str:
+    """S0011 step 2: memory.fill/copy and table.fill/copy (every pair of widths, n the narrower),
+    table get, set, call_indirect, return_call_indirect on MEMS and TABS, with the operands as
+    locals, computed values and constants."""
+    fs: list[str] = []
+    for o in "lxk":
+
+        def p(*ws: bool, o: str = o) -> str:
+            return f"(param {' '.join(map(_t, ws))})" if o != "k" else ""
+
+        for group, pre, val in (
+            (MEMS, "memory", "(i32.const 90)"),
+            (TABS, "table", "(ref.null func)"),
+        ):
+            for x, w in group.items():
+                body = f"({pre}.fill {x} {_op(o, 0, w)} {val} {_op(o, 1, w)})"
+                fs.append(_f(f"{pre}fill{o}{x}", p(w, w), body))
+                for y, v in group.items():
+                    ops = " ".join(_op(o, k, z) for k, z in enumerate((w, v, w and v)))
+                    body = f"({pre}.copy {x} {y} {ops})"
+                    fs.append(_f(f"{pre}copy{o}{x}{y}", p(w, v, w and v), body))
+        for x, w in TABS.items():
+            i, r = _op(o, 0, w), f"{p(w)} (result i32)"
+            fs += [
+                _f(f"get{o}{x}", r, f"(ref.is_null (table.get {x} {i}))"),
+                _f(f"set{o}{x}", p(w), f"(table.set {x} {i} (ref.func $f))"),
+                _f(f"call{o}{x}", r, f"(call_indirect {x} (type $s) {i})"),
+                _f(f"tcall{o}{x}", r, f"(return_call_indirect {x} (type $s) {i})"),
+            ]
+    mems = " ".join(f"(memory {m} {_t(w)} 1)" for m, w in MEMS.items())
+    tabs = " ".join(
+        f"(table {x} {_t(w)} {TS} funcref) (elem (table {x}) ({_t(w)}.const 0) func $f $f $f $f)"
+        for x, w in TABS.items()
+    )
+    head = "(type $s (func (result i32))) (func $f (type $s) (i32.const 42))"
+    return f"(module {head} {mems} {tabs}\n" + "\n".join(fs) + ")"
+
+
+def _many_tables() -> str:
+    """2060 tables: the size words of the last 30 cross context word 4096, the end of aarch64's
+    scaled `ldr` (then through x17)."""
+    fs: list[str] = []
+    for i in range(2030, 2060):
+        get, fill = f"(table.get $t{i} (local.get 0))", f"(table.fill $t{i} (local.get 0)"
+        fs.append(_f(f"g{i}", "(param i32) (result i32)", f"(ref.is_null {get})"))
+        fs.append(_f(f"f{i}", "(param i32 i32)", f"{fill} (ref.null func) (local.get 1))"))
+    tabs = " ".join(f"(table $t{i} {TS} funcref)" for i in range(2060))
+    return f"(module {tabs}\n" + "\n".join(fs) + ")"
+
+
 def _compiled(target: str, wasm: bytes, twolevel: bool, mp: pytest.MonkeyPatch) -> Any:
     mp.setenv("WABOROS_JIT_TWOLEVEL", "1" if twolevel else "")
     mod = parse(wasm)
@@ -97,10 +163,13 @@ def _compiled(target: str, wasm: bytes, twolevel: bool, mp: pytest.MonkeyPatch) 
 @pytest.mark.parametrize("mode", ["guard", "explicit"])
 def test_switch_changes_no_code(target: str, mode: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """Cross-compiled (D35): no machine is needed. CoreMark, every i32 path, the i64 paths S0011
-    keeps identical."""
+    keeps identical; the end and element checks (step 2) with locals pinned and in slots."""
     monkeypatch.setenv("WABOROS_JIT_BOUNDS", mode)
     core = (Path(ROOT) / "poc/in/core.wasm").read_bytes()
-    for wasm in (core, wat(_text(False)), wat(I64_SAME)):
+    bulk, many = wat(_bulk_text()), wat(_many_tables())
+    for wasm, nopin in ((core, ""), (wat(_text(False)), ""), (wat(I64_SAME), ""), (bulk, ""),
+                        (bulk, "all"), (many, "")):  # fmt: skip
+        monkeypatch.setenv("WABOROS_JIT_NOPIN", nopin)
         on = _compiled(target, wasm, True, monkeypatch)
         assert on == _compiled(target, wasm, False, monkeypatch)
 
@@ -178,6 +247,52 @@ def test_boundaries_match_the_old_code(mode: str, monkeypatch: pytest.MonkeyPatc
         assert (got == TrapCode.MEMORY_OUT_OF_BOUNDS) == oob, (name, args, got)
 
 
+def _pts(w: bool, size: int) -> list[int]:
+    """Starts, counts and indices around a bound `size`, up to the width's maximum."""
+    return [0, 1, size - 1, size, size + 1, M32] + [1 << 32, 1 << 63, M64 - 1, M64] * w
+
+
+def test_end_and_element_checks_match_the_old_code(
+    mode: str, monkeypatch: pytest.MonkeyPatch
+) -> None:  # fmt: skip
+    """S0011 step 2 on this machine, switch on and off: fills and copies (each range at its
+    width, n the narrower) and element accesses at the bound, one past it and where the end
+    wraps 2**64: the same outcomes, TABLE/MEMORY_OUT_OF_BOUNDS exactly where the range does not
+    fit. Also the tables whose words lie past context word 4096."""
+    texts = (_bulk_text(), _many_tables())
+    builds: dict[str, list[Any]] = {}
+    for switch in ("1", ""):
+        monkeypatch.setenv("WABOROS_JIT_TWOLEVEL", switch)
+        builds[switch] = [build(wat(t)) for t in texts]
+    calls: list[tuple[int, str, tuple[int, ...], bool, TrapCode]] = []
+    for group, size, code, fill, copy in (
+        (MEMS, PAGE, TrapCode.MEMORY_OUT_OF_BOUNDS, "memoryfill", "memorycopy"),
+        (TABS, TS, TrapCode.TABLE_OUT_OF_BOUNDS, "tablefill", "tablecopy"),
+    ):
+        for x, w in group.items():
+            for o in "lx":
+                if group is TABS:
+                    for i in _pts(w, size):
+                        for op in ("get", "set", "call", "tcall"):
+                            calls.append((0, f"{op}{o}{x}", (i,), i >= size, code))
+                for d in _pts(w, size):
+                    for n in _pts(w, size):
+                        calls.append((0, f"{fill}{o}{x}", (d, n), d + n > size, code))
+                for y, v in group.items():
+                    for d, s in [(d, 0) for d in _pts(w, size)] + [(0, s) for s in _pts(v, size)]:
+                        for n in _pts(w and v, size):
+                            oob = max(d, s) + n > size
+                            calls.append((0, f"{copy}{o}{x}{y}", (d, s, n), oob, code))
+    for i in range(2030, 2060):
+        for j in (0, TS - 1, TS, M32):
+            calls.append((1, f"g{i}", (j,), j >= TS, TrapCode.TABLE_OUT_OF_BOUNDS))
+            calls.append((1, f"f{i}", (j, 1), j + 1 > TS, TrapCode.TABLE_OUT_OF_BOUNDS))
+    for k, name, args, oob, code in calls:
+        got = outcome(builds["1"][k], name, *args)
+        assert got == outcome(builds[""][k], name, *args), (name, args)
+        assert (got == code) == oob, (name, args, got)
+
+
 S = 32769 << 16  # bytes of a memory of 32769 pages: 2**31 + 65536 (committed lazily)
 BIG32 = [(1 << 31) - 8, (1 << 31) - 4, 1 << 31, (1 << 31) + 8, S - 8, S - 7, S - 1, S]
 BIG64 = [*BIG32, 1 << 32, 1 << 63, M64 - 7]
@@ -234,7 +349,8 @@ def test_an_i32_address_ignores_the_upper_half(mode: str, monkeypatch: pytest.Mo
     """LESSONS 5, not relied on: the bounds check reads a register address as 32 bits. Every load
     and store of a register address here first gets bit 32 of that register set (a backend
     wrapper; the address is `tos`, overwritten by the access), as if a producer had left the upper
-    half dirty: the outcomes stay those of the clean module, switch on and off."""
+    half dirty: the outcomes stay those of the clean module, switch on and off. The same for an
+    i32 table index (`_element`: table.get, table.set, call_indirect)."""
     from waboros.targets.jit.aarch64.backend import Backend as A64
     from waboros.targets.jit.x86_64.backend import Backend as X86
 
@@ -247,7 +363,12 @@ def test_an_i32_address_ignores_the_upper_half(mode: str, monkeypatch: pytest.Mo
             else:
                 b.a.logic_imm("orr", addr.id, addr.id, 1 << 32)
 
-    load, store = backend.load, backend.store
+    load, store, element = backend.load, backend.store, backend._element
+
+    def dirty_element(b: Any, f: Any, word: int, index: object, a64: bool) -> Any:
+        if not a64:
+            dirty(b, index)
+        return element(b, f, word, index, a64)
 
     def dirty_load(b: Any, *args: Any, a64: bool, lo: int) -> None:
         dirty(b, args[5])
@@ -262,7 +383,15 @@ def test_an_i32_address_ignores_the_upper_half(mode: str, monkeypatch: pytest.Mo
     (i32.load8_u offset=1 (i32.xor (local.get 0) (i32.const 0))))
   (func (export "s") (param i32) (result i32)
     (i32.store8 offset=2 (i32.xor (local.get 0) (i32.const 0)) (i32.const 65))
-    (i32.load8_u (i32.const 2))))"""
+    (i32.load8_u (i32.const 2)))
+  (type $s (func (result i32))) (func $f (type $s) (i32.const 7))
+  (table 2 funcref) (elem (i32.const 0) func $f $f)
+  (func (export "g") (param i32) (result i32)
+    (ref.is_null (table.get (i32.xor (local.get 0) (i32.const 0)))))
+  (func (export "t") (param i32) (result i32)
+    (table.set (i32.xor (local.get 0) (i32.const 0)) (ref.null func)) (i32.const 0))
+  (func (export "c") (param i32) (result i32)
+    (call_indirect (type $s) (i32.xor (local.get 0) (i32.const 0)))))"""
     wasm = wat(text)
     for switch in ("1", ""):
         monkeypatch.setenv("WABOROS_JIT_TWOLEVEL", switch)
@@ -270,7 +399,9 @@ def test_an_i32_address_ignores_the_upper_half(mode: str, monkeypatch: pytest.Mo
         with monkeypatch.context() as mp:
             mp.setattr(backend, "load", dirty_load)
             mp.setattr(backend, "store", dirty_store)
+            mp.setattr(backend, "_element", dirty_element)
             dirtied = build(wasm)
-        for name, i in (("l", 0), ("l", 3), ("l", 65534), ("l", 65535), ("s", 0), ("s", 65533)):
+        mems = [("l", 0), ("l", 3), ("l", 65534), ("l", 65535), ("s", 0), ("s", 65533)]
+        for name, i in mems + [(n, i) for n in "gct" for i in (0, 1, 2)]:
             want = outcome(clean, name, i)
             assert outcome(dirtied, name, i) == want, (switch, name, i)

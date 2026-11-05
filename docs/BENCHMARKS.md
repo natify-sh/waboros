@@ -949,6 +949,39 @@ frame less each, S0011 Changes). In one process, the switch toggled each round, 
 `jit-x86_64`: explicit +4.8 % before those two changes and +2.4 % after (paired medians), guard +1.7 % and
 +1.5 %. Within S0011's +5 % bound.
 
+### S0011 step 2 in the package (2026-11-05)
+
+The end checks of bulk memory and tables and the table element check through the shared layer,
+`WABOROS_JIT_TWOLEVEL=1` against off, the same tree, the dev VM (Intel Xeon @ 2.10 GHz, 4 vCPU,
+CPython 3.13.17), nothing else running (load average about 1). Code: the D35 lists with the switch
+off equal HEAD's, and with it on equal HEAD's switch-on lists, on both targets in both modes
+(CoreMark identical).
+
+Standard set: CoreMark and the three corpus modules, median of 10 compiles per process (scratch
+`ctime.py`), `taskset -c 2`, 10 pairs alternated, aarch64 compiled on this host (D35). The set
+reaches the step-2 code once (one `call_indirect` check in `zip`), so the changes are noise:
+
+| target, mode | switch off (ms) | switch on (ms) | paired median | slower in |
+|---|---|---|---|---|
+| `jit-x86_64` explicit | 270.1 (224.3–618.6) | 258.9 (225.3–535.5) | −7.8 % | 3 of 10 |
+| `jit-x86_64` guard | 206.3 (196.6–262.4) | 205.9 (193.0–224.0) | −1.2 % | 4 of 10 |
+| `jit-aarch64` explicit | 219.9 (214.3–231.8) | 226.3 (209.7–239.0) | +1.7 % | 6 of 10 |
+| `jit-aarch64` guard | 206.3 (190.5–266.6) | 211.7 (189.2–256.0) | −4.3 % | 4 of 10 |
+
+Worst case: a generated module of 300 functions, each with memory.fill, two memory.copy, table.get,
+table.set, table.fill, table.copy, a table64 get and a call_indirect (scratch `ctime2.py`). Median of
+5 compiles, the switch toggled in one process for 30 rounds (order swapped each round),
+`taskset -c 2`:
+
+| target, mode | switch off (ms) | switch on (ms) | paired median | slower in |
+|---|---|---|---|---|
+| `jit-x86_64` explicit | 165.7 | 155.3 | −3.3 % | 13 of 30 |
+| `jit-x86_64` guard | 169.5 | 162.9 | −6.4 % | 11 of 30 |
+| `jit-aarch64` explicit | 275.9 | 284.9 | +1.3 % | 18 of 30 |
+| `jit-aarch64` guard | 272.3 | 272.9 | +1.9 % | 16 of 30 |
+
+Within S0011's +5 % bound.
+
 ## `pyc`: `_br` ladders (S0010 step 0)
 
 [S0010](specs/S0010-pyc-branch-emission.md) step 0: the experiment's post-pass (`poc/pyc-bropt/bropt.py`)

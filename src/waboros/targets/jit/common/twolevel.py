@@ -1,10 +1,12 @@
-"""The bounds check of a memory access, written once over each backend's low layer (S0011 step 1).
+"""The bounds checks of memory accesses (S0011 step 1), the end checks of bulk memory and tables
+and the table element check (step 2), written once over each backend's low layer.
 
-Test-only switch until S0011 step 4: `WABOROS_JIT_TWOLEVEL=1` makes `_bounds` of both backends
-delegate here; off, they emit their own code. The code is the same either way except the listed
-modules (S0011, "Identity"). The low layer (`LowLayer`, S0011 "The low-layer contract") are the
-`ll_*` methods of each backend: they name the machine registers and fit every immediate to its
-encoding; this module names neither. Conditions are D39's names, unsigned 64-bit."""
+Test-only switch until S0011 step 4: `WABOROS_JIT_TWOLEVEL=1` makes `_bounds`, `_end_check` and
+`_element` of both backends delegate here; off, they emit their own code. The code is the same
+either way except the listed modules (S0011, "Identity"). The low layer (`LowLayer`, S0011 "The
+low-layer contract") are the `ll_*` methods of each backend: they name the machine registers and
+fit every immediate to its encoding; this module names neither. Conditions are D39's names,
+unsigned 64-bit."""
 
 from typing import Protocol, TypeVar
 
@@ -16,9 +18,10 @@ M32, M64 = 0xFFFFFFFF, (1 << 64) - 1
 L = TypeVar("L", contravariant=True)  # the backend's label
 H = TypeVar("H")  # a memory's base or limit, as the backend holds it (a register, a context word)
 A = TypeVar("A", covariant=True)  # the access the backend's load/store/simd emit
+E = TypeVar("E", covariant=True)  # a table element as the backend's table ops read it
 
 
-class LowLayer(Protocol[L, H, A]):
+class LowLayer(Protocol[L, H, A, E]):
     IDX: int  # the index scratch register
     TMP: int  # the check's scratch register
     guard: bool  # S0006: guard-mode code
@@ -34,10 +37,14 @@ class LowLayer(Protocol[L, H, A]):
     def ll_jcmp(self, cond: str, x: int, y: int | H, label: L) -> None: ...
     def ll_jcmp_imm(self, cond: str, x: int | H, v: int, label: L) -> None: ...
     def ll_access(self, base: H, r: int | None, disp: int, size: int) -> A: ...
+    def ll_check_sum(self, r: int, n: int, limit: H, label: L, wide: bool) -> None: ...
+    def ll_index(self, addr: Operand, wide: bool) -> int: ...  # IDX = addr, 64-bit or zero-ext.
+    def ll_ctx_word(self, word: int) -> H: ...  # context word `word` as a handle
+    def ll_element(self, word: int, r: int) -> E: ...  # 8 bytes at [context word `word`] + 8 r
 
 
 def bounds(
-    b: LowLayer[L, H, A], oob: L, addr: Operand | AddK, offset: int, size: int, mem: int,
+    b: LowLayer[L, H, A, E], oob: L, addr: Operand | AddK, offset: int, size: int, mem: int,
     a64: bool, lo: int,
 ) -> A:  # fmt: skip
     """Check `addr + offset .. + size` against the memory's size (R3: the one place memory safety
@@ -71,7 +78,7 @@ def bounds(
 
 
 def _i64(
-    b: LowLayer[L, H, A], oob: L, base: H, limit: H, addr: Operand, offset: int, size: int,
+    b: LowLayer[L, H, A, E], oob: L, base: H, limit: H, addr: Operand, offset: int, size: int,
     lo: int,
 ) -> A:  # fmt: skip
     """An i64 memory (S0009), explicit in every mode: no guard covers a 64-bit index. With
@@ -88,3 +95,23 @@ def _i64(
         b.ll_jcmp("gt_u", b.ll_add_jc(b.TMP, r, k, oob), limit, oob)
     r, disp = b.ll_fold(r, offset, size)
     return b.ll_access(base, r, disp, size)
+
+
+def end_check(b: LowLayer[L, H, A, E], oob: L, r: int, n: int, limit: H, wide: bool) -> None:
+    """Bulk memory and tables: trap to `oob` unless r + n <= limit (`n` the count register);
+    `r` is preserved. Not `wide`: the caller zero-extended both (each below 2**32), so the sum
+    cannot wrap. `wide`: 64-bit values, a carry out of 64 bits is out of bounds (S0009). The
+    width of each operand (`n` is wide only between two wide ranges) and the order (both ranges
+    of a copy before any write) stay in the callers until step 4. One fused op (S0011 Q2):
+    x86-64 has no free register in memory_copy."""
+    b.ll_check_sum(r, n, limit, oob, wide)
+
+
+def element(b: LowLayer[L, H, A, E], oob: L, word: int, index: Operand, a64: bool) -> E:
+    """A table's element check: IDX = the index (64-bit for a table64, else zero-extended,
+    LESSONS 5), copied even from a register (the caller may then write the operand's register,
+    LESSONS 32); index >= the size (context word `word + 1`) traps to `oob`. Returns the
+    element: 8 bytes at the elements' base (context word `word`) + 8 IDX."""
+    r = b.ll_index(index, a64)
+    b.ll_jcmp("ge_u", r, b.ll_ctx_word(word + 1), oob)
+    return b.ll_element(word, r)

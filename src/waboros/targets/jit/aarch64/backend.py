@@ -590,10 +590,11 @@ class Backend:
         return base, r, 0
 
     # ---------------------------------------------------------------- low layer (S0011)
-    # The operations `twolevel.bounds` composes; each fits its immediates to the encoding (imm12,
-    # optionally lsl #12, else through x16 or x10; LESSONS 83). Only x9, x10, x16 (and x11/x12
-    # for a memory other than 0) are written; flags are live only inside `ll_jcmp`,
-    # `ll_jcmp_imm` and `ll_add_jc`.
+    # The operations `twolevel` composes; each fits its immediates to the encoding (imm12,
+    # optionally lsl #12, else through x16 or x10; LESSONS 83). Only x9, x10, x16 (x11/x12 for a
+    # memory other than 0; x17 for a context word past 4095 or a frame slot past the scaled
+    # imm12 range) are written; flags are live only inside `ll_jcmp`, `ll_jcmp_imm`, `ll_add_jc`
+    # and `ll_check_sum`.
     IDX: int = 9
     TMP: int = 10
 
@@ -661,6 +662,32 @@ class Backend:
             self._add_k(9, r, disp)
             r = 9
         return base, r, 0
+
+    def ll_check_sum(self, r: int, n: int, limit: int, label: Label, wide: bool) -> None:
+        """x9 = r + n; `wide`: `adds` and `b.hs label` on the carry; x9 > limit: `label`."""
+        self.a.addsub("adds" if wide else "add", 9, r, n)
+        if wide:
+            self._bcc("hs", label)
+        self.a.cmp(9, limit)
+        self._bcc("hi", label)
+
+    def ll_index(self, addr: Operand, wide: bool) -> int:
+        """x9 = addr: 64 bits, or an i32 zero-extended (a w-register write); any operand kind."""
+        if not wide and isinstance(addr, Reg):
+            self.a.mov(9, addr.id, False)  # even from x9 itself (LESSONS 5)
+        else:
+            self.move(Reg(9), addr, wide)
+        return 9
+
+    def ll_ctx_word(self, word: int) -> int:
+        """x10 = context word `word` (ldr, scaled imm12 up to word 4095, else via x17)."""
+        self._word(True, 10, CTX, 8 * word)
+        return 10
+
+    def ll_element(self, word: int, r: int) -> tuple[int, int]:
+        """(x10, r): x10 = context word `word`, the element at [x10, r, lsl #3]."""
+        self._word(True, 10, CTX, 8 * word)
+        return 10, r
 
     def _fault_point(self) -> None:
         """The next instruction is the access `_bounds` formed: in guard mode, a fault point
@@ -829,6 +856,9 @@ class Backend:
     def _element(self, f: Frame, word: int, index: Operand, a64: bool) -> None:
         """x9 = index, bounds-checked against the table's size; x10 = the elements' base. An
         i64 index (S0009) is read by a 64-bit move: `cmp` with the 64-bit size word, no carry."""
+        if self.twolevel:  # S0011 step 2: x9 and x10 as below
+            twolevel.element(self, self._stub(f, TrapCode.TABLE_OUT_OF_BOUNDS), word, index, a64)
+            return
         if a64:
             self.move(Reg(9), index, True)
         else:
@@ -859,8 +889,11 @@ class Backend:
                 self._u32(r, o)
 
     def _end_check(self, f: Frame, r: int, limit: int, code: int, carry: bool = False) -> None:
-        """x<r> + x15 must not exceed x<limit>: both < 2**35 (no wrap in 64 bits), or with
-        `carry` 64-bit values whose sum may wrap (`adds; b.hs`: out of bounds, S0009)."""
+        """x<r> + x15 must not exceed x<limit>: both < 2**32, the sum < 2**33 (no wrap in 64
+        bits), or with `carry` 64-bit values whose sum may wrap (`adds; b.hs`: out of bounds,
+        S0009)."""
+        if self.twolevel:  # S0011 step 2
+            return twolevel.end_check(self, self._stub(f, code), r, 15, limit, carry)
         self.a.addsub("adds" if carry else "add", 9, r, 15)
         if carry:
             self._bcc("hs", self._stub(f, code))
