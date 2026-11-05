@@ -415,3 +415,11 @@ in a comment (REFERENCES.md).
   groups; they become expected failures with the claim in step 2, so the target for `exceptions/` is
   102 pass and 8 expected failures (5 `cast.wast`, 3 rec groups) until GC. The JITs accept tag
   imports (nothing to wire before step 3), so their expected failures stay equal to `pyc`'s (D25).
+* 2026-11-05: step 2 done (`pyc`). `try_table` is a `try`/`except _Thrown` in a `try` frame of the
+  codegen; a catch clause branches as from inside the frame, so the S0010 `_br` routing applies. The
+  S0010 sink never records a `br_table` leaf that lies in a `try` body and targets a block outside it
+  (a moved region would run under the handler). `return_call*` inside a `try_table` returns its `_TC`
+  also for a direct call. `base.TrapCode` has `UNCAUGHT_EXCEPTION = 14` and `Trap.exn`. `exceptions/`
+  on `pyc`: 100 pass, 2 skipped (text-format `assert_malformed`, as on every engine), 8 expected
+  failures, 0 fail. The 15 `instance.wast` "unsupported: exceptions" lines left `pyc`'s file; the
+  JITs keep them, and the D25 test ignores exactly those entries until steps 3-4.

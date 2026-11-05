@@ -658,3 +658,9 @@ What went wrong or surprised us while building the PoC, so it is not found again
     fuzz (smith) never reached it. Rule: a differential check names its ground truth (Wasmtime where
     it can run) and counts the oracle's disagreements apart from the rule's. Found: S0010 step 1,
     2026-11-05.
+90. **A code motion must not cross a `try`.** S0010's sink moves the code after a block into the
+    `br_table` leaves that jump to it. A leaf inside a `try_table` body whose target lies outside
+    would pull that code under the handler, which then catches what it must not. `pyc` does not
+    record such a leaf, so the block is not a sink candidate. Likewise `return_call` inside a
+    `try_table` must be `return _TC(...)` even for a direct call: `return f(x)` runs `f` inside the
+    `try`. Found: S0012 step 2, 2026-11-05.

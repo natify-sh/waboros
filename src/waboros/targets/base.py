@@ -27,6 +27,7 @@ class TrapCode(IntEnum):
     TABLE_OUT_OF_BOUNDS = 9
     NULL_REFERENCE = 10
     INTERRUPT = 12
+    UNCAUGHT_EXCEPTION = 14  # S0012: a wasm exception reached an entry (inside code: status 14)
 
 
 class Trap(Exception):
@@ -35,6 +36,7 @@ class Trap(Exception):
     def __init__(self, code: TrapCode, message: str = "") -> None:
         super().__init__(message or code.name)
         self.code = code
+        self.exn: Any = None  # UNCAUGHT_EXCEPTION: (tag handle, payload values)
 
 
 class Unsupported(Exception):

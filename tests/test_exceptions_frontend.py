@@ -75,7 +75,8 @@ def test_invalid(args: tuple[Any, ...]) -> None:
 @pytest.mark.parametrize("target", sorted(TARGETS))
 def test_supports_reports_exceptions(target: str) -> None:
     m = check(mod(b"", b"", b"\x08\x00", [0]))
-    assert TARGETS[target]().supports(m) == "exceptions"
+    # pyc compiles them since S0012 step 2; the JITs report them until steps 3-4
+    assert TARGETS[target]().supports(m) == (None if target == "pyc" else "exceptions")
     assert TARGETS[target]().supports(check(mod(b"", b"", b"\x01"))) is None
 
 

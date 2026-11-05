@@ -241,6 +241,32 @@ class _TC:
         self.a = a
 
 
+class _Tag:
+    """An exception tag (S0012); compared with `is`, an imported tag is the exporter's object."""
+
+    __slots__ = ()
+
+
+class _Thrown(Exception):
+    """A wasm exception in flight, and the value of an exnref. `try_table` catches only this class:
+    traps, host exceptions and RecursionError pass through, as in Wasmtime."""
+
+    __slots__ = ("tag", "vals")
+
+    def __init__(self, tag, vals):
+        self.tag = tag
+        self.vals = vals
+
+
+def _rethrow(x):
+    """throw_ref: a null exnref traps; the traceback and context are dropped so that rethrowing the
+    same object in a loop does not grow a chain."""
+    if x is None:
+        raise Trap(TrapCode.NULL_REFERENCE, "null reference")
+    x.__traceback__ = x.__context__ = x.__cause__ = None
+    raise x
+
+
 def _pc(x):
     return x.bit_count()
 

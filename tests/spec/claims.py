@@ -22,7 +22,7 @@ CLAIMS: dict[str, frozenset[str]] = {
         | {"wideArithmetic"}
     ),
     "pyc": frozenset({"bulkMemory", "multiMemory", "simd", "relaxedSimd", "wideArithmetic"})
-    | {"memory64"},
+    | {"memory64", "exceptionsFinal"},
     "jit-x86_64": frozenset(
         {"bulkMemory", "multiMemory", "simd", "relaxedSimd", "wideArithmetic", "memory64"}
     ),  # parity with pyc (D25)

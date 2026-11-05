@@ -350,6 +350,10 @@ def test_claims(tmp_path: Path) -> None:
     assert claims.claimed("jit-aarch64", "memory64") and not claims.claimed("nope", "gc")
 
 
+_XFAIL = Path(__file__).parent / "xfail"
+_EXN_UNSUPPORTED = "unsupported: exceptions"
+
+
 def _xfail_keys(engine: str, both: Sequence[str]) -> set[str]:
     """Commands in an engine's expected failures, in the directories both engines claim."""
     from tests.spec.claims import CORE, claimed
@@ -378,7 +382,10 @@ def test_the_jit_fails_exactly_what_pyc_fails(jit: str) -> None:
     """D25: `auto` selects a JIT whose probe succeeds, so its expected failures must equal pyc's
     in the directories both claim."""
     both = ("pyc", jit)
-    assert _xfail_keys(jit, both) == _xfail_keys("pyc", both)
+    # exceptions (S0012): pyc runs them since step 2, the JITs say unsupported until steps 3-4
+    entries = run.read_xfail(_XFAIL / f"{jit}.txt")
+    ahead = {k for k, r in entries.items() if r == _EXN_UNSUPPORTED}
+    assert _xfail_keys(jit, both) - ahead == _xfail_keys("pyc", both)
 
 
 @pytest.mark.parametrize("jit", _jits(False))

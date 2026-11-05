@@ -6,6 +6,7 @@ import struct
 
 from waboros.frontend.binary import F32, F64, I32, I64, M32, M64
 from waboros.frontend.validate import valtype_key
+from waboros.targets.base import Unsupported
 from waboros.targets.pyc import runtime as _rt
 
 MAXPAGES64 = (1 << 48) - 1  # the byte size of an i64 memory must fit 64 bits (as in Wasmtime)
@@ -94,6 +95,7 @@ class Ctl:
         "zx",
         "leaves",
         "caps",
+        "cl",
     )
 
     def __init__(s, kind, mode, id_, res, rv, h):
@@ -114,6 +116,7 @@ class Ctl:
         s.zx = False
         s.leaves = []
         s.caps = []
+        s.cl = ()  # try_table: its catch clauses
 
 
 # ----------------------------------------------------------------------------- function compiler
@@ -460,9 +463,13 @@ class FuncGen:
         info[-1] = [False, True]  # targeted, all-toplevel
         for i, ins in enumerate(s.ins):
             op = ins[0]
-            if op in (0x02, 0x03, 0x04):
+            if op in (0x02, 0x03, 0x04, 0x1F):
                 st.append(i)
                 info[i] = [False, True]
+                if op == 0x1F:  # a catch clause branches to a label outside the try_table
+                    for _, _, lab in ins[2]:
+                        info[st[-2 - lab]][0] = True
+                        info[st[-2 - lab]][1] = False
             elif op == 0x0B:
                 st.pop()
             elif op in (0x0C, 0x0D, 0xD5, 0xD6):
@@ -578,7 +585,7 @@ class FuncGen:
             x = ins[i]
             op = x[0]
             if s.dead:
-                if op in (0x02, 0x03, 0x04):
+                if op in (0x02, 0x03, 0x04, 0x1F):
                     deadd += 1
                     i += 1
                     continue
@@ -614,7 +621,7 @@ class FuncGen:
                 F.has_else = True
                 s.dead = False
                 continue
-            if op in (0x02, 0x03, 0x04):
+            if op in (0x02, 0x03, 0x04, 0x1F):
                 ps, rs = s.bt(x[1])
                 tg, top = info[i - 1]
                 if op == 0x04:
@@ -627,7 +634,9 @@ class FuncGen:
                 else:
                     mode = "flag"
                 s.flush_all()
-                kind = {2: "block", 3: "loop", 4: "if"}[op]
+                kind = {2: "block", 3: "loop", 4: "if", 0x1F: "try"}[op]
+                if kind == "try" or mode == "loop":
+                    s.check_nesting(kind == "try")
                 fid = next(ids)
                 rv = ["r%d_%d" % (fid, j) for j in range(len(rs))]
                 for nm_, t_ in zip(rv, rs):
@@ -655,6 +664,9 @@ class FuncGen:
                 s.ctl.append(F)
                 if F.pyloop:
                     F.mark = s.open("while True:")
+                if kind == "try":
+                    F.cl = x[2]
+                    F.mark = s.open("try:")
                 if kind == "if":
                     F.mark = s.open("if %s:" % cc)
                 continue
@@ -733,6 +745,8 @@ class FuncGen:
                     T = s.ctl[-1 - d]
                     if s.br_code(d) or te is None or T.kind != "block":
                         return
+                    if any(F.kind == "try" for F in s.ctl[len(s.ctl) - 1 - d :]):
+                        return  # a region moved into a try body would be inside the handler's reach
                     pos = len(s.lines) - (1 if d else 0)  # the `_br = K` line, or where `pass` goes
                     T.leaves.append(s.rec(pos, "lf", T, s.ind, loop, te, d != 0))
 
@@ -782,6 +796,19 @@ class FuncGen:
                     te[0] = len(s.lines)
                 s.dead = True
                 continue
+            if op == 0x08:  # throw
+                vals = s.popn(len(s.mg.types[s.mg.tagtypes[x[1]]][0]))
+                s.flush_trapping()
+                codes = [s.n(v) if v.t in (I32, I64) else v.c for v in vals]
+                s.emit("raise _Thrown(TG%d, (%s))" % (x[1], "".join(c + "," for c in codes)))
+                s.dead = True
+                continue
+            if op == 0x0A:  # throw_ref
+                v = s.pop()
+                s.flush_trapping()
+                s.emit("_rethrow(%s)" % v.c)
+                s.dead = True
+                continue
             if op == 0x0F:
                 s.flush_trapping()
                 s.emit_return()
@@ -811,7 +838,7 @@ class FuncGen:
         rl = [
             s.lname(j)
             for j in range(len(s.params), len(s.ltypes))
-            if s.ltypes[j].__class__ is tuple or s.ltypes[j] in (0x70, 0x6F)
+            if s.ltypes[j].__class__ is tuple or s.ltypes[j] in (0x70, 0x6F, 0x69, 0x74)
         ]
         il = [v for v in inits if v not in fl and v not in rl]
         if rl:
@@ -834,6 +861,54 @@ class FuncGen:
             ]
         return "\n".join(head + body) + "\n"
 
+    def check_nesting(s, is_try):
+        """CPython allows 20 statically nested blocks (LESSONS 12); a `try` counts, and one is left
+        for the `try` of `call_indirect`. Loops are checked only inside a try_table (S0012 Q6)."""
+        n = sum(1 for F in s.ctl if F.pyloop or F.kind == "try")
+        if n >= 19 and (is_try or any(F.kind == "try" for F in s.ctl)):
+            raise Unsupported("pyc", "nesting")
+
+    def handlers(s, F):
+        """The `except` clause of a try_table, emitted while F is still the top frame: a branch of a
+        clause is a branch from inside F, so the `_br` routing of S0010 applies as it does to a `br`."""
+        s.dead = False
+        del s.stack[F.h :]
+        m0 = s.open("except _Thrown as _e:")
+        first = True
+        for kind, tag, lab in F.cl:
+            if kind < 2:
+                m = s.open(("if " if first else "elif ") + "_e.tag is TG%d:" % tag)
+            else:
+                m = s.open("if True:" if first else "else:")
+            first = False
+            ts = s.mg.types[s.mg.tagtypes[tag]][0] if tag is not None else []
+            if ts:
+                names = [s.newtmp(t) for t in ts]
+                s.emit("%s, = _e.vals" % ", ".join(names))
+                for nm, t in zip(names, ts):
+                    s.push(
+                        E(nm, t, (M32 if t == I32 else M64) if t in (I32, I64) else None, k=True)
+                    )
+            if kind & 1:  # the exnref: copied before `_e` is unbound at the end of the clause
+                nm = s.newtmp(0x69)
+                s.emit("%s = _e" % nm)
+                s.emit("%s.__traceback__ = None" % nm)  # no cycle frame -> exnref -> traceback
+                s.push(E(nm, 0x69, k=True))
+            s.br_code(lab + 1)
+            del s.stack[F.h :]
+            s.close(m)
+            if kind >= 2:
+                break
+        else:  # no catch_all: the exception goes on
+            if first:
+                s.emit("raise")
+            else:
+                m = s.open("else:")
+                s.emit("raise")
+                s.close(m)
+        s.close(m0)
+        s.dead = False
+
     def end_frame(s):
         F = s.ctl[-1]
         live = not s.dead
@@ -846,6 +921,9 @@ class FuncGen:
             s.sink(cap, live or F.zx)
             cap[1][0] = cap[2][0] = cap[3][0] = -1
         F.caps = []
+        if F.kind == "try":
+            s.close(F.mark)
+            s.handlers(F)
         if F.kind == "if":
             s.close(F.mark)
             if F.rv and not F.has_else:  # the implicit else passes the params through
@@ -1108,6 +1186,8 @@ class FuncGen:
                     s.emit('return _TC(getattr(%s, "t", %s), %s)' % (callee, callee, tup))
                 elif fi in s.mg.tc:
                     s.emit("return _TC(%s_b, %s)" % (callee, tup))
+                elif any(F.kind == "try" for F in s.ctl):  # the frame is gone before the call runs
+                    s.emit("return _TC(%s, %s)" % (callee, tup))
                 else:
                     s.emit("return %s(%s)" % (callee, ac))
                 s.dead = True
@@ -1521,7 +1601,7 @@ class FuncGen:
             push(E("(((%s&%d)^%d)-%d)" % (a.c, m, h, h), T, None, **dep(a)))
             return
         if op == 0xD0:
-            push(E("None", 0x70 if x[1] == -16 else 0x6F, k=True))
+            push(E("None", {-16: 0x70, -23: 0x69, -12: 0x74}.get(x[1], 0x6F), k=True))
             return
         if op == 0xD4:
             a = pop()
@@ -1619,6 +1699,8 @@ class ModGen:
         s.gimports = [i for i in im if i[0] == "global"]
         s.simd = False  # a SIMD instruction was compiled: the module imports simd's helpers
         s.dused = set()  # data segments that memory.init / data.drop name
+        s.tagimports = [i for i in im if i[0] == "tag"]
+        s.tagtypes = [i[3] for i in s.tagimports] + mod["tags"]  # type index of every tag
         s.timports = [i for i in im if i[0] == "table"]
         s.mimports = [i for i in im if i[0] == "mem"]
         s.ttypes = mod["ttypes"]
@@ -1723,6 +1805,8 @@ class ModGen:
                     gl.append("G%d" % i)
             if not first:
                 gi.append("    %s = %s" % (s.gname(i), s.val(init)))
+        for j in range(len(s.tagimports), len(s.tagtypes)):
+            out.append("TG%d = _Tag()" % j)
         for ti, (mn, mx) in enumerate(mod["tables"]):
             k = len(s.timports) + ti
             big = mn > 10000000  # above D27's cap: a checked allocation (S0009), else as before
@@ -1732,6 +1816,9 @@ class ModGen:
             L.append("    TX%d = imports[%r][%r]" % (i, im[1], im[2]))
             L.append("    T%d = TX%d.t" % (i, i))
             gl += ["TX%d" % i, "T%d" % i]
+        for i, im in enumerate(s.tagimports):
+            L.append("    TG%d = imports[%r][%r]" % (i, im[1], im[2]))
+            gl.append("TG%d" % i)
         for k, im in enumerate(s.mimports):
             mn, mp = s.mname(k), s.mname(k, "_MAXPAGES")
             L.append("    %s = imports[%r][%r]" % (mn, im[1], im[2]))
@@ -1799,6 +1886,8 @@ class ModGen:
                 ex.append(
                     "%r: C%d" % (n, i) if i in s.cells else "%r: _Global(lambda: G%d)" % (n, i)
                 )
+            elif k == 4:
+                ex.append("%r: TG%d" % (n, i))
         L.append("    return {%s}" % ", ".join(ex))
         out.append("\n".join(L))
         if s.simd:

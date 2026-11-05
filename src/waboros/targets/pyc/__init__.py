@@ -18,18 +18,18 @@ from waboros.targets.base import (
     Trap,
     TrapCode,
     ValidModule,
-    throws,
 )
 from waboros.targets.pyc import runtime as _rt
 from waboros.targets.pyc.codegen import generate
 
 __all__ = ["PycTarget", "Trap", "load", "translate"]
 
-_KIND: dict[int, Literal["func", "table", "memory", "global"]] = {
+_KIND: dict[int, Literal["func", "table", "memory", "global", "tag"]] = {
     0: "func",
     1: "table",
     2: "memory",
     3: "global",
+    4: "tag",
 }
 _f32_i32 = cast(Callable[[int], float], _rt._f32_i32)
 _f64_i64 = cast(Callable[[int], float], _rt._f64_i64)
@@ -74,6 +74,10 @@ def _run(store: StoreState, fn: Callable[..., Any], *args: Any) -> Any:
         raise
     except Trap:
         raise
+    except _rt._Thrown as e:  # an exception that reaches an entry (S0012, Q4)
+        t = Trap(TrapCode.UNCAUGHT_EXCEPTION, "thrown Wasm exception")
+        t.exn = (e.tag, e.vals)
+        raise t from None
     # OverflowError: an address of 2**31 or more on a 32-bit host (Py_ssize_t)
     except (IndexError, struct.error, OverflowError):
         raise Trap(TrapCode.MEMORY_OUT_OF_BOUNDS, "out of bounds memory access") from None
@@ -168,8 +172,6 @@ class PycTarget:
         return None
 
     def supports(self, module: ValidModule) -> str | None:
-        if throws(module):
-            return "exceptions"  # S0012 step 2
         return None  # a module the validator does not cover may run: a Python exception is safe
 
     def compile(self, module: ValidModule) -> object:
@@ -184,6 +186,9 @@ class PycTarget:
         wired: dict[str, dict[str, Any]] = {}
         for im, ext in zip(c.module["imports"], imports, strict=True):
             val = ext.value
+            if im[0] == "tag":  # (exporting instance, tag index): the exporter's tag object
+                inst, idx = cast(Any, val)
+                val = inst.ns[f"TG{idx}"]
             if im[0] == "func":
                 if ext.owner is None:
                     ps, rs = c.module["types"][im[3]]
