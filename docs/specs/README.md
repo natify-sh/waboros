@@ -22,5 +22,5 @@ lifecycle: [STANDARDS.md](../STANDARDS.md).
 | [S0008](S0008-relaxed-simd-wide-arithmetic.md) | Relaxed SIMD (deterministic profile) and wide arithmetic on pyc, jit-x86_64 and jit-aarch64 | implemented | maintainer |
 | [S0009](S0009-memory64.md) | memory64 and table64 (Wasm 3.0) on pyc, jit-x86_64 and jit-aarch64 | implemented | maintainer |
 | [S0010](S0010-pyc-branch-emission.md) | pyc: leaving nested blocks without `_br` ladders | implemented | maintainer |
-| [S0011](S0011-jit-low-layer.md) | JIT low layer: wasm memory semantics written once over per-architecture operations | approved | maintainer |
+| [S0011](S0011-jit-low-layer.md) | JIT low layer: wasm memory semantics written once over per-architecture operations | implemented | maintainer |
 | [S0012](S0012-exceptions.md) | Exception handling (exnref) on pyc, jit-x86_64 and jit-aarch64 | implemented | maintainer |

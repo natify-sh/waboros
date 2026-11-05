@@ -10,14 +10,13 @@ Every method that compares emits only `mov` between the `cmp` and its consumer (
 Everything here is x86-64-v1 (D24): bsr/bsf with an explicit zero case, popcnt by SWAR.
 """
 
-import os
 import struct
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import cast
 
 from waboros.targets.base import TrapCode
-from waboros.targets.jit.common import twolevel
+from waboros.targets.jit.common import lower
 from waboros.targets.jit.common.backend import NEGATE, SWAP, AddK, Dst, Imm, Operand, Reg, Slot
 from waboros.targets.jit.common.compiler import EXN, SUPPORTED, WIDEOPS
 from waboros.targets.jit.common.context import (
@@ -33,7 +32,6 @@ from waboros.targets.jit.common.context import (
     TAIL_SWITCH,
     VSTACK_LIMIT,
 )
-from waboros.targets.jit.common.guard import GUARD
 from waboros.targets.jit.x86_64 import simd as v128
 from waboros.targets.jit.x86_64.abi import MEM0
 from waboros.targets.jit.x86_64.encoder import (
@@ -101,7 +99,6 @@ class Backend:
         self.faults: list[tuple[int, int]] = []  # (fault offset, resume offset), by `finish`
         self._faults: list[tuple[int, Label]] = []
         self._oob: Label | None = None  # the stub of the unchecked access `_bounds` just formed
-        self.twolevel = os.environ.get("WABOROS_JIT_TWOLEVEL") == "1"  # S0011 step 1, test-only
 
     # ---------------------------------------------------------------- labels, frames, traps
     def new_label(self) -> Label:
@@ -742,141 +739,20 @@ class Backend:
     def _bounds(
         self, f: Frame, addr: Operand | AddK, offset: int, size: int, mem: int, a64: bool, lo: int
     ) -> Mem:  # fmt: skip
-        """The bounds check (R3: the one place memory safety rests on). The effective address
-        addr + offset (< 2**33) and its end are computed in 64 bits, so nothing wraps; the end
-        must be <= the memory's size (r14 for memory 0) or the access traps. A register address
-        is first copied with a 32-bit move (an `AddK` formed by a 32-bit lea, the wasm wrap
-        before `offset` is added), so its upper half cannot matter. The access is
+        """The bounds check (R3), written once in `lower.bounds` (S0011). The access is
         [r13 + ...] for memory 0, [rcx + ...] with rcx = base (+ address) for another; rdx is
-        free afterwards. In guard mode an access the guard catches is `_guarded` instead."""
+        free afterwards. In guard mode an access the guard catches has no check, and the caller
+        marks its one memory instruction with `_fault_point`."""
         assert self._oob is None, "an unchecked access without its fault point"
-        if self.twolevel:  # S0011: the same check, written once
-            oob = self._stub(f, TrapCode.MEMORY_OUT_OF_BOUNDS)
-            return twolevel.bounds(self, oob, addr, offset, size, mem, a64, lo)
-        if a64:  # S0009: explicit in every mode
-            if not isinstance(addr, Imm):
-                return self._bounds64(f, addr, offset, size, mem, lo)
-        elif self.guard and (
-            (addr.value & M32) + offset + size <= (1 << 32) + GUARD
-            if isinstance(addr, Imm)
-            else offset + size <= GUARD
-        ):
-            return self._guarded(f, addr, offset, mem)
-        a = self.a
-        base, limit = self._mem(mem)
         oob = self._stub(f, TrapCode.MEMORY_OUT_OF_BOUNDS)
-        if isinstance(addr, Imm):  # i64 (S0009): without the mask; ending past 2**64: oob
-            ea = (addr.value & (M64 if a64 else M32)) + offset
-            if ea + size > M64:
-                a.jmp(oob)
-                ea = 0
-            if ea + size < 1 << 31:
-                a.alu_imm("cmp", limit, ea + size, w=True)
-                a.jcc("b", oob)
-                if isinstance(base, int):
-                    return Mem(base, ea)
-                a.mov(RCX, base, w=True)
-                return Mem(RCX, ea)
-            a.mov_imm(RCX, ea, w=True)
-            disp = 0
-        else:
-            self.move(Reg(RCX), addr, False)
-            disp = offset
-            if offset + size >= 1 << 31:
-                a.mov_imm(RDX, offset, w=True)
-                a.alu("add", RCX, RDX, w=True)
-                disp = 0
-        a.lea(RDX, Mem(RCX, disp + size))
-        a.alu("cmp", RDX, limit, w=True)
-        a.jcc("a", oob)
-        if isinstance(base, int):
-            return Mem(base, disp, RCX)
-        a.alu("add", RCX, base, w=True)
-        return Mem(RCX, disp)
-
-    def _bounds64(
-        self, f: Frame, addr: Operand | AddK, offset: int, size: int, mem: int, lo: int
-    ) -> Mem:  # fmt: skip
-        """The check of an i64 memory (S0009), explicit in every mode (no guard can cover a
-        64-bit index), the shape Wasmtime emits. The index r is the 64-bit register operand, or
-        rcx loaded from its slot. With k = offset + size <= lo (the declared minimum, so the size
-        L >= k and L - k cannot wrap) and k <= 2**31 (disp32): `lea rdx, [L - k]; cmp r, rdx;
-        ja`. Otherwise `mov rdx, r; add rdx, k; jc` (idx + k carried out of 64 bits: out of
-        bounds) `; cmp rdx, L; ja`. rdx is free afterwards (a constant address: `_bounds`)."""
-        assert not isinstance(addr, (AddK, Imm)), "an AddK is an i32: never an i64 address"
-        a = self.a
-        base, limit = self._mem(mem)
-        oob = self._stub(f, TrapCode.MEMORY_OUT_OF_BOUNDS)
-        if isinstance(addr, Reg):
-            r = addr.id
-        else:
-            a.mov(RCX, _slot(addr.k), w=True)
-            r = RCX
-        if offset + size > M64:  # no index is in bounds (dead code follows, well-formed)
-            a.jmp(oob)
-            offset = 0
-        k, disp = offset + size, offset
-        if k <= lo and k < 1 << 31:  # `sub rdx, k` takes a sign-extended imm32
-            if isinstance(limit, int):
-                a.lea(RDX, Mem(limit, -k))
-            else:
-                a.mov(RDX, limit, w=True)
-                a.alu_imm("sub", RDX, k, w=True)
-            a.alu("cmp", r, RDX, w=True)
-            a.jcc("a", oob)
-        else:
-            if k < 1 << 31:
-                a.mov(RDX, r, w=True)
-                a.alu_imm("add", RDX, k, w=True)
-            else:
-                a.mov_imm(RDX, k, w=True)
-                a.alu("add", RDX, r, w=True)
-            a.jcc("b", oob)  # the carry: idx + k >= 2**64
-            a.alu("cmp", RDX, limit, w=True)
-            a.jcc("a", oob)
-            if offset >= 1 << 31:  # base + idx + offset through rcx: rdx stays free
-                a.lea(RCX, Mem(RDX, -size))
-                r, disp = RCX, 0
-        if isinstance(base, int):
-            return Mem(base, disp, r)
-        if r == RCX:
-            a.alu("add", RCX, base, w=True)
-            return Mem(RCX, disp)
-        a.mov(RCX, base, w=True)
-        return Mem(RCX, disp, r)
-
-    def _guarded(self, f: Frame, addr: Operand | AddK, offset: int, mem: int) -> Mem:
-        """Guard mode (S0006): no check. The address is formed as `_bounds` forms it (a register
-        index copied by a 32-bit move, LESSONS 5 not relied on), so it lies inside the memory's
-        reservation of 4 GiB + GUARD whose inaccessible part faults; the fault handler resumes
-        at this function's MEMORY_OUT_OF_BOUNDS stub. The caller marks the one instruction that
-        touches memory with `_fault_point`; no push is outstanding there (the fault point
-        invariant)."""
-        a = self.a
-        base = self._mem(mem)[0]
-        self._oob = self._stub(f, TrapCode.MEMORY_OUT_OF_BOUNDS)
-        if isinstance(addr, Imm):
-            ea = (addr.value & M32) + offset
-            if ea < 1 << 31:
-                if isinstance(base, int):
-                    return Mem(base, ea)
-                a.mov(RCX, base, w=True)
-                return Mem(RCX, ea)
-            a.mov_imm(RCX, ea, w=True)
-            disp = 0
-        else:
-            self.move(Reg(RCX), addr, False)
-            disp = offset
-        if isinstance(base, int):
-            return Mem(base, disp, RCX)
-        a.alu("add", RCX, base, w=True)
-        return Mem(RCX, disp)
+        return lower.bounds(self, oob, addr, offset, size, mem, a64, lo)
 
     # ---------------------------------------------------------------- low layer (S0011)
-    # The operations `twolevel` composes; each fits its immediates to the encoding (the ranges
+    # The operations `lower` composes; each fits its immediates to the encoding (the ranges
     # are part of the contract, LESSONS 83). Only rcx and rdx are written (`ll_check_sum`: its
-    # `r`, restored); no flags are live after an operation but inside `ll_jcmp`, `ll_jcmp_imm`,
-    # `ll_add_jc` and `ll_check_sum`.
+    # `r`, restored; `ll_three`, `ll_addr`, `ll_elem_addr`: the bulk operands rax, rdx, rcx); no
+    # flags are live after an operation but inside `ll_jcmp`, `ll_jcmp_imm`, `ll_add_jc` and
+    # `ll_check_sum`.
     IDX: int = RCX
     TMP: int = RDX
 
@@ -1015,6 +891,34 @@ class Backend:
         self.a.mov(RDX, Mem(R15, 8 * word), w=True)
         return Mem(RDX, 0, r, 8)
 
+    def ll_three(
+        self, x: Operand, y: Operand, z: Operand, wx: bool, wy: bool, wz: bool
+    ) -> tuple[int, int, int]:  # fmt: skip
+        """rax = x, rdx = y, rcx = z (i32 zero-extended, LESSONS 5; 64-bit if `wx`/`wy`/`wz`).
+        rcx and rdx never hold operands, so they are written first; rax (which may hold one)
+        last (LESSONS 32)."""
+        for r, o, w in ((RDX, y, wy), (RCX, z, wz)):
+            if w and isinstance(o, Reg):
+                self.a.mov(r, o.id, w=True)
+            elif w:
+                self.move(Reg(r), o, True)
+            else:
+                self._u32(r, o)
+        if wx:
+            self.move(Reg(RAX), x, True)
+        else:
+            self._u32(RAX, x)
+        return RAX, RDX, RCX
+
+    def ll_addr(self, r: int, base: int | Mem) -> None:
+        """r = base + r: `add r, r13` or `add r, [r15 + 8 mem]`."""
+        self.a.alu("add", r, base, w=True)
+
+    def ll_elem_addr(self, r: int, word: int) -> None:
+        """r = [context word `word`] + 8 r: `shl r, 3; add r, [r15 + 8 word]`."""
+        self.a.shift("shl", r, 3, w=True)
+        self.a.alu("add", r, Mem(R15, 8 * word), w=True)
+
     def _fault_point(self) -> None:
         """The next instruction is the access `_bounds` formed: in guard mode, a fault point
         (S0006 fault map); in explicit mode nothing."""
@@ -1106,20 +1010,10 @@ class Backend:
             self.move(Reg(r), o, False)
 
     def _element(self, f: Frame, word: int, index: Operand, a64: bool) -> Mem:
-        """Bounds-check index (rcx) against the table's size; the element's address via rdx. An
-        i64 index (S0009) is read by a 64-bit move: `cmp` with the 64-bit size word, no carry."""
-        if self.twolevel:  # S0011 step 2
-            oob = self._stub(f, TrapCode.TABLE_OUT_OF_BOUNDS)
-            return twolevel.element(self, oob, word, index, a64)
-        a = self.a
-        if a64:
-            self.move(Reg(RCX), index, True)
-        else:
-            self._u32(RCX, index)
-        a.alu("cmp", RCX, Mem(R15, 8 * word + 8), w=True)
-        a.jcc("ae", self._stub(f, TrapCode.TABLE_OUT_OF_BOUNDS))
-        a.mov(RDX, Mem(R15, 8 * word), w=True)
-        return Mem(RDX, 0, RCX, 8)
+        """The element check, written once in `lower.element` (S0011): rcx = the index, the
+        element [rdx + 8 rcx]."""
+        oob = self._stub(f, TrapCode.TABLE_OUT_OF_BOUNDS)
+        return lower.element(self, oob, word, index, a64)
 
     def table_get(self, f: Frame, dst: Reg, word: int, index: Operand, *, a64: bool) -> None:
         self.a.mov(dst.id, self._element(f, word, index, a64), w=True)
@@ -1134,38 +1028,6 @@ class Backend:
             self.move(Reg(RAX), value, True)  # a slot or an immediate: rcx/rdx are not touched
             value = Reg(RAX)
         self.a.mov(elem, value.id, w=True)
-
-    def _three(
-        self, x: Operand, y: Operand, z: Operand, wy: bool, wx: bool = False, wz: bool = False
-    ) -> None:  # fmt: skip
-        """rax = x, rdx = y, rcx = z (i32 zero-extended; 64-bit if `wx`/`wy`/`wz`). rcx and rdx
-        never hold operands, so they are written first; rax (which may hold one) last."""
-        for r, o, w in ((RDX, y, wy), (RCX, z, wz)):
-            if w and isinstance(o, Reg):
-                self.a.mov(r, o.id, w=True)
-            elif w:
-                self.move(Reg(r), o, True)
-            else:
-                self._u32(r, o)
-        if wx:
-            self.move(Reg(RAX), x, True)
-        else:
-            self._u32(RAX, x)
-
-    def _end_check(
-        self, f: Frame, r: int, size: int | Mem, code: int, carry: bool = False
-    ) -> None:  # fmt: skip
-        """r + rcx must not exceed `size`: both < 2**32 (no wrap in 64 bits), or with `carry`
-        64-bit values whose sum may wrap (`jc`: out of bounds, S0009)."""
-        if self.twolevel:  # S0011 step 2
-            return twolevel.end_check(self, self._stub(f, code), r, RCX, size, carry)
-        a = self.a
-        a.alu("add", r, RCX, w=True)
-        if carry:
-            a.jcc("b", self._stub(f, code))
-        a.alu("cmp", r, size, w=True)
-        a.jcc("a", self._stub(f, code))
-        a.alu("sub", r, RCX, w=True)
 
     def _copy(self, unit: int) -> None:
         """Copy rcx bytes from [rdx] to [rax] as memmove does: backwards when the destination is
@@ -1216,27 +1078,19 @@ class Backend:
         self, f: Frame, d: Operand, s: Operand, n: Operand, dmem: int, smem: int, *,
         a64: tuple[bool, bool],
     ) -> None:  # fmt: skip
-        """Both ranges are checked before any byte moves (bulk memory: no partial copy). The two
-        memory indices may name the same memory (one imported twice), so the direction is chosen by
-        the real addresses in `_copy`, never by the indices. Each range at its own width; `n` is
-        64-bit only between two i64 memories (S0009)."""
-        a, oob, (ad, as_) = self.a, TrapCode.MEMORY_OUT_OF_BOUNDS, a64
-        (dbase, dlimit), (sbase, slimit) = self._mem(dmem), self._mem(smem)
-        self._three(d, s, n, as_, ad, ad and as_)
-        self._end_check(f, RAX, dlimit, oob, ad)
-        self._end_check(f, RDX, slimit, oob, as_)
-        a.alu("add", RAX, dbase, w=True)
-        a.alu("add", RDX, sbase, w=True)
+        """The checks in `lower.memory_copy`. The two memory indices may name the same memory
+        (one imported twice), so the direction is chosen by the real addresses in `_copy`, never
+        by the indices."""
+        oob = self._stub(f, TrapCode.MEMORY_OUT_OF_BOUNDS)
+        lower.memory_copy(self, oob, d, s, n, dmem, smem, a64)  # rax, rdx, rcx
         self._copy(1)
 
     def memory_fill(
         self, f: Frame, d: Operand, v: Operand, n: Operand, mem: int, *, a64: bool
     ) -> None:  # fmt: skip
         a = self.a
-        base, limit = self._mem(mem)
-        self._three(d, v, n, False, a64, a64)
-        self._end_check(f, RAX, limit, TrapCode.MEMORY_OUT_OF_BOUNDS, a64)
-        a.alu("add", RAX, base, w=True)
+        oob = self._stub(f, TrapCode.MEMORY_OUT_OF_BOUNDS)
+        lower.memory_fill(self, oob, d, v, n, mem, a64)  # rax, rdx, rcx
         a.movzx(RDX, RDX, 8)
         a.push(RSI)
         a.mov_imm(RSI, 0x0101010101010101, w=True)
@@ -1263,10 +1117,7 @@ class Backend:
         self, f: Frame, word: int, i: Operand, v: Operand, n: Operand, *, a64: bool
     ) -> None:  # fmt: skip
         a = self.a
-        self._three(i, v, n, True, a64, a64)
-        self._end_check(f, RAX, Mem(R15, 8 * word + 8), TrapCode.TABLE_OUT_OF_BOUNDS, a64)
-        a.shift("shl", RAX, 3, w=True)
-        a.alu("add", RAX, Mem(R15, 8 * word), w=True)
+        lower.table_fill(self, self._stub(f, TrapCode.TABLE_OUT_OF_BOUNDS), word, i, v, n, a64)
         loop, done = a.label(), a.label()
         a.bind(loop)
         a.test(RCX, RCX, w=True)
@@ -1281,14 +1132,9 @@ class Backend:
         self, f: Frame, dst: int, src: int, d: Operand, s: Operand, n: Operand, *,
         a64: tuple[bool, bool],
     ) -> None:  # fmt: skip
-        a, oob, (ad, as_) = self.a, TrapCode.TABLE_OUT_OF_BOUNDS, a64
-        self._three(d, s, n, as_, ad, ad and as_)  # n: the narrower type, as memory_copy
-        self._end_check(f, RAX, Mem(R15, 8 * dst + 8), oob, ad)
-        self._end_check(f, RDX, Mem(R15, 8 * src + 8), oob, as_)
-        for r, word in ((RAX, dst), (RDX, src)):
-            a.shift("shl", r, 3, w=True)
-            a.alu("add", r, Mem(R15, 8 * word), w=True)
-        a.shift("shl", RCX, 3, w=True)
+        oob = self._stub(f, TrapCode.TABLE_OUT_OF_BOUNDS)
+        lower.table_copy(self, oob, dst, src, d, s, n, a64)  # rax, rdx, rcx
+        self.a.shift("shl", RCX, 3, w=True)
         self._copy(8)
 
     # ---------------------------------------------------------------- calls

@@ -707,3 +707,20 @@ What went wrong or surprised us while building the PoC, so it is not found again
     Rule: generated names match one fixed pattern (`GEN` in `tests/test_pyc_trap_order.py`) that no
     runtime name matches, and a test checks both; no generated name comes from module input (names
     are only ever `%r` strings). Found: S0012 fuzz triage, 2026-11-05.
+97. **Test operands of the same size hide which bound was checked.** In the bulk tests every table
+    had 4 elements and every memory 1 page. With S0011 step 4's mutant that checks a `table.copy`
+    source against the destination table's size, the tests and the spec suite all passed: the two
+    sizes were always equal. Widths have the same problem. D39 keeps every value zero-extended, so
+    reading an i32 copy count as 64 bits changed nothing in any test. Rule: give each operand of a
+    check a value no other operand has (sizes 3, 4, 5; memories of 1 and 2 pages). For a width that
+    an invariant protects, add a test that breaks the invariant: here a wrapper that sets bit 32
+    of each i32 operand register. Equal values or an upheld invariant let a mutant through
+    unnoticed. Found: S0011 step 4 plan, 2026-11-05.
+98. **`tools/jit_dump.py` imports its own checkout, whatever `PYTHONPATH` says.** It puts the
+    repository's `src` first on `sys.path`, so running it with `PYTHONPATH=<an archive of HEAD>/src`
+    compiles the working tree twice and the "before/after" lists are always equal. Twice in this
+    phase the orchestrator's own re-check of an identity claim was empty in this way (the agents'
+    and reviewers' runs, from a full archive copy, were real). Rule: compare by running the tool
+    inside a full copy (`git archive HEAD src tests tools poc/in`, the spec cache linked in) and
+    check that the expected differences appear, not only that nothing else does. Found: S0011
+    step 4 verification, 2026-11-05.

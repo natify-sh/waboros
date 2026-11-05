@@ -2,7 +2,7 @@
 title: JIT low layer - wasm memory semantics written once over per-architecture operations
 kind: spec
 id: S0011
-status: approved
+status: implemented
 superseded_by:
 related: [D24, D26, D35, D39, D44, D45, D47, R3, S0004, S0006, S0007, S0009]
 owner: maintainer
@@ -96,11 +96,17 @@ operand has no displacement.
 * **Switch:** `WABOROS_JIT_TWOLEVEL=1`, read in `Backend.__init__`, test-only, off by default (as
   `WABOROS_JIT_NOPIN`). It stays until step 4, so the old and the new code can be compared byte for
   byte and mixed for bisection (CLAUDE.md). Step 4 removes the switch and the old bodies.
+* **From step 4 (amendment B2, below):** the module is `common/lower.py` (Q1). The plug points
+  are `_bounds` and `_element`, now one delegation each, and the four D39 methods `memory_copy`,
+  `memory_fill`, `table_copy`, `table_fill`. Each of these four creates its stub, calls the
+  shared function of the same name, then emits its own copy or fill loop on the registers
+  `ll_three` returned. `_end_check`, `_three`, `_bounds64` and `_guarded` are gone.
+  `memory.init` and `table.init` have no JIT end check: they run through the host bridge.
 
 ### The shared semantics (normative)
 `bounds(b, f, addr, offset, size, mem, a64, lo)`, for an access of `size` bytes at `addr + offset`:
-1. `base, limit = ll_mem(mem)`; `oob = _stub(f, MEMORY_OUT_OF_BOUNDS)`. Assert that no fault point
-   is pending.
+1. `base, limit = ll_mem(mem)`; `oob = _stub(f, MEMORY_OUT_OF_BOUNDS)`, created by the plug point
+   `_bounds`, which first asserts that no fault point is pending ("Fault points").
 2. **An i64 index in a register or slot** (`a64` and not `Imm`): `r = ll_index64(addr)`.
    * If `offset + size > 2⁶⁴ − 1`, then `ll_jump(oob)` and `offset = 0` (LESSONS 75: no index is in
      bounds; the dead code that follows stays well formed).
@@ -130,6 +136,39 @@ i32 values (each below 2³², the sum below 2³³), so the sum cannot wrap. When
 ranges) and the order (both ranges of a copy are checked before any write) stay in the per-backend
 callers until step 4 (Q2).
 
+**Bulk memory and tables, from step 4 (amendment B2).** `end_check` is replaced by four functions
+named after the D39 methods that call them. Each is a single `ll_check_sum` per range. `oob` is the
+plug point's stub: `MEMORY_OUT_OF_BOUNDS` for the memory operators, `TABLE_OUT_OF_BOUNDS` for the
+table ones. A table's elements' base and size are context words `w` and `w + 1`.
+* `memory_copy(b, oob, d, s, n, dmem, smem, (ad, as))`:
+  `rd, rs, rn = ll_three(d, s, n, ad, as, ad and as)`; then for `(rd, dmem, ad)` and then
+  `(rs, smem, as)`: `base, limit = ll_mem(mem)`, `ll_check_sum(r, rn, limit, oob, w)`,
+  `ll_addr(r, base)`.
+* `memory_fill(b, oob, d, v, n, mem, a64)`: `rd, _, rn = ll_three(d, v, n, a64, False, a64)`;
+  `base, limit = ll_mem(mem)`; `ll_check_sum(rd, rn, limit, oob, a64)`; `ll_addr(rd, base)`.
+* `table_fill(b, oob, w, i, v, n, a64)`: `ri, _, rn = ll_three(i, v, n, a64, True, a64)`;
+  `ll_check_sum(ri, rn, ll_ctx_word(w + 1), oob, a64)`; `ll_elem_addr(ri, w)`.
+* `table_copy(b, oob, wd, ws, d, s, n, (ad, as))`: `rd, rs, rn = ll_three(d, s, n, ad, as, ad and
+  as)`. Then `ll_check_sum(r, rn, ll_ctx_word(w + 1), oob, wide)` for the destination, then the
+  source. Then `ll_elem_addr(rd, wd)`, `ll_elem_addr(rs, ws)`.
+
+The rules these carry:
+* Every operand is read at its width before anything is written: `ll_three`, LESSONS 32. `n` is
+  64-bit only between two 64-bit ranges. `memory.fill`'s value is an i32 and `table.fill`'s a
+  64-bit reference.
+* Every range is checked before the backend's loop writes anything (no partial fill or copy).
+* A copy checks the destination first, then the source. Both have the same trap code, so the
+  order is not observable.
+* The order of checks and address forms is aarch64's code before step 4, per operator:
+  * `memory_copy` checks a range, then forms its address, before the other range. A memory other
+    than 0 holds its base and size in `x11`/`x12`, which the other memory needs next.
+  * `table_copy` checks both ranges, then forms both addresses.
+  * A single order for both operators would change 106 aarch64 modules (every `table.copy`), so
+    it is not used. A unification can come with a later spec that changes code anyway.
+
+The shared functions emit no write to linear memory or a table. The loop each D39 method emits
+afterwards stays per backend (Non-goals).
+
 `element(b, oob, word, index, a64)`: the index goes into `IDX` (`ll_index`) as a 64-bit value
 (`a64`) or zero-extended, copied even from a register, and is compared with the table's size word
 (`word + 1`): `ge_u` traps `TABLE_OUT_OF_BOUNDS`. The result is the element: 8 bytes at the
@@ -146,24 +185,34 @@ Operand kinds:
 * **conditions:** D39's names, unsigned 64-bit.
 
 General rules, for every op:
-* **Registers.** An op writes only the scratch registers listed below, its `dst`, and `IDX`/`TMP`
-  where stated. It never writes a pool register, `tos`, the frame, context or memory-0 registers,
-  or the operand registers of the calling D39 method (for example x86-64 `rax`, `rdx`, `rcx` in
-  `memory_copy`). A store's source is formed after `_bounds`, as today.
-* **Flags (LESSONS 1).** Only `ll_jcmp`, `ll_jcmp_imm` and `ll_add_jc` produce flags that are
-  consumed, and each consumes them in its own next instruction. Other ops may clobber flags (x86
-  `add`, `sub`); nothing may rely on flags across ops.
+* **Registers.** An op writes only the registers its row lists: its scratch registers, its
+  `dst`, and `IDX`/`TMP` where stated. It never writes a pool register, the frame, context or
+  memory-0 registers. Two kinds of op may write registers that hold the operands of the calling
+  D39 method:
+  * **The bulk ops**, `ll_three`, `ll_addr`, `ll_elem_addr` and `ll_check_sum`. They write the
+    bulk operand registers (x86-64 `rax`, which is `tos`, plus `rdx` and `rcx`; aarch64
+    `x13`-`x15`). D39 allows that in table and bulk operations. `ll_three` reads every operand
+    before it writes a register that may hold one (LESSONS 32). x86-64 `ll_check_sum` writes its
+    `r` and restores it on the fall-through.
+  * **Every other op** writes no such register and not `tos`.
+
+  A store's source is formed after `_bounds`, as today.
+* **Flags (LESSONS 1).** Only `ll_jcmp`, `ll_jcmp_imm`, `ll_add_jc` and `ll_check_sum` produce
+  flags that are consumed. Each consumes them inside itself, in the instruction after the one that
+  set them. Other ops may clobber flags (x86 `add`, `sub`, `shl`); nothing may rely on flags
+  across ops.
 * **Immediates.** Every op accepts the full value range stated for it and fits the value to the
   encoding itself. **The ranges below are part of the contract** (LESSONS 83). An op that cannot
   encode a value raises; it never masks (LESSONS 75).
 * **Linear memory.** The only instruction that touches linear memory is the access the caller
-  emits after `ll_access` returns. Ops may read context words before it, which never fault.
+  emits after `ll_access` returns, or the loop a bulk D39 method emits after its shared function
+  returns. Ops may read context words and frame slots before it, which never fault.
 
 | op | meaning | x86-64 | aarch64 |
 |---|---|---|---|
 | `IDX`, `TMP` | scratch registers for the index and the check | `rcx`, `rdx` | `x9`, `x10` (also `x16`; `x11`/`x12` for a memory other than 0; `x17` for a context word past 4095, and for a frame slot past the scaled imm12 range: slot 2048 for a 4-byte load, 4096 for an 8-byte one) |
 | `ll_mem(mem)` → `(base, limit)` | the memory's base and size in bytes | memory 0: `r13`, `r14`; other: `Mem(r15, 8·mem)`, `Mem(r15, 8·mem+8)`; emits nothing | memory 0: `x26`, `x25`; other: `ldp x11, x12` (or two `ldr`; past context word 4095 through `x17`) |
-| `ll_index32(a)` → `IDX` | `IDX = a mod 2³²`, zero-extended | `mov ecx, …` / `lea ecx, [id+k]` | `mov w9, …` / `add w9, wid, #k` (imm12, or via `x16`) |
+| `ll_index32(a)` → `IDX` | `IDX = a mod 2³²`, zero-extended | `Reg`: `mov ecx, r32`; `Slot`: `mov ecx, [r12+8k]`; `Imm`: `mov ecx, imm32`; `AddK`: `lea ecx, [id+k]` (k as a signed disp32) | `Reg`: `mov w9, wN`; `Slot`: `ldr w9, [x27, #8k]` for slot k < 2048, else `mov x17, 8k; ldr w9, [x27, x17]`; `Imm`: `movz`/`movk w9`; `AddK`: `add w9, wid, #k` or `sub w9, wid, #(−k mod 2³²)` (imm12, optionally `lsl #12`), else `mov w16, k; add w9, wid, w16` |
 | `ll_index64(a)` → reg | the 64-bit index in a register | `Reg` itself, or `mov rcx, [slot]` | `Reg` itself, or `ldr x9, [slot]` |
 | `ll_fold(r, off, size)` → `(r', disp)` | the address `r + off` in the access form the architecture has | `(r, off)` if `off + size < 2³¹`; else `mov rdx, off; add rcx, rdx` (`r` = `rcx`) or `mov rcx, off; add rcx, r`, giving `(rcx, 0)` | `(r, 0)` if `off = 0`; else `x9 = r + off` (imm12 or `lsl #12`, or via `x16`), giving `(x9, 0)` |
 | `ll_add(dst, src, k)` → `dst` | `dst = src + k` mod 2⁶⁴; `src` a register or `limit` | register `src`: `lea` if −2³¹ ≤ k < 2³¹; else `mov dst, imm64; add dst, src` (`dst` ≠ `src`) or `mov rdx, imm64; add dst, rdx`. `Mem` `src`: `mov dst, src; add/sub dst, abs(k)` **only if −2³¹ < k < 2³¹** (`sub` takes `abs(k)` as a sign-extended imm32); else `mov dst, imm64; add dst, src` | `add`/`sub` imm12 (`lsl #12`), else `mov x16, k; add` |
@@ -177,13 +226,18 @@ General rules, for every op:
 | `ll_index(a, wide)` → `IDX` (step 2) | `IDX = a`, 64-bit (`wide`) or the i32 zero-extended; any `Imm`, `Reg`, `Slot`, copied even from a register (LESSONS 32) | `wide`: `mov rcx, …` (64-bit); else as `ll_index32` | `mov x9/w9, …`, `ldr`, or `mov_imm` |
 | `ll_ctx_word(w)` → handle (step 2) | context word `w` (a table's size word) | `Mem(r15, 8w)`, emits nothing (disp32) | `ldr x10, [ctx, #8w]` for w ≤ 4095, else `mov x17, 8w; ldr x10, [ctx, x17]` |
 | `ll_element(w, IDX)` → element (step 2) | 8 bytes at `[context word w] + 8·IDX` | `mov rdx, [r15+8w]`, giving `[rdx + rcx·8]` | `ldr x10, …` as `ll_ctx_word`, giving `(x10, x9)` read as `[x10, x9, lsl 3]` |
+| `ll_three(x, y, z, wx, wy, wz)` → `(rx, ry, rz)` (step 4) | the three operands of a bulk operator, each 64-bit if its `w`, else the i32 zero-extended (a 32-bit move even from a register, LESSONS 5); any `Imm`, `Reg`, `Slot`; every operand read before a register that may hold one is written (LESSONS 32); no flags | `rdx = y`, `rcx = z` first, `rax = x` last (`rax` is `tos` and may hold an operand; `rdx`, `rcx` never do): `mov r, …` (64-bit) or `mov r32, …` (i32), a constant by the encoder's `mov` immediate form; returns `(rax, rdx, rcx)`; writes only those | `x13 = x`, `x14 = y`, `x15 = z` in that order (none holds an operand): `mov x/w, …`, `ldr` (`x17` past the scaled imm12 range, as `ll_index32`), `movz`/`movk`; returns `(13, 14, 15)`; writes those and `x17` |
+| `ll_addr(r, base)` (step 4) | `r = base + r`: the address of a checked memory range; `base` from `ll_mem`; no immediate | `add r, r13` or `add r, [r15+8·mem]` (disp32); writes `r`, clobbers flags | `add r, r, x26` or `add r, r, x11`; writes `r`, no flags |
+| `ll_elem_addr(r, w)` (step 4) | `r = [context word w] + 8·r`: the address of a checked table range | `shl r, 3; add r, [r15+8w]` (disp32); writes `r`, clobbers flags | `ldr x10, …` as `ll_ctx_word` (`x17` past word 4095); `add r, x10, r, lsl #3`; writes `r`, `x10` (`x17`), no flags |
 
-Every row was built and checked: steps 1 and 2 in the package.
+Every row was built and checked: steps 1 and 2 in the package. The step-4 rows were checked in
+step 4 in the package: aarch64 byte-identical, x86-64 only the listed reorder.
 
 ### Fault points (S0006, D45)
 Unchanged. `ll_fault_next` records the pending point. The caller (`load`, `store`, `simd`) calls
 `_fault_point()` right before its one memory instruction, and no push is outstanding there. The
-shared layer asserts that no point is pending when it starts.
+plug point `_bounds` of each backend asserts that no point is pending before it calls `bounds`.
+The shared layer cannot see the pending point, and the assert stays there after step 4.
 
 ### Rows (D47)
 None. The code is per architecture; nothing differs by operating system.
@@ -238,6 +292,32 @@ the step can close. The test modules of `tests/jit` that are not in the spec cac
 `test_k_at_two_to_the_31_on_a_memory_other_than_0`) may differ in the same way as `address64`. They
 are checked by their tests, not by identity.
 
+### Step 4: the D35 lists before and after the switch-over (amendment B2)
+The comparison is made once, since the switch is gone afterwards. "Before" is the switch-on code at
+the step's base commit and "after" is the step-4 code, both targets, both modes, 5 979 modules. The
+switch-on lists at the base already differ from the switch-off ones in `address64.0-3` only, as
+above. Checked at step 4, in the package:
+* **aarch64: identical**, guard and explicit.
+* **x86-64: exactly the 70 modules that contain `memory.copy`**, in both modes:
+  * `bulk-memory/bulk/bulk.3`;
+  * `bulk-memory/memory_copy/memory_copy.1`-`.18` and `.83`-`.96`;
+  * `bulk-memory/memory_init/memory_init.3`;
+  * `memory64/bulk64/bulk64.2`;
+  * `memory64/memory_copy64/memory_copy64.1`-`.18` and `.83`-`.96`;
+  * `memory64/memory_init64/memory_init64.3`;
+  * `multi-memory/memory_copy0/memory_copy0.0` and `multi-memory/memory_copy1/memory_copy1.0`.
+
+  The reason: `memory_copy` takes aarch64's order, and the destination's `add rax, base` moves from
+  after the source check to before it. In every one of the 70 the code has the same length and the
+  same multiset of instructions (branch targets aside): a reorder, no extra instruction.
+  `memory.fill`, `table.fill` and `table.copy` are unchanged on x86-64.
+* **CoreMark: identical** on both targets in both modes.
+* **The generated modules of `tests/jit/test_low_layer.py`:** the same result. Only the bulk module
+  differs, on x86-64 only, pinned and with `WABOROS_JIT_NOPIN=all`. This includes a module of i64
+  memories with a declared minimum of 0 pages and accesses at offset 0: the carry path without an
+  offset. It is identical before and after, and also with the switch off at the base. That closes
+  the step-3 review's point that every `I64_SAME` case had `k ≤ lo`.
+
 ## Test plan
 * **Identity test** (new, `tests/jit/test_low_layer.py`): compile CoreMark and generated modules
   covering every path of the check (every width; i32 register, `local + const` and constant
@@ -269,9 +349,42 @@ are checked by their tests, not by identity.
   * use `gt_u` for `ge_u` in `element`;
   * read an i32 table index without zero-extending it (LESSONS 5).
   The script is a scratch tool, reported in the step, not committed.
+* **Step 4 (amendment B2):**
+  * `test_switch_changes_no_code` is deleted, and the comparison above replaces it.
+    `test_boundaries_*` and `test_end_and_element_checks_*` compare with `pyc` instead of the
+    switch off, as the rest of `tests/jit` does. The trap assertions stay as they are.
+    `test_an_i32_address_ignores_the_upper_half` compares the dirtied build with the clean one
+    once, not once per switch value. `test_two_gib_memories` keeps its exact expectations, with
+    no second build.
+  * `_bulk_text` gives the memories sizes of 1 and 2 pages (each i32 memory pairs with an i64
+    memory of the other size) and the tables 3, 4 and 5 elements. A range checked against the
+    other memory's or table's size then fails.
+  * `test_an_i32_address_ignores_the_upper_half` dirties the i32 operands of `memory.copy`,
+    `memory.fill`, `table.copy` and `table.fill`, including copies between an i64 and an i32
+    memory or table.
+  * The mutation list above is run again, and so are these, each caught:
+    * no source check, or no destination check, in `memory_copy`;
+    * the source checked after the copy loop (x86-64);
+    * an address formed before its check;
+    * `n` always narrow, or wide when either side is (`memory_copy`, `table_copy`);
+    * `d` and `s` widths swapped;
+    * each range given the other range's carry flag (`memory_copy`, `table_copy`);
+    * `memory_fill` `d` or `n` narrow on an i64 memory, or no carry;
+    * `table_fill` value read as an i32, index narrow on a table64, or no check;
+    * no source check in `table_copy`;
+    * a range checked against the other table's or memory's size;
+    * x86-64 `ll_three` writing `rax` first (LESSONS 32);
+    * `ll_three` not zero-extending an i32 register (both architectures);
+    * aarch64 `ll_elem_addr` with `lsl #2`, `ll_addr` adding `xzr`, and `ll_check_sum` without
+      the wide carry, under QEMU.
+
+    `memory_fill`'s value read as 64 bits survives: it is an equivalent mutant, since both loops
+    keep only the low byte.
 * **Compile time:** CoreMark plus the three corpus modules, median of 10 compiles, at least 10
   alternated pairs, switch on against off, both targets, both modes. Bound: **+5 %** (paired
-  median). Recorded in BENCHMARKS.md.
+  median). Recorded in BENCHMARKS.md. At step 4: the step against the base commit with the switch
+  off (the bound's reference) and on, plus the worst case of step 2 (a module of 300 functions of
+  bulk and table operators).
 
 ## Plan of steps
 JIT, ABI and trap work: `jit-engineer` with a plan approved first, then a `reviewer` (CLAUDE.md).
@@ -281,15 +394,21 @@ Measurements run with no other agent benchmarking at the same time.
 |---|---|---|---|---|
 | 1 | The memory bounds in the package behind the switch: `common/twolevel.py` with `bounds`; the low-layer ops of the contract table (the rows built in the prototype) in both backends; the `_bounds` hooks; the identity test; the boundary tests; CI steps | jit-engineer | Identity (only `address64.0-3`; CoreMark equal); Test plan "every step"; mutations caught; compile time ≤ +5 % | src ~260, tests ~80, CI ~10 |
 | 2 | `_end_check` and `_element` through the shared layer: `ll_check_sum`, `ll_index`, `ll_ctx_word`, `ll_element` (Q2); hooks in both backends | jit-engineer | Identity with no new listed module; bulk, table and table64 tests and the spec suite with the switch; mutations; compile time | src ~90, tests ~120 |
-| 3 | Review of steps 1-2 against this contract, without the implementers' reasoning: the R3 check, flags, registers, immediate ranges, fault points | reviewer | findings closed | — |
-| 4 | Switch-over: delete the old `_bounds`, `_bounds64`, `_guarded`, the per-backend `_end_check` and `_element` bodies and the switch; the end checks' callers' rules (operand widths, both ranges before any write) move into the shared layer (Q2); rename the module (Q1); the identity test becomes a one-time D35 comparison of the lists before and after | jit-engineer | D35 lists after the removal equal the switch-on lists; spec, tests and ISA gates as today; compile time re-measured | src about −250 +20 |
+| 3 | Review of steps 1-2 against this contract, without the implementers' reasoning: the R3 check, flags, registers, immediate ranges, fault points | reviewer | findings closed | — (done 2026-11-05; findings closed in this text and in step 4, Changes) |
+| 4 | Switch-over (amendment B2): delete the old `_bounds`, `_bounds64`, `_guarded` bodies, `_end_check`, `_three` and the per-backend `_element` body, and the switch and its CI steps. The bulk callers' rules (operand widths, the order, both ranges before any write) move into the shared layer as `memory_copy`, `memory_fill`, `table_fill`, `table_copy` over the new ops `ll_three`, `ll_addr`, `ll_elem_addr`. Rename the module (Q1). The identity test becomes the one-time D35 comparison of "Identity", step 4 | jit-engineer | "Identity", step 4: aarch64 identical; x86-64 exactly the 70 listed modules, each a reorder; CoreMark identical. Spec suite on `jit-x86_64` both modes and on `jit-aarch64` (QEMU subset, CI native) as before; `tests/jit` as before minus the identity test; ISA gates clean; the step-4 mutations caught; compile time within +5 % of the switch-off base; a short `memory.copy` micro-benchmark, alternated, shows no change | src −380 +165 (prototype: −378 +162); tests −110 +120; CI −8; docs ~+120 |
 
 A step that needs more than its size stops and reports. **Docs per step** (STANDARDS.md):
 * step 1: BENCHMARKS.md (compile time); LESSONS.md for a trap; this spec's Changes;
 * step 2: the same;
-* step 4: ARCHITECTURE.md "The IR" (the backend side of D39 is two levels: shared semantics over a
-  low layer); DECISIONS.md, a new decision (unify over a low layer; the contract is this spec);
-  ROADMAP.md; this spec `implemented`; `docs/specs/README.md`.
+* step 4:
+  * ARCHITECTURE.md: the file list, where `twolevel.py` becomes `lower.py` and holds steps 1, 2
+    and 4; "The IR": the backend side of D39 is two levels, shared semantics over a low layer.
+  * DECISIONS.md: a new decision (unify over a low layer; the contract is this spec).
+  * ROADMAP.md: the status line and "Next" item (3b).
+  * TESTING.md: the CI description loses the switch steps.
+  * BENCHMARKS.md: compile time and the `memory.copy` micro-benchmark.
+  * LESSONS.md: test operands of equal size hide which size was checked.
+  * This spec `implemented`; `docs/specs/README.md`.
 
 ## Alternatives considered
 * **Keep the semantics per backend (today).** No work now. But exceptions and GC would be written
@@ -323,7 +442,24 @@ A step that needs more than its size stops and reports. **Docs per step** (STAND
   is two ops for one meaning. Amended at step 2 (maintainer, 2026-11-05): the shared `end_check`
   is the one `ll_check_sum` call; which operands are wide, the trap code and the order (both
   ranges before any write) stay in the per-backend callers, which steps 1-3 do not edit. They
-  move into the shared layer at step 4, when the callers do (`lower.py`).
+  move into the shared layer at step 4, when the callers do (`lower.py`). Amended for step 4
+  (option B2, maintainer, 2026-11-05):
+  * the operand widths and the order move into `lower.py`, as "Bulk memory and tables";
+  * the order is aarch64's per operator, so aarch64 stays byte-identical and x86-64
+    `memory_copy` changes by a reorder only;
+  * new ops: `ll_three`, `ll_addr`, `ll_elem_addr`;
+  * the trap code stays where step 1 put it: the plug point creates the stub and passes its label
+    (Q5).
+* **Q5 The trap code of the bulk operators (step 4).** The amended Q2 lists "the trap code" among
+  what moves into the shared layer. But since step 1 the plug point creates the stub, so that the
+  shared layer never sees a frame. Two options:
+  * (a) keep that: each D39 bulk method writes `_stub(f, TrapCode.…)`, one token per method,
+    caught by the tests that assert the code;
+  * (b) the shared functions take a `stub(code) -> label` callable and name the code. That is a
+    closure per operator and, for consistency, a change of `bounds` and `element` on the hot path
+    as well.
+
+  Recommendation: (a). **Decided 2026-11-05 (maintainer): (a).**
 * **Q3 The switch after step 4. Decided 2026-11-05 (maintainer): as recommended.** Recommendation: remove it. Unlike `WABOROS_PYC_BR`, the old code
   is deleted, so there is nothing to mix, and the D35 lists keep the comparison.
 * **Q4 The `address64` differences.** Accepted (maintainer, 2026-11-04). Removing them would take an
@@ -379,3 +515,45 @@ A step that needs more than its size stops and reports. **Docs per step** (STAND
     locals in slots) and 2 060 tables whose words cross context word 4096.
     `test_end_and_element_checks_match_the_old_code` runs fills, copies and element accesses at
     the bound, one past it and where the end wraps 2⁶⁴, switch on against off.
+* 2026-11-05: step 3, the review of steps 1-2. Findings closed here, or in step 4:
+  * The identity test's `I64_SAME` claimed the carry path, but every case had `k ≤ lo`. A module
+    of i64 memories of minimum 0 pages, with accesses at offset 0, was compared once: switch on
+    equals switch off on both targets in both modes. The test goes at step 4, and the one-time
+    comparison includes that module ("Identity", step 4).
+  * The "no pending fault point" assert lives in the plug points `_bounds`, not the shared layer.
+    "Fault points" now says so. It stays there after step 4.
+  * The general rules contradicted the table: the flags rule now lists `ll_check_sum`; the
+    register rule names the bulk ops and `ll_check_sum`'s restored `r`; the aarch64 `ll_index32`
+    row gives the `sub` form and the slot load through `x17` past slot 2048.
+* 2026-11-05: amendment B2 approved by the maintainer with the step-4 plan:
+  * the bulk and table callers' rules move into `lower.py` ("Bulk memory and tables");
+  * three new ops in the table, marked step 4;
+  * aarch64's order per operator, not one order for both: one order would have changed 106
+    aarch64 modules;
+  * Q5 (a): the trap code stays at the plug point;
+  * a permanent test of the i64 carry path without an offset.
+
+  The step-3 review's first finding was B2 itself.
+* 2026-11-05: step 4 implemented; S0011 implemented (D53).
+  * `common/twolevel.py` is now `common/lower.py`, with `memory_copy`, `memory_fill`,
+    `table_fill` and `table_copy` over the new ops `ll_three`, `ll_addr` and `ll_elem_addr`.
+  * Removed: the old `_bounds`, `_bounds64` and `_guarded` bodies, `_end_check`, `_three`, the
+    per-backend `_element` body, the switch, and its two CI steps.
+  * D35 lists against the base's switch-on lists, 5 979 modules: aarch64 identical in both
+    modes; x86-64 exactly the 70 modules of "Identity", step 4, in both modes, each the same
+    length and instructions reordered; CoreMark identical.
+  * Spec suite: `jit-x86_64` 63 354 pass, 0 fail, 78 xfail in both modes, as at the base.
+    `jit-aarch64` under QEMU, on the bulk-memory, memory64, multi-memory, table, memory,
+    `call_indirect` and `address` files: 17 928 pass, 0 fail, 4 xfail in both modes, as at the
+    base.
+  * `uv run pytest -q`: 674 passed, 72 skipped. `tests/jit` loses the 4 identity cases. The
+    low-layer, table, memory64 and memories tests under QEMU: 85 passed, 3 skipped, in both
+    modes.
+  * ISA gates: 0 failed on both targets.
+  * Mutations: the 36 of the Test plan are caught (28 natively, 8 under QEMU). The equivalent
+    mutant (`memory_fill`'s value read as 64 bits) survives, as stated.
+  * Compile time against the switch-off base: −0.4 % to +1.6 % on the standard set, and +1.9 %
+    on the bulk worst case (x86-64, 20 pairs). A short `memory.copy` runs at 0.99× (BENCHMARKS.md,
+    "S0011 step 4").
+  * New test: i64 memory `$e` of minimum 0 pages in `test_boundaries_match_pyc`, the carry path
+    without an offset, grown to 1 page and loaded at the bound.

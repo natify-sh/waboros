@@ -80,8 +80,9 @@ At HEAD `src/waboros/` holds: `frontend/` (`binary.py` reader, `validate.py`, `s
 operator table with its decoder and validator), `runtime/` (`link.py`, `store.py`), `targets/base.py`
 (the `Target` protocol, registry, `auto` selection, `JitUnavailableWarning`), `targets/pyc/`
 (`codegen.py`, `runtime.py`, `simd.py`), and `targets/jit/` with `common/` (`compiler.py` the one-pass
-core, `backend.py` the backend interface, `context.py`, `simd.py` the core's v128 handling, `twolevel.py` the bounds check written once over
-each backend's low layer behind `WABOROS_JIT_TWOLEVEL=1` (S0011 step 1), and the host side: `execmem.py`,
+core, `backend.py` the backend interface, `context.py`, `simd.py` the core's v128 handling, `lower.py` the wasm memory semantics written once
+over each backend's low layer: the bounds checks, the bulk-memory and table end checks with their operand
+rules, the element check ([S0011](specs/S0011-jit-low-layer.md)), and the host side: `execmem.py`,
 `guard.py` the guard-page registry and handler installation (S0006), `instance.py`, `target.py` the
 glue shared by the architectures) and
 `x86_64/`, `aarch64/` (each `encoder.py`, `abi.py`, `backend.py`, `simd.py`). The compiler side
@@ -122,6 +123,13 @@ calls for one, replaces both rather than becoming a third.
 Per architecture only the implementation of that interface (instruction selection) and the encoder
 remain; an allocator over a materialised LIR is added only if a measurement shows it pays (D26). With copy-and-patch
 (TARGETS.md) each LIR operation would become a stencil.
+
+**The backend side of D39 has two levels (S0011, D53).** For the memory group, a backend method does not
+implement the wasm semantics itself: `common/lower.py` writes them once over the **low layer**, the
+`ll_*` methods of each backend. The group is the bounds checks, the bulk end checks with the order and
+widths of their operands, and the table element check. The low layer names the machine registers and
+fits immediates to the encodings, under the contract S0011 states. It sits inside the backend side of
+D39, is never serialized and is not part of D39's frozen interface. GC is to be written on it as well.
 
 **Why structured, not a CFG of basic blocks**: Python (and Lua 5.1) has no `goto`, so `pyc`/`mpy` need
 structure; a JIT lowers structure to labels trivially. **Why not SSA**: phi nodes buy GVN/LICM-class

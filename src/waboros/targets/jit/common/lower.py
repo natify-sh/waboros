@@ -1,12 +1,10 @@
-"""The bounds checks of memory accesses (S0011 step 1), the end checks of bulk memory and tables
-and the table element check (step 2), written once over each backend's low layer.
-
-Test-only switch until S0011 step 4: `WABOROS_JIT_TWOLEVEL=1` makes `_bounds`, `_end_check` and
-`_element` of both backends delegate here; off, they emit their own code. The code is the same
-either way except the listed modules (S0011, "Identity"). The low layer (`LowLayer`, S0011 "The
-low-layer contract") are the `ll_*` methods of each backend: they name the machine registers and
-fit every immediate to its encoding; this module names neither. Conditions are D39's names,
-unsigned 64-bit."""
+"""Wasm memory and table semantics written once over each backend's low layer (S0011): the
+bounds checks of memory accesses, the end checks and operand rules of bulk memory and table
+operators, and the table element check. The low layer (`LowLayer`, S0011 "The low-layer
+contract") are the `ll_*` methods of each backend: they name the machine registers and fit
+every immediate to its encoding; this module names neither. Conditions are D39's names,
+unsigned 64-bit. Each backend's plug point (`_bounds`, `_element`, the bulk and table methods)
+creates the trap stub and passes its label: this module never sees a frame."""
 
 from typing import Protocol, TypeVar
 
@@ -41,6 +39,11 @@ class LowLayer(Protocol[L, H, A, E]):
     def ll_index(self, addr: Operand, wide: bool) -> int: ...  # IDX = addr, 64-bit or zero-ext.
     def ll_ctx_word(self, word: int) -> H: ...  # context word `word` as a handle
     def ll_element(self, word: int, r: int) -> E: ...  # 8 bytes at [context word `word`] + 8 r
+    def ll_three(
+        self, x: Operand, y: Operand, z: Operand, wx: bool, wy: bool, wz: bool
+    ) -> tuple[int, int, int]: ...  # three operands at their widths, each read before any write
+    def ll_addr(self, r: int, base: H) -> None: ...  # r = base + r
+    def ll_elem_addr(self, r: int, word: int) -> None: ...  # r = [context word `word`] + 8 r
 
 
 def bounds(
@@ -97,14 +100,60 @@ def _i64(
     return b.ll_access(base, r, disp, size)
 
 
-def end_check(b: LowLayer[L, H, A, E], oob: L, r: int, n: int, limit: H, wide: bool) -> None:
-    """Bulk memory and tables: trap to `oob` unless r + n <= limit (`n` the count register);
-    `r` is preserved. Not `wide`: the caller zero-extended both (each below 2**32), so the sum
-    cannot wrap. `wide`: 64-bit values, a carry out of 64 bits is out of bounds (S0009). The
-    width of each operand (`n` is wide only between two wide ranges) and the order (both ranges
-    of a copy before any write) stay in the callers until step 4. One fused op (S0011 Q2):
-    x86-64 has no free register in memory_copy."""
-    b.ll_check_sum(r, n, limit, oob, wide)
+# Bulk memory and tables (S0011 step 4). Every operand is read, at its width, before anything is
+# written (`ll_three`, LESSONS 32), and every range is checked before the backend's loop writes
+# (no partial fill or copy). The end check is one fused op (Q2: x86-64 has no free register in
+# memory_copy): trap unless r + n <= limit, `r` preserved. Not wide, both were read zero-extended
+# (each below 2**32), so the sum cannot wrap; wide, a carry out of 64 bits is out of bounds
+# (S0009). The operands stay in `ll_three`'s registers for the backend's loop.
+def memory_copy(
+    b: LowLayer[L, H, A, E], oob: L, d: Operand, s: Operand, n: Operand, dmem: int, smem: int,
+    a64: tuple[bool, bool],
+) -> None:  # fmt: skip
+    """Each range at its memory's width, `n` 64-bit only between two i64 memories (S0009). Each
+    range is checked, then its address formed: a memory other than 0 may hold its base and
+    size in the registers the other one needs (aarch64 x11/x12)."""
+    ad, as_ = a64
+    rd, rs, rn = b.ll_three(d, s, n, ad, as_, ad and as_)
+    for r, mem, w in ((rd, dmem, ad), (rs, smem, as_)):
+        base, limit = b.ll_mem(mem)
+        b.ll_check_sum(r, rn, limit, oob, w)
+        b.ll_addr(r, base)
+
+
+def memory_fill(
+    b: LowLayer[L, H, A, E], oob: L, d: Operand, v: Operand, n: Operand, mem: int, a64: bool
+) -> None:  # fmt: skip
+    """The range at the memory's width; the value an i32."""
+    rd, _, rn = b.ll_three(d, v, n, a64, False, a64)
+    base, limit = b.ll_mem(mem)
+    b.ll_check_sum(rd, rn, limit, oob, a64)
+    b.ll_addr(rd, base)
+
+
+def table_fill(
+    b: LowLayer[L, H, A, E], oob: L, word: int, i: Operand, v: Operand, n: Operand, a64: bool
+) -> None:  # fmt: skip
+    """The table's base and size are context words `word`, `word + 1`. The range at the
+    table's width; the value a 64-bit reference."""
+    ri, _, rn = b.ll_three(i, v, n, a64, True, a64)
+    b.ll_check_sum(ri, rn, b.ll_ctx_word(word + 1), oob, a64)
+    b.ll_elem_addr(ri, word)
+
+
+def table_copy(
+    b: LowLayer[L, H, A, E], oob: L, dst: int, src: int, d: Operand, s: Operand, n: Operand,
+    a64: tuple[bool, bool],
+) -> None:  # fmt: skip
+    """Each range at its table's width, `n` the narrower (as memory_copy). Both ranges are
+    checked, then both addresses formed (the order the code had before step 4 on both
+    architectures)."""
+    ad, as_ = a64
+    rd, rs, rn = b.ll_three(d, s, n, ad, as_, ad and as_)
+    for r, word, w in ((rd, dst, ad), (rs, src, as_)):
+        b.ll_check_sum(r, rn, b.ll_ctx_word(word + 1), oob, w)
+    for r, word in ((rd, dst), (rs, src)):
+        b.ll_elem_addr(r, word)
 
 
 def element(b: LowLayer[L, H, A, E], oob: L, word: int, index: Operand, a64: bool) -> E:

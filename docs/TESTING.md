@@ -174,9 +174,8 @@ on other hosts, but fails under
 verified-row check cannot silently turn guard pages off;
 then both ISA gates and the D35 lists of both targets in both bounds modes, named on both hosts);
 `spec` (the spec run on `wasmtime`, `pyc` (also with `WABOROS_PYC_FBITS=1`), `jit-x86_64` in the default mode and with
-`WABOROS_JIT_BOUNDS=explicit`, again in both modes with `WABOROS_JIT_TWOLEVEL=1` (S0011's shared bounds
-checks, until its step 4), then `auto` under `no_exec.py`); `arm64`
-(Linux arm64 only: the `jit-aarch64` spec suite in both bounds modes, also with `WABOROS_JIT_TWOLEVEL=1`, `test_guard.py` in guard mode and
+`WABOROS_JIT_BOUNDS=explicit`, then `auto` under `no_exec.py`); `arm64`
+(Linux arm64 only: the `jit-aarch64` spec suite in both bounds modes, `test_guard.py` in guard mode and
 `tests/jit` in explicit mode, S0006 step 2).
 
 **The WAT cache.** Tests build modules from WAT text through `tests/watcache.py` (`wat2wasm`), which

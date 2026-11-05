@@ -982,6 +982,79 @@ table.set, table.fill, table.copy, a table64 get and a call_indirect (scratch `c
 
 Within S0011's +5 % bound.
 
+### S0011 step 4: the switch-over (2026-11-05)
+
+The per-backend bodies and `WABOROS_JIT_TWOLEVEL` are removed. The bulk operators' operand rules move
+into `common/lower.py`, in aarch64's order per operator (S0011 amendment B2, D53). The base is HEAD
+before the step. The step's source files were measured in a scratch copy, with the same files as
+committed. The dev VM: Intel Xeon @ 2.10 GHz, 4 vCPU, CPython 3.13.17, load average about 1.
+
+**Code (D35 lists, 5 979 modules), step 4 against the base with the switch on:**
+* aarch64: identical in both modes.
+* x86-64: the 70 modules with `memory.copy` differ, in both modes. Each has the same length and
+  the same instructions in another order: the destination's `add rax, base` moves before the
+  source check.
+* CoreMark: identical on both targets in both modes.
+
+**Short `memory.copy` (x86-64, native).** This is the only x86-64 change, so it is the only one
+timed. Each function runs a loop of 2 000 000 iterations:
+* `mc0`: a 16-byte `memory.copy` on memory 0;
+* `mc1`: the same on memory 1, whose base and size are context words;
+* `tc`: a 4-element `table.copy`, as the control. Its bytes are identical before and after.
+
+The WAT:
+```
+(module (memory 1) (memory $b 1) (table 32 funcref)
+ (func (export "mc0") (param i32) (local i32)
+   (loop $l (memory.copy (i32.and (local.get 1) (i32.const 255)) (i32.const 1024) (i32.const 16))
+     (local.set 1 (i32.add (local.get 1) (i32.const 1))) (br_if $l (i32.ne (local.get 1) (local.get 0)))))
+ (func (export "mc1") (param i32) (local i32)
+   (loop $l (memory.copy $b $b (i32.and (local.get 1) (i32.const 255)) (i32.const 1024) (i32.const 16))
+     (local.set 1 (i32.add (local.get 1) (i32.const 1))) (br_if $l (i32.ne (local.get 1) (local.get 0)))))
+ (func (export "tc") (param i32) (local i32)
+   (loop $l (table.copy (i32.and (local.get 1) (i32.const 7)) (i32.const 16) (i32.const 4))
+     (local.set 1 (i32.add (local.get 1) (i32.const 1))) (br_if $l (i32.ne (local.get 1) (local.get 0))))))
+```
+Each process builds the module with `tests.jit.test_compiler.build`. It calls each export once with
+1 000 iterations, then times 5 calls with 2 000 000 and keeps the median. The processes run
+under `taskset -c 2`, base and step alternated, 40 pairs:
+
+| export | base (ns/iteration) | step 4 | paired median | IQR of the ratio |
+|---|---|---|---|---|
+| `mc0` | 5.146 (min 4.962) | 5.118 (min 4.912) | 0.989 | 0.968-1.013 |
+| `mc1` | 4.738 (min 4.561) | 4.737 (min 4.439) | 0.987 | 0.932-1.027 |
+| `tc` (control) | 5.720 | 5.719 | 1.000 | 0.976-1.085 |
+
+Earlier sets of 12 pairs (unpinned) and 20 pairs gave 1.006 / 1.006 / 0.981 and 1.000 / 1.013 /
+0.996. The reorder costs nothing measurable.
+
+**Compile time.** The standard set (CoreMark, `hash`, `mono`, `zip`), median of 10 compiles per
+process (scratch `ctime.py`), `taskset -c 2`, 10 rounds with the order alternated. aarch64 is
+compiled on this host (D35). The step is compared with the base, switch off (the +5 % bound's
+reference) and switch on:
+
+| target, mode | base, off (ms) | base, on (ms) | step 4 (ms) | against off | against on |
+|---|---|---|---|---|---|
+| `jit-x86_64` explicit | 220.1 | 221.8 | 219.9 | −0.4 % (slower in 5 of 10) | +0.3 % |
+| `jit-x86_64` guard | 194.9 | 196.1 | 195.4 | +1.6 % (6 of 10) | −0.9 % |
+| `jit-aarch64` explicit | 230.1 | 221.4 | 239.2 | +0.8 % (6 of 10) | +4.3 % |
+| `jit-aarch64` guard | 204.3 | 222.8 | 218.9 | +0.5 % (5 of 10) | +1.0 % |
+
+The "against" columns are paired medians (each round's ratio, then the median); the three ms
+columns are medians of their own column, and their ratios do not agree with the paired figures
+(aarch64 guard: 218.9 / 204.3 = +7.1 %; base on against off +9 %), which shows how far the
+host drifts between rounds. The step-4 review re-measured `jit-aarch64` guard on CoreMark alone
+(6 alternated pairs of median-of-10 compiles, `taskset -c 2`): ratios 0.986 to 1.115, median
++2.4 %. Read the bound as met on the paired medians, with a spread of several percent.
+
+The worst case is step 2's module: 300 functions of bulk and table operators, explicit, median
+of 5 compiles.
+* `jit-x86_64`: +4.7 % against the switch off over 10 rounds (8 slower), then **+1.9 % over 20
+  pairs** (13 slower).
+* `jit-aarch64`: −0.2 % over 10 rounds.
+
+Within S0011's +5 % bound.
+
 ## `pyc`: `_br` ladders (S0010 step 0)
 
 [S0010](specs/S0010-pyc-branch-emission.md) step 0: the experiment's post-pass (`poc/pyc-bropt/bropt.py`)

@@ -911,3 +911,36 @@ scratch); its code without exception instructions is unchanged (D35 list), and b
 `exceptions/`, so the D25 parity test needs no exemption any more. Not done: a `throw` caught in the same function as a plain jump. Two tags of
 different indices are the same tag when both are imports of one export, so the first matching
 clause is not always known at compile time. Nothing measured asks for it.
+
+### D53. JIT memory semantics written once, over a per-architecture low layer
+Status: accepted (maintainer, 2026-11-05) · Date: 2026-11-05 · Supersedes: — · Evidence: S0011 steps 1-4; D35 lists; BENCHMARKS.md "JIT low layer" and "S0011 step 4"
+
+The JIT's memory semantics are written once, in `jit/common/lower.py`, and no longer in each
+backend (LESSONS 76). The low layer under them is the `ll_*` methods of each backend: about twenty
+operations that name the machine registers and fit every immediate to its encoding. The group
+covered:
+* the bounds checks of loads, stores and SIMD memory operators, i32 and i64, in guard and explicit
+  mode;
+* the end checks of `memory.copy`, `memory.fill`, `table.copy` and `table.fill`, with the widths
+  and order of their operands;
+* the table element check.
+
+[S0011](specs/S0011-jit-low-layer.md) is the contract: the operations, the registers each writes,
+flags, immediate ranges, and the fault-point rule. The low layer lies below D39 and is not part
+of its frozen interface.
+
+The bulk operators take aarch64's order per operator (S0011 amendment B2, maintainer):
+* `memory.copy` checks a range, then forms its address, before the other range;
+* `table.copy` checks both ranges, then forms both addresses.
+
+So aarch64 code is unchanged, and x86-64 changes in the 70 spec modules with `memory.copy`, each a
+reorder of the same instructions. One order for both operators would have changed 106 aarch64
+modules.
+
+Elsewhere generated code is byte-identical: CoreMark on both architectures in both bounds modes,
+and every other spec module except `address64.0-3`, whose differences the maintainer accepted.
+Speed is unchanged by construction (identity); a short `memory.copy` measured 0.99× after the
+reorder. Compile time is within the +5 % bound (S0011). The trap code stays at each backend's
+plug point, which creates the stub, so the shared layer never sees a frame (S0011 Q5).
+`WABOROS_JIT_TWOLEVEL` and the per-backend bodies are removed (Q3). GC is to be written on this
+layer.
