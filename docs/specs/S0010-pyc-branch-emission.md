@@ -473,3 +473,7 @@ document to update"):
   evident dead-store rule; the indentation acceptance is restated (step 0's +1 level was mostly
   `ast.unparse` splitting one-line `if`s); the fuzz tool compares three configurations; unit tests and
   planted defects are those of sink; budgets enlarged. Q1 revised.
+* 2026-11-05: maintainer approved the revised limits: depth may grow within the hard cap of 90 levels
+  (no growth on CoreMark, the corpus and the switch VM; spec modules that grow are listed), and the
+  source-size budget may rise to +8 % if `SINK_COPY` alone cannot keep +5 %, provided nothing breaks
+  (spec suite, corpus, three-way fuzz and the planted defects).
