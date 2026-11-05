@@ -2,7 +2,7 @@
 title: Lessons
 kind: log
 status: current
-updated: 2026-11-04
+updated: 2026-11-05
 ---
 
 # Lessons
@@ -596,3 +596,23 @@ What went wrong or surprised us while building the PoC, so it is not found again
     immediate range per encoding as part of its contract (S0011), and the boundary values (2³¹ − 1,
     2³¹, imm12 4095/4096) are tested for each form. Found: reconnaissance of ROADMAP 3b,
     2026-11-04.
+84. **A `pyc` control-flow rewrite needs the corpus and a differential fuzz, not only the spec suite.**
+    The experiment's first `chain` rule (S0010) checked only the first test of the chain it appended,
+    but that chain brought its own `elif` tail (`_br == 31 ... 16`); after the merge those arms were
+    skipped. The whole spec suite passed; only the corpus' `inflate 8K` (a state machine with ~56
+    labels) failed. Random modules rarely nest deeply: in S0010 step 0, `tools/fuzz.py 1000 1000` ran
+    938 modules and the pass touched only 129. Rule: a change to `pyc`'s control-flow emission runs
+    the spec suite, the corpus and `tools/fuzz.py` before review, and the unit tests add deep nests by
+    hand. On the dev VM (±5-10 % between identical sources) a rule's effect is judged with at least 10
+    alternated rounds or by exact counts (`_br` occurrences, executed lines): in S0010 step 0, the
+    5-round set gave the first rule group +9.7 % on CoreMark, the 10-round set +2.6 %. Found: the
+    `pyc-bropt` experiment, 2026-11-04, and S0010 step 0, 2026-11-05.
+85. **On the dev VM's Xeon the placement effect has a 64-byte period and is not the JCC erratum.** The
+    host (family 6 model 207, Emerald Rapids) is not in the erratum's list, and builds whose branches
+    sat at the same offsets mod 32 ran 20-50 % apart; the speed follows the hot loop's offset mod 64.
+    Aligning inner-loop headers to 64 bytes gave CoreMark +5.3 % and narrowed its spread between pads,
+    but fixed `swizzle` at its slow level (18 % slower) and left the corpus unchanged (−0.9 %), for
+    10 % more code. Rule: alignment trades one kernel for another; judge a placement change over
+    CoreMark, the kernels and the corpus together, and keep using the padding control of LESSONS 51
+    for every speed claim on code the step did not touch. Found: the code-placement investigation
+    (ROADMAP), 2026-11-04/05; BENCHMARKS.md, "Code placement on x86-64".

@@ -2,7 +2,7 @@
 title: Risks and possible solutions
 kind: log
 status: current
-updated: 2026-11-03
+updated: 2026-11-05
 ---
 
 # Risks and possible solutions
@@ -80,7 +80,8 @@ the spec core passes on `jit-x86_64` and `jit-aarch64` like on `pyc`; the ISA ga
 compiled module of both targets, SIMD ones included; SIMD code also runs on an SSE2-only CPU under
 QEMU (`qemu64`) in CI; the independent final review of phase 3 is done (S0002 step 6) and the SIMD
 steps are read by a `reviewer` one by one (S0005). Open: differential fuzzing against wasmtime
-(phase 5). The review of the SIMD steps as a whole (S0005, 5f) found no correctness defect.
+(phase 5: `tools/fuzz.py` exists since S0010 step 0 for `pyc` against `pyc`; the JITs and Wasmtime, as a
+nightly non-blocking job, follow, ROADMAP "Next"). The review of the SIMD steps as a whole (S0005, 5f) found no correctness defect.
 
 **Risk.** Encoding mistakes, register-allocation mistakes and missed checks are not exceptions but
 wrong results or sandbox escapes. The PoC already met three silent bugs (LESSONS.md 1, 2, 5).
@@ -160,7 +161,7 @@ arm64 runner; CoreMark +11.4 % there, BENCHMARKS.md). The handler is emitted mac
 (`common/guard.py`), chaining every fault it does not claim (tests: `tests/jit/test_guard.py`, foreign faults
 with and without `faulthandler`, a broken chain, a foreign chaining handler, wasmtime above ours, two copies of
 the package in either order). Since D44 `auto` is the default: guard on the verified rows (Linux glibc x86-64
-and aarch64, Linux musl x86-64, macOS and Windows x64 and arm64),
+and aarch64, Linux musl x86-64, macOS and Windows x64 and arm64, Android x86-64),
 explicit elsewhere; `WABOROS_JIT_BOUNDS=explicit` installs nothing. macOS x86-64 and arm64 (step 3): a handler
 on SIGSEGV and SIGBUS, built from xnu's sources without a macOS machine; CI's macOS steps ran the spec suite and
 `test_guard.py` in guard mode and passed (run 41610392553), so the row is verified. **Not detected** (rule A, S0006 Changes):
@@ -284,7 +285,7 @@ machine code. Risks and possible answers:
 
 | risk | where |
 |---|---|
-| scope: feature parity with Wasmtime (SIMD, GC, exceptions, threads, memory64) is large | FEATURES.md, ROADMAP.md |
+| scope: feature parity with Wasmtime (GC, exceptions, threads; SIMD and memory64 are done) is large | FEATURES.md, ROADMAP.md |
 | `pyc` speed ceiling on CPython (~1.5–2× the PoC at best) | DECISIONS.md D4, BENCHMARKS.md |
 | long calls: GIL in `pyc`, uninterruptible machine code | ARCHITECTURE.md, "Long calls and the GIL" |
 | deep recursion in `pyc` | ARCHITECTURE.md, "Calls, stack depth and recursion" |

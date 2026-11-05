@@ -2,7 +2,7 @@
 title: Briefing: read this first
 kind: guide
 status: current
-updated: 2026-11-04
+updated: 2026-11-05
 ---
 
 # Read this first
@@ -87,7 +87,8 @@ State of `main` (phases 0–4 and SIMD merged on 2026-11-02, published as 0.0.0)
 * **Done, phases 0–2:** package layout, strict binary reader and validator (`src/waboros/frontend/`), the
   spec-suite runner (the metric), and the `pyc` target complete for the core group (spec core: `pyc`
   20509 pass, 89 expected failures; wasmtime oracle 63 782 over all claimed directories). `pyc` is frozen
-  for new features and gets correctness fixes only.
+  for new features and gets correctness fixes only (except the proposals that land on every target
+  together, and S0010, the maintainer's exception for speed).
 * **Phase 3 (`jit-x86_64`, `docs/specs/S0002` step 3) done, including step 6, the final review (S0002, S0003 implemented):**
   3a ABI, 3b integer core, 3c SSE2 floats with `memory.grow`, 3d tables, `call_indirect`, reference
   types and bulk memory, 3e tail calls, typed function references and tags, 3f function imports
@@ -104,7 +105,8 @@ State of `main` (phases 0–4 and SIMD merged on 2026-11-02, published as 0.0.0)
   elsewhere. Platform tests run through cibuildwheel (`platforms.yml`), and `pyc` has a bits mode for
   32-bit x86 (D46). Scalar code generation (S0007) is implemented (steps 1 and 3). Relaxed SIMD and wide arithmetic (S0008) and memory64 with table64 (S0009) are implemented on all three targets. The reconnaissance of a two-level JIT backend
   (ROADMAP, "Next" 3b) is done: the maintainer chose to unify. **Next:** the JIT low layer
-  ([S0011](docs/specs/S0011-jit-low-layer.md), draft) with exceptions in parallel, then GC on top of
+  ([S0011](docs/specs/S0011-jit-low-layer.md), approved; step 1 done) with exceptions in parallel, and the
+  `pyc` `_br` ladders ([S0010](docs/specs/S0010-pyc-branch-emission.md), approved; step 0 done), then GC on top of
   the low layer, then threads
   (`docs/WASM-PROPOSALS.md`), and the artifact format; the public API only in phase 6.
   Native JIT targets are x86-64, aarch64 and riscv64 (planned); every other architecture runs `pyc` (D48).
@@ -147,7 +149,7 @@ a test. "Measure, do not estimate."
 | how it is built | `docs/ARCHITECTURE.md`, `docs/TARGETS.md` |
 | the order of work | `docs/ROADMAP.md` |
 | how it is tested | `docs/TESTING.md` |
-| why a choice was made | `docs/DECISIONS.md` (D1–D49) |
+| why a choice was made | `docs/DECISIONS.md` (D1–D51) |
 | what went wrong before | `docs/LESSONS.md` |
 | risks and possible answers | `docs/RISKS.md` |
 | the JIT artifact contract | `docs/ARTIFACT.md` |

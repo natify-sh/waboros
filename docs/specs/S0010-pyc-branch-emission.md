@@ -6,7 +6,7 @@ status: approved
 superseded_by:
 related: [D9, D19, D25, D35, D46, S0002]
 owner: maintainer
-updated: 2026-11-04
+updated: 2026-11-05
 ---
 
 # S0010 pyc: leaving nested blocks without `_br` ladders
@@ -18,8 +18,8 @@ Every one of those tests is executed, so a `br_table` at the bottom of a deep ne
 ladder each time. [BENCHMARKS.md](../BENCHMARKS.md), "`br_table` (a dense `switch`)", saw this in
 2026-10 (~64 tests per VM operation against 5 for the dispatch tree) and left it as "not done".
 
-**The finding (external experiment, maintainer, 2026-11-04, on `phase5`; to be re-measured in step 0,
-not yet a BENCHMARKS.md row).** A line profile of CoreMark on `pyc` found that **31 %** of the
+**The finding (external experiment, maintainer, 2026-11-04, on `phase5`; re-measured in step 0:
+BENCHMARKS.md, "`pyc`: `_br` ladders (S0010 step 0)").** A line profile of CoreMark on `pyc` found that **31 %** of the
 executed lines were `_br` guards. Most of them come from CoreMark's state machine (`f11`,
 `core_state_transition`), where a `br_table` dispatches into about 14 nested blocks. Rewriting that
 one function by hand gave **+11 %** on all of CoreMark. A post-pass over the generated AST
@@ -330,6 +330,11 @@ document to update"):
   if step 0 shows it adds more than the noise. The final cut follows step 0's per-rule table: a rule
   below the noise on both CoreMark and the switch VM is dropped and recorded as measured and
   rejected.
+  Note (step 0, 2026-11-05): sink carries the CoreMark gain (all four rules +10.7 % over 10 rounds on
+  3.13; simplify + chain + to_else +2.6 %, and each of the three left out of the full set changes
+  CoreMark by ≤ 1.2 %, below the noise). The switch VM was measured only with the full set (×2.3 on
+  3.13), not per rule, so the first group's share there is unknown; whether step 1 stays as planned
+  is asked of the maintainer separately.
 * **Q2 Copying regions into several leaves. Decided 2026-11-04: as recommended.** Sink may copy a small case region into more than one
   leaf. bropt.py's limit was 80 AST nodes and was not tuned. Recommendation: the same limit,
   expressed in generated lines (about 10). It is measured in step 2 only if the source-size budget
@@ -359,3 +364,10 @@ document to update"):
 * 2026-11-04: approved by the maintainer with the recommendations (Q1–Q5); S0010 is the
   maintainer's exception to the `pyc` freeze for speed. Implementation after memory64.
 * 2026-11-04: fuzzing as a nightly non-blocking CI job, findings triaged (maintainer); text aligned.
+* 2026-11-05: step 0 done: the experiment in `poc/pyc-bropt/`, `tools/fuzz.py`, and the measurements
+  (BENCHMARKS.md, "`pyc`: `_br` ladders (S0010 step 0)"): CoreMark with the full rule set +12.8 % on
+  CPython 3.11, +10.7 % on 3.13 (10 rounds), +6.8 % on 3.14, −3.0 % (noise) on PyPy; sink carries
+  the gain, dse adds nothing beyond the noise; the switch VM ×2.2-2.5 on CPython; the pass costs
+  10-15× `generate()`. Spec (both FBITS modes), corpus and fuzz (938 + 281 modules) show no
+  difference. The MicroPython compile check was not done (not installed). The experiment's +13 % is
+  corrected to +11-13 % on 3.13.

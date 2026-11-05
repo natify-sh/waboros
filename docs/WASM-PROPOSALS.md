@@ -2,7 +2,7 @@
 title: Wasm proposals - what Wasmtime enables by default, what needs a flag, and where waboros stands
 kind: reference
 status: draft
-updated: 2026-11-04
+updated: 2026-11-05
 ---
 
 # Wasm proposals: Wasmtime's defaults and flags, and waboros
@@ -39,7 +39,7 @@ retried with `-W <proposal>=y`, and each default was confirmed by `-W <proposal>
 | **memory64** | 5 | yes | **default** | yes on all three: `pyc` (S0009 step 1), `jit-x86_64` and `jit-aarch64` (steps 2a, 2b, 3); 8 658 of 8 719 spec commands pass on each, 2 expected failures (GC) | phase 5 (S0009) |
 | **relaxed SIMD** | 5 | yes | **default** | yes on all three targets (79 commands; S0008 steps 1-2; madd/nmadd fused on `jit-aarch64`, D49) | phase 5 (S0008) |
 | **exceptions** (`exnref`) | 5 | yes | **default** | tags validate only (110 + 9 core) | phase 5 |
-| **GC** | 5 | yes | **default** | no (798 + most of the 91 core xfails) | phase 5, last |
+| **GC** | 5 | yes | **default** | no (798 + most of the 89 core xfails) | phase 5, last |
 | **threads** (shared memory, atomics, wait/notify) | 4 | no | **default** (`-W threads=n` refuses it) | no | late (ROADMAP item 8) |
 | **wide arithmetic** (`i64.add128`, `i64.mul_wide_*`) | 4 | no | **default** (`=n` refuses it; the website still says flag) | yes on all three targets (109 commands; S0008 steps 1 and 3) | ROADMAP "Order of the wasm features" item 8, after GC (added 2026-11-03) |
 | branch hinting | 5 | no | accepted by default (a custom section; `=n` still accepts the module) | accepted (an unknown custom section is skipped) | optional: use the hints for block layout |
@@ -57,7 +57,8 @@ and JS string builtins (JavaScript only).
 
 * **Parity with Wasmtime's defaults** needs **six** more proposals: the four of Wasm 3.0
   (memory64, relaxed SIMD, exceptions, GC) plus **threads** and **wide arithmetic**. All six are
-  in ROADMAP as parity items (wide arithmetic and threads since 2026-11-03). Wide arithmetic is small (128-bit
+  in ROADMAP as parity items (wide arithmetic and threads since 2026-11-03); memory64, relaxed SIMD and
+  wide arithmetic are done (S0009, S0008), so exceptions, GC and threads remain. Wide arithmetic is small (128-bit
   add/sub and widening multiply on register pairs, `mul`/`adc` on x86-64, `umulh`/`adds`/`adc` on
   aarch64) and joined relaxed SIMD's step (S0008, done on all three targets). Threads are the hardest for `pyc` (shared memory
   needs real synchronisation, ROADMAP open question 8) and stay last, but they are on the path, not

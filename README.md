@@ -2,7 +2,7 @@
 title: README
 kind: guide
 status: current
-updated: 2026-11-03
+updated: 2026-11-05
 ---
 
 # waboros
@@ -24,20 +24,20 @@ around it, run from a checkout.
 
 What passes (details: [`docs/FEATURES.md`](docs/FEATURES.md), [`docs/ROADMAP.md`](docs/ROADMAP.md)):
 
-* The pinned WebAssembly spec suite has 65 353 commands. The directories our targets claim (the core,
-  SIMD, bulk memory, multiple memories) hold 55 647 of them, 1 171 of which are text-format checks
-  skipped for every engine; of the remaining 54 476, `pyc`, `jit-x86_64` and `jit-aarch64` each pass
-  54 385, and the other 91 are expected failures (listed in `tests/spec/xfail/`, mostly tests that use
-  GC or exception types). Not claimed yet: memory64 (8 719 commands), GC (798), exceptions (110),
-  relaxed SIMD (79).
-* Claimed and complete on all three targets: fixed-width SIMD (25 990 commands), multiple memories,
-  multi-value, tail calls, typed function references, extended constants, sign extension, non-trapping
-  float-to-int. Bulk memory, reference types and mutable globals are partial (a few commands listed as
-  expected failures).
+* The pinned WebAssembly spec suite has 65 462 commands. The directories our targets claim (the core,
+  SIMD, bulk memory, multiple memories, memory64, relaxed SIMD, wide arithmetic) hold 64 554 of them,
+  1 230 of which are text-format checks skipped for every engine; of the remaining 63 324, `pyc`,
+  `jit-x86_64` and `jit-aarch64` each pass 63 231, and the other 93 are expected failures (listed in
+  `tests/spec/xfail/`, mostly tests that use GC or exception types). Not claimed yet: GC (798
+  commands), exceptions (110).
+* Claimed and complete on all three targets: fixed-width SIMD (25 990 commands), relaxed SIMD (79),
+  wide arithmetic (109), multiple memories, multi-value, tail calls, typed function references,
+  extended constants, sign extension, non-trapping float-to-int. Bulk memory, memory64, reference
+  types and mutable globals are partial (a few commands listed as expected failures).
 * CoreMark and a corpus of real C libraries (Monocypher, SHA-256, BLAKE3, miniz) give the same results as
   `hashlib`, `zlib` and Wasmtime.
 
-Not there yet: the public API, the CLI and WASI (phase 6), memory64, relaxed SIMD, exceptions, GC,
+Not there yet: the public API, the CLI and WASI (phase 6), exceptions, GC,
 threads, fuel and epochs, the `mpy` (MicroPython) target and a JIT for riscv64 (the other architectures
 stay on `pyc`, D48). Bounds checks use guard pages by default on Linux glibc (x86-64 and aarch64), Linux
 musl (x86-64), macOS (x86-64 and arm64), Windows (x64 and arm64) and Android (x86-64) (S0006), and

@@ -2,7 +2,7 @@
 title: Architecture
 kind: reference
 status: current
-updated: 2026-11-04
+updated: 2026-11-05
 ---
 
 # Architecture
@@ -80,8 +80,10 @@ At HEAD `src/waboros/` holds: `frontend/` (`binary.py` reader, `validate.py`, `s
 operator table with its decoder and validator), `runtime/` (`link.py`, `store.py`), `targets/base.py`
 (the `Target` protocol, registry, `auto` selection, `JitUnavailableWarning`), `targets/pyc/`
 (`codegen.py`, `runtime.py`, `simd.py`), and `targets/jit/` with `common/` (`compiler.py` the one-pass
-core, `backend.py` the backend interface, `context.py`, `simd.py` the core's v128 handling, and the
-host side: `execmem.py`, `instance.py`, `target.py` the glue shared by the architectures) and
+core, `backend.py` the backend interface, `context.py`, `simd.py` the core's v128 handling, `twolevel.py` the bounds check written once over
+each backend's low layer behind `WABOROS_JIT_TWOLEVEL=1` (S0011 step 1), and the host side: `execmem.py`,
+`guard.py` the guard-page registry and handler installation (S0006), `instance.py`, `target.py` the
+glue shared by the architectures) and
 `x86_64/`, `aarch64/` (each `encoder.py`, `abi.py`, `backend.py`, `simd.py`). The compiler side
 (frontend, `compiler.py`, `backend.py`, `context.py`, the `simd.py` files, the backends, encoders and
 `abi.py`) imports no `ctypes`, `mmap`, threads or host-side module (`tests/test_source_rules.py`,

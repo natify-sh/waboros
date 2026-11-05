@@ -260,6 +260,8 @@ CoreMark is unchanged (its tables are small and not hot): `w2jit2` 16 403 / 16 6
   in an unconditional branch) and emit each case body at the leaf of the tree, with no flags; or, more
   cheaply, number labels so that one test `if _br <= d` replaces the two. Not done. (`W2PY_BT`: tree
   above this many runs, 0 = off.)
+  Taken up by [S0010](specs/S0010-pyc-branch-emission.md) (approved 2026-11-04; step 0 below, "`pyc`: `_br`
+  ladders (S0010 step 0)": the switch VM ×2.2-2.5 on CPython with the experiment's pass).
 
 ## meld on the PoC (a real 1.7 MB Rust program)
 
@@ -946,3 +948,139 @@ Code: D35 lists as in S0011 "Identity" (CoreMark identical on both targets in bo
 frame less each, S0011 Changes). In one process, the switch toggled each round, 30 rounds,
 `jit-x86_64`: explicit +4.8 % before those two changes and +2.4 % after (paired medians), guard +1.7 % and
 +1.5 %. Within S0011's +5 % bound.
+
+## `pyc`: `_br` ladders (S0010 step 0)
+
+[S0010](specs/S0010-pyc-branch-emission.md) step 0: the experiment's post-pass (`poc/pyc-bropt/bropt.py`)
+applied to the package's `pyc` through the `PYTHONPATH=poc/pyc-bropt/site` hook and `PYC_BROPT=1`
+(`BROPT_RULES`, `BROPT_DSE` select the rules), against the same tree without it. Branch `phase5` at the S0010
+step 0 commit; the dev VM: Intel Xeon @ 2.10 GHz, 4 vCPU, `taskset -c 3`; CPython 3.11.18, 3.13.18, 3.14.10
+and PyPy 3.11.17 (PyPy 8.0.1). Base and variant alternated, the order rotated each round. Noise on this VM:
+±5-10 % between runs of identical sources. CoreMark: `poc/pyc-bropt/tools/run_src.py` on the source
+`translate()` gives, CoreMark's own it/s, every run "Correct operation validated".
+
+**CoreMark, base against the full rule set** (simplify, chain, to_else, sink; dse on), median (min-max):
+
+| Python | rounds | base (it/s) | full set (it/s) | change |
+|---|---|---|---|---|
+| CPython 3.11.18 | 5 | 127.8 (124.3–130.7) | 144.1 (133.7–146.5) | +12.8 % |
+| CPython 3.13.18 | 5 | 121.3 (121.1–129.9) | 136.9 (129.4–143.8) | +12.8 % |
+| CPython 3.13.18 | 10 | 130.5 (119.5–139.2) | 144.5 (136.1–148.3) | +10.7 % |
+| CPython 3.14.10 | 5 | 135.7 (134.1–138.5) | 144.9 (142.4–149.7) | +6.8 % |
+| PyPy 3.11.17 | 5 | 478.0 (446.0–501.5) | 463.6 (455.6–501.6) | −3.0 %, within the ~10 % spread |
+
+**Per rule, CPython 3.13** (cumulative, then each rule left out of the full set). The 10-round set is the
+one that decides; the 5-round set is below it for the left-out rows:
+
+| rules | rounds | median (it/s) | vs base | `_br` in the source |
+|---|---|---|---|---|
+| base | 10 | 130.5 | — | 635 |
+| simplify + chain + to_else (dse on) | 10 | 133.9 | +2.6 % | 322 |
+| all four (dse on) | 10 | 144.5 | +10.7 % | 235 |
+| base | 5 | 129.1 | — | 635 |
+| simplify (dse off / on) | 5 | 127.6 / 127.1 | −1.1 / −1.6 % | 587 / 531 |
+| simplify + chain (dse off / on) | 5 | 132.7 / 134.2 | +2.8 / +4.0 % | 569 / 498 |
+| simplify + chain + to_else (dse off / on) | 5 | 141.6 / 141.3 | +9.7 / +9.4 % | 492 / 322 |
+| all four (dse off / on) | 5 | 140.8 / 142.9 | +9.1 / +10.7 % | 461 / 235 |
+| full set without simplify / chain / to_else | 5 | 144.6 / 144.3 / 143.0 | +1.2 / +1.0 / +0.1 % vs full | — |
+| full set without sink | 5 | 133.2 | −6.8 % vs full | — |
+
+Sink carries the gain (about +8 % of the +10.7 %). Left out of the full set, simplify, chain and to_else each
+change CoreMark by at most 1.2 %, below the noise; the 5-round cumulative rows (+9.7 % without sink) are not
+confirmed by the 10-round set (+2.6 %). dse adds nothing beyond the noise; it only cuts the `_br` count
+(461 → 235 with all four rules).
+
+**Switch VM** (`poc/bench/switch/vm.wasm` through the package's `pyc`, million VM operations per second,
+median of 5 sets of 3 runs; every run the same checksum): CPython 3.11 1.11 → 2.81 (×2.5), 3.13 1.00 → 2.28
+(×2.3), 3.14 1.23 → 2.68 (×2.2), PyPy 15.2 → 15.7 (×1.03). `_br` occurrences 158 → 0.
+
+**Corpus** (`tools/run_corpus.py --targets pyc`, CPython 3.13, 5 alternated rounds): 21/21 agree with and
+without the pass; per-call times 2-8 % faster, `inflate 8K` −13.6 %, `deflate 8K` 58.0 → 54.6 ms. As a
+post-pass at load it costs 10-15× `generate()`: the whole corpus run takes 4 s without and 15 s with it, so
+the rules have to live in the codegen (S0010's design).
+
+**Static** (CPython 3.13, median of 3):
+
+| module | `generate()` | pass | `_br` | max indentation (levels) |
+|---|---|---|---|---|
+| CoreMark | 27 ms | 366 ms | 635 → 235 | 14 → 13 |
+| corpus `zip` | 46 ms | 494 ms | 1 244 → 576 | 30 → 30 |
+| switch VM | 1.4 ms | 19 ms | 158 → 0 | 9 → 10 |
+| 1 648 spec modules that validate and generate | 215 ms (all) | 2.9 s | 8 805 → 8 104 | +1 level in 38 modules (sink) |
+
+Max indentation grows by one level in the switch VM and in 38 of the 1 648 spec modules, all from sink;
+step 2 must watch it (LESSONS 22). Source size: CoreMark 148 123 → 149 366 bytes, `zip` 278 682 → 276 388.
+
+**Line profile** (`poc/pyc-bropt/tools/lines.py`, CPython 3.13, one CoreMark run): line events −27 %; `_br`
+guards fall from 31.0 % to 5.4 % of the executed lines.
+
+**Correctness of the pass in the repository**: spec suite on `pyc` with the hook 63 231 pass, 0 fail,
+93 xfail in both FBITS modes, `tools/spec_diff.py` empty both ways; corpus 21/21; `tools/fuzz.py 1000 1000`:
+938 modules run, 129 rewritten by the pass, 0 mismatches; `tools/fuzz.py 300 5000 --fbits`: 281 run,
+0 mismatches. The MicroPython compile check was not done (not installed on the VM).
+
+**The experiment's claims** (S0010 "Summary"): CoreMark +13 % is corrected to +11-13 % on CPython 3.13,
++7 % on 3.14 and none on PyPy; the corpus, spec, fuzz and cost claims are confirmed.
+
+**Measured and rejected** (external experiment, 2026-11-04, `poc/pyc-bropt/README.md`; not re-measured
+here), so they are not tried again:
+
+| idea | result |
+|---|---|
+| `memoryview.cast('I')` instead of `struct.unpack_from` (aligned, inside a function) | ~31 vs ~40 ns per load, but needs a runtime alignment check; with the check or with four shifted views (for unaligned addresses) no faster |
+| local aliases of `M`, `U32`, `P32`... as default arguments | within noise |
+| wrap as `x & 0xFFFFFFFF`, or `if x >> 32:`, or the walrus expression form | all slower than the statement `if x > 0xFFFFFFFF: x -= 0x100000000` (39 vs 41-47 ns) |
+| CPython's experimental JIT (3.14, `PYTHON_JIT=1`) | slower: 103 vs 125 it/s |
+
+The same experiment, same generated source, CoreMark by CPython version: 3.13 ~120, 3.14 ~127 (+5 %),
+3.15b4 ~138 (+14 %) (external, not re-measured).
+
+## Code placement on x86-64 (ROADMAP "Code placement", 2026-11-04/05)
+
+Why a loop's speed moves with code elsewhere (LESSONS 51). Host: the dev VM, CPU family 6 model 207
+(Emerald Rapids, "Intel Xeon Processor @ 2.10GHz"), 4 vCPU, no PMU in the VM (no performance counters).
+CPython 3.13.17, `jit-x86_64` in guard mode, `taskset -c 3`, one process at a time. A scratch patch put
+`PAD` bytes of `int3` before the first function (the code area is page-aligned, so offsets are absolute).
+Kernels: the scalar build of the SIMD benchmark (`swizzle`, `addsat`, `scan`, `nearest`, `matmul`), µs per
+iteration from a scratch driver over `tools/run_simd_bench.py`'s modules; CoreMark:
+`tools/run_coremark_jit.py`, every run validated.
+
+**Hypothesis 2, the JCC erratum: refuted on this host.** Model 207 is not in Intel's list for the erratum
+(Skylake-derived models only), and builds with identical 32-byte pictures (every branch at the same offset
+mod 32) ran 20-50 % apart.
+
+**Hypothesis 1 as stated, 32-byte loop-header alignment: refuted.** Builds with the same header offset mod 32
+ran at different speeds, and with headers aligned to 32 `swizzle` still has two speed levels.
+
+**What holds:** the speed follows the hot loop's position mod 64, i.e. how the fetch blocks between taken
+branches fall on 64-byte lines. The exact mechanism is not identified (no PMU).
+
+**Sweep of 0..63 pad bytes** (8 sessions, every pad once per session in shuffled order, median of 5 rounds
+per run, then the median over the sessions):
+
+| kernel | range over the pads | fastest – slowest |
+|---|---|---|
+| `swizzle` | 61 % | 2.71 µs (pad 17) – 4.37 µs (pad 47) |
+| `nearest` | 27 % | 1.21 µs (pad 13) – 1.55 µs (pad 59) |
+| `addsat` | 14 % | 3.89 µs (pad 59) – 4.46 µs (pad 5) |
+| `matmul` | 9 % | 3.36 µs (pad 56) – 3.65 µs (pad 41) |
+| `scan` | 8 % | 2.04 µs (pad 58) – 2.20 µs (pad 17) |
+
+Within one pad, the spread between sessions is 11-13 %.
+
+**Prototype: inner-loop headers aligned to 64 bytes** (NOP padding; scratch, not in the package), against the
+same tree unaligned, alternated, 4 pads (0, 8, 24, 40) each:
+
+| measure | result |
+|---|---|
+| CoreMark (it/s) | +5.3 % median, faster in 23 of 24 pairs; spread between pads 6.5 % → 2.0 % |
+| scalar `swizzle` | 18 % slower: flat at its slow level |
+| corpus (`tools/run_corpus.py --targets jit-x86_64`, 21 cases, all agree) | geomean −0.9 % |
+| code size, CoreMark | +10.3 % |
+
+Alignment to 32 gave CoreMark about +4 % in 2 sessions (not pursued further).
+
+Decision (maintainer, 2026-11-05): **not implemented**. It fails ROADMAP's rule (a gain over CoreMark, the
+kernels and the corpus, beyond the spread): it trades one kernel for another. Still open: aarch64 measured
+natively on the CI arm runners (a `PAD` sweep in 4-byte steps over 0..124 bytes, then alignment to 16, 32 and
+64); alignment to 32 only if the item is revisited.

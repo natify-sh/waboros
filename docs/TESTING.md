@@ -2,7 +2,7 @@
 title: Testing
 kind: reference
 status: current
-updated: 2026-11-03
+updated: 2026-11-05
 ---
 
 # Testing
@@ -23,7 +23,7 @@ exit criterion of each phase (ROADMAP.md) is a value of them.
 | Python API | **wasmtime-py** at the pinned version: its public classes and **its own test suite** (`tests/`) | wasmtime-py's tests run against waboros through a shim (`import waboros as wasmtime`), plus an API-surface test that diffs `dir()` of every public class against wasmtime-py's | wasmtime-py tests passed; missing names |
 | CLI | the `wasmtime` binary at the pinned version: `run`, `compile`, `wast`, `settings`, the option groups `-W` (wasm features), `-S` (WASI), `-O`, `-D` | the option list scraped from `wasmtime --help` / `run --help` of the pinned version, not copied by hand | options accepted (or deliberately refused, DECISIONS.md) |
 | WASI | p1: `wasi_snapshot_preview1.witx` (`WebAssembly/WASI`, legacy/preview1); p2: the WIT packages `wasi:cli`, `wasi:io`, `wasi:filesystem`, `wasi:clocks`, `wasi:random`, `wasi:sockets`, `wasi:http` | `WebAssembly/wasi-testsuite` (p1 at least; check its p2 coverage), the chosen host's own conformance tests | WASI tests passed |
-| everything the suites miss | Wasmtime's behaviour wherever the spec leaves room (NaN, trap codes, stack limits) | differential fuzzing: `wasm-tools smith` modules run on every target and on wasmtime | fuzz hours without a divergence |
+| everything the suites miss | Wasmtime's behaviour wherever the spec leaves room (NaN, trap codes, stack limits) | differential fuzzing: `wasm-tools smith` modules run on every target and on wasmtime (`tools/fuzz.py`, below) | fuzz hours run; every divergence found triaged (ROADMAP.md, phase 5 exit) |
 
 When the pinned wasmtime / wasmtime-py version moves, the API-surface diff and the scraped CLI options
 show what is new; the spec commit moves the same way, in small steps.
@@ -67,7 +67,19 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
 * For each module (spec modules, `wasm-smith` output, real programs): run every target and Wasmtime;
   compare return values, trap codes, final memory hash, globals.
 * NaN results compare by the spec's rules (canonical / arithmetic NaN), not bit-for-bit.
-* A mismatch is minimized (`wasm-tools shrink`) and kept as a regression test.
+* A mismatch found by the fuzzer is not fixed at once: it is kept with a short description (which
+  targets differ, on which export) and triaged before each large spec closes and before phase 5 ends
+  (ROADMAP.md, "Next"); one that is fixed is minimized (`wasm-tools shrink`) and kept as a regression
+  test.
+* `tools/fuzz.py` (S0010 step 0): `uv run python tools/fuzz.py N SEED [--fbits]` runs N
+  `wasm-tools smith --ensure-termination` modules from seed SEED, bounded (1 MiB memory, 1 000 table
+  elements, 3-12 functions, 3 000 instructions; no SIMD, reference types, GC, exceptions, threads or
+  memory64; a 20 s alarm per module: unbounded modules got the process OOM-killed). Every export is
+  called three times with arguments drawn from the seed; results, trap codes and a hash of memory are
+  compared between the default `pyc` and `pyc` + `poc/pyc-bropt/bropt.py` ([S0010](specs/S0010-pyc-branch-emission.md)).
+  A mismatch saves `bad_<seed>.wasm`; the exit status is non-zero on any mismatch. `--fbits` runs it
+  with `WABOROS_PYC_FBITS=1` (D46). Comparing `pyc`, `jit-x86_64` (guard and explicit) and Wasmtime,
+  and the nightly non-blocking CI job, come next (ROADMAP.md); neither exists yet.
 
 ## Programs and benchmarks
 
@@ -123,8 +135,9 @@ on other hosts, but fails under
 verified-row check cannot silently turn guard pages off;
 then both ISA gates and the D35 lists of both targets in both bounds modes, named on both hosts);
 `spec` (the spec run on `wasmtime`, `pyc` (also with `WABOROS_PYC_FBITS=1`), `jit-x86_64` in the default mode and with
-`WABOROS_JIT_BOUNDS=explicit`, then `auto` under `no_exec.py`); `arm64`
-(Linux arm64 only: the `jit-aarch64` spec suite in both bounds modes, `test_guard.py` in guard mode and
+`WABOROS_JIT_BOUNDS=explicit`, again in both modes with `WABOROS_JIT_TWOLEVEL=1` (S0011's shared bounds
+checks, until its step 4), then `auto` under `no_exec.py`); `arm64`
+(Linux arm64 only: the `jit-aarch64` spec suite in both bounds modes, also with `WABOROS_JIT_TWOLEVEL=1`, `test_guard.py` in guard mode and
 `tests/jit` in explicit mode, S0006 step 2).
 
 **The WAT cache.** Tests build modules from WAT text through `tests/watcache.py` (`wat2wasm`), which

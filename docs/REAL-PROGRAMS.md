@@ -2,7 +2,7 @@
 title: Real programs beyond CoreMark - a corpus, the scalar gap, and work that can run beside phase 5
 kind: reference
 status: draft
-updated: 2026-11-04
+updated: 2026-11-05
 ---
 
 # Real programs beyond CoreMark: a corpus, the scalar gap, and parallel work
@@ -16,12 +16,13 @@ backends, the artifact format).
 
 | item | in the docs |
 |---|---|
-| differential fuzzing with `wasm-smith` against Wasmtime | yes, as a plan: ROADMAP phase 5 ("from the first widened stage on") and its exit criteria, TESTING, RISKS. No infrastructure yet |
-| a corpus of real programs with a check that needs no Wasmtime | no. TESTING says "real programs" in general only |
+| differential fuzzing with `wasm-smith` against Wasmtime | yes: ROADMAP phase 5 (a nightly non-blocking CI job, findings triaged) and its exit criteria, TESTING, RISKS. `tools/fuzz.py` exists since S0010 step 0 (2026-11-05), comparing `pyc` with `pyc` + `bropt.py`; the comparison with the JITs and Wasmtime and the CI job are not built yet |
+| a corpus of real programs with a check that needs no Wasmtime | yes since 2026-11-02 (section 1): `poc/bench/corpus/`, `tools/run_corpus.py`, TESTING, BENCHMARKS |
 | why scalar code on `jit-x86_64` is 1.5-3.9x behind Wasmtime | a measured fact (BENCHMARKS, SIMD benchmark: "The scalar builds on `jit-x86_64` are 1.5-3.9x behind Wasmtime's scalar builds"); its work is [S0007](specs/S0007-scalar-codegen.md) (scalar code generation): implemented: steps 1 and 3 landed; step 2 reverted; steps 1b, 5 and 7 measured and dropped; steps 4 and 6 not done |
 
-What runs today besides the spec suite: CoreMark, meld-core without WASI (`poc/bench/meld`), the
-SIMD kernels (`poc/bench/simd`), `vm.wasm` (`poc/bench/switch`). Nothing with WASI.
+What runs today besides the spec suite: CoreMark, the corpus (`poc/bench/corpus`), meld-core without WASI
+(`poc/bench/meld`), the SIMD kernels (`poc/bench/simd`), the calls benchmark (`poc/bench/calls`), `vm.wasm`
+(`poc/bench/switch`). Nothing with WASI.
 
 ## 1. A corpus of freestanding libraries (no WASI)
 
@@ -85,10 +86,12 @@ maintainer. The ranking decides what goes into phase 5 after guard pages, or lat
 Infrastructure beside the code, not in it:
 
 * `wasm-tools smith` modules on every target and on Wasmtime; results compared value by value, NaN
-  lanes by class (TESTING, S0005); a divergence is minimised (`wasm-tools shrink`) and becomes a test.
+  lanes by class (TESTING, S0005); a divergence is kept and triaged (ROADMAP, "Next"); one that is fixed
+  is minimised (`wasm-tools shrink`) and becomes a test.
 * The corpus of section 1 and, once WASI is bound (below), real programs, run the same way.
-* A CI job with a time budget, and a longer local run before each phase closes (ROADMAP phase 5 exit
-  criterion: "differential fuzzing finds no divergence over an agreed number of hours").
+* A nightly CI job with a time budget, never blocking, and its findings triaged before each large spec
+  and phase 5 close (ROADMAP phase 5 exit criterion: "every divergence found by the nightly differential
+  fuzzing is triaged: fixed, or recorded as a known deviation").
 
 ## 4. WASI through fusedwasi, beside phase 5
 
@@ -145,4 +148,4 @@ a dependency; the cost of p1 over p2 on a hot `fd_write` loop (measure).
 | fuzzing infrastructure (section 3) | yes | `tools/`, CI |
 | WASI binding through fusedwasi (section 4) | yes, after the maintainer's decision on the dependency | a new `wasi` area over the internal engine interface |
 | micro-compilers, the C reference loader | no | wait for the fixed artifact format (D36) |
-| a third architecture (riscv64, D48) | no | the backend interface still changes (exceptions, GC, memory64); it comes as a micro-compiler, after `arm64.wasm` |
+| a third architecture (riscv64, D48) | no | the backend interface still changes (the S0011 low layer, exceptions, GC); it comes as a micro-compiler, after `arm64.wasm` |
