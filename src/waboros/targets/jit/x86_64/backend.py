@@ -10,12 +10,14 @@ Every method that compares emits only `mov` between the `cmp` and its consumer (
 Everything here is x86-64-v1 (D24): bsr/bsf with an explicit zero case, popcnt by SWAR.
 """
 
+import os
 import struct
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import cast
 
 from waboros.targets.base import TrapCode
+from waboros.targets.jit.common import twolevel
 from waboros.targets.jit.common.backend import NEGATE, SWAP, AddK, Dst, Imm, Operand, Reg, Slot
 from waboros.targets.jit.common.compiler import SUPPORTED, WIDEOPS
 from waboros.targets.jit.common.context import (
@@ -93,6 +95,7 @@ class Backend:
         self.faults: list[tuple[int, int]] = []  # (fault offset, resume offset), by `finish`
         self._faults: list[tuple[int, Label]] = []
         self._oob: Label | None = None  # the stub of the unchecked access `_bounds` just formed
+        self.twolevel = os.environ.get("WABOROS_JIT_TWOLEVEL") == "1"  # S0011 step 1, test-only
 
     # ---------------------------------------------------------------- labels, frames, traps
     def new_label(self) -> Label:
@@ -740,6 +743,9 @@ class Backend:
         [r13 + ...] for memory 0, [rcx + ...] with rcx = base (+ address) for another; rdx is
         free afterwards. In guard mode an access the guard catches is `_guarded` instead."""
         assert self._oob is None, "an unchecked access without its fault point"
+        if self.twolevel:  # S0011: the same check, written once
+            oob = self._stub(f, TrapCode.MEMORY_OUT_OF_BOUNDS)
+            return twolevel.bounds(self, oob, addr, offset, size, mem, a64, lo)
         if a64:  # S0009: explicit in every mode
             if not isinstance(addr, Imm):
                 return self._bounds64(f, addr, offset, size, mem, lo)
@@ -858,6 +864,122 @@ class Backend:
             return Mem(base, disp, RCX)
         a.alu("add", RCX, base, w=True)
         return Mem(RCX, disp)
+
+    # ---------------------------------------------------------------- low layer (S0011)
+    # The operations `twolevel.bounds` composes; each fits its immediates to the encoding (the
+    # ranges are part of the contract, LESSONS 83). Only rcx and rdx are written; no flags are
+    # live after an operation but inside `ll_jcmp`, `ll_jcmp_imm` and `ll_add_jc`.
+    IDX: int = RCX
+    TMP: int = RDX
+
+    ll_mem = _mem  # no frame of its own: the bounds check is on the compiler's hot path
+
+    def ll_fault_next(self, label: Label) -> None:
+        self._oob = label
+
+    def ll_jump(self, label: Label) -> None:
+        self.a.jmp(label)
+
+    def ll_index32(self, addr: Operand | AddK) -> int:
+        """ecx = addr (`move` to rcx, inlined): a 32-bit write zero-extends, no flags."""
+        if isinstance(addr, Reg):
+            self.a.mov(RCX, addr.id)
+        elif isinstance(addr, Slot):
+            self.a.mov(RCX, _slot(addr.k))
+        else:
+            self.move(Reg(RCX), addr, False)
+        return RCX
+
+    def ll_index64(self, addr: Operand) -> int:
+        if isinstance(addr, Reg):
+            return addr.id
+        assert isinstance(addr, Slot), "a constant address is folded by the caller"
+        self.a.mov(RCX, _slot(addr.k), w=True)
+        return RCX
+
+    def ll_fold(self, r: int, offset: int, size: int) -> tuple[int, int]:
+        """r + offset as [base + r + disp32]: disp = offset if offset + size < 2**31 (the check's
+        `lea` adds size), else rcx = r + offset by a 64-bit immediate (rdx free here)."""
+        a = self.a
+        if offset + size < 1 << 31:
+            return r, offset
+        if r == RCX:
+            a.mov_imm(RDX, offset, w=True)
+            a.alu("add", RCX, RDX, w=True)
+        else:
+            a.mov_imm(RCX, offset, w=True)
+            a.alu("add", RCX, r, w=True)
+        return RCX, 0
+
+    def ll_add(self, dst: int, src: int | Mem, k: int) -> int:
+        """dst = src + k mod 2**64. A register: `lea` for -2**31 <= k < 2**31 (disp32), else
+        through a 64-bit immediate. A context word: `mov` then `add`/`sub` |k| only for
+        -2**31 < k < 2**31 (`sub r, -k` takes -k as a sign-extended imm32), else `mov dst, k; add
+        dst, [word]`."""
+        a = self.a
+        if isinstance(src, Mem):
+            if -(1 << 31) < k < 1 << 31:
+                a.mov(dst, src, w=True)
+                if k:
+                    a.alu_imm("sub" if k < 0 else "add", dst, abs(k), w=True)
+            else:
+                a.mov_imm(dst, k & M64, w=True)
+                a.alu("add", dst, src, w=True)
+        elif -(1 << 31) <= k < 1 << 31:
+            a.lea(dst, Mem(src, k))
+        elif dst == src:  # rdx is free while an address is formed
+            assert dst != RDX
+            a.mov_imm(RDX, k & M64, w=True)
+            a.alu("add", dst, RDX, w=True)
+        else:
+            a.mov_imm(dst, k & M64, w=True)
+            a.alu("add", dst, src, w=True)
+        return dst
+
+    def ll_add_jc(self, dst: int, src: int, k: int, label: Label) -> int:
+        """dst = src + k (0 <= k < 2**64); `jb label` on the carry out of 64 bits."""
+        a = self.a
+        if k < 1 << 31:
+            a.mov(dst, src, w=True)
+            a.alu_imm("add", dst, k, w=True)
+        else:
+            a.mov_imm(dst, k, w=True)
+            a.alu("add", dst, src, w=True)
+        a.jcc("b", label)
+        return dst
+
+    def ll_jcmp(self, cond: str, x: int, y: int | Mem, label: Label) -> None:
+        self.a.alu("cmp", x, y, w=True)
+        self.a.jcc(CC[cond], label)
+
+    def ll_jcmp_imm(self, cond: str, x: int | Mem, v: int, label: Label) -> None:
+        """x cond v, 0 <= v < 2**64: `cmp x, imm32` for v < 2**31, else through rdx."""
+        if v < 1 << 31:
+            self.a.alu_imm("cmp", x, v, w=True)
+        else:
+            self.a.mov_imm(RDX, v, w=True)
+            self.a.alu("cmp", x, RDX, w=True)
+        self.a.jcc(CC[cond], label)
+
+    def ll_access(self, base: int | Mem, r: int | None, disp: int, size: int) -> Mem:
+        """[base + r + disp] (disp < 2**31 with r); no r: [base + disp] for disp < 2**31, else
+        rcx = disp. A base in a context word is added into rcx (or loaded into it)."""
+        a = self.a
+        if r is None:
+            if disp < 1 << 31:
+                if isinstance(base, int):
+                    return Mem(base, disp)
+                a.mov(RCX, base, w=True)
+                return Mem(RCX, disp)
+            a.mov_imm(RCX, disp, w=True)
+            r, disp = RCX, 0
+        if isinstance(base, int):
+            return Mem(base, disp, r)
+        if r == RCX:
+            a.alu("add", RCX, base, w=True)
+            return Mem(RCX, disp)
+        a.mov(RCX, base, w=True)
+        return Mem(RCX, disp, r)
 
     def _fault_point(self) -> None:
         """The next instruction is the access `_bounds` formed: in guard mode, a fault point

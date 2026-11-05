@@ -2,7 +2,7 @@
 title: Benchmarks
 kind: log
 status: current
-updated: 2026-11-04
+updated: 2026-11-05
 ---
 
 # Benchmarks
@@ -922,3 +922,27 @@ the bound at +5 %.
 Not measured (maintainer, 2026-11-04): the `thin` variant (the offset always added into the index; x86-64
 CoreMark code 34 023 → 35 151 bytes in guard mode, 43 020 → 43 848 explicit; aarch64 unchanged), which
 would need a placement-controlled run.
+
+### S0011 step 1 in the package (2026-11-05)
+
+`WABOROS_JIT_TWOLEVEL=1` against off, the same tree, the dev VM (Intel Xeon @ 2.10 GHz, 4 vCPU,
+CPython 3.13.17, load average about 1; another agent's timings ran pinned to core 3). Compile time:
+CoreMark and the three corpus modules, median of 10 compiles per process (scratch `ctime.py`),
+`taskset -c 2`, 10 pairs alternated (order swapped each pair), aarch64 compiled on this host (D35).
+Code: D35 lists as in S0011 "Identity" (CoreMark identical on both targets in both modes).
+
+| target, mode | switch off (ms) | switch on (ms) | paired median | slower in |
+|---|---|---|---|---|
+| `jit-x86_64` explicit, first build | 193.5 (188.4–204.3) | 206.9 (192.1–240.5) | +5.7 % | 10 of 10 |
+| `jit-x86_64` guard, first build | 185.9 (173.0–201.4) | 188.1 (173.0–214.1) | +0.8 % | 6 of 10 |
+| `jit-aarch64` explicit, first build | 203.7 (194.6–216.5) | 202.0 (196.7–217.4) | −0.8 % | 3 of 10 |
+| `jit-aarch64` guard, first build | 188.6 (178.9–195.6) | 191.3 (179.8–198.6) | +2.0 % | 7 of 10 |
+| `jit-x86_64` explicit, final | 208.7 (204.1–223.1) | 217.2 (204.4–234.9) | +1.1 % (medians +4.1 %) | 7 of 10 |
+| `jit-x86_64` guard, final | 192.2 (182.2–233.4) | 192.1 (174.8–215.1) | +0.6 % | 5 of 10 |
+| `jit-aarch64` explicit, final | 209.1 (195.6–236.5) | 210.4 (201.1–216.6) | +0.7 % | 6 of 10 |
+| `jit-aarch64` guard, final | 195.1 (177.5–252.9) | 187.3 (178.8–221.6) | −3.3 % | 4 of 10 |
+
+"Final": `ll_mem` is `_mem` itself and x86-64's `ll_index32` emits its move directly (one Python
+frame less each, S0011 Changes). In one process, the switch toggled each round, 30 rounds,
+`jit-x86_64`: explicit +4.8 % before those two changes and +2.4 % after (paired medians), guard +1.7 % and
++1.5 %. Within S0011's +5 % bound.

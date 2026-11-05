@@ -13,6 +13,7 @@ Far mode (S0004): a conditional branch reaches ±1 MiB. `func_end` reports a fun
 does not; compiled again with `far`, every conditional branch to a label becomes `b.!cond` over
 an unconditional `b` (±128 MiB). Loops inside one method branch locally and always reach."""
 
+import os
 import struct
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -32,6 +33,7 @@ from waboros.targets.jit.aarch64.encoder import (
     bitmask,
     invert,
 )
+from waboros.targets.jit.common import twolevel
 from waboros.targets.jit.common.backend import SWAP, AddK, Dst, Imm, Operand, Reg, Slot
 from waboros.targets.jit.common.compiler import SUPPORTED, WIDEOPS
 from waboros.targets.jit.common.context import (
@@ -80,6 +82,7 @@ class Backend:
         self.faults: list[tuple[int, int]] = []  # (fault offset, resume offset), by `finish`
         self._faults: list[tuple[int, Label]] = []
         self._oob: Label | None = None  # the stub of the unchecked access `_bounds` just formed
+        self.twolevel = os.environ.get("WABOROS_JIT_TWOLEVEL") == "1"  # S0011 step 1, test-only
 
     def new_label(self) -> Label:
         return self.a.label()
@@ -506,6 +509,9 @@ class Backend:
         (S0006) an access the guard catches is formed the same way without the compare and
         branch, and the caller marks its one memory instruction with `_fault_point`."""
         assert self._oob is None, "an unchecked access without its fault point"
+        if self.twolevel:  # S0011: the same check, written once
+            oob = self._stub(f, TrapCode.MEMORY_OUT_OF_BOUNDS)
+            return twolevel.bounds(self, oob, addr, offset, size, mem, a64, lo)
         if a64 and not isinstance(addr, Imm):
             return self._bounds64(f, addr, offset, size, mem, lo)
         a = self.a
@@ -581,6 +587,79 @@ class Backend:
             if offset:
                 a.addsub_imm("sub", 9, 10, size)
                 r = 9
+        return base, r, 0
+
+    # ---------------------------------------------------------------- low layer (S0011)
+    # The operations `twolevel.bounds` composes; each fits its immediates to the encoding (imm12,
+    # optionally lsl #12, else through x16 or x10; LESSONS 83). Only x9, x10, x16 (and x11/x12
+    # for a memory other than 0) are written; flags are live only inside `ll_jcmp`,
+    # `ll_jcmp_imm` and `ll_add_jc`.
+    IDX: int = 9
+    TMP: int = 10
+
+    ll_mem = _mem  # no frame of its own: the bounds check is on the compiler's hot path
+
+    def ll_fault_next(self, label: Label) -> None:
+        self._oob = label
+
+    def ll_jump(self, label: Label) -> None:
+        self.a.b(label)
+
+    def ll_index32(self, addr: Operand | AddK) -> int:
+        self.move(Reg(9), addr, False)  # a w-register write: zero-extends
+        return 9
+
+    def ll_index64(self, addr: Operand) -> int:
+        return self._r(addr, 9, True)
+
+    def ll_fold(self, r: int, offset: int, size: int) -> tuple[int, int]:
+        """No [base, index, #disp] form: x9 = r + offset unless offset is 0."""
+        if offset:
+            self._add_k(9, r, offset)
+            return 9, 0
+        return r, 0
+
+    def ll_add(self, dst: int, src: int, k: int) -> int:
+        self._add_k(dst, src, k)  # dst = src + k mod 2**64: add/sub imm12, else via x16
+        return dst
+
+    def ll_add_jc(self, dst: int, src: int, k: int, label: Label) -> int:
+        """dst = src + k (0 <= k < 2**64) by `adds` (imm12, else via x16); `b.hs label` on the
+        carry out of 64 bits."""
+        if _imm12(k):
+            self.a.addsub_imm("adds", dst, src, k)
+        else:
+            self.a.mov_imm(16, k)
+            self.a.addsub("adds", dst, src, 16)
+        self._bcc("hs", label)
+        return dst
+
+    def ll_jcmp(self, cond: str, x: int, y: int, label: Label) -> None:
+        self.a.cmp(x, y)
+        self._bcc(CC[cond], label)
+
+    def ll_jcmp_imm(self, cond: str, x: int, v: int, label: Label) -> None:
+        """x cond v, 0 <= v < 2**64: `subs xzr, x, #imm12`, else v into x10 and `cmp`."""
+        if _imm12(v):
+            self.a.addsub_imm("subs", ZR, x, v)
+        else:
+            self.a.mov_imm(10, v)
+            self.a.cmp(x, 10)
+        self._bcc(CC[cond], label)
+
+    def ll_access(
+        self, base: int, r: int | None, disp: int, size: int
+    ) -> tuple[int, int | None, int]:  # fmt: skip
+        """(base, index, offset): no r: [base, #disp] when disp is a multiple of size below
+        4096 * size (the scaled form), else x9 = disp; with r and disp: x9 = r + disp."""
+        if r is None:
+            if not disp % size and disp // size < 1 << 12:
+                return base, None, disp
+            self.a.mov_imm(9, disp)
+            return base, 9, 0
+        if disp:
+            self._add_k(9, r, disp)
+            r = 9
         return base, r, 0
 
     def _fault_point(self) -> None:

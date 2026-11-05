@@ -6,7 +6,7 @@ status: approved
 superseded_by:
 related: [D24, D26, D35, D39, D44, D45, D47, R3, S0004, S0006, S0007, S0009]
 owner: maintainer
-updated: 2026-11-04
+updated: 2026-11-05
 ---
 
 # S0011 JIT low layer: wasm memory semantics written once over per-architecture operations
@@ -82,8 +82,9 @@ operand has no displacement.
 
 ### Where the code lives, the plug points and the switch
 * **Shared layer:** `src/waboros/targets/jit/common/twolevel.py` during steps 1-3, renamed at step 4
-  (Q1). It has no encoder imports and names no machine register. It calls only the low layer and
-  the backend's existing `_stub(f, code)`.
+  (Q1). It has no encoder imports and names no machine register. It calls only the low layer;
+  the plug point creates the trap stub (`_stub(f, code)`) and passes its label, so the shared
+  layer never sees a frame.
 * **Low layer:** methods `ll_*` and the attributes `IDX`, `TMP` on each `Backend` class
   (`x86_64/backend.py`, `aarch64/backend.py`). They are private to the JIT and are not part of D39.
 * **Plug points:** the private methods `_bounds`, `_end_check` and `_element`. Both backends have
@@ -188,13 +189,42 @@ None. The code is per architecture; nothing differs by operating system.
 switch on against switch off. The lists must be equal except for these listed modules, each with its
 reason:
 * `memory64/address64/address64.0-3.wasm`, on both targets and in both modes. These have i64
-  accesses with offsets beyond 2³¹, on a memory whose declared minimum is 1 page:
-  * x86-64: an offset ≥ 2³¹ − size is formed by `mov rcx, imm64; add rcx, r` instead of
-    `lea rcx, [rdx − size]`.
+  accesses with offsets beyond 2³¹, on a memory whose declared minimum is 1 page (so `k > lo`,
+  the carry path):
+  * x86-64: an offset with `offset + size ≥ 2³¹` is added into the index by `ll_fold`:
+    `mov rcx, off; add rcx, r`, or `mov rdx, off; add rcx, rdx` when the index was loaded from
+    its slot into rcx. Before, it was `lea rcx, [rdx − size]` from the checked end, for
+    offset ≥ 2³¹.
   * aarch64: on the carry path the index with an offset is `add x9, r, #off` instead of
     `sub x9, x10, #size`.
   * The same semantics and the same trap behaviour (spec suite and `test_memory64.py`). Accepted by
     the maintainer (2026-11-04).
+
+Not in the spec cache or CoreMark, so the D35 lists do not show them; each is correct (step 1
+review, 2026-11-05) and accepted:
+* **x86-64, an i32 or i64 constant address whose end `ea + size` is at or above 2³¹, wherever it is
+  checked.** That is explicit mode, plus in guard mode an i64 constant (always checked) or an i32
+  constant past the reservation of 4 GiB + GUARD.
+  * Before, the address was loaded first (`mov rcx, ea; lea rdx, [rcx + size]; cmp rdx, limit;
+    ja`). The shared layer checks first (`mov rdx, ea + size; cmp limit, rdx; jb`), then forms the
+    address (`mov rcx, ea`).
+  * For `ea ≥ 2³¹` this is the same 4 instructions and 1 byte more. For `2³¹ − size ≤ ea < 2³¹`
+    it is one instruction fewer, since the access then takes `ea` as its displacement.
+  * Such an address is in bounds only for a memory of 2 GiB or more:
+    `test_two_gib_memories` reads it back there, on memories 0 and 1 in both modes, and the
+    reviewer checked in- and at-bound accesses from `0x7FFFFFF8` to `0x8000FFF9`.
+  * Accepted by the maintainer (2026-11-05), on the reviewer's confirmation. Removing it would need
+    a fused constant-address check op on every architecture, which moves semantics down, or a
+    predicate the shared layer asks.
+* **x86-64, an i64 offset with `2³¹ − size ≤ offset < 2³¹`.** Before, it stayed the disp32 of the
+  access. `ll_fold` keeps a displacement only while `offset + size < 2³¹`, so it is now added into
+  the index (`mov ecx, off; add rcx, r`).
+* **x86-64, an i64 access with `2³¹ ≤ k ≤ lo`** (a declared minimum of 2 GiB or more).
+  * Before, it took the carry path: the x86-64 fast path needed `k < 2³¹`.
+  * The shared layer takes the `k ≤ lo` path. For `k = 2³¹` on memory 0 that is
+    `lea rdx, [r14 − 0x80000000]`; otherwise `ll_add` legalizes `limit − k` (`mov rdx, −k;
+    add rdx, limit`).
+  * aarch64 already used `k ≤ lo` and does not change.
 * Step 2 adds no expected difference. A difference it shows is either removed or listed here, with
   its reason and the maintainer's acceptance.
 
@@ -205,8 +235,10 @@ the step can close. The test modules of `tests/jit` that are not in the spec cac
 are checked by their tests, not by identity.
 
 ## Test plan
-* **Identity test** (new, `tests/jit/test_low_layer.py`): compile CoreMark and the modules of
-  `test_memory64.py` with the switch on and off, for both targets (cross-compiled, D35) and both
+* **Identity test** (new, `tests/jit/test_low_layer.py`): compile CoreMark and generated modules
+  covering every path of the check (every width; i32 register, `local + const` and constant
+  addresses; memory 0 and a memory read from its context words; the i64 paths that stay identical)
+  with the switch on and off, for both targets (cross-compiled, D35) and both
   modes. Assert that the code is equal, except for the listed modules. It runs in the default suite
   until step 4. At step 4 the D35 lists before and after the removal are compared once instead.
 * **Every step:**
@@ -215,8 +247,8 @@ are checked by their tests, not by identity.
   * The same for `jit-aarch64` under QEMU (`tools/run_arm64.py … --in-process`), guard and explicit.
   * `WABOROS_JIT_TWOLEVEL=1 uv run pytest tests/jit -q` in both modes: as today.
   * `tools/isa_all.py` for both targets: clean.
-  * CI (`ci.yml`, step 1 to step 3): the `jit` and `arm64` jobs gain one step with the switch on
-    (spec suite, both modes).
+  * CI (`ci.yml`, step 1 to step 3): the `spec` job (x86-64) and the `arm64` job (native
+    aarch64) gain one step with the switch on (spec suite, both modes).
 * **Edge tests** with the switch on. Existing: `test_memory64.py`, including
   `test_k_at_two_to_the_31_on_a_memory_other_than_0`, `test_every_width_at_each_bound_and_offset`
   and the 2⁶⁴ − 1 offset; `test_tables.py`; the table64 tests. New: one test per immediate-range
@@ -293,3 +325,25 @@ A step that needs more than its size stops and reports. **Docs per step** (STAND
 ## Changes
 * 2026-11-04: created (draft), from the reconnaissance of ROADMAP "Next" 3b.
 * 2026-11-05: approved by the maintainer with the recommendations (Q1-Q3).
+* 2026-11-05: step 1 implemented: `common/twolevel.py` and the low layer of both backends behind
+  `WABOROS_JIT_TWOLEVEL=1`, with the `_bounds` hooks, `tests/jit/test_low_layer.py` and the CI
+  steps. D35 lists: the switch off equals the previous code on both targets in both modes; the
+  switch on differs only in `address64.0-3`, and CoreMark is identical. Compile time is within
+  the bound (BENCHMARKS.md, "JIT low layer"). Mutations of the check are caught. Changes against
+  the text above:
+  * the plug point passes the trap label to the shared layer;
+  * `ll_mem` is the backend's `_mem` itself, and x86-64's `ll_index32` emits the move directly:
+    one Python frame less each, which took x86-64 explicit compile time from +5.7 % to +1.1 %;
+  * the identity test uses generated modules, not `test_memory64.py`'s;
+  * the x86-64 constant-address difference in "Identity" was found, and awaits acceptance.
+* 2026-11-05: step 1 review: no defect. "Identity" now describes the constant-address difference
+  precisely (not only in explicit mode; the same instruction count, or one fewer) and lists two
+  more x86-64 i64 classes. The maintainer accepted all three on the reviewer's confirmation. New
+  tests:
+  * `test_two_gib_memories`: in-bounds and at-bound accesses past 2³¹ on memories of 32769 pages,
+    and the i64 `k ≤ lo` path at k = 2³¹;
+  * `test_an_i32_address_ignores_the_upper_half`: LESSONS 5; it catches the zero-extension
+    mutation;
+  * i64 constants from 2³¹ to 2⁶⁴ − 8 in the boundary test.
+
+  The CI step is in the `spec` job.
