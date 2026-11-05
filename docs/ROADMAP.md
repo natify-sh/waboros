@@ -332,7 +332,7 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29; done 2026-11-03) -> 
 ## Open questions
 1. **Minimum Python.** Resolved by D19: 3.11 (the PoC's 3.8 and 3.4 `--legacy` measurements stay as
    history).
-2. **The WASI host.** fusedwasi's Python twin (candidate; 0.1.0b1 and 0.1.0b2 released 2026-11-05, D8; 0.1.0a1 was runtime-independent and ran on
+2. **The WASI host.** fusedwasi's Python twin (candidate; 0.1.0b1-b3 released 2026-11-05, D8, with the limits of a preopen on Windows; 0.1.0a1 was runtime-independent and ran on
    wasmtime, wasm3 and wasmext, D8; not tried with waboros yet),
    an own implementation, or another; and what WASI means on MicroPython (open question 6).
 3. **Parallelism of `pyc` guests**: yield points only, or also subinterpreters (3.12+/3.14),

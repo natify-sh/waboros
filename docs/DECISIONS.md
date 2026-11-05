@@ -79,6 +79,16 @@ running it on waboros.
 no dependencies; WASI 0.1 implemented over WASI 0.2 with one state; `wasi:sockets` and `wasi:http` still
 unstable). 0.1.0b2 followed the same day. Still the candidate until the WASI phase runs it on waboros.
 
+2026-11-05 (maintainer): fusedwasi 0.1.0b3: changes in `wasi:http`, and a draft spec (fusedwasi's own spec number 15) on
+what a preopen promises in `wasi:filesystem` and WASI 0.1. On POSIX the path walk (one name at a time
+through held descriptors, `O_NOFOLLOW`, `..` handled by the walk) cannot be led out of the preopen
+by a race (one 8-second run on the Python twin, 0 escapes; the C twin, which wasmext uses, only
+read). On Windows the check and the open are two steps, so another process that can write the
+shared folder can race a junction in; closing it needs a walk by handle (`NtCreateFile` with a root
+directory), native in C, `ctypes` in Python. A link the guest makes with `symlink-at` (0.2) may point
+out; the walk never follows it, another process may. For waboros (the Python twin) this means a
+preopen is not a barrier against other processes on Windows until that work is done.
+
 ### D9. Cache compiled artifacts
 Status: accepted · Date: 2026-10-26 · Supersedes: — · Evidence: —
 
