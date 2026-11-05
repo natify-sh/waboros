@@ -1,26 +1,18 @@
-imports.wast:240  LoadError: NotImplementedError: tag import
-imports.wast:244  LoadError: NotImplementedError: tag import
-imports.wast:248  LoadError: NotImplementedError: tag import
-imports.wast:252  LoadError: NotImplementedError: tag import
-imports.wast:256  LoadError: NotImplementedError: tag import
-imports.wast:35  LoadError: NotImplementedError: tag import
-imports.wast:97  LookupError: no exported function print32
-imports.wast:98  LookupError: no exported function print64
-instance.wast:101  no current module
-instance.wast:102  no current module
-instance.wast:103  no current module
-instance.wast:104  no current module
-instance.wast:128  LoadError: NotImplementedError: tag import
-instance.wast:15  LoadError: NotImplementedError: tag import
-instance.wast:167  no current module
-instance.wast:168  no current module
-instance.wast:169  no current module
-instance.wast:170  no current module
-instance.wast:54  no current module
-instance.wast:55  no current module
-instance.wast:56  no current module
-instance.wast:57  no current module
-instance.wast:62  LoadError: NotImplementedError: tag import
+instance.wast:101  unsupported: exceptions
+instance.wast:102  unsupported: exceptions
+instance.wast:103  unsupported: exceptions
+instance.wast:104  unsupported: exceptions
+instance.wast:128  unsupported: exceptions
+instance.wast:15  unsupported: exceptions
+instance.wast:167  unsupported: exceptions
+instance.wast:168  unsupported: exceptions
+instance.wast:169  unsupported: exceptions
+instance.wast:170  unsupported: exceptions
+instance.wast:54  unsupported: exceptions
+instance.wast:55  unsupported: exceptions
+instance.wast:56  unsupported: exceptions
+instance.wast:57  unsupported: exceptions
+instance.wast:62  unsupported: exceptions
 linking.wast:112  LinkError: incompatible import type Mref_ex.g-const-func
 ref_null.wast:1  LoadError: NotImplementedError: value type 0x6e
 ref_null.wast:16  no current module

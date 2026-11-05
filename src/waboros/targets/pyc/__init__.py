@@ -10,7 +10,16 @@ from waboros.frontend.binary import F32, F64, parse
 from waboros.frontend.validate import validate, valtype_key
 from waboros.runtime.link import func_type, global_type
 from waboros.runtime.store import StoreState
-from waboros.targets.base import Extern, HostError, HostFunc, Raw, Trap, TrapCode, ValidModule
+from waboros.targets.base import (
+    Extern,
+    HostError,
+    HostFunc,
+    Raw,
+    Trap,
+    TrapCode,
+    ValidModule,
+    throws,
+)
 from waboros.targets.pyc import runtime as _rt
 from waboros.targets.pyc.codegen import generate
 
@@ -159,6 +168,8 @@ class PycTarget:
         return None
 
     def supports(self, module: ValidModule) -> str | None:
+        if throws(module):
+            return "exceptions"  # S0012 step 2
         return None  # a module the validator does not cover may run: a Python exception is safe
 
     def compile(self, module: ValidModule) -> object:

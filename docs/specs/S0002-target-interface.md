@@ -52,7 +52,7 @@ HostFunc: TypeAlias = Callable[[Sequence[Raw]], Sequence[Raw]]   # wrapped by th
 
 @dataclass(frozen=True)
 class Extern:               # a resolved import, already type-checked by the runtime
-    kind: Literal["func", "memory", "table", "global"]
+    kind: Literal["func", "memory", "table", "global", "tag"]
     owner: str | None       # target name of the exporting instance; None for host objects
     value: object           # HostFunc | target-specific handle (opaque to other targets)
 
@@ -267,3 +267,8 @@ weights itself until then.
   counters it read before the check, LESSONS 78); JIT `Memory.grow`, `Table.grow` and instantiation
   check it too, with a claim that an entry alone makes permanent (`release`). `pyc` behaviour is
   unchanged apart from the atomic first claim.
+* 2026-11-05 (S0012 step 1): `Extern.kind` gains `"tag"`. Until the targets own tag identity
+  (S0012 steps 2-3) `link.resolve` builds the value itself, `(exporting instance, tag index)`, checks
+  the tag type as a function import's, and never calls `TargetInstance.export` for a tag; the targets
+  ignore a tag import when instantiating. A body with `throw`, `throw_ref` or `try_table` is
+  `Unsupported("exceptions")` on every target (`supports()`).

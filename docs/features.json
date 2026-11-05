@@ -41,10 +41,7 @@
         "multibyteArrayAccess": null,
         "multiMemory": true,
         "multiValue": true,
-        "mutableGlobals": [
-          "partial",
-          "431/439 over global+imports+exports; xfail 8 (imports 8); mostly: LoadError: NotImplementedError: tag import"
-        ],
+        "mutableGlobals": true,
         "numericValuesInWat": null,
         "profiles": null,
         "referenceTypes": [
@@ -110,10 +107,7 @@
         "multibyteArrayAccess": null,
         "multiMemory": true,
         "multiValue": true,
-        "mutableGlobals": [
-          "partial",
-          "431/439 over global+imports+exports; xfail 8 (imports 8); mostly: LoadError: NotImplementedError: tag import"
-        ],
+        "mutableGlobals": true,
         "numericValuesInWat": null,
         "profiles": null,
         "referenceTypes": [
@@ -179,10 +173,7 @@
         "multibyteArrayAccess": null,
         "multiMemory": true,
         "multiValue": true,
-        "mutableGlobals": [
-          "partial",
-          "431/439 over global+imports+exports; xfail 8 (imports 8); mostly: LoadError: NotImplementedError: tag import"
-        ],
+        "mutableGlobals": true,
         "numericValuesInWat": null,
         "profiles": null,
         "referenceTypes": [

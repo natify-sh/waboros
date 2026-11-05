@@ -690,7 +690,7 @@ class JitInstance(Instance):
                     raise LinkError(f"incompatible import type {im[1]}.{im[2]}")
             elif im[0] == "table":
                 tables.append(cast(Table, ext.value))
-            else:
+            elif im[0] == "global":  # a tag import has nothing to wire before S0012 step 3
                 self.cells.append(cast(GlobalCell, ext.value))
         for mt in mod["mems"]:
             memories.append(Memory(*mt, a64=mod["maddr"][len(memories)] == I64))

@@ -11,7 +11,7 @@ from typing import Any, NamedTuple, cast
 from waboros.frontend.validate import functype_key, valtype_key
 from waboros.targets.base import Extern, HostError, HostFunc, Raw, TargetInstance, ValidModule
 
-_KINDS = {"func": 0, "table": 1, "mem": 2, "global": 3}
+_KINDS = {"func": 0, "table": 1, "mem": 2, "global": 3, "tag": 4}
 _EXTERN = {0: "func", 1: "table", 2: "memory", 3: "global"}
 
 
@@ -45,9 +45,16 @@ def global_type(mod: ValidModule, index: int) -> tuple[int, int]:
     return gl[index]
 
 
+def _tag_tidx(mod: ValidModule, index: int) -> int:
+    """Type index of tag `index` (imports first)."""
+    return ([im[3] for im in mod["imports"] if im[0] == "tag"] + mod["tags"])[index]
+
+
 def _key(mod: ValidModule, kind: int, index: int) -> Any:
-    """Structural identity of the type of an exported function / table / global."""
+    """Structural identity of the type of an exported function / table / global / tag."""
     types = mod["types"]
+    if kind == 4:
+        return functype_key(types, _tag_tidx(mod, index))
     if kind == 0:
         return functype_key(types, _tidx(mod, index))
     if kind == 1:
@@ -83,11 +90,16 @@ def resolve(
             if exports.get(name, (None, 0))[0] != _KINDS[kind]:
                 raise LinkError(f"unknown import {modname}.{name}")
             ex_kind, ex_idx = exports[name]
-            ext = src.instance.export(name)
-            if kind in ("func", "global"):
+            # a tag: (instance, index) identifies it for linking until the targets own it (S0012)
+            ext = (
+                Extern("tag", None, (src.instance, ex_idx))
+                if kind == "tag"
+                else src.instance.export(name)
+            )
+            if kind in ("func", "global", "tag"):
                 want = (
                     functype_key(mod["types"], desc)
-                    if kind == "func"
+                    if kind != "global"
                     else (valtype_key(mod["types"], desc[0]), desc[1])
                 )
                 ok = _key(src.module, ex_kind, ex_idx) == want

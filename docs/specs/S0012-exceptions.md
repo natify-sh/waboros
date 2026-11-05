@@ -411,3 +411,7 @@ in a comment (REFERENCES.md).
   (the public shape follows wasmtime-py in phase 6), Q5, Q6 and Q7 as recommended, Q8 not planned.
   Order kept: exceptions before GC (GC needs the S0011 low layer; exceptions need GC only to
   reclaim exnrefs and for `cast.wast`).
+* 2026-11-05: step 1 done. Three commands of `exceptions/tag.wast` (lines 30, 40, 49) need GC rec
+  groups; they become expected failures with the claim in step 2, so the target for `exceptions/` is
+  102 pass and 8 expected failures (5 `cast.wast`, 3 rec groups) until GC. The JITs accept tag
+  imports (nothing to wire before step 3), so their expected failures stay equal to `pyc`'s (D25).

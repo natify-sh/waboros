@@ -16,6 +16,8 @@ from waboros.frontend import simd
 from waboros.frontend.binary import decode
 
 I32, I64, F32, F64, FUNCREF, EXTERNREF = 0x7F, 0x7E, 0x7D, 0x7C, 0x70, 0x6F
+EXNREF, NOEXNREF = 0x69, 0x74  # (ref null exn), (ref null noexn); heap types -23 and -12
+EXN = (0, -23)  # (ref exn)
 UNKNOWN = 0  # the type of a value popped from a polymorphic stack
 MAX_PAGES, MAX_TABLE = 65536, 0xFFFFFFFF
 MAX_PAGES64, MAX_TABLE64 = 1 << 48, 0xFFFFFFFFFFFFFFFF  # i64 memories and tables (memory64)
@@ -135,18 +137,22 @@ def _vt(t, ntypes: int):
     if t.__class__ is tuple:
         if t[1] >= ntypes:
             raise Invalid("unknown type")
-        if t[1] < -17:
+        if t[1] < -17 and t[1] != -23:
             raise _Unsupported("heap type")
     return t
 
 
 def _isref(t) -> bool:
-    return t.__class__ is tuple or t in (FUNCREF, EXTERNREF)
+    return t.__class__ is tuple or t in (FUNCREF, EXTERNREF, EXNREF, NOEXNREF)
+
+
+_NN = {FUNCREF: (1, -16), EXTERNREF: (1, -17), EXNREF: (1, -23), NOEXNREF: (1, -12)}
 
 
 def _nn(t):
-    """(nullable, heap type) of a reference type: funcref is (1, -16), externref (1, -17)."""
-    return (1, -16) if t == FUNCREF else (1, -17) if t == EXTERNREF else t
+    """(nullable, heap type) of a reference type: funcref is (1, -16), externref (1, -17), exnref
+    (1, -23), nullexnref (1, -12)."""
+    return _NN[t] if t in _NN else t
 
 
 def functype_key(types: list, i: int, stack: tuple = ()) -> tuple:
@@ -176,6 +182,7 @@ def _match(types: list, a, b) -> bool:
     return (
         ah == bh
         or (bh == -16 and ah >= 0)
+        or (bh == -23 and ah == -12)
         or (ah >= 0 and bh >= 0 and functype_key(types, ah) == functype_key(types, bh))
     )
 
@@ -188,9 +195,9 @@ def _ref(c, ht: int):
     """Reference type of a `ref.null` heap type (-16: func, -17: extern, else a type index)."""
     if ht >= len(c.types):
         raise Invalid("unknown type")
-    if ht < -17:
+    if ht < -17 and ht != -23:
         raise _Unsupported("heap type")
-    return FUNCREF if ht == -16 else EXTERNREF if ht == -17 else (1, ht)
+    return {-16: FUNCREF, -17: EXTERNREF, -23: EXNREF, -12: NOEXNREF}.get(ht, (1, ht))
 
 
 class _Ctx:
@@ -201,6 +208,7 @@ class _Ctx:
         imps = mod["imports"]
         self.ftidx = [i[3] for i in imps if i[0] == "func"] + mod["funcs"]
         self.funcs = [self.types[t] for t in self.ftidx]
+        self.tags = [i[3] for i in imps if i[0] == "tag"] + mod["tags"]  # type index of every tag
         self.ttypes = mod["ttypes"]
         self.maddr = mod["maddr"]  # address type of every memory / table
         self.taddr = mod["taddr"]
@@ -307,13 +315,13 @@ def _validate(mod: dict) -> None:
                 raise Invalid("type mismatch")
         elif not _match(c.types, _const(c, init, nimpg), t):
             raise Invalid("type mismatch")
-    for ti in mod["tags"]:  # an exception tag: a function type without results
+    for ti in c.tags:  # an exception tag: a function type without results
         if ti >= nt:
             raise Invalid("unknown type")
         if types[ti][1]:
             raise Invalid("non-empty tag result type")
     seen = set()
-    counts = (len(c.funcs), len(c.ttypes), c.nmems, ng, len(mod["tags"]))
+    counts = (len(c.funcs), len(c.ttypes), c.nmems, ng, len(c.tags))
     for name, kind, idx in mod["exports"]:
         if name in seen:
             raise Invalid("duplicate export name")
@@ -447,7 +455,7 @@ def _body(c: _Ctx, lt: list, nparams: int, results: list, insns: list[tuple]) ->
                 inits.append(ins[1])
             if op == 0x22:
                 vals.append(lt[ins[1]])
-        elif op in (0x02, 0x03, 0x04):
+        elif op in (0x02, 0x03, 0x04, 0x1F):
             if op == 0x04:
                 pop(I32)
             bt = ins[1]
@@ -457,7 +465,24 @@ def _body(c: _Ctx, lt: list, nparams: int, results: list, insns: list[tuple]) ->
                 bt = types[bt[1]]
             for t in bt[1]:
                 _vt(t, ntypes)
+            if op == 0x1F:  # each clause: what it passes must match its label (outside the block)
+                for kind, tag, lab in ins[2]:
+                    if tag is not None and tag >= len(c.tags):
+                        raise Invalid("unknown tag")
+                    ts = [*types[c.tags[tag]][0]] if tag is not None else []
+                    if kind & 1:
+                        ts.append(EXN)
+                    if not _rmatch(types, ts, label(lab)):
+                        raise Invalid("type mismatch")
             enter(op, bt[0], bt[1])
+        elif op == 0x08:
+            if ins[1] >= len(c.tags):
+                raise Invalid("unknown tag")
+            popn(types[c.tags[ins[1]]][0])
+            unreachable()
+        elif op == 0x0A:
+            pop(EXNREF)
+            unreachable()
         elif op == 0x05:
             f = exit_()
             if f[0] != 0x04:

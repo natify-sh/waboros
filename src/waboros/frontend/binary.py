@@ -12,12 +12,20 @@ from waboros.frontend import simd
 
 M32, M64 = 0xFFFFFFFF, 0xFFFFFFFFFFFFFFFF
 I32, I64, F32, F64 = 0x7F, 0x7E, 0x7D, 0x7C
-TN = {I32: "i32", I64: "i64", F32: "f32", F64: "f64", 0x7B: "v128", 0x70: "ref", 0x6F: "ref"}
-UNSUPPORTED_TYPES = frozenset(
-    (0x63, 0x64, 0x69, 0x6A, 0x6B, 0x6C, 0x6D, 0x6E, 0x71, 0x72, 0x73, 0x74)
+TN = dict.fromkeys((0x70, 0x6F, 0x69, 0x74), "ref") | {
+    I32: "i32",
+    I64: "i64",
+    F32: "f32",
+    F64: "f64",
+    0x7B: "v128",
+}
+UNSUPPORTED_TYPES = frozenset((0x63, 0x64, 0x6A, 0x6B, 0x6C, 0x6D, 0x6E, 0x71, 0x72, 0x73))
+UNSUPPORTED_OPS = frozenset(
+    (6, 7, 9, 0x18, 0x19, 0xFB, 0xFE)
+)  # 6, 7, 9, 0x18, 0x19: legacy exceptions
+SIMPLE_OPS = frozenset(
+    (0, 1, 5, 0x0A, 0x0B, 0x0F, 0x1A, 0x1B, 0xD1, 0xD3, 0xD4, *range(0x45, 0xC5))
 )
-UNSUPPORTED_OPS = frozenset((*range(6, 11), 0x18, 0x19, 0x1F, 0xFB, 0xFE))
-SIMPLE_OPS = frozenset((0, 1, 5, 0x0B, 0x0F, 0x1A, 0x1B, 0xD1, 0xD3, 0xD4, *range(0x45, 0xC5)))
 # Section id -> position; custom sections (0) go anywhere, the data count (12) sits before code (10).
 SECTION_RANK = {
     1: 1,
@@ -69,11 +77,15 @@ def _illegal(op):
     raise Malformed("illegal opcode %#x" % op)
 
 
+_NULLABLE = {-16: 0x70, -17: 0x6F, -23: 0x69, -12: 0x74}
+
+
 def _reftype(nullable, ht):
-    """(ref null func) / (ref null extern) are the bytes 0x70 / 0x6F; any other reference type is
-    the tuple (nullable, heap type), the heap type a type index or a negative abstract-type code."""
-    if nullable and ht in (-16, -17):
-        return 0x70 if ht == -16 else 0x6F
+    """(ref null func / extern / exn / noexn) are the bytes 0x70 / 0x6F / 0x69 / 0x74; any other
+    reference type is the tuple (nullable, heap type), the heap type a type index or a negative
+    abstract-type code."""
+    if nullable and ht in _NULLABLE:
+        return _NULLABLE[ht]
     return (int(nullable), ht)
 
 
@@ -136,7 +148,7 @@ class R:
 
     def vt(s, refs=False):
         b = s.u8()
-        if b in (0x70, 0x6F) or (not refs and b in (I32, I64, F32, F64, 0x7B)):
+        if b in (0x70, 0x6F, 0x69, 0x74) or (not refs and b in (I32, I64, F32, F64, 0x7B)):
             return b
         if b in (0x63, 0x64):  # (ref null? ht)
             return _reftype(b == 0x63, s.ht())
@@ -189,7 +201,7 @@ def parse(data):
         data_mem=[],  # memory index of every data segment (None: passive)
         maddr=[],  # address type (0x7F / 0x7E) of every memory, imported first (memory64)
         taddr=[],  # address type of every table, imported first (table64)
-        tags=[],  # type index of every defined tag (tag imports are not read yet)
+        tags=[],  # type index of every defined tag (imported tags are in `imports`, first)
     )
     datacount = None
     rank = 0
@@ -280,7 +292,9 @@ def parse(data):
                     t = r.vt()
                     mod["imports"].append(("global", m, n, (t, r.mut())))
                 elif k == 4:
-                    raise NotImplementedError("tag import")
+                    if r.u8() != 0:
+                        raise Malformed("zero byte expected")
+                    mod["imports"].append(("tag", m, n, r.u()))
                 else:
                     raise Malformed("malformed import kind")
         elif sid == 3:
@@ -398,7 +412,7 @@ def decode(body):
         if depth == 0:
             raise Malformed("operators remaining after end of function")
         op = r.u8()
-        if op in (0x02, 0x03, 0x04):
+        if op in (0x02, 0x03, 0x04, 0x1F):
             depth += 1
             b = body[r.p]
             if b == 0x40:
@@ -418,7 +432,18 @@ def decode(body):
                         else Malformed("malformed block type")
                     )
                 bt = ("idx", idx)
-            out.append((op, bt))
+            if op == 0x1F:  # try_table: catch clauses (kind, tag index or None, label)
+                cl = []
+                for _ in range(r.u()):
+                    k = r.u8()
+                    if k > 3:
+                        raise Malformed("malformed catch clause")
+                    cl.append((k, r.u() if k < 2 else None, r.u()))
+                out.append((op, bt, cl))
+            else:
+                out.append((op, bt))
+        elif op == 0x08:  # throw
+            out.append((op, r.u()))
         elif op in (
             0x0C,
             0x0D,

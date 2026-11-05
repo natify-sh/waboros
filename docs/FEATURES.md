@@ -56,7 +56,7 @@ directories (`test/core/<dir>/`) count only on a target that claims the feature
 | Multibyte Array Access (`multibyteArrayAccess`) | 2 | - | - | - | - |
 | Multiple Memories (`multiMemory`) | 5 | since 15 | yes 912/912 | yes 912/912 | yes 912/912 |
 | Multi-value (`multiValue`) | 5 | since 0.17 | yes 1253/1253 | yes 1253/1253 | yes 1253/1253 |
-| Import/Export of Mutable Globals (`mutableGlobals`) | 5 | yes | partial 431/439 | partial 431/439 | partial 431/439 |
+| Import/Export of Mutable Globals (`mutableGlobals`) | 5 | yes | yes 439/439 | yes 439/439 | yes 439/439 |
 | Numeric Values in WAT Data Segments (`numericValuesInWat`) | 2 | - | - | - | - |
 | Profiles (`profiles`) | 1 | yes | - | - | - |
 | Reference Types (`referenceTypes`) | 5 | since 0.20 | partial 397/431 | partial 397/431 | partial 397/431 |

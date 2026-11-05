@@ -120,7 +120,7 @@ HEAPS = (-16, -17, -13, -14)
 
 def feature(op: int) -> str:
     """The name an `Unsupported` carries for an opcode this core does not compile (yet)."""
-    return f"opcode {op:#x}"
+    return "exceptions" if op in (0x08, 0x0A, 0x1F) else f"opcode {op:#x}"
 
 
 def type_ok(t: Any) -> str | None:
@@ -128,6 +128,8 @@ def type_ok(t: Any) -> str | None:
     else the feature."""
     if t in NUM or t in (0x70, 0x6F) or t.__class__ is tuple and (t[1] >= 0 or t[1] in HEAPS):
         return None
+    if t in (0x69, 0x74) or t.__class__ is tuple and t[1] in (-23, -12):
+        return "exceptions"
     return "simd" if t == 0x7B else "GC types"
 
 
