@@ -1240,3 +1240,30 @@ Decision (maintainer, 2026-11-05): **not implemented**. It fails ROADMAP's rule 
 kernels and the corpus, beyond the spread): it trades one kernel for another. Still open: aarch64 measured
 natively on the CI arm runners (a `PAD` sweep in 4-byte steps over 0..124 bytes, then alignment to 16, 32 and
 64); alignment to 32 only if the item is revisited.
+
+## Exceptions: the status check after a call (S0012 Q1, 2026-11-05)
+
+The cost of option A's check, which every JIT call site already has for traps (`test eax, eax; jnz
+unwind` on x86-64). A scratch script (`nocheck_calls.py`, not committed) compiles the calls
+benchmark (`poc/bench/calls/calls.wasm`) twice in one process: once as is, once with
+`Backend.call_direct` patched to emit no status test. It runs the two alternated, 11 rounds per
+run, three runs.
+
+* Machine: the dev VM (Intel Xeon @ 2.10 GHz, 4 vCPU), CPython 3.13.17, `jit-x86_64`, guard mode
+  (the default), branch `phase5` at S0011 step 2. Other agents may have been running.
+* Command: `uv run python <scratchpad>/nocheck_calls.py 11`, three times.
+
+| run | `leaf` with check | `leaf` without | `fib(27)` with check | `fib(27)` without |
+|---|---|---|---|---|
+| 1 | 2.155 | 2.055 | 2.886 | 3.357 |
+| 2 | 2.053 | 1.970 | 2.728 | 3.261 |
+| 3 | 2.024 | 1.929 | 2.658 | 3.204 |
+
+The values are ns per call (median of 11 rounds).
+
+* **Result.** On `leaf`, removing the check saves 0.08-0.13 ns per call (4-6 %). On `fib`,
+  removing it makes the code 16-20 % *slower*. The code moved, and `fib` follows code placement
+  (LESSONS 51; "Code placement on x86-64" above).
+* **Conclusion.** The check costs at most about 0.1 ns, about 0.2 cycles, per call, below the
+  placement spread. S0012's option A adds no instruction to it. Options B and C would not remove
+  it either while traps return through frames.
