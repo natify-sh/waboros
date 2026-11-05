@@ -76,8 +76,20 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   elements, 3-12 functions, 3 000 instructions; no SIMD, reference types, GC, exceptions, threads or
   memory64; a 20 s alarm per module: unbounded modules got the process OOM-killed). Every export is
   called three times with arguments drawn from the seed; results, trap codes and a hash of memory are
-  compared between the default `pyc` and `pyc` + `poc/pyc-bropt/bropt.py` ([S0010](specs/S0010-pyc-branch-emission.md)).
-  A mismatch saves `bad_<seed>.wasm`; the exit status is non-zero on any mismatch. `--fbits` runs it
+  compared between three `pyc` sources: the default (S0010's rules), the emission before S0010
+  (`WABOROS_PYC_BR=0`) and that source after `poc/pyc-bropt/bropt.py` (the oracle;
+  [S0010](specs/S0010-pyc-branch-emission.md), step 1). A source that fails to generate, compile or
+  instantiate in one configuration only is a mismatch too. A mismatch saves `bad_<seed>.wasm`; the
+  exit status is non-zero on any mismatch. The oracle disagreeing is counted apart
+  (`oracle_<seed>.wasm`): `bropt.py` has a defect of its own (BENCHMARKS.md, S0010 step 1). `--gen`
+  replaces smith by a structured generator of the shapes S0010 rewrites, bounded by a fuel counter:
+  switches (a chain of case blocks with an innermost `br_table`) with result-typed case blocks,
+  fall-through and empty case regions, loops around a switch (a Python loop as the parent), the
+  dispatch inside an `if` arm or an extra block, code and loops before the dispatch with branches out
+  to outer loops, branches in a case block before the next one opens, degenerate tables with a plain
+  identifier index or only a default; `if`/`else` frames, blocks with a result, `return`,
+  `return_call`, `unreachable`. It draws `BRTREE` from {0, 1, 2, 4} per module and also compares
+  `sink` and `dse` alone; the rules change 0.9 % of smith modules (8 of 938) and 40 % of `--gen` modules (4 045 of 10 000). `--fbits` runs it
   with `WABOROS_PYC_FBITS=1` (D46). Comparing `pyc`, `jit-x86_64` (guard and explicit) and Wasmtime,
   and the nightly non-blocking CI job, come next (ROADMAP.md); neither exists yet.
 

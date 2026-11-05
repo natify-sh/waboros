@@ -179,15 +179,21 @@ between the leaf and T.
      that holds a leaf record not yet resolved is not copied;
    * **the indentation limit** (below).
 
-   Then the lines from T's guard to the end are cut; the body is re-indented (its indentation
-   stripped, the leaf's prefixed) and replaces each leaf's `_br = K` line, or the leaf's `pass`, or is
-   inserted at an empty leaf. Positions recorded after a splice point shift by the difference.
+   Then the body is re-indented (its indentation stripped, the leaf's prefixed) and replaces each
+   leaf's `_br = K` line, or the leaf's `pass`, or is inserted at an empty leaf; positions recorded
+   after a splice point shift by the difference, and a leaf record inside the moved body takes its new
+   depth. What goes from the original place is T's guard (dead: every `_br = K` store was a leaf) and
+   the region. Between them `propagate(T)` routed the escapes that pass through T: when P is not a
+   Python loop it emitted only the `if not _br:` that guards the region (those escapes are in P's
+   `esc` and P's end routes them, after the cut), so everything from T's guard on goes; when P is a
+   Python loop it emitted live routing (`if _br: … continue / break`) for escapes from Python loops
+   inside T, and that routing stays (review of step 1: cutting it left the loop with `_br` set).
    Otherwise nothing changes: the region stays behind its guard, as today, and the leaves keep
    `_br = K`.
 
 The emitter stays a flat list of indented lines. When P ends, every frame opened after the dispatch
 tree is closed, so no open frame's mark lies after a leaf and `close`'s empty-body test is unchanged
-(asserted). A spliced line contains no newline (asserted). The `local.set` peephole that rewrites the
+(asserted, and for `dse`'s deletions too). A spliced line contains no newline (asserted). The `local.set` peephole that rewrites the
 last emitted line cannot reach into a cut, because a region's values do not survive P's end on the
 stack.
 
@@ -206,8 +212,15 @@ that a test with only one level of loops does not see. `return` and `return_call
 
 **The indentation limit (LESSONS 22).** A sunk body moves to the leaf's depth, which is usually
 deeper than the region's. The move is not made when any of its lines would land deeper than
-`SINK_MAXIND` = 90 levels (CPython allows 100; the margin is for the function's own levels and keeps
-the check simple). It adds no `while`, so the 20 statically nested blocks (LESSONS 2) are unchanged.
+`SINK_MAXIND` = 90 levels. The limit that applies was measured on every supported interpreter
+(LESSONS 87; BENCHMARKS.md, "`pyc`: `_br` ladders (S0010 step 1)"): for this shape (nested `if`/`else`
+arms, one-line `if`s, inside up to 19 `while` loops) every CPython 3.11–3.15, free-threaded included,
+compiles and runs 99 levels, in the main thread and in a thread with a 256 KiB stack; PyPy 3.11
+passes 139. The compiler's recursion only binds for `elif` chains of hundreds of arms, and sink never
+lengthens a chain (the chain lowering has at most `BRTREE` groups). 90 leaves 9 levels of margin; a
+sink that would pass it is not made, and the leaf keeps `_br = K`, so sink never turns a module that
+compiles into one that does not. It adds no `while` (the same-loop rule): the static loop nesting
+(LESSONS 2) is unchanged, asserted by a test over CoreMark, the corpus and the switch VM.
 Step 0 counted +1 level in the switch VM and 38 spec modules, but on `ast.unparse` output, which splits
 the codegen's one-line `if c: x`; against the base after the same round trip only 3 spec modules grow
 (4 → 5 levels; BENCHMARKS.md). Acceptance: the max depth of CoreMark, every corpus module and the
@@ -215,9 +228,10 @@ switch VM does not increase; spec modules whose depth grows are listed in the st
 beyond 90.
 
 ### Dead `_br` stores evident at emission
-The codegen records the position of every `_br = J` store emitted without `break`, and of every line
-that tests `_br` (both shift with splices). At `end_frame` of J, before its guard: **a store of J with
-no test of `_br` after it in the line list is dead.** From such a store control only moves forward to
+The codegen records the position of every `_br = J` store emitted without `break` (it shifts with
+splices). At `end_frame` of J, before its guard, it scans the line list backwards from the end to J's
+first store for a line that tests `_br`: **a store of J with no test of `_br` after it in the line
+list is dead.** From such a store control only moves forward to
 J's end (no Python loop lies between, or the store would carry a `break`), passes no test, and J's end
 clears `_br` to 0; without the store `_br` is already 0 there (the invariant above), so every later
 statement sees the same value. The store line is deleted, or becomes `pass` when it was its arm's only
@@ -477,3 +491,29 @@ document to update"):
   (no growth on CoreMark, the corpus and the switch VM; spec modules that grow are listed), and the
   source-size budget may rise to +8 % if `SINK_COPY` alone cannot keep +5 %, provided nothing breaks
   (spec suite, corpus, three-way fuzz and the planted defects).
+* 2026-11-05: depth rule (maintainer): sink never turns a module that compiles into one that does not, on
+  any supported interpreter; the limit measured on each (LESSONS 87) and `SINK_MAXIND` = 90 kept.
+* 2026-11-05: step 1 implemented (not yet reviewed): sink and the evident dead stores in `codegen.py`
+  (+185 lines), `tests/test_pyc_branches.py` (20 tests; the five planted defects each fail one),
+  `tools/fuzz.py` three-way. `WABOROS_PYC_BR=0` is byte-identical to the parent. Spec 63 231 / 0 / 93 in
+  both FBITS modes, spec_diff empty, corpus 21/21, fuzz 938 + 281 modules with 0 mismatches. CoreMark
+  +9.4 % (3.11), +10.0 % (3.13), +5.7 % (3.14); switch VM ×2.47 (3.13), the same bytecode as `bropt.py`
+  with sink only. Gaps against the acceptance: CoreMark keeps 538 `_br`, not ≤ 517 (the rest needs
+  general liveness or fall-through copies: conditional step 2); `generate()` +9.6-10.6 % on `zip`, at the
+  10 % budget. Two spec modules grow by one level (`align.106`, `align64.106`). BENCHMARKS.md,
+  "`pyc`: `_br` ladders (S0010 step 1)".
+* 2026-11-05: step 1 review: two defects fixed (LESSONS 88): when P is a Python loop the routing that
+  `propagate(T)` emitted for escapes through T stays (only T's guard and the region go); a leaf moved
+  with its region takes its new depth. The marks assertion behind "(asserted)" added, for `dse` too.
+  The oracle `bropt.py` (all four rules) is itself wrong on some generated modules (LESSONS 89); the
+  tool counts that apart. CoreMark +10.2 % and the switch VM ×2.50 on 3.13 after the fix.
+* 2026-11-05: second review: a third defect fixed (LESSONS 88): when T emits no line and its region is
+  empty, the cut removed the `pass` of a closed nest of P (`IndentationError` on a valid module); every
+  cut now refills a suite it emptied (`fill`). `tools/fuzz.py --gen` widened to the shapes listed in
+  TESTING.md (after the reviewer's generator). Fuzz coverage: the rules change 0.9 % of smith modules
+  (8 of 938) and 40 % of `--gen` modules (4 045 of 10 000, 0 mismatches; 421 of 1 000 with `--fbits`,
+  0 mismatches); each of the three review defects, re-planted, is found within 2 000 `--gen` modules.
+  Eight planted defects, each failing a unit test. Size against the step's budget: codegen +232 lines
+  (budget ~250), tests 457 lines (~350), `tools/fuzz.py` +335 / −36 (~40: the structured generator
+  and the per-rule comparison were not in the plan). The default output of CoreMark, the corpus,
+  the switch VM and the spec modules did not change in the reviews: the speed figures stand.

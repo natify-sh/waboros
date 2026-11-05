@@ -13,6 +13,13 @@ MAXPAGES64 = (1 << 48) - 1  # the byte size of an i64 memory must fit 64 bits (a
 BRTREE = int(
     os.environ.get("WABOROS_BT", "4")
 )  # br_table: balanced if-tree above this many runs, 0 = chain
+# S0010: `_br` rules, comma-separated: `sink` (case regions moved into br_table leaves), `dse` (stores
+# of `_br` evidently dead at emission); "0" or empty = the emission before S0010, byte for byte
+BRRULES = frozenset(
+    r for r in os.environ.get("WABOROS_PYC_BR", "sink,dse").split(",") if r and r != "0"
+)
+SINK_COPY = 10  # a region copied into n leaves: lines * (n - 1) at most this (S0010 Q2)
+SINK_MAXIND = 90  # no moved line deeper than this many levels (CPython allows 100, LESSONS 22)
 
 
 class E:
@@ -82,6 +89,11 @@ class Ctl:
         "tg",
         "pv",
         "pin",
+        "narr",
+        "nbk",
+        "zx",
+        "leaves",
+        "caps",
     )
 
     def __init__(s, kind, mode, id_, res, rv, h):
@@ -96,6 +108,12 @@ class Ctl:
         s.mark = None
         s.pv = []  # python-loop parameter variables (assigned by a br to the loop)
         s.pin = []  # block parameters as they stand on entry (restored for `else`)
+        # S0010 (only with BRRULES): branches arriving without a python jump; `_br = id` stores with
+        # `break`; a structural exit to this frame with `_br == 0`; leaf records; pending captures
+        s.narr = s.nbk = 0
+        s.zx = False
+        s.leaves = []
+        s.caps = []
 
 
 # ----------------------------------------------------------------------------- function compiler
@@ -118,6 +136,10 @@ class FuncGen:
         s.tmpty = {}
         s.rvty = {}
         s.uses_w = set()
+        s.br = BRRULES  # read once per function (tests change the module global)
+        s.recs = []  # S0010 position records [pos, kind, ...]; pos -1 = gone
+        s.stores = {}  # frame id -> store records (`_br = id` without break)
+        s.dse_on = "dse" in s.br
 
     # --- emit helpers
     def emit(s, line):
@@ -132,6 +154,163 @@ class FuncGen:
         if len(s.lines) == mark:
             s.emit("pass")
         s.ind -= 1
+
+    # --- S0010: records of positions in s.lines, kept true when lines are spliced
+    def rec(s, pos, kind, *a):
+        r = [pos, kind, *a]
+        s.recs.append(r)
+        return r
+
+    def marks_before(s, pos, open_):
+        """no open frame (or open nest) began after pos: `close` compares lines with marks, which a
+        splice at pos does not shift"""
+        return all(
+            (F.mark is None or F.mark <= pos) and all(m <= pos for m in F.nests) for F in open_
+        )
+
+    def fill(s, pos):
+        """after lines were removed at pos: a suite that opened just before pos and lost all its lines
+        (a closed nest's `pass` may be what went) gets `pass` back"""
+        if pos == 0:
+            return
+        head = s.lines[pos - 1]
+        k = len(head) - len(head.lstrip(" "))
+        nxt = s.lines[pos] if pos < len(s.lines) else ""
+        if head.endswith(":") and len(nxt) - len(nxt.lstrip(" ")) <= k:
+            s.splice(pos, 0, [" " * (k + 4) + "pass"])
+
+    def splice(s, at, n, new):
+        """replace lines[at:at+n] by new; records inside the replaced lines are gone, later ones shift"""
+        s.lines[at : at + n] = new
+        d, end, gone = len(new) - n, at + n, False
+        for r in s.recs:
+            p = r[0]
+            if p >= end:
+                r[0] = p + d
+            elif p >= at:
+                r[0] = -1
+                gone = True
+        if gone:
+            s.recs = [r for r in s.recs if r[0] >= 0]
+
+    def sink(s, cap, may0):
+        """S0010: move (or copy) the case region of T, emitted after T's end up to the end of its
+        parent (the current frame, nests closed), into the br_table leaves that are T's only arrivals"""
+        T, g, ge, b, bind = cap
+        lv = T.leaves
+        if g[0] < 0 or ge[0] < 0 or b[0] < 0 or any(r[0] < 0 for r in lv):
+            return
+        loop = next((F for F in reversed(s.ctl) if F.pyloop), None)
+        # the same python loop (a correctness rule, S0010): a leaf that needed `break` is not recorded
+        for r in lv:
+            assert r[4] is loop, "S0010 sink: a leaf and its region in different python loops"
+        if may0 and any(r[5][0] != g[0] for r in lv):
+            return  # falling through with 0 must reach the code that followed the region
+        pre = "    " * bind
+        body = s.lines[b[0] :]
+        if all(ln == pre + "pass" for ln in body):
+            body = []
+        if len(lv) > 1 and len(body) * (len(lv) - 1) > SINK_COPY:
+            return
+        bp = b[0]
+        inside = [r for r in s.recs if r[0] >= bp and r[1] not in ("cg", "ce", "cb")]
+        if len(lv) > 1 and any(r[1] == "lf" or r[1] == "te" for r in inside):
+            return
+        top = max(r[3] for r in lv) - bind  # the region moves by up to this many levels
+        if body and top + max(map(len, body)) // 4 > SINK_MAXIND:  # a line could pass the limit
+            deep = max(len(ln) - len(ln.lstrip(" ")) for ln in body) // 4
+            if top + deep > SINK_MAXIND:
+                return
+        text = "\n" + "\n".join(body) if body else ""
+        # every line is indented as the region (or deeper), and no line holds a newline
+        assert text.count("\n" + pre) == len(body) == text.count("\n"), "S0010 sink: region lines"
+        rel = [(r, r[0] - b[0]) for r in inside if r[0] < len(s.lines)]
+        # every frame opened after the dispatch tree is closed (the current one's nests too)
+        lo = min(r[0] for r in lv)
+        assert s.marks_before(lo, s.ctl[:-1]) and (s.ctl[-1].mark or 0) <= lo, "S0010 sink: marks"
+        first = True
+        for lf in sorted(lv, key=lambda r: -r[0]):
+            pos, ind = lf[0], lf[3]
+            sp = "    " * ind
+            new = text.replace("\n" + pre, "\n" + sp).split("\n")[1:] if body else []
+            if lf[6]:  # a store leaf: its `_br = K` line is replaced
+                assert s.lines[pos] == sp + "_br = %d" % T.id, (s.lines[pos], T.id)
+                n = 1
+                if not new:
+                    new = [sp + "pass"]
+            else:  # depth 0: nothing was emitted; `close` may have written `pass`
+                n = 1 if pos < len(s.lines) and s.lines[pos] == sp + "pass" else 0
+                if not n:  # inserted at the end of the leaf's arm: after its header or a statement
+                    prev = s.lines[pos - 1]
+                    k = (len(prev) - len(prev.lstrip(" "))) // 4
+                    assert k >= ind or k == ind - 1 and prev.endswith(":"), (prev, ind)
+                    nxt = s.lines[pos] if pos < len(s.lines) else ""
+                    assert (len(nxt) - len(nxt.lstrip(" "))) // 4 <= ind, (nxt, ind)
+                if n and not new:
+                    continue
+            s.splice(pos, n, new)
+            for r, off in rel:
+                if first:
+                    r[0] = pos + off
+                    if r[1] == "lf":  # a leaf inside the region moves with it: so does its depth
+                        r[3] += ind - bind
+                else:
+                    c = s.rec(pos + off, *r[1:])
+                    if r[1] == "st":
+                        s.stores.setdefault(r[2], []).append(c)
+            first = False
+        for r in lv:
+            r[0] = -1
+        # What goes: T's guard (dead: every `_br = T` store was a leaf, now replaced) and the region.
+        # Between them, propagate(T) routed the escapes that pass through T. When P is not a python
+        # loop it emitted only `if not _br:`, the region's own guard: those escapes are in P.esc and
+        # P's end routes them, after this cut. When P is a python loop it emitted live routing
+        # (`if _br: ... continue / break`) for escapes from python loops inside T: it stays.
+        gp, keep = (b[0], []) if s.ctl[-1].pyloop else (g[0], [])
+        del s.lines[gp:]
+        for r in s.recs:
+            p = r[0]
+            if p > gp or p == gp and r[1] != "te":  # a tree end may be the new end of lines
+                r[0] = -1
+            elif p >= 0:
+                keep.append(r)
+        s.recs = keep
+        s.fill(gp)
+        if s.ctl[-1].pyloop and ge[0] > g[0]:
+            at = g[0]
+            s.splice(at, ge[0] - at, [])
+            s.fill(at)
+
+    def dse(s, F):
+        """S0010: a `_br = F.id` store with no test of `_br` after it reaches F's end, where `_br`
+        becomes 0, without being read: it is dead (no python loop lies between, or it had `break`)"""
+        sts = [r for r in s.stores.pop(F.id, ()) if r[0] >= 0]
+        if not sts:
+            return
+        lo, last, L = min(r[0] for r in sts), -1, s.lines
+        for i in range(len(L) - 1, lo, -1):  # the last line that tests `_br`, if after a store
+            ln = L[i]
+            if "_br" in ln and not ln.lstrip().startswith("_br ="):
+                last = i
+                break
+        dead = sorted((r for r in sts if r[0] > last), key=lambda r: -r[0])
+        assert not dead or s.marks_before(dead[-1][0], s.ctl), "S0010 dse: marks"
+        for r in dead:
+            pos = r[0]
+            ln = s.lines[pos]
+            ind = (len(ln) - len(ln.lstrip(" "))) // 4
+            assert ln == "    " * ind + "_br = %d" % F.id, (ln, F.id)
+            prev = s.lines[pos - 1]
+            if (len(prev) - len(prev.lstrip(" "))) // 4 == ind - 1:  # the arm's only line
+                s.lines[pos] = "    " * ind + "pass"
+                r[0] = -1
+            else:
+                s.splice(pos, 1, [])
+        if not F.nbk and len(dead) == len(sts):
+            F.esc.discard(F.id)
+        for r in sts:  # F has ended: its stores need no position any more
+            r[0] = -1
+        s.recs = [r for r in s.recs if r[0] >= 0]
 
     def newtmp(s, t=None):
         s.tmp += 1
@@ -324,6 +503,8 @@ class FuncGen:
         else:
             s.assign_results(T, len(T.pv), T.pv)
         if depth == 0 and T.kind != "loop":
+            T.narr += 1
+            T.zx = True
             return False  # rest of T is skipped structurally by the caller
         P = None
         for F in reversed(s.ctl[len(s.ctl) - 1 - depth :]):
@@ -335,11 +516,15 @@ class FuncGen:
             return True
         s.uses_br = True
         s.emit("_br = %d" % T.id)
+        T.narr += 1
         if P is not None:
             s.emit("break")
             P.esc.add(T.id)
+            T.nbk += 1
             return True
         s.ctl[-1].esc.add(T.id)
+        if s.dse_on:
+            s.stores.setdefault(T.id, []).append(s.rec(len(s.lines) - 1, "st", T.id))
         return False
 
     def emit_return(s):
@@ -479,6 +664,8 @@ class FuncGen:
                 s.flush_trapping()
                 if not (d == 0 and T.mode == "nest"):
                     s.br_code(d)
+                else:
+                    T.zx = True
                 s.dead = True
                 continue
             if op == 0x0D:  # br_if
@@ -488,6 +675,7 @@ class FuncGen:
                 T = s.ctl[-1 - d]
                 s.flush_trapping()
                 if d == 0 and T.mode == "nest":
+                    T.zx = True
                     s.nest(T, "if not %s:" % cc)
                     continue
                 if T.kind != "loop" and T.res:
@@ -508,6 +696,7 @@ class FuncGen:
                 T = s.ctl[-1 - d]
                 if op == 0xD5:
                     if d == 0 and T.mode == "nest":
+                        T.zx = True
                         s.nest(T, "if %s is not None:" % t)
                         st.append(ref)
                         continue
@@ -536,12 +725,23 @@ class FuncGen:
                 for k, d in enumerate(list(x[1]) + [x[2]]):
                     if not runs or runs[-1][1] != d:
                         runs.append((k, d))
+                # S0010 sink: where the dispatch ends, and the python loop around its leaves
+                te = s.rec(len(s.lines), "te") if "sink" in s.br else None
+                loop = next((F for F in reversed(s.ctl) if F.pyloop), None)
+
+                def leaf(d):
+                    T = s.ctl[-1 - d]
+                    if s.br_code(d) or te is None or T.kind != "block":
+                        return
+                    pos = len(s.lines) - (1 if d else 0)  # the `_br = K` line, or where `pass` goes
+                    T.leaves.append(s.rec(pos, "lf", T, s.ind, loop, te, d != 0))
+
                 if BRTREE and len(runs) > BRTREE:
                     # Python has no computed goto: a balanced tree of `<` tests over the runs, log2(runs)
                     # comparisons instead of a linear chain (the same lowering compilers use for sparse switches)
                     def tree(rs):
                         if len(rs) == 1:
-                            s.br_code(rs[0][1])
+                            leaf(rs[0][1])
                             return
                         h = len(rs) // 2
                         m = s.open("if %s < %d:" % (idx, rs[h][0]))
@@ -552,6 +752,8 @@ class FuncGen:
                         s.close(m)
 
                     tree(runs)
+                    if te is not None:
+                        te[0] = len(s.lines)
                     s.dead = True
                     continue
                 groups = {}
@@ -568,14 +770,16 @@ class FuncGen:
                         c = "%s in %r" % (idx, tuple(ks))
                     m = s.open(("if " if first else "elif ") + c + ":")
                     first = False
-                    s.br_code(d)
+                    leaf(d)
                     s.close(m)
                 if first:
-                    s.br_code(x[2])
+                    leaf(x[2])
                 else:
                     m = s.open("else:")
-                    s.br_code(x[2])
+                    leaf(x[2])
                     s.close(m)
+                if te is not None:
+                    te[0] = len(s.lines)
                 s.dead = True
                 continue
             if op == 0x0F:
@@ -616,7 +820,7 @@ class FuncGen:
             head.append("    " + " = ".join(il) + " = 0")
         if fl:
             head.append("    " + " = ".join(fl) + (" = 0" if s.mg.fb else " = 0.0"))
-        if s.uses_br:
+        if s.uses_br and (not s.br or "_br" in "\n".join(body)):
             head.append("    _br = 0")
         if not body:
             body = ["    pass"]
@@ -638,6 +842,10 @@ class FuncGen:
         del s.stack[F.h :]
         for mk in reversed(F.nests):
             s.close(mk)
+        for cap in reversed(F.caps):  # S0010: the case regions that end here, latest first
+            s.sink(cap, live or F.zx)
+            cap[1][0] = cap[2][0] = cap[3][0] = -1
+        F.caps = []
         if F.kind == "if":
             s.close(F.mark)
             if F.rv and not F.has_else:  # the implicit else passes the params through
@@ -654,6 +862,22 @@ class FuncGen:
             s.emit("break")
             s.close(F.mark)
         s.ctl.pop()
+        cand = (  # S0010 sink: T = F, its region is what follows in the parent
+            F.kind == "block"
+            and F.leaves
+            and F.narr == len(F.leaves)
+            and not live
+            and s.ctl[-1].kind in ("block", "loop")
+        )
+        if not cand:
+            for r in F.leaves:
+                r[0] = -1
+            if F.id in s.stores and F.kind != "loop":
+                s.dse(F)
+        elif s.dse_on:  # every store of a sink candidate is a leaf, which has its own record
+            for r in s.stores.pop(F.id, ()):
+                r[0] = -1
+        g = s.rec(len(s.lines), "cg") if cand else None
         if F.kind != "loop" and F.id in F.esc:
             if F.esc - {F.id}:
                 m = s.open("if _br == %d:" % F.id)
@@ -661,7 +885,10 @@ class FuncGen:
                 s.close(m)
             else:
                 s.emit("_br = 0")
+        ge = s.rec(len(s.lines), "ce") if cand else None  # the end of T's guard
         s.propagate(F)
+        if cand:
+            s.ctl[-1].caps.append((F, g, ge, s.rec(len(s.lines), "cb"), s.ind))
         if F.kind == "if":
             after = live or F.live_then or not F.has_else or F.tg
         elif F.kind == "loop":

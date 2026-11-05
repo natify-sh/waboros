@@ -1076,6 +1076,88 @@ here), so they are not tried again:
 The same experiment, same generated source, CoreMark by CPython version: 3.13 ~120, 3.14 ~127 (+5 %),
 3.15b4 ~138 (+14 %) (external, not re-measured).
 
+## `pyc`: `_br` ladders (S0010 step 1)
+
+[S0010](specs/S0010-pyc-branch-emission.md) step 1: sink and the evidently dead `_br` stores in
+`codegen.py` (`WABOROS_PYC_BR`, default `sink,dse`), against the same tree with `WABOROS_PYC_BR=0` (the
+emission before S0010, byte-identical to the step's parent for CoreMark, the corpus, the switch VM and every
+spec module, both FBITS modes). Branch `phase5`, 2026-11-05, the dev VM, `taskset -c 3`, uv builds of
+CPython 3.11.18, 3.13.18, 3.14.10.
+
+**CoreMark** (`poc/pyc-bropt/tools/run_src.py` on the two `translate()` sources, alternated, the order
+reversed every other round, 10 rounds; every run "Correct operation validated"), median (min-max):
+
+| Python | `WABOROS_PYC_BR=0` (it/s) | default (it/s) | change | default faster |
+|---|---|---|---|---|
+| CPython 3.11.18 | 127.4 (101.4–135.9) | 139.3 (127.5–141.8) | +9.4 % | 10 of 10 |
+| CPython 3.13.18 | 130.8 (104.5–138.0) | 143.9 (137.4–152.1) | +10.0 % | 10 of 10 |
+| CPython 3.14.10 | 138.3 (130.8–142.4) | 146.1 (115.5–156.3) | +5.7 % | 8 of 10 |
+
+On 3.13 this is the gain `bropt.py` with sink only gave (+10.1 %, "`pyc`: `_br` ladders (S0010 step 0)").
+
+**Switch VM** (`poc/bench/switch/vm.wasm`, CPython 3.13.18, 10 rounds of one process per configuration,
+median of each process's 3 runs of 2 000 iterations; every run `fb62750f`): 1.010 (0.923–1.046) → 2.494
+(2.247–2.691) M ops/s, ×2.47. Head to head with `bropt.py` (sink only, dse on), 6 rounds, per-round
+medians: ours 2.05-2.75, the pass's 2.71-2.87. The two sources compile to the **same bytecode** (`co_code` and constants of
+`f0` identical on 3.13; the pass's `ast.unparse` changes only line numbers), so the gap is between processes,
+not in the code; the follow-up's ×2.72 was measured in another session.
+
+**Static** (CoreMark, the corpus, the switch VM; `generate()` alternated with the rules off and on in one
+process, 101 times each, median; two sessions):
+
+| module | `_br` | bytes | max indentation | `generate()` |
+|---|---|---|---|---|
+| CoreMark | 635 → 538 | 148 123 → 151 486 (+2.3 %) | 14 → 14 | +8.8 / +9.5 % |
+| corpus `hash` | 60 → 53 | 96 125 → 95 936 | 9 → 9 | — |
+| corpus `mono` | 64 → 60 | 179 632 → 179 567 | 10 → 10 | — |
+| corpus `zip` | 1 244 → 978 | 278 682 → 278 309 | 30 → 30 | +9.6 / +10.6 % |
+| switch VM | 158 → 0 | 11 301 → 6 931 | 9 → 9 | 1.4 → 2.2 ms |
+
+All modules together (CoreMark, corpus, switch VM, 2 366 spec modules): `_br` 10 966 → 10 069; 13 modules
+change, two of them grow by one level of indentation (`align.106`, `align64.106`: 4 → 5). `bropt.py` with sink
+only leaves 517 `_br` in CoreMark: the 21 more here are stores that its general liveness proves dead and the
+evident rule does not (a store read by a later `if not _br:` on another path), and fall-through cases that it
+copies (`f11`: 34 against 29). `generate()` is at the 10 % budget on `zip` (sink's splices and record shifts,
+about 4 ms of 49).
+
+**Depth limits measured for the cap** (`SINK_MAXIND` = 90; LESSONS 87): nested `if`/`else` arms of `pyc`'s
+shape, with one-line wrap `if`s, inside 0, 5 or 19 `while True:` loops, compile and run at 99 levels on
+CPython 3.11.18, 3.12.16, 3.13.18, 3.14.10, 3.14t, 3.15.2 and 3.15t, in the main thread and in a thread with a
+256 KiB stack (the parser's limit of 100 binds); PyPy 3.11.17 passes 139. `if/elif` chains under 98 levels:
+~5 400 arms on 3.14/3.15 (~550 in a 256 KiB thread); 3.11 in a 256 KiB thread crashes at 1 000 arms and
+compiles 300. The 26 sources that the rules change (13 modules, both FBITS modes) and 25 deep-nest modules
+around the cap (`tests/test_pyc_branches.py`, sunk, at the cap and kept) compile, and the latter run with the
+results of `WABOROS_PYC_BR=0`, on every one of those interpreters. MicroPython is not installed on the VM: not
+checked.
+
+**Correctness**: spec suite on `pyc` 63 231 pass, 0 fail, 93 xfail in both FBITS modes, `tools/spec_diff.py`
+against `WABOROS_PYC_BR=0` empty both ways; corpus 21/21 (`inflate 8K` included); `tools/fuzz.py` (default,
+`WABOROS_PYC_BR=0`, and that + `bropt.py`): `1000 1000` ran 938 modules, the rules changed 8, 0 mismatches;
+`300 5000 --fbits` ran 281, changed 1, 0 mismatches. Corpus timings were not re-measured.
+
+**After two reviews** (three defects, LESSONS 88: the routing of escapes through a sunk case block in a
+Python loop was cut; leaves moved with their region kept their old depth; a cut could empty a closed nest's
+suite; all fixed, the default output of CoreMark, the corpus, the switch VM and every spec module unchanged by
+the fixes, so the speed figures stand). Smith reaches the rules in 0.9 % of its modules, so `tools/fuzz.py
+--gen` generates the shapes they rewrite (TESTING.md); it compares the default, `sink` alone, `dse` alone and
+`bropt.py` with `WABOROS_PYC_BR=0`, with `BRTREE` drawn from {0, 1, 2, 4}:
+
+| run | modules | changed by the rules | mismatches | `bropt.py` wrong |
+|---|---|---|---|---|
+| `--gen 5000 1` + `--gen 5000 5001` | 10 000 | 4 045 (40 %) | 0 | 1 |
+| `--gen 1000 100000 --fbits` | 1 000 | 421 (42 %) | 0 | 1 |
+| smith `1000 1000` | 938 | 8 (0.9 %) | 0 | 0 |
+| smith `300 5000 --fbits` | 281 | 1 | 0 | 0 |
+
+Each of the three defects, re-planted in a copy of the code, is found by `--gen 2000 1`: the routing cut 3
+times, the depth 23 times (an assertion at translation), the empty suite 2 times (`IndentationError`). The
+oracle's disagreements are `bropt.py`'s own: with all four rules it gave 3189 instead of 27 773 for `f(1, 0)`
+of a module of the generator's first version, and was wrong in 150 of 300 calls of another, where Wasmtime,
+`pyc` and `pyc` with S0010's rules agree (LESSONS 89). Spec suite again 63 231 / 0 / 93 in both FBITS modes, spec_diff
+empty both ways, corpus 21/21. CoreMark on CPython 3.13 after the fix, 10 alternated rounds: 125.3
+(117.7–130.2) → 138.1 (127.1–147.7) it/s, +10.2 %, faster in 10 of 10; switch VM 0.986 → 2.471 M ops/s,
+×2.50.
+
 ## Code placement on x86-64 (ROADMAP "Code placement", 2026-11-04/05)
 
 Why a loop's speed moves with code elsewhere (LESSONS 51). Host: the dev VM, CPU family 6 model 207

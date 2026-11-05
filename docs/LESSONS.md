@@ -616,3 +616,45 @@ What went wrong or surprised us while building the PoC, so it is not found again
     CoreMark, the kernels and the corpus together, and keep using the padding control of LESSONS 51
     for every speed claim on code the step did not touch. Found: the code-placement investigation
     (ROADMAP), 2026-11-04/05; BENCHMARKS.md, "Code placement on x86-64".
+86. **Positions recorded in a line list must not include the records of the edit itself.** S0010
+    step 1 moves a case region by splicing lines and shifting every recorded position after the
+    splice. The records that mark where the region starts (its capture) sat at the region's first
+    line, were taken for region content and moved with it; when the region was empty of guards the
+    cut then started at the moved copy and deleted it. The unit tests passed; the spec suite's
+    `br_table.wast` (162 failures, `IndentationError` in `as-loop-mid`-like functions) and the fuzz
+    (4 modules) found it. Rule: classify every record kind as content, marker of this edit, or
+    marker of another, and keep line-text assertions where a record is used (`_br = K` is checked
+    before it is replaced). Found: S0010 step 1, 2026-11-05.
+87. **For `pyc`'s shape, the parser's 100 indentation levels bind first on every CPython; compiler
+    recursion only for very long `elif` chains.** Measured 2026-11-05 (CPython 3.11.18, 3.12.16,
+    3.13.18, 3.14.10, 3.14t, 3.15.2, 3.15t, PyPy 3.11.17): nested `if`/`else` arms with one-line
+    wrap `if`s, inside 0, 5 or 19 `while True:` loops, compile and run at 99 levels on every CPython,
+    in the main thread and in a thread with a 256 KiB stack; PyPy compiles past 139. An `if/elif`
+    chain under 98 levels compiles with ~5 400 arms on 3.14/3.15 (~550 in a 256 KiB thread); on 3.11
+    a 256 KiB thread **crashes** (no exception) at 1 000 arms and compiles 300. `pyc`'s chain lowering
+    emits at most `BRTREE` (4) groups, so chains stay short; a `WABOROS_BT=0` build of a wide
+    `br_table` does not. Rule: S0010's sink never puts a line deeper than 90 levels and never makes an
+    `elif` chain longer. Found: S0010 step 1; BENCHMARKS.md, "`pyc`: `_br` ladders (S0010 step 1)".
+88. **Code that looks like a region's guard can be live routing for other escapes.** S0010's sink cut
+    everything from T's guard to the end of its parent P. When P is a Python loop, `propagate(T)` put
+    between them `if _br: [if _br == P: _br = 0;] continue / break`, the routing of an escape from a
+    Python loop inside T (`_br = P; break`); after the cut that escape fell to P's closing `break`
+    and left the loop with `_br` set (wrong results, no error). A second defect moved leaf records
+    with their region but not their depth, so a later sink spliced at the wrong indentation. Neither
+    the spec suite, the corpus, the planted defects nor 938 smith modules (rules exercised in < 1 %)
+    found them; an independent review did. A second review found a third: when T emits no line and
+    its region is empty, the cut removed the `pass` that was the only line of a closed nest of P
+    (`IndentationError`); every cut now refills a suite it emptied. `tools/fuzz.py --gen` (the rules
+    change 40 % of its modules, 4 045 of 10 000, against 0.9 % of smith's) finds each of the three
+    re-planted within 2 000 modules (3, 23 and 2 times), but only once it generated the shapes
+    named: its first version found the depth defect and missed the empty suite. Rule: before deleting
+    emitted lines, list what each emitter put there and for whom; measure a fuzzer's coverage of the
+    rule it tests, and check it on re-planted defects, not only its mismatch count. Found: S0010
+    step 1 reviews, 2026-11-05.
+89. **The oracle can be wrong too.** `poc/pyc-bropt/bropt.py` with all four rules gives a wrong result
+    on structured fuzz modules (in the first version of `tools/fuzz.py --gen`, seed 237: `f(1, 0)`
+    3189 instead of 27 773; Wasmtime, `pyc` and `pyc` with S0010's rules agree; the current version
+    finds 2 in 11 000 modules); each rule alone is right. Step 0's
+    fuzz (smith) never reached it. Rule: a differential check names its ground truth (Wasmtime where
+    it can run) and counts the oracle's disagreements apart from the rule's. Found: S0010 step 1,
+    2026-11-05.
