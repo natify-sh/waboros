@@ -3,6 +3,7 @@
 The spec suite (`exceptions/`) is the metric; these cover the host boundary, traps, chains and
 nesting."""
 
+import struct
 import tracemalloc
 from typing import Any
 
@@ -11,6 +12,7 @@ import pytest
 from tests.watcache import wat2wasm
 from waboros.targets.base import Trap, TrapCode, Unsupported
 from waboros.targets.pyc import load
+from waboros.targets.pyc import runtime as _rt
 
 
 def run(text: str, imports: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -29,7 +31,11 @@ def test_payload_of_every_kind_is_caught() -> None:
       unreachable)))
 """
     )
-    assert ex["go"]() == (0xFFFFFFFF, 0xFFFFFFFFFFFFFFFE, 1.5, -2.5)
+    f32, f64 = 1.5, -2.5
+    if _rt.FBITS:  # D46: f32/f64 are bit patterns (the default on 32-bit x86)
+        f32 = struct.unpack("<I", struct.pack("<f", f32))[0]
+        f64 = struct.unpack("<Q", struct.pack("<d", f64))[0]
+    assert ex["go"]() == (0xFFFFFFFF, 0xFFFFFFFFFFFFFFFE, f32, f64)
 
 
 def test_catch_ref_and_throw_ref_keep_the_object() -> None:
