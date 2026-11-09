@@ -15,7 +15,7 @@ to ~20 % (shared cloud machine); compare within a session.
 Real libraries compiled to wasm (REAL-PROGRAMS section 1): Monocypher 4.0.2 (BLAKE2b, X25519,
 XChaCha20-Poly1305), SHA-256 (B-Con crypto-algorithms), BLAKE3 1.5.4 (portable C), miniz 3.0.2
 (deflate, inflate), xxHash 0.8.2 (XXH32, XXH64, XXH3-64, XXH3-128; scalar, no SIMD), QOI (`qoi.h`, content
-pinned by sha256, no tag). Built by `poc/bench/corpus/build.sh`: Ubuntu clang 18.1.3, wasm-ld 18,
+pinned by sha256, no tag), and a C++ program with real `throw`/`catch` (`cxx_exc.cpp`, below). Built by `poc/bench/corpus/build.sh`: Ubuntu clang 18.1.3 (`cxx_exc.wasm`: Zig 0.17.1, clang 22.1.8), wasm-ld 18,
 `--target=wasm32 -O3 -nostdlib -ffunction-sections -fno-builtin -Wl,--gc-sections -Wl,-z,stack-size=1048576`
 (BLAKE3 with its SIMD dispatch off, miniz without archive/stdio/time); sources are fetched from
 raw.githubusercontent.com and checked against the pinned sha256, the build is byte-reproducible. A driver
@@ -27,9 +27,9 @@ output inflated by miniz), the BLAKE3 test vectors (`test_vectors.json`, 1.5.4) 
 xxHash built natively once (`xxh_vectors.json`: 20 lengths from 0 to 8192 B x seeds 0 and 12345 x 4 algorithms,
 the three known empty-input values agree with the published ones), and for QOI the FNV-1a of the reference
 decoder's pixels plus a decode-then-encode that must return the reference encoder's bytes (`qoi_test.qoi`,
-64x48 RGBA, 8312 B), on `pyc`, `jit-x86_64` and Wasmtime: 183 of 183 agree on each (549 of 549), also with
+64x48 RGBA, 8312 B), on `pyc`, `jit-x86_64` and Wasmtime: 184 of 184 agree on each (552 of 552), also with
 `WABOROS_JIT_BOUNDS=explicit`; on `jit-aarch64` under QEMU (`python3 tools/run_arm64.py
-tools/run_corpus.py --targets jit-aarch64 --rounds 1`) 183 of 183 agree (no timings).
+tools/run_corpus.py --targets jit-aarch64 --rounds 1`) 184 of 184 agree (no timings).
 
 Conditions: 2026-11-02, the machine below, CPython 3.13.17, wasmtime-py 50.0.1, one session, 3 rounds
 alternated, median; microseconds per call of the export (the input transfer is not timed; `pyc` 1
@@ -57,6 +57,18 @@ bounds; one session, so not comparable with the rows above):
 | XXH3-128, 4 KiB | 343 | 2.0 | 1.4 | 4.6 |
 | QOI decode, 64x48 RGBA | 5 262 | 23.3 | 28.3 | 27.4 |
 | QOI decode + encode | 13 019 | 69.0 | 54.9 | 54.5 |
+| C++ throw/catch, 13 lines (below) | 637 | 5.0 | 6.6 | 14.2 |
+
+The C++ row (2026-11-09; `explicit` from the separate `WABOROS_JIT_BOUNDS=explicit` run, so only roughly
+comparable with the others): `cxx_exc.cpp`, an expression evaluator over 13 lines in which 5 raise
+`ParseError` (caught, counted, rethrown with `throw;` and turned into a number three frames up), 1 `DivZero`
+and 1 an `Other` caught by `catch (...)`; 116 destructors run during unwinding. The module is built with
+`-fwasm-exceptions -mllvm -wasm-use-legacy-eh=false` by Zig 0.17.1's clang 22.1.8 and holds `try_table` (52),
+`throw_ref` (38) and `throw` (1), no legacy opcode; 169 KB, 6 WASI imports that only abort paths use
+(stubbed by the runner; `proc_exit` traps). The libc++abi exception runtime is built by `build.sh` from the
+sources in the Zig wheel (the wheel's own wasm libc++abi has none). 7 throws per call, so about 90 us per throw
+on `pyc`, under 1 us on `jit-x86_64`, 2 us on Wasmtime. All results equal the native g++ build on `pyc`,
+`jit-x86_64` (guard and explicit), `jit-aarch64` (QEMU) and Wasmtime 50.0.1 with `wasm_exceptions` on.
 
 The "explicit" column is a separate run with `WABOROS_JIT_BOUNDS=explicit` (its Wasmtime column is a
 different run of the same thing: 3.2, 2.8, 3.1, 3.4, 17.0, 37.5), so differences of 10-40 % between the two

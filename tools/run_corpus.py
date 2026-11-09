@@ -29,20 +29,38 @@ OUT = 32768  # the output area of poc/bench/corpus/common.h
 M32, M64 = 0xFFFFFFFF, (1 << 64) - 1
 
 
+def _wasi(name: str) -> Callable[..., int]:
+    """A WASI import of the C++ module (abort paths only): proc_exit traps, the rest succeed."""
+
+    def f(*_: int) -> int:
+        if name == "proc_exit":
+            raise RuntimeError("proc_exit")
+        return 0
+
+    return f
+
+
 def runner(target: str, wasm: bytes) -> Callable[..., int]:
     """call(name, *args) -> result of the export, unsigned, on a fresh instance."""
     if target == "wasmtime":
         import wasmtime
 
-        eng = wasmtime.Engine()
+        cfg = wasmtime.Config()
+        cfg.wasm_exceptions = True  # the C++ module uses try_table / throw_ref
+        eng = wasmtime.Engine(cfg)
         st = wasmtime.Store(eng)
-        ex = wasmtime.Instance(st, wasmtime.Module(eng, wasm), []).exports(st)
+        mdl = wasmtime.Module(eng, wasm)
+        imps = [wasmtime.Func(st, i.type, _wasi(i.name)) for i in mdl.imports]
+        ex = wasmtime.Instance(st, mdl, imps).exports(st)
         sign = lambda v: v - (1 << 64) if v >> 63 else v  # noqa: E731
         return lambda name, *a: ex[name](st, *(sign(x) for x in a)) & M64
     mod = binary.parse(wasm)
     validate(mod)
     tg = base.TARGETS[target]()
-    inst = tg.instantiate(tg.compile(mod), link.resolve(mod, {}), StoreState())
+    host = {n: (lambda _a, n=n: [_wasi(n)()]) for _, _, n, _ in mod["imports"]}
+    inst = tg.instantiate(
+        tg.compile(mod), link.resolve(mod, {"wasi_snapshot_preview1": host}), StoreState()
+    )
     idx = {n: i for n, k, i in mod["exports"] or () if k == 0}
     return lambda name, *a: inst.call(idx[name], list(a))[0]
 
@@ -186,6 +204,16 @@ def cases() -> list[Case]:
     out.append(("qoi", "qoi decode 8K", {0: img}, "qoi_dec", (len(img),), fnv))
     # decode, then encode again: must give back the reference encoder's bytes
     out.append(("qoi", "qoi dec+enc 8K", {0: img}, "qoi_rt", (len(img),), img))
+    # C++ exceptions (cxx_exc.cpp, try_table / throw_ref): one int32 per line, then the destructors
+    # that ran (116) and the rethrows (5); computed by the same source built natively with g++
+    lines = ["1+2*3", "(4+5)*(6-1)", "7/0", "2+*3", "(1+2", "12 3", "100/7/2", "!", ""]
+    lines += ["((((9))))-10", "8*(3+x)", "6/(2-2)+1", "99"]
+    expr = "\n".join(lines).encode()
+    want = bytes.fromhex(
+        "070000002d00000030f8ffff16fcffff14fcffff16fcffff0700000048f4ffff18fcffffffffffff"
+        "13fcffff30f8ffff630000007400000005000000"
+    )
+    out.append(("cxx_exc", "c++ throw/catch", {0: expr}, "exc_eval", (len(expr),), want))
     return out
 
 
@@ -201,7 +229,9 @@ def run_case(call: Callable[..., int], case: Case, reps: int) -> tuple[bytes, fl
     dt = (time.perf_counter() - t0) * 1e6 / reps
     if size == M32:
         return b"<failed>", dt
-    n = size if fn in ("deflate", "qoi_dec", "qoi_rt") else len(case[5])  # these return the size
+    n = (
+        size if fn in ("deflate", "qoi_dec", "qoi_rt", "exc_eval") else len(case[5])
+    )  # these return the size
     got = b"".join(struct.pack("<Q", call("get", OUT + i)) for i in range(0, n, 8))[:n]
     if fn == "qoi_dec":
         return fnv1a64(got).to_bytes(8, "little"), dt
@@ -214,7 +244,8 @@ def main() -> None:
     rounds = int(arg("--rounds", "3"))
     allcases = cases()
     wasms = {
-        lib: (DIR / f"{lib}.wasm").read_bytes() for lib in ("mono", "hash", "zip", "xxh", "qoi")
+        lib: (DIR / f"{lib}.wasm").read_bytes()
+        for lib in ("mono", "hash", "zip", "xxh", "qoi", "cxx_exc")
     }
     bad = 0
     shared: dict[tuple[str, str], Callable[..., int]] = {}  # xxh: many vectors, one instance

@@ -52,10 +52,13 @@ run below.
 Status (2026-11-09): built, in `poc/bench/corpus/` with `tools/run_corpus.py` (results in BENCHMARKS,
 "Corpus"): Monocypher (BLAKE2b, X25519, XChaCha20-Poly1305), SHA-256, BLAKE3, miniz (deflate, inflate).
 xxHash (XXH32/64/3, checked against vectors of the reference build) and QOI (checksum of the reference
-decoder, byte-identical re-encoding) added 2026-11-09. Not yet: stb_image. A C++ program with
-`-fwasm-exceptions` was tried and not built: clang 18.1.3 emits the legacy opcodes (`try` 0x06; no option for
-`try_table`/`exnref`, `-mllvm -wasm-use-legacy-eh=false` is unknown to it), which are not planned (S0012,
-Q8); it also needs libc++abi's `__cxa_*` and the personality, absent freestanding. Sources are fetched with pinned sha256 (not vendored); licences in
+decoder, byte-identical re-encoding) added 2026-11-09. Not yet: stb_image. A C++ program with real
+`throw`/`catch` (`cxx_exc.cpp`, 2026-11-09) is built with Zig 0.17.1 (PyPI `ziglang`, the newest; clang 22.1.8):
+`-fwasm-exceptions -mllvm -wasm-use-legacy-eh=false` gives `try_table`/`throw_ref`, no legacy opcode. Zig's own
+wasm libc++abi has no exceptions and Zig turns `exception-handling` off on every command line, so `build.sh`
+builds the exception runtime from the sources in the wheel (details there); clang 18.1.3 emits only the
+legacy `try`, and no clang 19+ release tarball was reachable. All targets agree with the native build.
+Sources are fetched with pinned sha256 (not vendored); licences in
 `poc/bench/corpus/licenses/`.
 
 ## 2. Why scalar code is 1.5-3.9x behind Wasmtime (investigation, no code change)

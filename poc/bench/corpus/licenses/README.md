@@ -10,6 +10,7 @@ Sources are fetched by `build.sh` (not stored here); the built `.wasm` files con
 | xxHash | 0.8.2 | BSD-2-Clause (`xxhash-LICENSE`; the library) |
 | QOI (`qoi.h`) | master, content pinned by sha256 | MIT (`qoi-LICENSE`) |
 | crypto-algorithms (SHA-256) | master, content pinned by sha256 | public domain (`crypto-algorithms-README.md`) |
+| LLVM libc++abi and libunwind (in `cxx_exc.wasm`, from the `ziglang` 0.17.1 wheel) | as shipped by Zig 0.17.1 | Apache-2.0 WITH LLVM-exception (https://llvm.org/LICENSE.txt) |
 
 `../blake3_vectors.json` is a subset of `test_vectors/test_vectors.json` of BLAKE3 1.5.4 (the first 32 bytes of
 `hash`, for 11 input lengths).

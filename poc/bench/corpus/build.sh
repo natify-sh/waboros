@@ -1,5 +1,6 @@
 #!/bin/sh
-# Build mono.wasm, hash.wasm, zip.wasm, xxh.wasm, qoi.wasm (Ubuntu clang 18.1.3, wasm-ld 18). Run from anywhere.
+# Build mono.wasm, hash.wasm, zip.wasm, xxh.wasm, qoi.wasm (Ubuntu clang 18.1.3, wasm-ld 18) and cxx_exc.wasm (Zig 0.17.1's
+# clang 22.1.8, below). Run from anywhere.
 # Library sources are fetched into .cache/corpus (git-ignored) and checked against the sha256 below.
 set -e
 cd "$(dirname "$0")"
@@ -41,4 +42,31 @@ clang $F -fno-builtin -DMINIZ_NO_ARCHIVE_APIS -DMINIZ_NO_STDIO -DMINIZ_NO_TIME \
   -o zip.wasm common.c zip.c "$SRC/miniz.c" "$SRC/miniz_tdef.c" "$SRC/miniz_tinfl.c"
 clang $F -fno-builtin -o xxh.wasm common.c xxh.c
 clang $F -fno-builtin -o qoi.wasm common.c qoi.c
-ls -l mono.wasm hash.wasm zip.wasm xxh.wasm qoi.wasm
+# cxx_exc.wasm: C++ throw/catch with the new exception opcodes (try_table, throw_ref; no legacy ones).
+# Zig 0.17.1 (PyPI wheel ziglang, pinned by hash; clang 22.1.8). Zig's own wasm libc++abi is built without
+# exceptions (cxa_noexception.cpp) and Zig adds -exception-handling to every command line, so the exception
+# runtime is built here from the sources the wheel ships (libc++abi, libunwind's Unwind-wasm.c), with
+# -mexception-handling last and the tag __cpp_exception (the C++ exception tag) defined in an assembly stub.
+ZV="$SRC/zig"
+if [ ! -x "$ZV/bin/python" ]; then
+  python3 -m venv "$ZV"
+  echo "ziglang==0.17.1 --hash=sha256:ea6cc5d87b033cf0aedfbc8f9549a908cae6c50ac31f1698188fa48a74524b54" > "$ZV/req.txt"
+  "$ZV/bin/pip" install -q --require-hashes -r "$ZV/req.txt" # the manylinux x86_64 wheel
+fi
+Z="$ZV/bin/python -m ziglang"
+ZL=$(echo "$ZV"/lib/python3*/site-packages/ziglang/lib)
+EH="-fwasm-exceptions -mexception-handling -mreference-types -mllvm -wasm-use-legacy-eh=false -O2 -target wasm32-wasi"
+RT="$SRC/cxx_rt"
+mkdir -p "$RT"
+printf '\t.globl\t__cpp_exception\n\t.tagtype __cpp_exception i32\n__cpp_exception:\n' > "$RT/tag.s"
+$Z cc $EH -c "$RT/tag.s" -o "$RT/tag.o"
+for f in stdlib_exception stdlib_new_delete cxa_demangle cxa_exception cxa_personality cxa_handlers \
+  cxa_default_handlers cxa_exception_storage abort_message fallback_malloc private_typeinfo stdlib_typeinfo; do
+  $Z c++ $EH -std=c++20 -D_LIBCXXABI_HAS_NO_THREADS -D_LIBCPP_HAS_NO_THREADS -D_LIBCXXABI_BUILDING_LIBRARY \
+    -D_LIBCPP_BUILDING_LIBRARY -I"$ZL/libcxxabi/include" -I"$ZL/libcxx/include" -I"$ZL/libcxx/src" \
+    -I"$ZL/libcxxabi/src" -I"$ZL/libunwind/include" -c "$ZL/libcxxabi/src/$f.cpp" -o "$RT/$f.o"
+done
+$Z cc $EH -D_LIBUNWIND_HIDE_SYMBOLS -I"$ZL/libunwind/include" -c "$ZL/libunwind/src/Unwind-wasm.c" -o "$RT/unw.o"
+$Z c++ $EH -fno-rtti -nostdlib++ -I. -Ishim -o cxx_exc.wasm cxx_exc.cpp common.c "$RT"/*.o \
+  -Wl,--no-entry -Wl,--gc-sections -Wl,--export-dynamic -Wl,--strip-all
+ls -l mono.wasm hash.wasm zip.wasm xxh.wasm qoi.wasm cxx_exc.wasm

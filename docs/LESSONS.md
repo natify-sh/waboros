@@ -724,3 +724,11 @@ What went wrong or surprised us while building the PoC, so it is not found again
     inside a full copy (`git archive HEAD src tests tools poc/in`, the spec cache linked in) and
     check that the expected differences appear, not only that nothing else does. Found: S0011
     step 4 verification, 2026-11-05.
+99. **Zig's wasm C++ has no exceptions, and its command line undoes `-fwasm-exceptions`.** `zig c++
+    -target wasm32-wasi -fwasm-exceptions` links against a libc++abi built from `cxa_noexception.cpp`
+    (`__cxa_throw` is absent), and Zig adds `-target-feature -exception-handling` after the user's flags,
+    so any function with a destructor dies in the backend with "Cannot select: cleanupret" (a `throw` alone
+    compiles). Rule: pass `-mexception-handling` (last wins) and build libc++abi's `cxa_*.cpp`, the
+    personality and libunwind's `Unwind-wasm.c` yourself, plus the tag `__cpp_exception` (an assembly
+    `.tagtype` stub); `-mllvm -wasm-use-legacy-eh=false` then selects `try_table`. `zig c++ -S -o -` also
+    writes a file named `-`. Found: corpus C++ exceptions, 2026-11-09.
