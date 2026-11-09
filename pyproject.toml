@@ -55,7 +55,7 @@ dev = [
     "ruff",
     "pyright",
     "wasmtime==50.0.1",
-    "wasm-tools-package==1.262.0.0",
+    "wasm-tools-package==1.263.0.0",
     "pywasm",
     "cibuildwheel>=4.3.5",
 ]
