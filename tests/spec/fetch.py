@@ -24,7 +24,7 @@ PROPOSAL_FILES = (
         "9a3353e12e1fb78e8a7e30b7c5b356bfc897c093b83cbfc6a544660b88adcdc1",
     ),
 )
-WASM_TOOLS_VERSION = "1.262.0"  # PyPI wasm-tools-package, dev group
+WASM_TOOLS_VERSION = "1.263.0"  # PyPI wasm-tools-package, dev group
 
 HERE = Path(__file__).resolve().parent
 CACHE_DIR = HERE.parents[1] / ".cache" / "spec" / SPEC_COMMIT

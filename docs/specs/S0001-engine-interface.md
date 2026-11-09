@@ -171,7 +171,7 @@ uv run python -m tests.spec.run --engine NAME [--json PATH] [--xfail PATH] [--wr
 
 ### Pinning and fetching (`tests/spec/fetch.py`)
 Constants at the top: `SPEC_COMMIT = "6057acdb1a213f85369c64454c078a15f11ac4b1"` (main, 2026-10-28),
-`WASM_TOOLS_VERSION = "1.262.0"` (PyPI `wasm-tools-package`, dev group; `json-from-wast` takes no
+`WASM_TOOLS_VERSION = "1.263.0"` (PyPI `wasm-tools-package`, dev group; `json-from-wast` takes no
 feature flags: it only parses). It checks `wasm-tools --version` (exit 2 on mismatch), downloads
 `https://github.com/WebAssembly/spec/archive/<commit>.tar.gz` with `urllib`, extracts only
 `test/core/*.wast` (top level) with `tarfile` `filter="data"`, runs `wasm-tools json-from-wast
@@ -307,3 +307,4 @@ result and on an xpass).
 * 2026-11-02: status `implemented` (the runner has used this interface since phase 1).
 * 2026-11-04 (S0008 step 1): a second pin, `PROPOSAL_FILES` in `fetch.py` (one file of a proposal repository at a commit, sha256 checked, recorded in the manifest; `wide-arithmetic/wide-arithmetic.wast`, 109 commands, in `counts.json`); the oracle Config gains `wasm_relaxed_simd_deterministic` and `wasm_wide_arithmetic`; Wasmtime and `pyc` claim `wideArithmetic`, `pyc` claims `relaxedSimd`.
 * 2026-11-05 (S0012 step 0): `assert_exception` (an exception escapes to the host) and `TrapCode.UNCAUGHT_EXCEPTION`; the Wasmtime adapter maps its code-less "thrown Wasm exception" trap to it; the 18 `exceptions/` xfail entries `unsupported command` of Wasmtime are gone.
+* 2026-11-09: converter pinned to wasm-tools 1.263.0 (Dependabot bump); on the pinned suite its output equals 1.262.0 (wasm byte-identical, JSON differs only in `source_filename`).
