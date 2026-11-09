@@ -35,7 +35,7 @@ build-frontend = "build[uv]"
 before-build = "pip wheel --no-deps --wheel-dir {project}/ci/deps {project}"
 # auditwheel refuses a wheel without an ELF file, and there is nothing to repair
 repair-wheel-command = ""
-test-requires = ["pytest", "wasmtime==50.0.1", "wasm-tools-package==1.262.0.0", "pywasm"]
+test-requires = ["pytest", "wasmtime==50.0.1", "wasm-tools-package==1.263.0.0", "pywasm"]
 # The JIT platforms run the tests that compile JIT code once per bounds mode (guard, explicit), in
 # one pytest run: the mode is a pytest option (tests/conftest.py), not an environment variable, so it
 # is the same in sh, cmd and the Android app, where cibuildwheel has no test-environment. Windows runs
