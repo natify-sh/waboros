@@ -23,8 +23,28 @@ concurrency:
 env:
   PYTHONUTF8: "1"
 jobs:
+  # A push to a branch with an open pull request is tested by that pull request's run: skip the
+  # duplicate push run (pushes to main, tags and branches without a pull request still run).
+  dedup:
+    runs-on: ubuntu-slim
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      skip: ${{ steps.pr.outputs.skip }}
+    steps:
+      - id: pr
+        if: github.event_name == 'push' && github.ref_type == 'branch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          n=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$GITHUB_REF_NAME" --state open --json number --jq length)
+          echo "open pull requests from $GITHUB_REF_NAME: $n"
+          if [ "$n" -gt 0 ]; then echo skip=true; else echo skip=false; fi >> "$GITHUB_OUTPUT"
   wheels:
     name: ${{ matrix.name }}
+    needs: dedup
+    if: needs.dedup.outputs.skip != 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     strategy:

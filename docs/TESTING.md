@@ -155,7 +155,7 @@ with plain ARMv8.0) and check that a higher-level artifact is refused there; loa
 reference loader as well as from Python; refuse artifacts with an unknown format or context ABI version.
 
 A newer push to the same ref cancels a `ci.yml` or `coverage.yml` run in progress (`concurrency`);
-`publish.yml` runs one release per ref and is never cancelled. Jobs of `.github/workflows/ci.yml`: `lint` (ruff, pyright, `check_docs.py`, `features.py --check`); `test`
+`publish.yml` runs one release per ref and is never cancelled. A push to a branch that has an open pull request is tested once, by the `pull_request` run: in `ci.yml`, `platforms.yml` and `coverage.yml` the job `dedup` (on `ubuntu-slim`) asks the API for an open pull request from that branch and the other jobs are skipped on the push run; pushes to `main`, tags and branches without a pull request run as before. Jobs of `.github/workflows/ci.yml`: `lint` (ruff, pyright, `check_docs.py`, `features.py --check`); `test`
 (`pytest -q` on the seven Pythons, in the default bounds mode, `auto` (D44: guard pages on this Linux glibc x86-64
 runner);
 on 3.13 again with `WABOROS_JIT_BOUNDS=explicit`, so explicit checks stay covered, and the three `pyc`
