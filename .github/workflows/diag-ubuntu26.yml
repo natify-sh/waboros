@@ -22,9 +22,21 @@ jobs:
           cat /etc/ld.so.preload || true; env | grep -E '^(LD_|GLIBC_)' || true
           readlink -f .venv/bin/python; file -L .venv/bin/python
           grep -m1 'model name' /proc/cpuinfo; grep -m1 -o -w 'avx512f\|avx2\|sse4_2' /proc/cpuinfo | sort -u
+      - name: host userland ISA level
+        continue-on-error: true
+        run: |
+          set -x
+          dpkg --print-architecture; dpkg --print-foreign-architectures || true
+          /lib64/ld-linux-x86-64.so.2 --help | grep -iE 'subdirector|x86-64-v|supported' || true
+          dpkg -S /bin/true; dpkg -s libc6 | grep -E 'Version|Architecture'; ls /etc/apt/sources.list.d; grep -rh "^Architectures\|amd64v" /etc/apt/ 2>/dev/null | head
+      - name: SSE2-only qemu64 inside a container (generic amd64 userland)
+        continue-on-error: true
+        run: |
+          docker run --rm -v "$PWD:/w" -w /w ubuntu:latest sh -c 'apt-get update -qq >/dev/null && apt-get install -y -qq qemu-user python3 >/dev/null; Q="qemu-x86_64 -cpu qemu64,-pni,-ssse3,-sse4.1,-sse4.2,-popcnt"; $Q /bin/true; echo rc=$?; $Q /usr/bin/python3 -c "print(1)"; echo rc=$?'
       - name: run under SSE2-only qemu64
         continue-on-error: true
         run: |
+          set +e
           Q="qemu-x86_64 -cpu qemu64,-pni,-ssse3,-sse4.1,-sse4.2,-popcnt"
           for cmd in /bin/true "/usr/bin/python3 -c pass" "$(readlink -f .venv/bin/python) -c pass" ".venv/bin/python -c pass"; do
             echo "== $cmd"; $Q $cmd; echo "rc=$?"
@@ -43,3 +55,7 @@ jobs:
             echo "== $p"
             docker run --rm $p sh -c 'cat /etc/resolv.conf; getent hosts pypi.org || echo NO-DNS; uname -m' || echo "docker rc=$?"
           done
+          echo "== i686 with seccomp unconfined"
+          docker run --rm --security-opt seccomp=unconfined --platform=linux/386 quay.io/pypa/manylinux_2_28_i686 sh -c 'getent hosts pypi.org || echo NO-DNS'
+          echo "== i686 strace of getent"
+          docker run --rm --platform=linux/386 quay.io/pypa/manylinux_2_28_i686 sh -c 'yum -q -y install strace >/dev/null 2>&1; strace -f getent hosts pypi.org 2>&1 | grep -E "socket|connect|EPERM|ENOSYS" | head -20' || true
