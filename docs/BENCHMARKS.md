@@ -14,7 +14,8 @@ to ~20 % (shared cloud machine); compare within a session.
 
 Real libraries compiled to wasm (REAL-PROGRAMS section 1): Monocypher 4.0.2 (BLAKE2b, X25519,
 XChaCha20-Poly1305), SHA-256 (B-Con crypto-algorithms), BLAKE3 1.5.4 (portable C), miniz 3.0.2
-(deflate, inflate). Built by `poc/bench/corpus/build.sh`: Ubuntu clang 18.1.3, wasm-ld 18,
+(deflate, inflate), xxHash 0.8.2 (XXH32, XXH64, XXH3-64, XXH3-128; scalar, no SIMD), QOI (`qoi.h`, content
+pinned by sha256, no tag). Built by `poc/bench/corpus/build.sh`: Ubuntu clang 18.1.3, wasm-ld 18,
 `--target=wasm32 -O3 -nostdlib -ffunction-sections -fno-builtin -Wl,--gc-sections -Wl,-z,stack-size=1048576`
 (BLAKE3 with its SIMD dispatch off, miniz without archive/stdio/time); sources are fetched from
 raw.githubusercontent.com and checked against the pinned sha256, the build is byte-reproducible. A driver
@@ -22,9 +23,13 @@ per library exports one function per operation plus `put`/`get` (8 bytes per cal
 and a 1 MiB bump `malloc`. Runner: `uv run python tools/run_corpus.py --rounds 3`. Every result is
 compared with `hashlib` (BLAKE2b, SHA-256), `zlib` (miniz deflate output decompressed by `zlib`, `zlib`
 output inflated by miniz), the BLAKE3 test vectors (`test_vectors.json`, 1.5.4) or a pure-Python reference
-(RFC 7748 ladder for X25519; XChaCha20-Poly1305 built from the RFC 8439 pieces), on `pyc`, `jit-x86_64`
-and Wasmtime: 63 of 63 agree; on `jit-aarch64` under QEMU (`python3 tools/run_arm64.py
-tools/run_corpus.py --targets jit-aarch64 --rounds 1`) 21 of 21 agree (no timings).
+(RFC 7748 ladder for X25519; XChaCha20-Poly1305 built from the RFC 8439 pieces), values of the reference
+xxHash built natively once (`xxh_vectors.json`: 20 lengths from 0 to 8192 B x seeds 0 and 12345 x 4 algorithms,
+the three known empty-input values agree with the published ones), and for QOI the FNV-1a of the reference
+decoder's pixels plus a decode-then-encode that must return the reference encoder's bytes (`qoi_test.qoi`,
+64x48 RGBA, 8312 B), on `pyc`, `jit-x86_64` and Wasmtime: 183 of 183 agree on each (549 of 549), also with
+`WABOROS_JIT_BOUNDS=explicit`; on `jit-aarch64` under QEMU (`python3 tools/run_arm64.py
+tools/run_corpus.py --targets jit-aarch64 --rounds 1`) 183 of 183 agree (no timings).
 
 Conditions: 2026-11-02, the machine below, CPython 3.13.17, wasmtime-py 50.0.1, one session, 3 rounds
 alternated, median; microseconds per call of the export (the input transfer is not timed; `pyc` 1
@@ -40,6 +45,22 @@ repetition per call, the others 20).
 | BLAKE3, 8 KiB | 9 787 | 22.2 | 17.3 |
 | inflate, 8 KiB (to 8 KiB) | 7 598 | 45.5 | 38.2 |
 | deflate, 8 KiB | 62 337 | 487.6 | 364.6 |
+
+Rows added 2026-11-09 (same machine and settings, `uv run python tools/run_corpus.py --rounds 3`, guard
+bounds; one session, so not comparable with the rows above):
+
+| case | pyc | jit-x86_64 | jit-x86_64 explicit | Wasmtime |
+|---|---|---|---|---|
+| XXH32, 4 KiB | 409 | 1.6 | 1.2 | 3.7 |
+| XXH64, 4 KiB | 385 | 1.3 | 0.9 | 2.8 |
+| XXH3-64, 4 KiB | 290 | 1.9 | 1.4 | 4.2 |
+| XXH3-128, 4 KiB | 343 | 2.0 | 1.4 | 4.6 |
+| QOI decode, 64x48 RGBA | 5 262 | 23.3 | 28.3 | 27.4 |
+| QOI decode + encode | 13 019 | 69.0 | 54.9 | 54.5 |
+
+The "explicit" column is a separate run with `WABOROS_JIT_BOUNDS=explicit` (its Wasmtime column is a
+different run of the same thing: 3.2, 2.8, 3.1, 3.4, 17.0, 37.5), so differences of 10-40 % between the two
+`jit-x86_64` columns on these 1-30 us calls are noise, not a bounds-check effect.
 
 The i64-heavy X25519 is 1.55x behind Wasmtime on `jit-x86_64`, the 32-bit hashes and the byte loops of
 miniz 1.1-1.4x; BLAKE2b and the AEAD are on par.

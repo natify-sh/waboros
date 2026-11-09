@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build mono.wasm, hash.wasm, zip.wasm (Ubuntu clang 18.1.3, wasm-ld 18). Run from anywhere.
+# Build mono.wasm, hash.wasm, zip.wasm, xxh.wasm, qoi.wasm (Ubuntu clang 18.1.3, wasm-ld 18). Run from anywhere.
 # Library sources are fetched into .cache/corpus (git-ignored) and checked against the sha256 below.
 set -e
 cd "$(dirname "$0")"
@@ -31,10 +31,14 @@ fetch miniz_tdef.h $Z/miniz_tdef.h 12b09b189c27aa7d0b0ebe0be2f3021a3bab26fe7b19e
 fetch miniz_tinfl.c $Z/miniz_tinfl.c 9b7edc1fab708166e10f5e90a618a91c95a91496c4692e38160fdae810c1149a
 fetch miniz_tinfl.h $Z/miniz_tinfl.h 040aad2d9ca23c487652c150277d950be12e72c5453ae1f7c6713ed2efd16b4e
 fetch miniz_zip.h $Z/miniz_zip.h c9343f0d251d92f3730d5fe684d4af67aa0bed25d2d1d39d5fd4746a3c63f796
+fetch xxhash.h $R/Cyan4973/xxHash/v0.8.2/xxhash.h be275e9db21a503c37f24683cdb4908f2370a3e35ab96e02c4ea73dc8e399c43
+fetch qoi.h $R/phoboslab/qoi/master/qoi.h 7de6fca1a285b1c20d38f2723dec8b774eb9f144edb9710800a95feeea09375a # no tags
 F="--target=wasm32 -O3 -nostdlib -ffunction-sections -Ishim -I$SRC -I. -Wl,--no-entry -Wl,--gc-sections -Wl,-z,stack-size=1048576"
 clang $F -fno-builtin -o mono.wasm common.c mono.c "$SRC/monocypher.c"
 clang $F -fno-builtin -DBLAKE3_NO_SSE2 -DBLAKE3_NO_SSE41 -DBLAKE3_NO_AVX2 -DBLAKE3_NO_AVX512 \
   -o hash.wasm common.c hash.c "$SRC/sha256.c" "$SRC/blake3.c" "$SRC/blake3_dispatch.c" "$SRC/blake3_portable.c"
 clang $F -fno-builtin -DMINIZ_NO_ARCHIVE_APIS -DMINIZ_NO_STDIO -DMINIZ_NO_TIME \
   -o zip.wasm common.c zip.c "$SRC/miniz.c" "$SRC/miniz_tdef.c" "$SRC/miniz_tinfl.c"
-ls -l mono.wasm hash.wasm zip.wasm
+clang $F -fno-builtin -o xxh.wasm common.c xxh.c
+clang $F -fno-builtin -o qoi.wasm common.c qoi.c
+ls -l mono.wasm hash.wasm zip.wasm xxh.wasm qoi.wasm

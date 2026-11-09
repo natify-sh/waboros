@@ -127,7 +127,7 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
 * CoreMark (`poc/in/core.wasm`, `zig cc -O3`): correctness by its own CRC self-check, speed in it/s.
   Record new numbers in BENCHMARKS.md with the conditions.
 * Corpus of freestanding libraries (`poc/bench/corpus/`, `tools/run_corpus.py`): Monocypher, SHA-256,
-  BLAKE3 and miniz checked against `hashlib`, `zlib`, reference vectors and pure-Python references on every
+  BLAKE3, miniz, xxHash and QOI checked against `hashlib`, `zlib`, reference vectors and pure-Python references on every
   target and Wasmtime; exit status non-zero on a mismatch. Timings in BENCHMARKS.md.
 * Calls benchmark (`poc/bench/calls/`, `tools/run_calls_bench.py`, S0007): a 2-argument leaf called in a
   loop and recursive `fib(27)`, ns per call on `jit-x86_64` and Wasmtime; fails if the results differ.
