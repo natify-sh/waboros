@@ -43,6 +43,9 @@ test-requires = ["pytest", "wasmtime==50.0.1", "wasm-tools-package==1.262.0.0", 
 test-command = "pytest {project}/tests --jit-bounds=guard,explicit -q -rs -p no:cacheprovider"
 
 [tool.cibuildwheel.linux]
+# Docker's default seccomp profile on the Ubuntu 26.04 runners refuses the 32-bit socket calls, so
+# DNS fails in the i686 container (pip cannot reach PyPI); 64-bit containers are not affected.
+container-engine = { name = "docker", create-args = ["--security-opt", "seccomp=unconfined"] }
 # x86_64 glibc: oldest, 3.14, newest free-threaded; musl x86_64: one (the musl guard row); i686: one
 # (the 32-bit pyc cell); aarch64 glibc: oldest and newest free-threaded; armv7l (native on the arm runner, pyc only): cp313; no musl aarch64, no musl i686.
 build = """

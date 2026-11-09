@@ -167,7 +167,9 @@ test files with `WABOROS_PYC_FBITS=1` (D46: f32/f64 as int bit patterns, the def
 D45) and the spec suite of `jit-aarch64` (it covers `simd/` since the 5e2 claim) in both bounds modes, then
 `test_guard.py` in guard mode, under QEMU with BTI enforced (its subprocess cases skip without binfmt); the x86 SIMD tests and the explicit `simd` spec run of
 `jit-x86_64` under the SSE2-only `qemu64` CPU with `WABOROS_JIT_BOUNDS=explicit` (QEMU splits wide
-stores, D45), compared with `pyc` by `tools/spec_diff.py` (strict since 5d3);
+stores, D45), compared with `pyc` by `tools/spec_diff.py` (strict since 5d3), run inside an
+`ubuntu:latest` container because the Ubuntu 26.04 runner's own userland is the `amd64v3` variant
+(SIGILL on an SSE2-only CPU before Python starts);
 the spec suite of `jit-x86_64` and `tests/jit/test_guard.py` with `WABOROS_JIT_BOUNDS=guard` named
 explicitly (guard pages, S0006; the same two in a `python:3.13-alpine` container for Linux musl
 x86-64, `MUSL_GUARD`; the test file runs on the JIT of the machine and skips

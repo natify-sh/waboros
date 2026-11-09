@@ -115,16 +115,19 @@ jobs:
       # S0005: SIMD on an SSE2-only CPU (QEMU's qemu64 without SSE3/SSSE3/SSE4/popcnt: an
       # instruction above x86-64-v1 is a SIGILL); jit-x86_64 claims simd (5d3), so the explicit
       # `simd` run must pass whole and equal pyc's
-      # explicit bounds: QEMU TCG splits wide stores, so guard mode may tear one (accepted, D45)
-      - run: qemu-x86_64 -cpu qemu64,-pni,-ssse3,-sse4.1,-sse4.2,-popcnt .venv/bin/python -m pytest tests/jit/test_simd_abi.py tests/jit/test_simd_x86.py -q
-        env:
-          WABOROS_JIT_REQUIRE: "1"
-          WABOROS_JIT_BOUNDS: explicit
+      # explicit bounds: QEMU TCG splits wide stores, so guard mode may tear one (accepted, D45).
+      # In a container: the Ubuntu 26.04 runner's own userland is the amd64v3 variant (glibc,
+      # /bin/true and qemu-user use AVX2), so on an SSE2-only CPU it is SIGILL before Python starts;
+      # ubuntu:latest has the generic amd64 userland. The venv and its Python are mounted at their paths.
       - run: |
-          qemu-x86_64 -cpu qemu64,-pni,-ssse3,-sse4.1,-sse4.2,-popcnt .venv/bin/python -m tests.spec.run --engine jit-x86_64 --in-process --json simd-qemu64.json simd > /dev/null
+          docker run --rm -v /home/runner/work:/home/runner/work -w "$PWD" \
+            -e WABOROS_JIT_REQUIRE=1 -e WABOROS_JIT_BOUNDS=explicit ubuntu:latest sh -euc '
+            apt-get update -qq >/dev/null && apt-get install -y -qq qemu-user llvm binutils >/dev/null  # llvm-mc, objdump: the encoder tests
+            Q="qemu-x86_64 -cpu qemu64,-pni,-ssse3,-sse4.1,-sse4.2,-popcnt"
+            $Q /bin/true
+            $Q .venv/bin/python -m pytest tests/jit/test_simd_abi.py tests/jit/test_simd_x86.py -q -p no:cacheprovider
+            $Q .venv/bin/python -m tests.spec.run --engine jit-x86_64 --in-process --json simd-qemu64.json simd > /dev/null'
           uv run python tools/spec_diff.py pyc simd-qemu64.json simd
-        env:
-          WABOROS_JIT_BOUNDS: explicit
       - run: uv run python tools/isa_all.py
       # S0004: the same gate for the aarch64 code, cross-compiled here (never run; D35): ARMv8.0-A
       - run: uv run python tools/isa_all.py --target jit-aarch64
