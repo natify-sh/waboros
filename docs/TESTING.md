@@ -207,8 +207,10 @@ Package tests run in parallel with pytest-xdist (`-n auto`, in the dev group; th
 wherever the process is native and can start subprocesses: the `test`, `jit` and `arm64` pytest runs of `ci`,
 `coverage.yml`, the WAT-cache fill and every cibuildwheel cell except Android and Pyodide, whose runtimes
 cannot start the worker processes (execnet). Serial: the single-file `tests/jit/test_guard.py` runs (too small
-to gain), every run under QEMU user mode (`tools/run_arm64.py`, the qemu64 container), where workers would
-multiply the emulation cost, and the spec runner (`tests/spec/run.py`, one file after another).
+to gain), every run under QEMU user mode (`tools/run_arm64.py`, the qemu64 container): without binfmt its child
+processes are not emulated (xdist workers for aarch64 would not start; in the qemu64 SSE2 step they would run
+natively with AVX and silently stop testing SSE2). The spec runner (`tests/spec/run.py`) runs its per-file
+child processes in parallel (`--jobs`, default the CPU count); with `--in-process` it is serial.
 
 `tests/jit/test_fault_handler.py` checks the emitted fault handlers off their OS: the Darwin and
 Windows offsets against ctypes mirrors of xnu's and the Windows SDK's headers, the Darwin and Windows
