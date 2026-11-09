@@ -35,12 +35,12 @@ build-frontend = "build[uv]"
 before-build = "pip wheel --no-deps --wheel-dir {project}/ci/deps {project}"
 # auditwheel refuses a wheel without an ELF file, and there is nothing to repair
 repair-wheel-command = ""
-test-requires = ["pytest", "wasmtime==50.0.1", "wasm-tools-package==1.263.0.0", "pywasm"]
+test-requires = ["pytest", "pytest-xdist", "wasmtime==50.0.1", "wasm-tools-package==1.263.0.0", "pywasm"]
 # The JIT platforms run the tests that compile JIT code once per bounds mode (guard, explicit), in
 # one pytest run: the mode is a pytest option (tests/conftest.py), not an environment variable, so it
 # is the same in sh, cmd and the Android app, where cibuildwheel has no test-environment. Windows runs
 # test-command through cmd.exe (cibuildwheel util/cmd.py shell()).
-test-command = "pytest {project}/tests --jit-bounds=guard,explicit -q -rs -p no:cacheprovider"
+test-command = "pytest {project}/tests -n auto --jit-bounds=guard,explicit -q -rs -p no:cacheprovider"
 
 [tool.cibuildwheel.linux]
 # Docker's default seccomp profile on the Ubuntu 26.04 runners refuses the 32-bit socket calls, so
@@ -74,7 +74,8 @@ test-requires = ["pytest"]
 test-sources = ["tests", "tools", "docs", "poc/in/core.wasm", "poc/bench/switch/vm.wasm", "poc/bench/corpus/hash.wasm", "poc/bench/corpus/mono.wasm", "poc/bench/corpus/zip.wasm"]  # docs: tests/test_features.py copies it; the wasm: tests/test_pyc_branches.py
 test-command = "python -m pytest tests --jit-bounds=guard,explicit -q -rs -p no:cacheprovider --ignore=tests/spec"
 
-# Pyodide: pyc only, no wasmtime wheel.
+# Pyodide: pyc only, no wasmtime wheel. No pytest-xdist on Android and Pyodide: its workers are
+# subprocesses (execnet), which neither the testbed app nor the Pyodide runtime can start.
 [tool.cibuildwheel.pyodide]
 build = "cp313-*"
 test-requires = ["pytest"]
@@ -84,24 +85,25 @@ test-command = "pytest {project}/tests -q -rs -p no:cacheprovider --ignore={proj
 # mode there) and explicit.
 [[tool.cibuildwheel.overrides]]
 select = "*-manylinux_aarch64"
-test-command = "pytest {project}/tests --jit-bounds=auto,explicit -q -rs -p no:cacheprovider"
+test-command = "pytest {project}/tests -n auto --jit-bounds=auto,explicit -q -rs -p no:cacheprovider"
 
 # The spec suite (ci/harness/spec.py: wasmtime, pyc, the JIT in guard and explicit mode, auto) runs
 # once per JIT platform, after the tests, on one Python: cp311 (musl x86_64 has only cp313). The
 # overrides are in this order because a later one wins: the aarch64 glibc cell keeps its modes.
 [[tool.cibuildwheel.overrides]]
 select = ["cp311-manylinux_x86_64", "cp313-musllinux_x86_64", "cp311-macosx_*", "cp311-win_*"]
-test-command = "pytest {project}/tests --jit-bounds=guard,explicit -q -rs -p no:cacheprovider && python {project}/ci/harness/spec.py"
+test-command = "pytest {project}/tests -n auto --jit-bounds=guard,explicit -q -rs -p no:cacheprovider && python {project}/ci/harness/spec.py"
 
 [[tool.cibuildwheel.overrides]]
 select = "cp311-manylinux_aarch64"
-test-command = "pytest {project}/tests --jit-bounds=auto,explicit -q -rs -p no:cacheprovider && python {project}/ci/harness/spec.py"
+test-command = "pytest {project}/tests -n auto --jit-bounds=auto,explicit -q -rs -p no:cacheprovider && python {project}/ci/harness/spec.py"
 
+# xdist runs here too (native i686/armv7l; the QEMU jobs are unmeasured).
 # Linux i686 and armv7l (32-bit) and the optional exotic jobs (ppc64le, s390x, riscv64; under QEMU): no JIT here, no
 # wheels of wasmtime / wasm-tools, no uv wheels: no oracle (those tests skip); WAT comes from
 # tests/wat_cache. tests/spec needs the spec cache and the oracle.
 [[tool.cibuildwheel.overrides]]
 select = ["*_i686", "*_armv7l", "*_ppc64le", "*_s390x", "*_riscv64"]
 build-frontend = "build"
-test-requires = ["pytest"]
-test-command = "pytest {project}/tests -q -rs -p no:cacheprovider --ignore={project}/tests/spec"
+test-requires = ["pytest", "pytest-xdist"]
+test-command = "pytest {project}/tests -n auto -q -rs -p no:cacheprovider --ignore={project}/tests/spec"

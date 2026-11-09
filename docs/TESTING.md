@@ -203,6 +203,13 @@ the JIT in guard mode and in explicit mode, and `auto` (S0006 steps 3 and 4: the
 Windows are verified there on every push). Left in `ci` because they need a source checkout or special
 tools: the disassembly checks (llvm-mc, GNU objdump), QEMU, CoreMark, the D35 lists, MDWE.
 
+Package tests run in parallel with pytest-xdist (`-n auto`, in the dev group; the runners have 4 vCPU)
+wherever the process is native and can start subprocesses: the `test`, `jit` and `arm64` pytest runs of `ci`,
+`coverage.yml`, the WAT-cache fill and every cibuildwheel cell except Android and Pyodide, whose runtimes
+cannot start the worker processes (execnet). Serial: the single-file `tests/jit/test_guard.py` runs (too small
+to gain), every run under QEMU user mode (`tools/run_arm64.py`, the qemu64 container), where workers would
+multiply the emulation cost, and the spec runner (`tests/spec/run.py`, one file after another).
+
 `tests/jit/test_fault_handler.py` checks the emitted fault handlers off their OS: the Darwin and
 Windows offsets against ctypes mirrors of xnu's and the Windows SDK's headers, the Darwin and Windows
 handlers through llvm-mc (x86-64 also through GNU objdump; the Windows ones also for the registers they
