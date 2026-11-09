@@ -266,7 +266,9 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29; done 2026-11-03) -> 
   and the corpus geomean −0.9 %, for +10 % code, so it fails the rule (a gain over CoreMark, the kernels and
   the corpus beyond the spread; maintainer, 2026-11-05). Alignment to 32 (CoreMark about +4 % in two
   sessions) only if revisited. **aarch64: open**: measured natively on the CI arm runners, a `PAD`
-  sweep in 4-byte steps over 0..124 bytes, then alignment to 16, 32 and 64.
+  sweep in 4-byte steps over 0..124 bytes, then alignment to 16, 32 and 64. The workflow
+  `placement-arm.yml` and `tools/placement_sweep.py` are ready; the numbers are not in yet
+  (BENCHMARKS.md, "Code placement on aarch64").
 * Trap frames, fuel and epoch checks (the interrupt word is polled already, phase 3); Ctrl+C via the
   waiting main thread.
 * **Entry bookkeeping without a restore in a `finally`** (D51): on PyPy a `KeyboardInterrupt` at a

@@ -230,6 +230,14 @@ Packaging workflows (D40): `.github/workflows/coverage.yml` runs `pytest --cov` 
 smoke-tests the wheel in a clean environment, and publishes to PyPI (trusted publishing) and as a GitHub
 release. `.github/dependabot.yml` updates the `uv` lock file and the pinned actions weekly.
 
+Measurement workflow: `.github/workflows/placement-arm.yml` (push to the branch `placement-arm`, or
+`workflow_dispatch` with the rounds) runs `tools/placement_sweep.py` on `ubuntu-24.04-arm`, one job per
+bounds mode. It is the code-placement study on native aarch64 (BENCHMARKS.md, "Code placement on
+aarch64"), not a gate. It fails only on a wrong result: CoreMark not validated, a kernel checksum or a
+corpus result off. The values go to the job summary and the artifact `placement-<mode>`. A local run
+under QEMU checks correctness only: `python3 tools/run_arm64.py tools/placement_sweep.py --quick
+--rounds 1 --pads 0,4 --aligns 16 --align-pads 0`.
+
 **SIMD is measured before it is claimed.** A directory the target does not claim is not run by the
 default spec run and not in CI; the explicit run `python -m tests.spec.run --engine T simd` ignores
 the claims and counts failures as failures. A target claims `simd` only when that run has at most 25

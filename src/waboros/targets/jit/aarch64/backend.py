@@ -13,6 +13,7 @@ Far mode (S0004): a conditional branch reaches ±1 MiB. `func_end` reports a fun
 does not; compiled again with `far`, every conditional branch to a label becomes `b.!cond` over
 an unconditional `b` (±128 MiB). Loops inside one method branch locally and always reach."""
 
+import os
 import struct
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -86,6 +87,8 @@ class Backend:
         self.faults: list[tuple[int, int]] = []  # (fault offset, resume offset), by `finish`
         self._faults: list[tuple[int, Label]] = []
         self._oob: Label | None = None  # the stub of the unchecked access `_bounds` just formed
+        self.align = int(os.environ.get("WABOROS_JIT_LOOP_ALIGN") or 0)  # placement study only
+        self.a.pad_here(int(os.environ.get("WABOROS_JIT_PAD") or 0))  # (tools/placement_sweep.py)
 
     def new_label(self) -> Label:
         return self.a.label()
@@ -137,7 +140,7 @@ class Backend:
         a.ld(17, CTX, 8 * VSTACK_LIMIT)
         a.cmp(16, 17)
         self._bcc("hi", self._stub(f, TrapCode.STACK_OVERFLOW))
-        self.poll(f)
+        self._poll(f)
         return f
 
     def func_end(self, f: Frame, frame_slots: int) -> bool:
@@ -203,6 +206,12 @@ class Backend:
         return f.traps[code]
 
     def poll(self, f: Frame) -> None:
+        """A loop header (the compiler's only call): `_poll`, after NOPs to `self.align`."""
+        if self.align:
+            self.a.pad_here(-len(self.a.buf) % self.align)
+        self._poll(f)
+
+    def _poll(self, f: Frame) -> None:
         """At function entry and loop headers (D14, LESSONS 8)."""
         self.a.ld(16, CTX, 8 * INTERRUPT)
         self._cbz(16, self._stub(f, STATUS_INTERRUPT), nz=True)

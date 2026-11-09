@@ -1347,6 +1347,28 @@ kernels and the corpus, beyond the spread): it trades one kernel for another. St
 natively on the CI arm runners (a `PAD` sweep in 4-byte steps over 0..124 bytes, then alignment to 16, 32 and
 64); alignment to 32 only if the item is revisited.
 
+## Code placement on aarch64 (method; ROADMAP "Code placement")
+
+The numbers come from the workflow `.github/workflows/placement-arm.yml` (push to the branch
+`placement-arm` or start it by hand). It runs on GitHub's `ubuntu-24.04-arm` runner, CPython 3.13,
+one job per bounds mode (guard, explicit). Results go to the job summary and to the artifact
+`placement-<mode>` (CSV of every value, the summary, `lscpu`). Its tool, `tools/placement_sweep.py`,
+compiles with two aarch64-only knobs. Both are off by default, and the code with them unset is
+byte-identical (D35 lists, all spec modules and CoreMark, both modes). `WABOROS_JIT_PAD` puts N
+bytes of `nop` before the first function. `WABOROS_JIT_LOOP_ALIGN` aligns every loop header (not only
+inner ones, unlike the x86-64 prototype) with `nop`. The configurations are pads 0..124 in 4-byte
+steps, plus alignment to 16, 32 and 64 at pads 0, 20, 40 and 60, judged against the same pad
+unaligned. Each round runs every configuration once, in a shuffled order, in one process; values
+are medians over the rounds (5 by default):
+* CoreMark it/s (its `millis()` runs 4 times fast, so a run takes about 3 s; the rate is scaled
+  back), validated on every run;
+* the scalar kernels of `run_simd_bench.py`, µs per iteration, median of 5 calls of 2000 iterations
+  each, checksums equal across configurations;
+* the corpus of `run_corpus.py`, µs per call over 20 calls, every result checked; the summary gives
+  the geomean.
+
+The decision rule is the x86-64 one. Results: to be filled from the first run.
+
 ## Exceptions: the status check after a call (S0012 Q1, 2026-11-05)
 
 The cost of option A's check, which every JIT call site already has for traps (`test eax, eax; jnz
