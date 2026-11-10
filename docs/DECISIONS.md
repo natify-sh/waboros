@@ -944,3 +944,19 @@ reorder. Compile time is within the +5 % bound (S0011). The trap code stays at e
 plug point, which creates the stub, so the shared layer never sees a frame (S0011 Q5).
 `WABOROS_JIT_TWOLEVEL` and the per-backend bodies are removed (Q3). GC is to be written on this
 layer.
+
+### D54. Runtime modules written in wasm ship as source and bytes, tied by a test
+Status: accepted (maintainer, 2026-11-10) · Date: 2026-11-10 · Supersedes: — · Evidence: S0013 Q4 (revised 2026-11-10); the review of 2026-11-10 and the proposal GC-COLLECTOR-WAT
+
+A small module the runtime itself runs as wasm (the first is S0013's collector) is written in WAT
+and kept in the package as two files side by side: the `.wat` source and the committed `.wasm`,
+shipped as package data. A test assembles the `.wat` with the development tools (`tests/watcache.py`,
+`wasm-tools`) and fails unless the bytes equal the committed file. Nothing is assembled at install
+or at import (D1): the package compiles the bytes with its own JIT, as it compiles any module. Such a
+module uses core wasm only, has no host import beyond what its spec names, is deterministic (D35),
+and traps on malformed input instead of writing outside its memory.
+
+Why: a module written once runs on every JIT architecture and ports to JIT-AS-WASM.md unchanged,
+and the text is reviewable source rather than a binary built elsewhere; the test keeps the two from
+drifting. Rejected: assembling WAT at run time (needs a parser in the package, D1); bytes without a
+source in the tree (unreviewable).
