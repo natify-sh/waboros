@@ -155,7 +155,7 @@ with plain ARMv8.0) and check that a higher-level artifact is refused there; loa
 reference loader as well as from Python; refuse artifacts with an unknown format or context ABI version.
 
 A newer push to the same ref cancels a `ci.yml` or `coverage.yml` run in progress (`concurrency`);
-`publish.yml` runs one release per ref and is never cancelled. A push to a branch that has an open pull request is tested once, by the `pull_request` run: in `ci.yml`, `platforms.yml` and `coverage.yml` the job `dedup` (on `ubuntu-slim`) asks the API for an open pull request from that branch and the other jobs are skipped on the push run; pushes to `main`, tags and branches without a pull request run as before. Jobs of `.github/workflows/ci.yml`: `lint` (ruff, pyright, `check_docs.py`, `features.py --check`); `test`
+`publish.yml` runs one release per ref and is never cancelled. A push to a branch that has an open pull request is tested once, by the `pull_request` run: in `ci.yml`, `platforms.yml` and `coverage.yml` the job `dedup` (on `ubuntu-slim`) asks the API for an open pull request from that branch and the other jobs are skipped on the push run; pushes to `main`, tags and branches without a pull request run as before. Caches: `setup-uv` keeps uv's package cache and, with `cache-python: true`, the managed Pythons; the non-Linux cells of `platforms.yml` keep cibuildwheel's download cache (`CIBW_CACHE_PATH`, `actions/cache`; Linux builds in containers and does not use it); `publish.yml` caches nothing. Jobs of `.github/workflows/ci.yml`: `lint` (ruff, pyright, `check_docs.py`, `features.py --check`); `test`
 (`pytest -q` on the seven Pythons, in the default bounds mode, `auto` (D44: guard pages on this Linux glibc x86-64
 runner);
 on 3.13 again with `WABOROS_JIT_BOUNDS=explicit`, so explicit checks stay covered, and the three `pyc`
@@ -211,6 +211,11 @@ to gain), every run under QEMU user mode (`tools/run_arm64.py`, the qemu64 conta
 processes are not emulated (xdist workers for aarch64 would not start; in the qemu64 SSE2 step they would run
 natively with AVX and silently stop testing SSE2). The spec runner (`tests/spec/run.py`) runs its per-file
 child processes in parallel (`--jobs`, default the CPU count); with `--in-process` it is serial.
+Measured on GitHub runners, one run each (2026-11-09; serial: `ci` run 42715354410, `platforms` 42715354559;
+parallel: 42723969981, 42723969854): `spec` 3:11 → 1:30, `test` 3.13 2:39 → 1:38 (the other CPython cells
+−27…−43 %, PyPy 0:53 → 0:56), `arm64` 6:43 → 4:38, coverage 3:15 → 2:07, cibuildwheel cells −26…−58 %
+(Android and Pyodide, serial: −7 % and −4 %); `jit` 10:48 → 16:28, all of it in its QEMU steps, which did
+not change (runner variance).
 
 `tests/jit/test_fault_handler.py` checks the emitted fault handlers off their OS: the Darwin and
 Windows offsets against ctypes mirrors of xnu's and the Windows SDK's headers, the Darwin and Windows
@@ -226,9 +231,17 @@ where `IsUserCetAvailableInEnvironment` says the machine has no user CET (with C
 fails).
 
 Packaging workflows (D40): `.github/workflows/coverage.yml` runs `pytest --cov` on Python 3.13 and keeps
-`coverage.xml` as an artifact and to Codecov (OIDC); `publish.yml` runs on a `v*` tag, builds the sdist and the wheel,
+`coverage.xml` as an artifact and to Codecov (OIDC; informational, `codecov.yml`: its statuses and upload errors never fail CI); `publish.yml` runs on a `v*` tag, builds the sdist and the wheel,
 smoke-tests the wheel in a clean environment, and publishes to PyPI (trusted publishing) and as a GitHub
 release. `.github/dependabot.yml` updates the `uv` lock file and the pinned actions weekly.
+
+Measurement workflow: `.github/workflows/placement-arm.yml` (by hand only,
+`workflow_dispatch` with the rounds) runs `tools/placement_sweep.py` on `ubuntu-24.04-arm`, one job per
+bounds mode. It is the code-placement study on native aarch64 (BENCHMARKS.md, "Code placement on
+aarch64"), not a gate. It fails only on a wrong result: CoreMark not validated, a kernel checksum or a
+corpus result off. The values go to the job summary and the artifact `placement-<mode>`. A local run
+under QEMU checks correctness only: `python3 tools/run_arm64.py tools/placement_sweep.py --quick
+--rounds 1 --pads 0,4 --aligns 16 --align-pads 0`.
 
 **SIMD is measured before it is claimed.** A directory the target does not claim is not run by the
 default spec run and not in CI; the explicit run `python -m tests.spec.run --engine T simd` ignores

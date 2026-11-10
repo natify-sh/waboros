@@ -43,6 +43,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+        with: { cache-python: true }  # the managed Pythons too, not only the packages
       - run: uv sync --python 3.14
       - run: uv run ruff format --check .
       - run: uv run ruff check .
@@ -60,6 +61,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+        with: { cache-python: true }  # the managed Pythons too, not only the packages
       - run: uv sync --python ${{ matrix.python }}
       - run: uv run pytest -q -n auto
       # the measured native stack bounds and the JIT's budget (D10), once; and on musl (128 KiB threads)
@@ -84,6 +86,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+        with: { cache-python: true }  # the managed Pythons too, not only the packages
       - run: uv sync --python 3.13
       # llvm-mc (encoder check) and objdump/objcopy (ISA check); the tests skip without them.
       - run: (command -v llvm-mc && command -v llvm-objcopy) || (sudo apt-get update && sudo apt-get install -y llvm binutils)
@@ -176,6 +179,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+        with: { cache-python: true }  # the managed Pythons too, not only the packages
       - run: uv sync --python 3.13
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
@@ -205,6 +209,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+        with: { cache-python: true }  # the managed Pythons too, not only the packages
       - run: uv sync --python 3.13
       # llvm-mc and llvm-objcopy for the encoder tests (WABOROS_JIT_REQUIRE=1 below)
       - run: (command -v llvm-mc && command -v llvm-objcopy) || (sudo apt-get update && sudo apt-get install -y llvm)

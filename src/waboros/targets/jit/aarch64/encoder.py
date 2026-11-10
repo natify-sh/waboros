@@ -114,6 +114,12 @@ class Asm:
             raise ValueError(f"label {label.id} bound twice")
         self._labels[label.id] = len(self.buf)
 
+    def pad_here(self, n: int) -> None:
+        """n bytes of `nop`; labels bound here move past them (code-placement study only)."""
+        at = len(self.buf)
+        self.buf += struct.pack("<I", 0xD503201F) * (n // 4)
+        self._labels = [at + n // 4 * 4 if p == at else p for p in self._labels]
+
     def emit(self, word: int) -> None:
         self.buf += struct.pack("<I", word)
 

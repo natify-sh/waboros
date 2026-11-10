@@ -76,6 +76,7 @@ jobs:
         with:
           fetch-depth: 0  # setuptools-scm: the version of the wheel under test must not be 0.0.0
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+        with: { cache-python: true }  # the managed Pythons too, not only the packages
       # UV_FIND_LINKS makes the `uv run` below read this directory, so it must exist; before-build fills it
       - run: mkdir -p ci/deps
         shell: bash
@@ -85,8 +86,17 @@ jobs:
         run: uv run pytest tests -q -n auto -p no:cacheprovider --ignore=tests/spec
         env: { WABOROS_WAT_CACHE: "1" }
         shell: bash
+      # cibuildwheel's download cache (CPython/PyPy installers, virtualenv, the Android and Pyodide
+      # toolchains; cibuildwheel FAQ "Caching"). Linux builds in containers and does not use it.
+      - if: ${{ matrix.platform != 'linux' }}
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ runner.temp }}/cibw-cache
+          key: cibw-${{ matrix.platform }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('uv.lock', 'ci/harness/pyproject.toml') }}
+          restore-keys: cibw-${{ matrix.platform }}-${{ runner.os }}-${{ runner.arch }}-
       # cibuildwheel comes from uv.lock (dev group); the host needs nothing else
       - run: uv run --only-group dev cibuildwheel ci/harness --platform ${{ matrix.platform }} --output-dir wheelhouse
+        env: { CIBW_CACHE_PATH: "${{ runner.temp }}/cibw-cache" }
         shell: bash
   # Optional, never on push, never counts against the run: the architectures that have only pyc (no
   # micro-compiler yet). Start it from the Actions tab with `exotic` ticked. QEMU is very slow, so
@@ -112,6 +122,7 @@ jobs:
         with:
           fetch-depth: 0
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+        with: { cache-python: true }  # the managed Pythons too, not only the packages
       - if: ${{ matrix.qemu }}
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1  # v4.4.0
         with:

@@ -1,0 +1,50 @@
+name: placement-arm
+# Code placement on native aarch64 (ROADMAP "Code placement"; BENCHMARKS.md, "Code placement on
+# aarch64"): tools/placement_sweep.py, a pad sweep of 0..124 bytes in 4-byte steps, then loop headers
+# aligned to 16, 32 and 64 at four pads; CoreMark, the scalar SIMD kernels and the corpus, alternated
+# rounds in one process. A measurement, not a gate: run on demand. About 15-20 min per mode.
+on:
+  workflow_dispatch:  # by hand only (Actions tab, or gh workflow run placement-arm.yml)
+    inputs:
+      rounds:
+        description: "alternated rounds"
+        default: "5"
+permissions:
+  contents: read
+jobs:
+  sweep:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        bounds: [guard, explicit]
+    env:
+      WABOROS_JIT_BOUNDS: ${{ matrix.bounds }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+      - run: uv sync --python 3.13
+      - run: |
+          lscpu | tee lscpu.txt
+          uv run python -c "import platform, sys; print(platform.machine(), sys.version)" | tee -a lscpu.txt
+      - run: >-
+          uv run python tools/placement_sweep.py --target jit-aarch64
+          --rounds ${{ inputs.rounds || '5' }}
+          --csv placement-${{ matrix.bounds }}.csv --md placement-${{ matrix.bounds }}.md
+      - if: ${{ !cancelled() }}
+        run: |
+          {
+            cat placement-${{ matrix.bounds }}.md 2>/dev/null || echo "no result"
+            echo; echo '```'; grep -E "Model name|Vendor|CPU part|^aarch64" lscpu.txt; echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: placement-${{ matrix.bounds }}
+          path: |
+            placement-*.csv
+            placement-*.md
+            lscpu.txt
+          retention-days: 30
+          if-no-files-found: ignore
