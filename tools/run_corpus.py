@@ -4,9 +4,10 @@
     python tools/run_corpus.py [--targets pyc,jit-x86_64,wasmtime] [--rounds 3]
 
 Every case puts an input into the module's I/O buffer, calls an export, reads the result back and
-compares it with the Python standard library (hashlib, zlib), a pure-Python reference or a published
-vector, on every target; the exit status is non-zero on any mismatch. Then prints microseconds per
-call (alternated rounds, median; none for jit-aarch64, which runs under QEMU)."""
+compares it with the Python standard library (hashlib, zlib), a pure-Python reference or a vector
+computed once by the reference C library built natively (xxHash, QOI), on every target; the exit
+status is non-zero on any mismatch. Then prints microseconds per call
+(alternated rounds, median; none for jit-aarch64, which runs under QEMU)."""
 
 import hashlib
 import json
@@ -28,20 +29,38 @@ OUT = 32768  # the output area of poc/bench/corpus/common.h
 M32, M64 = 0xFFFFFFFF, (1 << 64) - 1
 
 
+def _wasi(name: str) -> Callable[..., int]:
+    """A WASI import of the C++ module (abort paths only): proc_exit traps, the rest succeed."""
+
+    def f(*_: int) -> int:
+        if name == "proc_exit":
+            raise RuntimeError("proc_exit")
+        return 0
+
+    return f
+
+
 def runner(target: str, wasm: bytes) -> Callable[..., int]:
     """call(name, *args) -> result of the export, unsigned, on a fresh instance."""
     if target == "wasmtime":
         import wasmtime
 
-        eng = wasmtime.Engine()
+        cfg = wasmtime.Config()
+        cfg.wasm_exceptions = True  # the C++ module uses try_table / throw_ref
+        eng = wasmtime.Engine(cfg)
         st = wasmtime.Store(eng)
-        ex = wasmtime.Instance(st, wasmtime.Module(eng, wasm), []).exports(st)
+        mdl = wasmtime.Module(eng, wasm)
+        imps = [wasmtime.Func(st, i.type, _wasi(i.name)) for i in mdl.imports]
+        ex = wasmtime.Instance(st, mdl, imps).exports(st)
         sign = lambda v: v - (1 << 64) if v >> 63 else v  # noqa: E731
         return lambda name, *a: ex[name](st, *(sign(x) for x in a)) & M64
     mod = binary.parse(wasm)
     validate(mod)
     tg = base.TARGETS[target]()
-    inst = tg.instantiate(tg.compile(mod), link.resolve(mod, {}), StoreState())
+    host = {n: (lambda _a, n=n: [_wasi(n)()]) for _, _, n, _ in mod["imports"]}
+    inst = tg.instantiate(
+        tg.compile(mod), link.resolve(mod, {"wasi_snapshot_preview1": host}), StoreState()
+    )
     idx = {n: i for n, k, i in mod["exports"] or () if k == 0}
     return lambda name, *a: inst.call(idx[name], list(a))[0]
 
@@ -119,6 +138,16 @@ def xchacha_poly_ref(key: bytes, nonce: bytes, pt: bytes) -> bytes:
     return mac + ct
 
 
+FNV_OFFSET, FNV_PRIME = 1469598103934665603, 1099511628211
+
+
+def fnv1a64(data: bytes) -> int:
+    h = FNV_OFFSET
+    for b in data:
+        h = ((h ^ b) * FNV_PRIME) & M64
+    return h
+
+
 # (library, case, input put at IN, export, args, expected output); reps are given at call time
 Case = tuple[str, str, dict[int, bytes], str, tuple[int, ...], bytes]
 
@@ -158,6 +187,33 @@ def cases() -> list[Case]:
     comp = zlib.compress(text, 6)
     out.append(("zip", "inflate 8K", {0: comp}, "inflate", (len(comp),), text))
     out.append(("zip", "deflate 8K", {0: text}, "deflate", (len(text),), text))
+    for key, (h32, h64, x3, x128) in json.loads((DIR / "xxh_vectors.json").read_text()).items():
+        n, seed = map(int, key.split(":"))
+        data = bytes((i * 31 + 7) & 255 for i in range(n))
+        lo, hi = int(x128[:16], 16), int(x128[16:], 16)  # printed low64 then high64
+        for fn, want in (
+            ("xxh32", bytes.fromhex(h32)[::-1]),
+            ("xxh64", bytes.fromhex(h64)[::-1]),
+            ("xxh3", bytes.fromhex(x3)[::-1]),
+            ("xxh3_128", lo.to_bytes(8, "little") + hi.to_bytes(8, "little")),
+        ):
+            out.append(("xxh", f"{fn} {n}B s{seed}", {0: data}, fn, (n, seed), want))
+    img = (DIR / "qoi_test.qoi").read_bytes()  # 64x48 RGBA made by the reference encoder
+    # FNV-1a of the pixels the reference decoder returned (computed natively once)
+    fnv = (0x8CA146741205981A).to_bytes(8, "little")
+    out.append(("qoi", "qoi decode 8K", {0: img}, "qoi_dec", (len(img),), fnv))
+    # decode, then encode again: must give back the reference encoder's bytes
+    out.append(("qoi", "qoi dec+enc 8K", {0: img}, "qoi_rt", (len(img),), img))
+    # C++ exceptions (cxx_exc.cpp, try_table / throw_ref): one int32 per line, then the destructors
+    # that ran (116) and the rethrows (5); computed by the same source built natively with g++
+    lines = ["1+2*3", "(4+5)*(6-1)", "7/0", "2+*3", "(1+2", "12 3", "100/7/2", "!", ""]
+    lines += ["((((9))))-10", "8*(3+x)", "6/(2-2)+1", "99"]
+    expr = "\n".join(lines).encode()
+    want = bytes.fromhex(
+        "070000002d00000030f8ffff16fcffff14fcffff16fcffff0700000048f4ffff18fcffffffffffff"
+        "13fcffff30f8ffff630000007400000005000000"
+    )
+    out.append(("cxx_exc", "c++ throw/catch", {0: expr}, "exc_eval", (len(expr),), want))
     return out
 
 
@@ -173,8 +229,12 @@ def run_case(call: Callable[..., int], case: Case, reps: int) -> tuple[bytes, fl
     dt = (time.perf_counter() - t0) * 1e6 / reps
     if size == M32:
         return b"<failed>", dt
-    n = size if fn == "deflate" else len(case[5])  # deflate returns the compressed size
+    n = (
+        size if fn in ("deflate", "qoi_dec", "qoi_rt", "exc_eval") else len(case[5])
+    )  # these return the size
     got = b"".join(struct.pack("<Q", call("get", OUT + i)) for i in range(0, n, 8))[:n]
+    if fn == "qoi_dec":
+        return fnv1a64(got).to_bytes(8, "little"), dt
     return (zlib.decompress(got) if fn == "deflate" else got), dt  # deflate: the round trip
 
 
@@ -183,15 +243,23 @@ def main() -> None:
     targets = arg("--targets", "pyc,jit-x86_64,wasmtime").split(",")
     rounds = int(arg("--rounds", "3"))
     allcases = cases()
-    wasms = {lib: (DIR / f"{lib}.wasm").read_bytes() for lib in ("mono", "hash", "zip")}
+    wasms = {
+        lib: (DIR / f"{lib}.wasm").read_bytes()
+        for lib in ("mono", "hash", "zip", "xxh", "qoi", "cxx_exc")
+    }
     bad = 0
+    shared: dict[tuple[str, str], Callable[..., int]] = {}  # xxh: many vectors, one instance
     for c in allcases:  # a fresh instance per case and target
         for t in targets:
-            ok = run_case(runner(t, wasms[c[0]]), c, 1)[0] == c[5]
+            call = shared.get((c[0], t)) or runner(t, wasms[c[0]])
+            if c[0] == "xxh":
+                shared[(c[0], t)] = call
+            ok = run_case(call, c, 1)[0] == c[5]
             bad += not ok
             print(f"{'OK ' if ok else 'BAD'} {t:12} {c[0]:5} {c[1]}")
     timed = [t for t in targets if t != "jit-aarch64"]  # QEMU timings mean nothing
     times: dict[tuple[str, str], list[float]] = {}
+    allcases = [c for c in allcases if not c[0] == "xxh" or c[1].endswith(" 4096B s0")]  # timings
     calls = {(i, t): runner(t, wasms[c[0]]) for i, c in enumerate(allcases) for t in timed}
     for _ in range(rounds if timed else 0):  # alternated: every configuration once per round
         for i, c in enumerate(allcases):

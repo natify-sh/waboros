@@ -127,7 +127,7 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
 * CoreMark (`poc/in/core.wasm`, `zig cc -O3`): correctness by its own CRC self-check, speed in it/s.
   Record new numbers in BENCHMARKS.md with the conditions.
 * Corpus of freestanding libraries (`poc/bench/corpus/`, `tools/run_corpus.py`): Monocypher, SHA-256,
-  BLAKE3 and miniz checked against `hashlib`, `zlib`, reference vectors and pure-Python references on every
+  BLAKE3, miniz, xxHash and QOI checked against `hashlib`, `zlib`, reference vectors and pure-Python references on every
   target and Wasmtime; exit status non-zero on a mismatch. Timings in BENCHMARKS.md.
 * Calls benchmark (`poc/bench/calls/`, `tools/run_calls_bench.py`, S0007): a 2-argument leaf called in a
   loop and recursive `fib(27)`, ns per call on `jit-x86_64` and Wasmtime; fails if the results differ.
@@ -155,7 +155,7 @@ with plain ARMv8.0) and check that a higher-level artifact is refused there; loa
 reference loader as well as from Python; refuse artifacts with an unknown format or context ABI version.
 
 A newer push to the same ref cancels a `ci.yml` or `coverage.yml` run in progress (`concurrency`);
-`publish.yml` runs one release per ref and is never cancelled. Jobs of `.github/workflows/ci.yml`: `lint` (ruff, pyright, `check_docs.py`, `features.py --check`); `test`
+`publish.yml` runs one release per ref and is never cancelled. A push to a branch that has an open pull request is tested once, by the `pull_request` run: in `ci.yml`, `platforms.yml` and `coverage.yml` the job `dedup` (on `ubuntu-slim`) asks the API for an open pull request from that branch and the other jobs are skipped on the push run; pushes to `main`, tags and branches without a pull request run as before. Jobs of `.github/workflows/ci.yml`: `lint` (ruff, pyright, `check_docs.py`, `features.py --check`); `test`
 (`pytest -q` on the seven Pythons, in the default bounds mode, `auto` (D44: guard pages on this Linux glibc x86-64
 runner);
 on 3.13 again with `WABOROS_JIT_BOUNDS=explicit`, so explicit checks stay covered, and the three `pyc`
@@ -202,6 +202,15 @@ macOS, Windows, both architectures; one Python each) `ci/harness/spec.py`: the s
 the JIT in guard mode and in explicit mode, and `auto` (S0006 steps 3 and 4: the guard rows of macOS and
 Windows are verified there on every push). Left in `ci` because they need a source checkout or special
 tools: the disassembly checks (llvm-mc, GNU objdump), QEMU, CoreMark, the D35 lists, MDWE.
+
+Package tests run in parallel with pytest-xdist (`-n auto`, in the dev group; the runners have 4 vCPU)
+wherever the process is native and can start subprocesses: the `test`, `jit` and `arm64` pytest runs of `ci`,
+`coverage.yml`, the WAT-cache fill and every cibuildwheel cell except Android and Pyodide, whose runtimes
+cannot start the worker processes (execnet). Serial: the single-file `tests/jit/test_guard.py` runs (too small
+to gain), every run under QEMU user mode (`tools/run_arm64.py`, the qemu64 container): without binfmt its child
+processes are not emulated (xdist workers for aarch64 would not start; in the qemu64 SSE2 step they would run
+natively with AVX and silently stop testing SSE2). The spec runner (`tests/spec/run.py`) runs its per-file
+child processes in parallel (`--jobs`, default the CPU count); with `--in-process` it is serial.
 
 `tests/jit/test_fault_handler.py` checks the emitted fault handlers off their OS: the Darwin and
 Windows offsets against ctypes mirrors of xnu's and the Windows SDK's headers, the Darwin and Windows

@@ -52,6 +52,7 @@ fallback_version = "0.0.0"
 dev = [
     "pytest",
     "pytest-cov",
+    "pytest-xdist",
     "ruff",
     "pyright",
     "wasmtime==50.0.1",

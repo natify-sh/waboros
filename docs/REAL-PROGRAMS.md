@@ -49,9 +49,16 @@ the built `.wasm` committed, a runner that checks the results on every target an
 (alternated rounds, median, as `tools/run_simd_bench.py`). The same modules join the differential
 run below.
 
-Status (2026-11-02): built, in `poc/bench/corpus/` with `tools/run_corpus.py` (results in BENCHMARKS,
+Status (2026-11-09): built, in `poc/bench/corpus/` with `tools/run_corpus.py` (results in BENCHMARKS,
 "Corpus"): Monocypher (BLAKE2b, X25519, XChaCha20-Poly1305), SHA-256, BLAKE3, miniz (deflate, inflate).
-Not yet: xxHash, QOI / stb_image. Sources are fetched with pinned sha256 (not vendored); licences in
+xxHash (XXH32/64/3, checked against vectors of the reference build) and QOI (checksum of the reference
+decoder, byte-identical re-encoding) added 2026-11-09. Not yet: stb_image. A C++ program with real
+`throw`/`catch` (`cxx_exc.cpp`, 2026-11-09) is built with Zig 0.17.1 (PyPI `ziglang`, the newest; clang 22.1.8):
+`-fwasm-exceptions -mllvm -wasm-use-legacy-eh=false` gives `try_table`/`throw_ref`, no legacy opcode. Zig's own
+wasm libc++abi has no exceptions and Zig turns `exception-handling` off on every command line, so `build.sh`
+builds the exception runtime from the sources in the wheel (details there); clang 18.1.3 emits only the
+legacy `try`, and no clang 19+ release tarball was reachable. All targets agree with the native build.
+Sources are fetched with pinned sha256 (not vendored); licences in
 `poc/bench/corpus/licenses/`.
 
 ## 2. Why scalar code is 1.5-3.9x behind Wasmtime (investigation, no code change)

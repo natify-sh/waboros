@@ -18,7 +18,27 @@ env:
     python -m tests.spec.run --engine "jit-$(uname -m)"
     python -m pytest -p no:cacheprovider tests/jit/test_guard.py -v -rs
 jobs:
+  # A push to a branch with an open pull request is tested by that pull request's run: skip the
+  # duplicate push run (pushes to main, tags and branches without a pull request still run).
+  dedup:
+    runs-on: ubuntu-slim
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      skip: ${{ steps.pr.outputs.skip }}
+    steps:
+      - id: pr
+        if: github.event_name == 'push' && github.ref_type == 'branch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          n=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$GITHUB_REF_NAME" --state open --json number --jq length)
+          echo "open pull requests from $GITHUB_REF_NAME: $n"
+          if [ "$n" -gt 0 ]; then echo skip=true; else echo skip=false; fi >> "$GITHUB_OUTPUT"
   lint:
+    needs: dedup
+    if: needs.dedup.outputs.skip != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -30,6 +50,8 @@ jobs:
       - run: python3 tools/check_docs.py
       - run: python3 tools/features.py --check
   test:
+    needs: dedup
+    if: needs.dedup.outputs.skip != 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -39,7 +61,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
       - run: uv sync --python ${{ matrix.python }}
-      - run: uv run pytest -q
+      - run: uv run pytest -q -n auto
       # the measured native stack bounds and the JIT's budget (D10), once; and on musl (128 KiB threads)
       - if: matrix.python == '3.13'
         run: uv run python tools/stack_info.py
@@ -47,15 +69,17 @@ jobs:
         run: docker run --rm -v "$PWD:/w" -w /w python:3.13-alpine python tools/stack_info.py
       # D44: the default is guard pages here (Linux glibc x86-64); explicit checks stay covered
       - if: matrix.python == '3.13'
-        run: uv run pytest -q
+        run: uv run pytest -q -n auto
         env:
           WABOROS_JIT_BOUNDS: explicit
       # D46: the pyc mode that carries f32/f64 as int bit patterns (the default only on 32-bit x86)
       - if: matrix.python == '3.13'
-        run: uv run pytest -q tests/test_pyc.py tests/test_target_pyc.py tests/test_pyc_simd.py
+        run: uv run pytest -q -n auto tests/test_pyc.py tests/test_target_pyc.py tests/test_pyc_simd.py
         env:
           WABOROS_PYC_FBITS: "1"
   jit:
+    needs: dedup
+    if: needs.dedup.outputs.skip != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -64,7 +88,7 @@ jobs:
       # llvm-mc (encoder check) and objdump/objcopy (ISA check); the tests skip without them.
       - run: (command -v llvm-mc && command -v llvm-objcopy) || (sudo apt-get update && sudo apt-get install -y llvm binutils)
       - run: llvm-mc --version && llvm-objcopy --version | head -1 && objdump --version | head -1
-      - run: uv run pytest tests/jit -v -rs
+      - run: uv run pytest tests/jit -n auto -v -rs
         env:
           WABOROS_JIT_REQUIRE: "1"  # a missing tool fails the job instead of skipping (tests/jit)
       # S0004: the aarch64 ABI and compiler tests under QEMU user mode, which enforces BTI (the
@@ -146,6 +170,8 @@ jobs:
           name: jit-dump-x86
           path: dump
   spec:
+    needs: dedup
+    if: needs.dedup.outputs.skip != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -197,7 +223,7 @@ jobs:
       # disassembly are left out (they need GNU objdump with x86-64, which these runners lack).
       # Explicit bounds: Arm may tear a straddling 16-byte store in guard mode (D45), which
       # test_simd_abi compares; guard mode is covered by the spec suite and test_guard.py below
-      - run: uv run pytest tests/jit -v -rs -k "not isa_check and not isa_levels and not decode_and_reassemble"
+      - run: uv run pytest tests/jit -n auto -v -rs -k "not isa_check and not isa_levels and not decode_and_reassemble"
         env:
           WABOROS_JIT_REQUIRE: "1"
           WABOROS_JIT_BOUNDS: explicit

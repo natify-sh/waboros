@@ -29,7 +29,27 @@ permissions:
   id-token: write # Codecov OIDC upload
 
 jobs:
+  # A push to a branch with an open pull request is tested by that pull request's run: skip the
+  # duplicate push run (pushes to main, tags and branches without a pull request still run).
+  dedup:
+    runs-on: ubuntu-slim
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      skip: ${{ steps.pr.outputs.skip }}
+    steps:
+      - id: pr
+        if: github.event_name == 'push' && github.ref_type == 'branch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          n=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$GITHUB_REF_NAME" --state open --json number --jq length)
+          echo "open pull requests from $GITHUB_REF_NAME: $n"
+          if [ "$n" -gt 0 ]; then echo skip=true; else echo skip=false; fi >> "$GITHUB_OUTPUT"
   coverage:
+    needs: dedup
+    if: needs.dedup.outputs.skip != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -37,7 +57,7 @@ jobs:
           fetch-depth: 0 # setuptools_scm needs tags for the package version
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
       - run: uv sync --locked --python 3.13
-      - run: uv run --locked pytest -q --cov --cov-report=term --cov-report=xml
+      - run: uv run --locked pytest -q -n auto --cov --cov-report=term --cov-report=xml
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: coverage-xml

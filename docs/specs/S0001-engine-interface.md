@@ -141,7 +141,7 @@ because `pyc` refuses the whole module then (that one command is an xfail).
 ```
 uv run python tests/spec/fetch.py                       # once per pin; idempotent
 uv run python -m tests.spec.run --engine NAME [--json PATH] [--xfail PATH] [--write-xfail]
-                                [--in-process] [--timeout 600] [FILE.wast ...]
+                                [--in-process] [--jobs N] [--timeout 600] [FILE.wast ...]
 ```
 * Input: `.cache/spec/<commit>/json/` (`<stem>.json` + `<stem>/` per file; `<dir>/<stem>` for the
   proposal subdirectories) and `manifest.json`. A FILE argument is a stem or a directory name (`simd`).
@@ -308,3 +308,4 @@ result and on an xpass).
 * 2026-11-04 (S0008 step 1): a second pin, `PROPOSAL_FILES` in `fetch.py` (one file of a proposal repository at a commit, sha256 checked, recorded in the manifest; `wide-arithmetic/wide-arithmetic.wast`, 109 commands, in `counts.json`); the oracle Config gains `wasm_relaxed_simd_deterministic` and `wasm_wide_arithmetic`; Wasmtime and `pyc` claim `wideArithmetic`, `pyc` claims `relaxedSimd`.
 * 2026-11-05 (S0012 step 0): `assert_exception` (an exception escapes to the host) and `TrapCode.UNCAUGHT_EXCEPTION`; the Wasmtime adapter maps its code-less "thrown Wasm exception" trap to it; the 18 `exceptions/` xfail entries `unsupported command` of Wasmtime are gone.
 * 2026-11-09: converter pinned to wasm-tools 1.263.0 (Dependabot bump); on the pinned suite its output equals 1.262.0 (wasm byte-identical, JSON differs only in `source_filename`).
+* 2026-11-10: `--jobs N` (default the CPU count): the per-file child processes run in parallel, results consumed in file order, output unchanged; `--in-process` stays serial.

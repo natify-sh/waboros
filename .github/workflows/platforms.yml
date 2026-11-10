@@ -23,8 +23,28 @@ concurrency:
 env:
   PYTHONUTF8: "1"
 jobs:
+  # A push to a branch with an open pull request is tested by that pull request's run: skip the
+  # duplicate push run (pushes to main, tags and branches without a pull request still run).
+  dedup:
+    runs-on: ubuntu-slim
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      skip: ${{ steps.pr.outputs.skip }}
+    steps:
+      - id: pr
+        if: github.event_name == 'push' && github.ref_type == 'branch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          n=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$GITHUB_REF_NAME" --state open --json number --jq length)
+          echo "open pull requests from $GITHUB_REF_NAME: $n"
+          if [ "$n" -gt 0 ]; then echo skip=true; else echo skip=false; fi >> "$GITHUB_OUTPUT"
   wheels:
     name: ${{ matrix.name }}
+    needs: dedup
+    if: needs.dedup.outputs.skip != 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     strategy:
@@ -62,7 +82,7 @@ jobs:
       # The cells without a wasmtime wheel (Android, Pyodide, Linux i686 and armv7l) read the WAT of the
       # tests from tests/wat_cache (docs/TESTING.md); the host has wasmtime and records it here
       - if: ${{ contains(fromJSON('["linux", "android", "pyodide"]'), matrix.platform) }}
-        run: uv run pytest tests -q -p no:cacheprovider --ignore=tests/spec
+        run: uv run pytest tests -q -n auto -p no:cacheprovider --ignore=tests/spec
         env: { WABOROS_WAT_CACHE: "1" }
         shell: bash
       # cibuildwheel comes from uv.lock (dev group); the host needs nothing else
@@ -97,6 +117,6 @@ jobs:
         with:
           platforms: all
       - run: mkdir -p ci/deps
-      - run: uv run pytest tests -q -p no:cacheprovider --ignore=tests/spec  # fills tests/wat_cache
+      - run: uv run pytest tests -q -n auto -p no:cacheprovider --ignore=tests/spec  # fills tests/wat_cache
         env: { WABOROS_WAT_CACHE: "1" }
       - run: uv run --only-group dev cibuildwheel ci/harness --platform linux --output-dir wheelhouse

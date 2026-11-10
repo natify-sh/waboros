@@ -7,7 +7,8 @@ import re
 import subprocess
 import sys
 from collections import Counter
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -367,7 +368,7 @@ def read_xfail(path: Path) -> dict[str, str]:
 # --- the run --------------------------------------------------------------------------------
 
 
-def _child_results(engine_name: str, stem: str, ids: list[str], timeout: float) -> Iterator[Result]:
+def _child_results(engine_name: str, stem: str, ids: list[str], timeout: float) -> list[Result]:
     cmd = [sys.executable, "-m", "tests.spec.run", "--engine", engine_name, "--child", stem]
     why = ""
     try:
@@ -381,8 +382,7 @@ def _child_results(engine_name: str, stem: str, ids: list[str], timeout: float) 
         if line.startswith("{"):
             r = Result(**json.loads(line))
             done[r.id] = r
-    for cid in ids:
-        yield done.get(cid) or Result(cid, "fail", why)
+    return [done.get(cid) or Result(cid, "fail", why) for cid in ids]
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -392,6 +392,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--xfail", type=Path)
     ap.add_argument("--write-xfail", action="store_true")
     ap.add_argument("--in-process", action="store_true")
+    ap.add_argument("--jobs", type=int, default=os.cpu_count() or 1)
     ap.add_argument("--timeout", type=float, default=600)
     ap.add_argument("--child")
     ap.add_argument("files", nargs="*")
@@ -444,6 +445,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     partial: set[str] = set()  # wildcard entries under which a command passed
     per_file: dict[str, Counter[str]] = {}
     per_dir: dict[str, Counter[str]] = {}
+    futures: dict[str, Future[list[Result]]] = {}
+    if not args.in_process and args.jobs > 1:  # children run in parallel, consumed in file order
+        pool = ThreadPoolExecutor(max_workers=args.jobs)
+        for stem in stems:
+            cmds = json.loads((json_dir / f"{stem}.json").read_text(encoding="utf-8"))["commands"]
+            futures[stem] = pool.submit(
+                _child_results, args.engine, stem, command_ids(stem, cmds), args.timeout
+            )
     for stem in stems:
         directory = _dir(stem)
         commands: list[Json] = json.loads((json_dir / f"{stem}.json").read_text(encoding="utf-8"))[
@@ -453,7 +462,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         types.update(zip(ids, (c["type"] for c in commands), strict=True))
         whole = f"{stem}.wast:*"
         pattern = re.compile(xfail[whole].removeprefix(WILDCARD)) if whole in xfail else None
-        if args.in_process:
+        raw: Iterable[Result]
+        if stem in futures:
+            raw = futures[stem].result()
+        elif args.in_process:
             raw = run_file(ENGINES[args.engine](), json_dir, stem, spectest)
         else:
             raw = _child_results(args.engine, stem, ids, args.timeout)
