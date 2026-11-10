@@ -956,6 +956,11 @@ or at import (D1): the package compiles the bytes with its own JIT, as it compil
 module uses core wasm only, has no host import beyond what its spec names, is deterministic (D35),
 and traps on malformed input instead of writing outside its memory.
 
+The `.wasm` is the module's single portable form, the same shape as the micro-compilers
+(MICRO-COMPILERS.md, JIT-AS-WASM.md): compiled by the JIT at load today, and, once the artifact
+format exists (ROADMAP "Next" item 6), it may also ship as a per-architecture AOT artifact made from
+those bytes, as the compilers will; the `.wat` and the match test stay the source of truth either way.
+
 Why: a module written once runs on every JIT architecture and ports to JIT-AS-WASM.md unchanged,
 and the text is reviewable source rather than a binary built elsewhere; the test keeps the two from
 drifting. Rejected: assembling WAT at run time (needs a parser in the package, D1); bytes without a
