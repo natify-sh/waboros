@@ -1349,8 +1349,8 @@ natively on the CI arm runners (a `PAD` sweep in 4-byte steps over 0..124 bytes,
 
 ## Code placement on aarch64 (method; ROADMAP "Code placement")
 
-The numbers come from the workflow `.github/workflows/placement-arm.yml` (push to the branch
-`placement-arm` or start it by hand). It runs on GitHub's `ubuntu-24.04-arm` runner, CPython 3.13,
+The numbers come from the workflow `.github/workflows/placement-arm.yml` (started by hand,
+`workflow_dispatch`). It runs on GitHub's `ubuntu-24.04-arm` runner, CPython 3.13,
 one job per bounds mode (guard, explicit). Results go to the job summary and to the artifact
 `placement-<mode>` (CSV of every value, the summary, `lscpu`). Its tool, `tools/placement_sweep.py`,
 compiles with two aarch64-only knobs. Both are off by default, and the code with them unset is

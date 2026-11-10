@@ -4,9 +4,7 @@ name: placement-arm
 # aligned to 16, 32 and 64 at four pads; CoreMark, the scalar SIMD kernels and the corpus, alternated
 # rounds in one process. A measurement, not a gate: run on demand. About 15-20 min per mode.
 on:
-  push:
-    branches: [placement-arm]
-  workflow_dispatch:
+  workflow_dispatch:  # by hand only (Actions tab, or gh workflow run placement-arm.yml)
     inputs:
       rounds:
         description: "alternated rounds"

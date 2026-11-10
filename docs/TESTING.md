@@ -235,7 +235,7 @@ Packaging workflows (D40): `.github/workflows/coverage.yml` runs `pytest --cov` 
 smoke-tests the wheel in a clean environment, and publishes to PyPI (trusted publishing) and as a GitHub
 release. `.github/dependabot.yml` updates the `uv` lock file and the pinned actions weekly.
 
-Measurement workflow: `.github/workflows/placement-arm.yml` (push to the branch `placement-arm`, or
+Measurement workflow: `.github/workflows/placement-arm.yml` (by hand only,
 `workflow_dispatch` with the rounds) runs `tools/placement_sweep.py` on `ubuntu-24.04-arm`, one job per
 bounds mode. It is the code-placement study on native aarch64 (BENCHMARKS.md, "Code placement on
 aarch64"), not a gate. It fails only on a wrong result: CoreMark not validated, a kernel checksum or a
