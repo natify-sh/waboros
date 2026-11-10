@@ -307,6 +307,12 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29; done 2026-11-03) -> 
   artifacts of phase 5.
 * CLI: `run`, `compile`, `wast`, `settings`/`targets`, `cache`.
 * Differential tests against wasmtime on real programs.
+* **GC handles released by the host** (maintainer, 2026-11-10, with S0013 Q10): until here a GC
+  reference given to the host stays rooted until the store is dropped. One contract for every host
+  (Python, MicroPython, a C loader, the runtime as wasm), Wasmtime's model: root scopes released
+  together when they close, explicit long-lived roots released by `unroot`, generation-checked
+  handles. Host conveniences on top (Python: `with store.scope():`, optionally a finalizer that
+  marks the entry for release at a safe point), never the mechanism itself.
 * **JIT code visible to debuggers and profilers** (maintainer, 2026-11-10, with S0013 Q3): the GC's
   frame walk uses return addresses and site tables, not a frame-pointer chain, so `perf`, `gdb` and
   native profilers cannot unwind through JIT frames or name them. Options to weigh then: a perf map /
