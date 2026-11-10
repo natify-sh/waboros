@@ -1405,7 +1405,7 @@ spread between rounds, so the effect is real on aarch64 too, but smaller than on
 Alignment to 32 is the closest to the rule (CoreMark +1.2…1.4 % at every pad, corpus +0.3…0.7 %), yet `dot`
 loses in explicit mode (0 of 4) and `nearest` in guard mode (0 of 4), for +4.5…6 % code; no alignment is a
 gain over CoreMark, the kernels and the corpus in both modes. By the rule: **not implemented** (the knobs
-stay, off by default); the decision is the maintainer's.
+stay, off by default). Decision (maintainer, 2026-11-10): not implemented, closed for aarch64.
 
 ## Exceptions: the status check after a call (S0012 Q1, 2026-11-05)
 

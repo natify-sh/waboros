@@ -214,8 +214,10 @@ child processes in parallel (`--jobs`, default the CPU count); with `--in-proces
 Measured on GitHub runners, one run each (2026-11-09; serial: `ci` run 42715354410, `platforms` 42715354559;
 parallel: 42723969981, 42723969854): `spec` 3:11 → 1:30, `test` 3.13 2:39 → 1:38 (the other CPython cells
 −27…−43 %, PyPy 0:53 → 0:56), `arm64` 6:43 → 4:38, coverage 3:15 → 2:07, cibuildwheel cells −26…−58 %
-(Android and Pyodide, serial: −7 % and −4 %); `jit` 10:48 → 16:28, all of it in its QEMU steps, which did
-not change (runner variance).
+(Android and Pyodide, serial: −7 % and −4 %); `jit` 10:48 → 16:28 and 17:52 (`main` run 42730778821
+with the caches): its native pytest step got faster (0:54 → 0:40), but every QEMU step and both
+`isa_all.py` runs, none of which changed, took about 1.5-1.8× as long in both later runs. Cause not
+established (the runner's CPU is not logged); probably the runner, not the change.
 
 `tests/jit/test_fault_handler.py` checks the emitted fault handlers off their OS: the Darwin and
 Windows offsets against ctypes mirrors of xnu's and the Windows SDK's headers, the Darwin and Windows
