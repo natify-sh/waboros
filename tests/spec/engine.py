@@ -23,7 +23,22 @@ class FuncRef:
     handle: object
 
 
-Value: TypeAlias = int | ExternRef | FuncRef | None  # None: a null reference of any type
+@dataclass(frozen=True)
+class HostRef:
+    """The host value written (ref.host N) in wast: an externref made an anyref (S0013)."""
+
+    n: int
+
+
+@dataclass(frozen=True)
+class OpaqueRef:
+    """A non-null reference an engine returns that has no value to compare: kind is "i31",
+    "struct", "array" or "extern" (an externref the host did not make)."""
+
+    kind: str
+
+
+Value: TypeAlias = int | ExternRef | FuncRef | HostRef | OpaqueRef | None  # None: a null reference
 
 
 class TrapCode(Enum):
@@ -40,6 +55,9 @@ class TrapCode(Enum):
     TABLE_OUT_OF_BOUNDS = auto()
     NULL_REFERENCE = auto()
     UNCAUGHT_EXCEPTION = auto()  # an exception escaped to the host (S0012, Q4)
+    ARRAY_OUT_OF_BOUNDS = auto()  # S0013
+    CAST_FAILURE = auto()
+    ALLOCATION_TOO_LARGE = auto()
 
 
 class EngineError(Exception):

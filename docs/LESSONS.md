@@ -732,3 +732,11 @@ What went wrong or surprised us while building the PoC, so it is not found again
     personality and libunwind's `Unwind-wasm.c` yourself, plus the tag `__cpp_exception` (an assembly
     `.tagtype` stub); `-mllvm -wasm-use-legacy-eh=false` then selects `try_table`. `zig c++ -S -o -` also
     writes a file named `-`. Found: corpus C++ exceptions, 2026-11-09.
+100. **wasmtime-py 50.0.1: `wasmtime_anyref_is_i31` answers true for every anyref, and `Func.type()`
+    aborts on references.** Measured on an i31, a struct and a host value made by
+    `any.convert_extern`: `is_i31` is true for all three, while `wasmtime_anyref_i31_get_u`'s success
+    flag is right (true only for the i31), as are `_is_struct`, `_is_array`. Separately, `func.type()`
+    and `str(ValType)` abort the process on a concrete reference type; `wasmtime_valtype_new` into a
+    `wasmtime_valtype_t` does not (kind 5 = reference, heap kind 0-1 extern, 2-4 func, 5-12 any,
+    13 up exn). Rule: classify an anyref by `i31_get_u`, never by `is_i31`; read types through
+    `wasmtime_valtype_t`. Found: S0013 step 0, 2026-11-10.

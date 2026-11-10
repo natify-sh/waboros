@@ -45,13 +45,22 @@ class ExternRef:               # the host reference written (ref.extern N) in wa
 class FuncRef:                 # a non-null funcref returned by an engine; compared by presence only
     handle: object
 
-Value: TypeAlias = int | ExternRef | FuncRef | None    # None: a null reference of any type
+@dataclass(frozen=True)
+class HostRef:                 # (ref.host N): an externref made an anyref (S0013)
+    n: int
+
+@dataclass(frozen=True)
+class OpaqueRef:               # a non-null reference with no value to compare:
+    kind: str                  # "i31", "struct", "array" or "extern" (not made by the host)
+
+Value: TypeAlias = int | ExternRef | FuncRef | HostRef | OpaqueRef | None   # None: a null reference
 
 class TrapCode(Enum):          # Wasmtime's names (D6); a member is added when a test needs it
     UNREACHABLE = auto(); MEMORY_OUT_OF_BOUNDS = auto(); INTEGER_DIVISION_BY_ZERO = auto()
     INTEGER_OVERFLOW = auto(); BAD_CONVERSION_TO_INTEGER = auto(); STACK_OVERFLOW = auto()
     INDIRECT_CALL_TO_NULL = auto(); BAD_SIGNATURE = auto(); TABLE_OUT_OF_BOUNDS = auto()
-    NULL_REFERENCE = auto()
+    NULL_REFERENCE = auto(); UNCAUGHT_EXCEPTION = auto()
+    ARRAY_OUT_OF_BOUNDS = auto(); CAST_FAILURE = auto(); ALLOCATION_TOO_LARGE = auto()   # S0013
 
 class EngineError(Exception): ...    # base class; not raised itself
 class LoadError(EngineError):        # load(): malformed or invalid module
@@ -214,6 +223,8 @@ new texts; verified on Wasmtime for all 541 + 15 + 34 trap commands:
 | integer overflow | INTEGER_OVERFLOW | | indirect call type mismatch | BAD_SIGNATURE |
 | invalid conversion to integer | BAD_CONVERSION_TO_INTEGER | | null function reference | NULL_REFERENCE |
 | call stack exhausted | STACK_OVERFLOW | | null reference | NULL_REFERENCE |
+| cast failure | CAST_FAILURE | | out of bounds array access | ARRAY_OUT_OF_BOUNDS |
+| null structure / array / i31 reference | NULL_REFERENCE | | | |
 
 **Never crash the interpreter** (D10). Exhaustion is `Trap(STACK_OVERFLOW)`; an engine that lets
 `RecursionError` out fails the command (the runner does not convert it, so the bug is visible). A
@@ -231,15 +242,24 @@ looked up in `module.imports` order, `wasmtime.Instance`; `WasmtimeError` → `L
 `wasmtime._func.enter_wasm`), numbers through the integer fields of the value union: the `float`
 path quiets f32 signalling NaNs (measured `0x7FA00000` → `0x7FE00000`; 988 commands in 8 files
 of the wabt conversion).
-References go through `wasmtime.Val`; an `ExternRef` object comes back as itself. The file disables
-pyright's `reportPrivateUsage` (pinned version). Known: wasmtime-py 50.0.1 aborts the process on a
-typed reference in a signature (`(ref extern)`, `anyref`, …: "support for non-externref and
-non-funcref references is not implemented") → per-command entries in its xfail (the same for the `gc/` and `exceptions/` files that use such
-types). `v128` (`simd/`, `relaxed-simd/`): wasmtime-py cannot convert it (`Val`), and `wasm_valtype_kind`
-aborts the process on a v128 `valtype` ("support for v128 is not implemented"), which `str(ValType)` and
-`Func.type().params` reach. The adapter tells v128 apart with `wasmtime_wasm_valtype_equal` against
-`wasmtime_wasm_valtype_v128()` first, and reads/writes the 16-byte `of.v128` of the value union
-(`WASMTIME_V128`) as a little-endian `int`. The Config also enables `wasm_simd`, `wasm_relaxed_simd`. Upstream issues (workaround to drop once fixed):
+References: `funcref` and `externref` go through `wasmtime.Val` (an `ExternRef` object comes back as
+itself); an anyref, which `Val` cannot hold, goes through the C API (S0013 step 0). The file disables
+pyright's `reportPrivateUsage` (pinned version). wasmtime-py 50.0.1 aborts the process on `v128` and on
+a concrete or non-extern/func reference in a `ValType` ("support for v128 / non-externref and
+non-funcref references is not implemented"; `wasm_valtype_kind`, reached by `str(ValType)` and
+`Func.type()`). The adapter never calls `func.type()`: it reads each parameter into a
+`wasmtime_valtype_t` (`wasmtime_valtype_new`: `kind` 0-4 the numbers incl. v128, 5 a reference, told
+apart by its heap type kind) and takes the result count from `wasm_functype_results`; results are
+decoded by the `kind` of the returned `wasmtime_val_t`. (S0013 Q12 proposed our own parse of the
+type section; the front end does not parse GC types before step 1a, and the C route needs none.)
+v128 is written/read as the 16-byte `of.v128` of the value union (`WASMTIME_V128`), a little-endian
+`int`. An anyref result is classified with `wasmtime_anyref_i31_get_u` (its success; the bundled
+library's `wasmtime_anyref_is_i31` answers true for every anyref, measured), `_is_struct`,
+`_is_array`; anything else is a host value, turned back to its externref by a two-function helper
+module (`any.convert_extern` / `extern.convert_any`, `CONVERT_WAT`) and returned as `HostRef`; a
+host `HostRef` argument is made by the same helper. A non-null externref the host did not make is
+`OpaqueRef("extern")`. In `matches`, an expected reference without a value (`funcref`, `externref`,
+`i31ref`, `structref`, `arrayref`, `eqref`, `anyref`) accepts the kinds it names. The Config also enables `wasm_simd`, `wasm_relaxed_simd`. Upstream issues (workaround to drop once fixed):
 [wasmtime-py#348](https://github.com/bytecodealliance/wasmtime-py/issues/348),
 [wasmtime#15088](https://github.com/bytecodealliance/wasmtime/issues/15088).
 
@@ -309,3 +329,4 @@ result and on an xpass).
 * 2026-11-05 (S0012 step 0): `assert_exception` (an exception escapes to the host) and `TrapCode.UNCAUGHT_EXCEPTION`; the Wasmtime adapter maps its code-less "thrown Wasm exception" trap to it; the 18 `exceptions/` xfail entries `unsupported command` of Wasmtime are gone.
 * 2026-11-09: converter pinned to wasm-tools 1.263.0 (Dependabot bump); on the pinned suite its output equals 1.262.0 (wasm byte-identical, JSON differs only in `source_filename`).
 * 2026-11-10: `--jobs N` (default the CPU count): the per-file child processes run in parallel, results consumed in file order, output unchanged; `--in-process` stays serial.
+* 2026-11-10 (S0013 step 0): GC trap codes and texts (`ARRAY_OUT_OF_BOUNDS`, `CAST_FAILURE`, `ALLOCATION_TOO_LARGE`; "cast failure", "out of bounds array access", "null structure/array/i31 reference"), `HostRef` and `OpaqueRef`, expected references without a value; the Wasmtime adapter reads signatures and anyrefs through the C API (no `func.type()`): the 55 unknown-trap-text and 262 abort lines leave `xfail/wasmtime.txt` (one entry stays: `memory64/table_grow64.wast:46`).

@@ -28,6 +28,9 @@ class TrapCode(IntEnum):
     NULL_REFERENCE = 10
     INTERRUPT = 12
     UNCAUGHT_EXCEPTION = 14  # S0012: a wasm exception reached an entry (inside code: status 14)
+    ARRAY_OUT_OF_BOUNDS = 16  # S0013
+    CAST_FAILURE = 17
+    ALLOCATION_TOO_LARGE = 18
 
 
 class Trap(Exception):
