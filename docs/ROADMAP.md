@@ -265,10 +265,12 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29; done 2026-11-03) -> 
   hot loop's offset mod 64. Inner-loop headers aligned to 64 gave CoreMark +5.3 % but `swizzle` 18 % slower
   and the corpus geomean −0.9 %, for +10 % code, so it fails the rule (a gain over CoreMark, the kernels and
   the corpus beyond the spread; maintainer, 2026-11-05). Alignment to 32 (CoreMark about +4 % in two
-  sessions) only if revisited. **aarch64: open**: measured natively on the CI arm runners, a `PAD`
-  sweep in 4-byte steps over 0..124 bytes, then alignment to 16, 32 and 64. The workflow
-  `placement-arm.yml` and `tools/placement_sweep.py` are ready; the numbers are not in yet
-  (BENCHMARKS.md, "Code placement on aarch64").
+  sessions) only if revisited. **aarch64: measured** natively on the CI arm runner (Neoverse-N2,
+  2026-11-09; BENCHMARKS.md, "Code placement on aarch64"): pads move CoreMark by about 3 % and `swizzle` by
+  about 12 %; alignment to 32 gives CoreMark +1.2…1.4 % but `dot` or `nearest` lose in one bounds mode each,
+  for +4.5…6 % code, so it fails the rule as on x86-64: not implemented, pending the maintainer's word. The
+  knobs `WABOROS_JIT_PAD` and `WABOROS_JIT_LOOP_ALIGN` stay, off by default; `placement-arm.yml` reruns the
+  sweep by hand.
 * Trap frames, fuel and epoch checks (the interrupt word is polled already, phase 3); Ctrl+C via the
   waiting main thread.
 * **Entry bookkeeping without a restore in a `finally`** (D51): on PyPy a `KeyboardInterrupt` at a

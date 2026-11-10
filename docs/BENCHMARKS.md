@@ -1367,7 +1367,45 @@ are medians over the rounds (5 by default):
 * the corpus of `run_corpus.py`, µs per call over 20 calls, every result checked; the summary gives
   the geomean.
 
-The decision rule is the x86-64 one. Results: to be filled from the first run.
+The decision rule is the x86-64 one.
+
+Results of the first run (2026-11-09, `placement-arm` run 42721947272; Neoverse-N2, 4 vCPU, `lscpu` lists
+no `bti`; 5 rounds, 44 configurations, 925 s guard, 1017 s explicit). Pad sweep, median over the pads, the
+range between the best and the worst pad, and the spread between rounds:
+
+| bench | guard: median | range | spread | explicit: median | range | spread |
+|---|---|---|---|---|---|---|
+| CoreMark (it/s) | 19 308 | 3.1 % | 0.3 % | 17 440 | 3.3 % | 0.2 % |
+| addsat (µs/iter) | 4.40 | 0.1 % | 0.1 % | 6.06 | 4.3 % | 0.1 % |
+| dot | 2.60 | 1.4 % | 0.3 % | 2.60 | 2.2 % | 0.5 % |
+| scan | 5.74 | 0.1 % | 0.1 % | 5.74 | 0.2 % | 0.1 % |
+| matmul | 5.75 | 0.3 % | 0.1 % | 6.01 | 0.8 % | 0.1 % |
+| swizzle | 3.31 | 11.6 % | 0.8 % | 4.38 | 12.3 % | 1.0 % |
+| nearest | 0.61 | 0.4 % | 0.4 % | 0.89 | 5.2 % | 0.6 % |
+| corpus (geomean µs/call) | 9.62 | 2.2 % | 1.4 % | 9.58 | 2.0 % | 1.5 % |
+
+The best pad differs per benchmark and per mode (CoreMark: 68 guard, 44 explicit), so no single pad is a
+target. Loop headers aligned, gain over the same pad unaligned (positive = faster), median over pads 0, 20,
+40, 60 (faster at n of 4):
+
+| bench | guard 16 | guard 32 | guard 64 | explicit 16 | explicit 32 | explicit 64 |
+|---|---|---|---|---|---|---|
+| CoreMark | +0.0 % (2) | +1.4 % (4) | +0.5 % (2) | +1.9 % (3) | +1.2 % (4) | +0.5 % (4) |
+| addsat | +0.0 % (4) | −0.1 % (0) | +0.0 % (2) | +1.7 % (4) | +1.6 % (3) | +1.6 % (3) |
+| dot | +0.0 % (3) | +0.8 % (3) | +0.9 % (3) | −1.0 % (0) | −0.3 % (0) | −0.3 % (1) |
+| scan | −0.0 % (2) | +0.1 % (4) | +0.2 % (4) | +0.0 % (3) | −0.1 % (0) | +0.0 % (3) |
+| matmul | +0.0 % (2) | +0.0 % (2) | +0.1 % (3) | +0.5 % (4) | +0.4 % (4) | +0.7 % (4) |
+| swizzle | +0.1 % (2) | +0.3 % (2) | −0.3 % (1) | −1.3 % (2) | +1.0 % (3) | +1.0 % (3) |
+| nearest | −0.1 % (1) | −0.2 % (0) | −0.3 % (0) | +0.1 % (3) | +0.1 % (2) | +0.4 % (3) |
+| corpus | +0.3 % (3) | +0.3 % (2) | +0.3 % (2) | +0.5 % (3) | +0.7 % (3) | +0.4 % (3) |
+| code size, CoreMark | +2.6 % | +6.0 % | +12.3 % | +1.8 % | +4.5 % | +10.0 % |
+
+Reading: placement moves CoreMark by about 3 % and `swizzle` by about 12 % between pads, ten times the
+spread between rounds, so the effect is real on aarch64 too, but smaller than on x86-64 for CoreMark.
+Alignment to 32 is the closest to the rule (CoreMark +1.2…1.4 % at every pad, corpus +0.3…0.7 %), yet `dot`
+loses in explicit mode (0 of 4) and `nearest` in guard mode (0 of 4), for +4.5…6 % code; no alignment is a
+gain over CoreMark, the kernels and the corpus in both modes. By the rule: **not implemented** (the knobs
+stay, off by default); the decision is the maintainer's.
 
 ## Exceptions: the status check after a call (S0012 Q1, 2026-11-05)
 
