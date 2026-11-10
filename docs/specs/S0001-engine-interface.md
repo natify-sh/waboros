@@ -261,6 +261,8 @@ host `HostRef` argument is made by the same helper. A non-null externref the hos
 `OpaqueRef("extern")`. In `matches`, an expected reference without a value (`funcref`, `externref`,
 `i31ref`, `structref`, `arrayref`, `eqref`, `anyref`) accepts the kinds it names. The Config also enables `wasm_simd`, `wasm_relaxed_simd`. Upstream issues (workaround to drop once fixed):
 [wasmtime-py#348](https://github.com/bytecodealliance/wasmtime-py/issues/348),
+[wasmtime-py#283](https://github.com/bytecodealliance/wasmtime-py/issues/283#issuecomment-6770652941) (typed references, `anyref`),
+[wasmtime#15216](https://github.com/bytecodealliance/wasmtime/issues/15216) (`wasmtime_anyref_is_i31`),
 [wasmtime#15088](https://github.com/bytecodealliance/wasmtime/issues/15088).
 
 ## Test plan
