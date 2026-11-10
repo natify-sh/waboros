@@ -960,12 +960,17 @@ The source is in one of two languages, chosen in the step's plan before the code
   also built natively with sanitizers (address, undefined behaviour) and run on the same inputs as
   the wasm build, so memory errors are found in C, not in the JIT. The module's own data and stack
   live inside the memory it is given; where (for S0013, a region of the hidden memory's reservation
-  outside every object) is fixed in the step's plan.
+  outside every object) is fixed in the step's plan. The C code reaches its memory through a base plus
+  u32 offsets, not pointers, so the native and the wasm builds run the same code. Whether the
+  pinned toolchain gives the same bytes on every OS is proven once, or the byte-match test runs on
+  Linux only.
 
 The same for both:
 * the test fails unless the bytes it builds equal the committed `.wasm`;
 * a test decodes the module and fails on any instruction outside an allowed list (the core features
-  the JITs support; nothing that would need a newer proposal or the GC itself);
+  the JITs support; nothing that would need a newer proposal or the GC itself), and checks its
+  structure: the imports and exports its spec names, every data segment (and, for C, the stack)
+  inside the region the spec gives it, no `memory.grow` unless the spec allows it;
 * the module uses core wasm only, has no host import beyond what its spec names, is deterministic
   (D35), and traps on malformed input instead of writing outside its memory;
 * nothing is built at install or at import (D1): the toolchains are development tools, and the
