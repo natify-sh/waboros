@@ -132,7 +132,7 @@ class WasmtimeEngine:
             if raw.of.anyref.store_id == 0:
                 return None
             if ffi.wasmtime_anyref_i31_get_u(ctx, ref, ctypes.byref(ctypes.c_uint32())):
-                return OpaqueRef("i31")  # wasmtime_anyref_is_i31 answers true for every anyref
+                return OpaqueRef("i31")  # is_i31 answers true for every anyref (wasmtime#15216)
             if ffi.wasmtime_anyref_is_struct(ctx, ref):
                 return OpaqueRef("struct")
             if ffi.wasmtime_anyref_is_array(ctx, ref):
