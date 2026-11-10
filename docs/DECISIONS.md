@@ -948,34 +948,37 @@ layer.
 ### D54. Runtime modules written in wasm ship as source and bytes, tied by a test
 Status: accepted (maintainer, 2026-11-10) · Date: 2026-11-10 · Supersedes: — · Evidence: S0013 Q4 (revised 2026-11-10); the review of 2026-11-10 and the proposal GC-COLLECTOR-WAT
 
-A small module the runtime itself runs as wasm (the first is S0013's collector) is written in WAT
-and kept in the package as two files side by side: the `.wat` source and the committed `.wasm`,
-shipped as package data. A test assembles the `.wat` with the development tools (`tests/watcache.py`,
-`wasm-tools`) and fails unless the bytes equal the committed file. Nothing is assembled at install
-or at import (D1): the package compiles the bytes with its own JIT, as it compiles any module. Such a
-module uses core wasm only, has no host import beyond what its spec names, is deterministic (D35),
-and traps on malformed input instead of writing outside its memory.
+A small module the runtime itself runs as wasm (the first is S0013's collector) is kept in the
+package as its source and its committed `.wasm` side by side; the `.wasm` ships as package data.
+The source is in one of two languages, chosen in the step's plan before the code:
+* **WAT** (`.wat`), the default for a small module. A test assembles it with the development tools
+  (`tests/watcache.py`, `wasm-tools`).
+* **C** (`.c`), when the module is too large or too intricate to keep in WAT (maintainer). A test
+  rebuilds it with a pinned toolchain (the PyPI `ziglang` wheel at a fixed version and hash, as
+  `poc/bench/corpus/build.sh` does, or a pinned wasi-sdk) and fixed flags that keep the output
+  reproducible (no debug info, fixed paths, a fixed target CPU and feature set). The same file is
+  also built natively with sanitizers (address, undefined behaviour) and run on the same inputs as
+  the wasm build, so memory errors are found in C, not in the JIT. The module's own data and stack
+  live inside the memory it is given; where (for S0013, a region of the hidden memory's reservation
+  outside every object) is fixed in the step's plan.
+
+The same for both:
+* the test fails unless the bytes it builds equal the committed `.wasm`;
+* a test decodes the module and fails on any instruction outside an allowed list (the core features
+  the JITs support; nothing that would need a newer proposal or the GC itself);
+* the module uses core wasm only, has no host import beyond what its spec names, is deterministic
+  (D35), and traps on malformed input instead of writing outside its memory;
+* nothing is built at install or at import (D1): the toolchains are development tools, and the
+  package compiles the bytes with its own JIT, as it compiles any module.
 
 The `.wasm` is the module's single portable form, the same shape as the micro-compilers
 (MICRO-COMPILERS.md, JIT-AS-WASM.md): compiled by the JIT at load today, and, once the artifact
 format exists (ROADMAP "Next" item 6), it may also ship as a per-architecture AOT artifact made from
-those bytes, as the compilers will; the `.wat` and the match test stay the source of truth either way.
-
-**C instead of WAT** (maintainer, 2026-11-10), when the module is too large or too intricate to
-keep in WAT (decided in the step's plan, before the code): the same rule with these parts.
-* The source is a `.c` file (for S0013, `collector.c`).
-* The toolchain is pinned: the PyPI `ziglang` wheel at a fixed version and hash (as
-  `poc/bench/corpus/build.sh` does), or a pinned wasi-sdk, with fixed flags; development only.
-* The `.wasm` is committed, and a test rebuilds it and fails unless the bytes are equal (flags that
-  keep the output reproducible: no debug info, fixed paths, a fixed target CPU and feature set).
-* A separate test decodes the module and fails on any instruction outside an allowed list (the core
-  features the JITs support, nothing the module itself would need a newer proposal or the GC for).
-* The same file is also built natively for tests with sanitizers (address, undefined behaviour) and
-  run on the same heaps as the wasm build, so memory errors are found in C, not in the JIT.
-A C module's own data and stack must live inside the memory it is given; where they go (for S0013,
-a region of the hidden memory's reservation outside every object) is fixed in the step's plan.
+those bytes, as the compilers will. The source and the match test stay the source of truth either
+way. Another source language needs an amendment of its own (a pinned toolchain, reproducible
+output).
 
 Why: a module written once runs on every JIT architecture and ports to JIT-AS-WASM.md unchanged,
-and the text is reviewable source rather than a binary built elsewhere; the test keeps the two from
-drifting. Rejected: assembling WAT at run time (needs a parser in the package, D1); bytes without a
-source in the tree (unreviewable).
+and the source is reviewable rather than a binary built elsewhere; the test keeps the two from
+drifting. Rejected: building the module at run time (needs a parser or a compiler in the package,
+D1); bytes without a source in the tree (unreviewable).
