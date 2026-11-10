@@ -961,6 +961,20 @@ The `.wasm` is the module's single portable form, the same shape as the micro-co
 format exists (ROADMAP "Next" item 6), it may also ship as a per-architecture AOT artifact made from
 those bytes, as the compilers will; the `.wat` and the match test stay the source of truth either way.
 
+**C instead of WAT** (maintainer, 2026-11-10), when the module is too large or too intricate to
+keep in WAT (decided in the step's plan, before the code): the same rule with these parts.
+* The source is a `.c` file (for S0013, `collector.c`).
+* The toolchain is pinned: the PyPI `ziglang` wheel at a fixed version and hash (as
+  `poc/bench/corpus/build.sh` does), or a pinned wasi-sdk, with fixed flags; development only.
+* The `.wasm` is committed, and a test rebuilds it and fails unless the bytes are equal (flags that
+  keep the output reproducible: no debug info, fixed paths, a fixed target CPU and feature set).
+* A separate test decodes the module and fails on any instruction outside an allowed list (the core
+  features the JITs support, nothing the module itself would need a newer proposal or the GC for).
+* The same file is also built natively for tests with sanitizers (address, undefined behaviour) and
+  run on the same heaps as the wasm build, so memory errors are found in C, not in the JIT.
+A C module's own data and stack must live inside the memory it is given; where they go (for S0013,
+a region of the hidden memory's reservation outside every object) is fixed in the step's plan.
+
 Why: a module written once runs on every JIT architecture and ports to JIT-AS-WASM.md unchanged,
 and the text is reviewable source rather than a binary built elsewhere; the test keeps the two from
 drifting. Rejected: assembling WAT at run time (needs a parser in the package, D1); bytes without a
