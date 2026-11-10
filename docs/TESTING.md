@@ -211,6 +211,11 @@ to gain), every run under QEMU user mode (`tools/run_arm64.py`, the qemu64 conta
 processes are not emulated (xdist workers for aarch64 would not start; in the qemu64 SSE2 step they would run
 natively with AVX and silently stop testing SSE2). The spec runner (`tests/spec/run.py`) runs its per-file
 child processes in parallel (`--jobs`, default the CPU count); with `--in-process` it is serial.
+Measured on GitHub runners, one run each (2026-11-09; serial: `ci` run 42715354410, `platforms` 42715354559;
+parallel: 42723969981, 42723969854): `spec` 3:11 → 1:30, `test` 3.13 2:39 → 1:38 (the other CPython cells
+−27…−43 %, PyPy 0:53 → 0:56), `arm64` 6:43 → 4:38, coverage 3:15 → 2:07, cibuildwheel cells −26…−58 %
+(Android and Pyodide, serial: −7 % and −4 %); `jit` 10:48 → 16:28, all of it in its QEMU steps, which did
+not change (runner variance).
 
 `tests/jit/test_fault_handler.py` checks the emitted fault handlers off their OS: the Darwin and
 Windows offsets against ctypes mirrors of xnu's and the Windows SDK's headers, the Darwin and Windows
