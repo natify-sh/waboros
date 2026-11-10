@@ -307,6 +307,11 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29; done 2026-11-03) -> 
   artifacts of phase 5.
 * CLI: `run`, `compile`, `wast`, `settings`/`targets`, `cache`.
 * Differential tests against wasmtime on real programs.
+* **JIT code visible to debuggers and profilers** (maintainer, 2026-11-10, with S0013 Q3): the GC's
+  frame walk uses return addresses and site tables, not a frame-pointer chain, so `perf`, `gdb` and
+  native profilers cannot unwind through JIT frames or name them. Options to weigh then: a perf map /
+  jitdump file (names and code ranges), GDB's JIT interface, unwind info registered for the code, or
+  frame pointers as a `Config` switch (measured first: Wasmtime always keeps them).
 
 ## Phase 7 — `mpy` target
 *Status: not started.*
