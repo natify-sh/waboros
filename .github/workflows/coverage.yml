@@ -68,4 +68,4 @@ jobs:
         with:
           use_oidc: true
           files: ./coverage.xml
-          fail_ci_if_error: true
+          fail_ci_if_error: false  # Codecov is informational: an upload or service error never fails CI

@@ -1,0 +1,11 @@
+# Codecov reports, it never blocks: the project and patch statuses are informational
+# (maintainer, 2026-11-10). Coverage runs on x86-64 only, so code reached only on other
+# architectures or with study knobs set shows as uncovered.
+coverage:
+  status:
+    project:
+      default:
+        informational: true
+    patch:
+      default:
+        informational: true
