@@ -171,15 +171,20 @@ def test_keys_of_a_deep_chain_are_cheap() -> None:
 
 def test_keys_are_the_same_in_another_process() -> None:
     """Generated `pyc` code embeds the keys (`f.s`, the `call_indirect` check): they must not
-    depend on the process (no counters, no `id()`)."""
+    depend on the process (no counters, no `id()`). The child gets the module's bytes, so it needs
+    only the package (cibuildwheel runs tests outside the source tree)."""
     import subprocess
     import sys
 
+    body = b"\x02" + b"\x60\x00\x00" + func(ref(0))
+    wasm = HEAD + b"\x01" + bytes([len(body)]) + body
     code = (
-        "from tests.test_gc_types import func, module, ref; from waboros.frontend.types import key;"
-        "m = module(b'\\x60\\x00\\x00', func(ref(0))); print(key(m, 1))"
+        "import sys; from waboros.frontend.binary import parse;"
+        "from waboros.frontend.validate import validate; from waboros.frontend.types import key;"
+        "m = parse(bytes.fromhex(sys.argv[1])); validate(m); print(key(m, 1))"
     )
-    other = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+    run = [sys.executable, "-c", code, wasm.hex()]
+    other = subprocess.run(run, capture_output=True, text=True, check=True)
     assert other.stdout.strip() == key(module(b"\x60\x00\x00", func(ref(0))), 1)
 
 
