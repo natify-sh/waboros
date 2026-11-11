@@ -121,8 +121,6 @@ HEAPS = (-16, -17, -13, -14)
 
 def feature(op: int) -> str:
     """The name an `Unsupported` carries for an opcode this core does not compile (yet)."""
-    if op == 0xD3 or 0xFB00 <= op < 0xFC00:  # ref.eq, the 0xFB instructions
-        return "GC types"
     return "exceptions" if op in (0x08, 0x0A, 0x1F) else f"opcode {op:#x}"
 
 

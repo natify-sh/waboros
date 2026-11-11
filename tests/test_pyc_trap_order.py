@@ -80,7 +80,7 @@ def test_ninth_element_segment_does_not_shadow_a_helper() -> None:
 
 # ---- the two namespaces: generated names match GEN, no runtime name does
 GEN = re.compile(
-    r"(?:C|D|ES|G|I|M|T|TG|TX|f|l|p|t|_MAXPAGES)\d*|f\d+_b|instantiate|imports|_e|_br|_w|_W|q\d+_\d+|r\d+_\d+|r"
+    r"(?:C|D|ES|G|I|M|RT|T|TG|TX|f|l|p|t|_MAXPAGES)\d*|f\d+_b|instantiate|imports|_e|_br|_w|_W|q\d+_\d+|r\d+_\d+|r"
 )
 COREMARK = os.path.join(os.path.dirname(__file__), "..", "poc", "in", "core.wasm")
 
@@ -140,6 +140,16 @@ def violations() -> list[str]:
     )
     srcs = [translate(wat2wasm("(module " + " ".join(parts) + ")"))]
     assert "_W" in srcs[0] and "q" in srcs[0]
+    srcs.append(  # the runtime types of S0013 (`RT`) and the segments of the array operators
+        translate(
+            wat2wasm(
+                "(module (type $s (sub (struct (field i8)))) (type $a (array (mut i8)))"
+                ' (data $d "ab") (func (export "f") (result i32) (array.len (array.new_data $a $d'
+                " (i32.const 0) (i32.const 2)))))"
+            )
+        )
+    )
+    assert "RT0" in srcs[1]
     if os.path.exists(COREMARK):
         with open(COREMARK, "rb") as f:
             srcs.append(translate(f.read()))

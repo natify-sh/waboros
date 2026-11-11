@@ -134,7 +134,7 @@ def test_refusal_by_the_targets() -> None:
         m = load(text)
         assert m["gc"] and m["validated"]
         assert unsupported(m, SUPPORTED) == "GC types"
-        assert PycTarget().supports(m) == "GC types"
+        assert PycTarget().supports(m) is None  # `pyc` runs GC since step 2, the JITs do not
 
 
 def masks(text: str, f: int = 0) -> tuple[dict[int, int], list[tuple[Any, ...]]]:

@@ -908,7 +908,7 @@ every pool register may be a pin, so each method re-reads the pending word (main
 since S0012 step 3; aarch64 completes the amendment in step 4 (maintainer, Q-F), with the same
 shapes in AArch64 (`cmp w0, #14; b.ne` at a pad, `cbnz w0` after every call to `error`, x9-x12
 scratch); its code without exception instructions is unchanged (D35 list), and both JITs claim
-`exceptions/`, so the D25 parity test needs no exemption any more. Not done: a `throw` caught in the same function as a plain jump. Two tags of
+`exceptions/`, so the D25 parity test needs no exemption any more (from S0013 step 2 it ignores exactly the JITs' `unsupported: GC types` lines until they claim `gc`, steps 3b-4). Not done: a `throw` caught in the same function as a plain jump. Two tags of
 different indices are the same tag when both are imports of one export, so the first matching
 clause is not always known at compile time. Nothing measured asks for it.
 

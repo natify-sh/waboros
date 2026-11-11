@@ -8,10 +8,7 @@
         "acquireReleaseAtomics": null,
         "bigInt": null,
         "branchHinting": null,
-        "bulkMemory": [
-          "partial",
-          "7483/7485 over bulk-memory/; xfail 2 (bulk-memory/table_init 2); mostly: unsupported: GC types"
-        ],
+        "bulkMemory": true,
         "compactImportSection": null,
         "compilationHints": null,
         "componentModel": null,
@@ -20,25 +17,19 @@
         "customPageSizes": null,
         "esmIntegration": null,
         "exceptions": null,
-        "exceptionsFinal": [
-          "partial",
-          "105/110 over exceptions/; xfail 5 (exceptions/cast 5); mostly: unsupported: GC types"
-        ],
+        "exceptionsFinal": true,
         "extendedConst": true,
         "extendedNameSection": null,
         "flexibleVectors": null,
         "frozenValues": null,
-        "gc": null,
+        "gc": true,
         "halfPrecision": null,
         "instrumentAndTracingTechnology": null,
         "jitInterface": null,
         "jsPrimitiveBuiltins": null,
         "jsStringBuiltins": null,
         "jspi": null,
-        "memory64": [
-          "partial",
-          "8717/8719 over memory64/; xfail 2 (memory64/table_init64 2); mostly: unsupported: GC types"
-        ],
+        "memory64": true,
         "memoryControl": null,
         "moreArrayConstructors": null,
         "multibyteArrayAccess": null,
@@ -47,10 +38,7 @@
         "mutableGlobals": true,
         "numericValuesInWat": null,
         "profiles": null,
-        "referenceTypes": [
-          "partial",
-          "397/431 over ref_func+ref_is_null+ref_null+ref+table_get+table_set+table_grow+table_size+table+select; xfail 34 (ref_null 34); mostly: unsupported: GC types"
-        ],
+        "referenceTypes": true,
         "relaxedDeadCodeValidation": null,
         "relaxedSimd": true,
         "roundingVariants": null,

@@ -4,8 +4,10 @@
 import os
 import struct
 
-from waboros.frontend.binary import F32, F64, I32, I64, M32, M64
+from waboros.frontend.binary import F32, F64, I32, I64, M32, M64, NULLABLE
+from waboros.frontend.types import ANY, ARRAY, EQ, EXTERN, I31, STRUCT
 from waboros.frontend.types import key as types_key
+from waboros.frontend.types import nn as ref_nn
 from waboros.targets.base import Unsupported
 from waboros.targets.pyc import runtime as _rt
 
@@ -21,6 +23,42 @@ BRRULES = frozenset(
 )
 SINK_COPY = 10  # a region copied into n leaves: lines * (n - 1) at most this (S0010 Q2)
 SINK_MAXIND = 90  # no moved line deeper than this many levels (CPython allows 100, LESSONS 22)
+
+
+# ---- GC storage types (S0013): i8/i16 are masked unsigned in a field, an i8 array is a bytearray
+PACK = {0x78: 0xFF, 0x77: 0xFFFF}  # packed storage type -> its mask
+ABSTRACT_TEST = {  # abstract heap type -> the test of a non-null value x
+    ANY: "%s is not None",
+    EXTERN: "%s is not None",
+    -16: "%s is not None",  # func
+    -23: "%s is not None",  # exn
+    EQ: "(%(x)s.__class__ is int or %(x)s.__class__ is list)",
+    I31: "%s.__class__ is int",
+    STRUCT: "(%(x)s.__class__ is list and %(x)s[0].kind == 'struct')",
+    ARRAY: "(%(x)s.__class__ is list and %(x)s[0].kind == 'array')",
+}
+
+
+def gc_size(st):
+    """The size in bytes of an array element in Wasmtime's heap (references are 4 bytes)."""
+    return {0x78: 1, 0x77: 2, I32: 4, F32: 4, I64: 8, F64: 8, 0x7B: 16}.get(st, 4)
+
+
+def gc_default(st, fb):
+    """Source of the default value of a storage type."""
+    if st.__class__ is tuple or st in NULLABLE.values():
+        return "None"
+    return "0" if st not in (F32, F64) or fb else "0.0"
+
+
+def nullable(t):
+    """A static value type that may hold null."""
+    return t.__class__ is not tuple or bool(t[0])
+
+
+def gc_ref(ht, null):
+    """The reference type (nullable or not) of heap type `ht`."""
+    return NULLABLE.get(ht, (1, ht)) if null else (0, ht)
 
 
 class E:
@@ -476,10 +514,11 @@ class FuncGen:
                         info[st[-2 - lab]][1] = False
             elif op == 0x0B:
                 st.pop()
-            elif op in (0x0C, 0x0D, 0xD5, 0xD6):
-                t = st[-1 - ins[1]]
+            elif op in (0x0C, 0x0D, 0xD5, 0xD6, 0xFB18, 0xFB19):
+                d = ins[2] if op >= 0xFB18 else ins[1]
+                t = st[-1 - d]
                 info[t][0] = True
-                if ins[1] != 0:
+                if d != 0:
                     info[t][1] = False
             elif op == 0x0E:
                 for d in ins[1] + [ins[2]]:
@@ -728,6 +767,25 @@ class FuncGen:
                 else:
                     st.pop()
                 continue
+            if op in (0xFB18, 0xFB19):  # br_on_cast / br_on_cast_fail: br_if on a type test
+                fl, d, h1, h2 = x[1:]
+                v = s.pop()
+                s.flush_all()
+                t = s.newtmp(v.t)
+                s.emit("%s = %s" % (t, v.c))
+                cond = s.rtest(t, h2, fl & 2)
+                hit, miss = gc_ref(h2, fl & 2), gc_ref(h1, fl & 1 and not fl & 2)
+                if op == 0xFB19:
+                    cond, hit, miss = "not " + cond, miss, hit
+                st.append(E(t, hit, k=True))  # the branch carries the reference
+                m = s.open("if %s:" % cond)
+                jumped = s.br_code(d)
+                s.close(m)
+                if not jumped:
+                    s.nest(s.ctl[-1], "else:")
+                st.pop()
+                st.append(E(t, miss, k=True))
+                continue
             if op == 0x0E:  # br_table
                 e = s.pop()
                 idx = s.n(e)
@@ -842,7 +900,7 @@ class FuncGen:
         rl = [
             s.lname(j)
             for j in range(len(s.params), len(s.ltypes))
-            if s.ltypes[j].__class__ is tuple or s.ltypes[j] in (0x70, 0x6F, 0x69, 0x74)
+            if s.ltypes[j].__class__ is tuple or s.ltypes[j] in NULLABLE.values()
         ]
         il = [v for v in inits if v not in fl and v not in rl]
         if rl:
@@ -1191,7 +1249,13 @@ class FuncGen:
                 s.emit("    _toob()")
                 s.emit("except AttributeError:")
                 s.emit("    _tnull()")
-                s.emit("if %s != %r:" % (q, types_key(mg.mod, x[1])))
+                if mg.tdefs[x[1]][2]:  # final: the key decides; else a subtype of it passes (S0013)
+                    s.emit("if %s != %r:" % (q, types_key(mg.mod, x[1])))
+                else:
+                    s.emit(
+                        "if %s != %r and not _fsub(%s, RT%d):"
+                        % (q, types_key(mg.mod, x[1]), q, x[1])
+                    )
                 s.emit("    _tsig()")
             ac = ", ".join(n(a) if a.t in (I32, I64) else a.c for a in args)
             if tail:
@@ -1619,16 +1683,18 @@ class FuncGen:
             push(E("(((%s&%d)^%d)-%d)" % (a.c, m, h, h), T, None, **dep(a)))
             return
         if op == 0xD0:
-            push(E("None", {-16: 0x70, -23: 0x69, -12: 0x74}.get(x[1], 0x6F), k=True))
+            push(E("None", gc_ref(x[1], True), k=True))
             return
         if op == 0xD4:
             a = pop()
-            push(E("_nonnull(%s)" % a.c, a.t, **dep(a, x=True)))
+            push(E("_nonnull(%s)" % a.c, (0, ref_nn(a.t)[1]), **dep(a, x=True)))
             return
         if op == 0xD1:
             a = pop()
             push(E("(%s is None)" % a.c, "bool", 1, **dep(a)))
             return
+        if op == 0xD3 or 0xFB00 <= op < 0xFC00:
+            return s.gc(x)
         if op == 0xD2:
             push(E(mg.fname(x[1]), 0x70, k=True))
             return
@@ -1704,6 +1770,232 @@ class FuncGen:
             return
         raise NotImplementedError("opcode 0x%x" % op)
 
+    # --- GC (S0013): a struct is `[rtt, f0, f1, ...]`, an array `[rtt, data]`, an i31 its signed
+    # value. Every read of a GC object is a statement into a temporary (no lazy expression reads GC
+    # state), and an operand that is not a name is assigned first, so the first trap in program order
+    # wins: operands, then null, then bounds, then the access (LESSONS 95).
+    def name(s, c, t):
+        """`c` (code of a value of type t) as a name or number: an expression goes into a temp now."""
+        if (c.isidentifier() and c != "None") or c.isdigit():
+            return c
+        r = s.newtmp(t)
+        s.emit("%s = %s" % (r, c))
+        return r
+
+    def nm(s, e):
+        return s.name(s.n(e) if e.t in (I32, I64) else e.c, e.t)
+
+    def nullchk(s, name, t, trap):
+        if nullable(t):
+            s.emit("if %s is None: %s()" % (name, trap))
+
+    def field(s, v, st):
+        """Source of value `v` as stored in a field or element of storage type `st`."""
+        if st in PACK:
+            return v.c if v.b is not None and v.b <= PACK[st] else "(%s&%d)" % (v.c, PACK[st])
+        return s.n(v) if st in (I32, I64) else v.c
+
+    def loaded(s, st, code, sub):
+        """Push the value `code` read from a field or element of type `st`; `sub` 3 (struct.get_s)
+        and 12 (array.get_s) sign-extend a packed one."""
+        if st in PACK:
+            h = PACK[st] + 1 >> 1
+            t = s.newtmp(I32)
+            s.emit("%s = %s" % (t, "((%s^%d)-%d)" % (code, h, h) if sub in (3, 12) else code))
+            s.push(E(t, I32, None if sub in (3, 12) else PACK[st], k=True))
+        else:
+            t = s.newtmp(st)
+            s.emit("%s = %s" % (t, code))
+            s.push(E(t, st, (M32 if st == I32 else M64) if st in (I32, I64) else None, k=True))
+
+    def rtest(s, x, ht, null):
+        """The test that the value named `x` is a `ht` (null accepted if `null`)."""
+        tdef = s.mg.tdefs[ht][0][0] if ht >= 0 else None
+        if tdef == "func":
+            t = "(%s is not None and _ftest(%s, RT%d))" % (x, x, ht)
+        elif tdef:
+            T = s.mg.tdefs[ht]
+            d = s.mg.depth(ht)
+            t = "(%s.__class__ is list and %s[0] is RT%d)" % (x, x, ht)
+            if not T[2]:
+                t = "(%s.__class__ is list and %s[0].depth >= %d and %s[0].display[%d] is RT%d)" % (
+                    x,
+                    x,
+                    d,
+                    x,
+                    d,
+                    ht,
+                )
+        elif ht in ABSTRACT_TEST:
+            t = ABSTRACT_TEST[ht].replace("%(x)s", x).replace("%s", x)
+        else:  # none, nofunc, noextern, noexn: only null
+            return "%s is None" % x if null else "False"
+        if null:
+            return "True" if t == "%s is not None" % x else "(%s is None or %s)" % (x, t)
+        return t
+
+    def gc(s, x):
+        mg, op = s.mg, x[0]
+        sub = op - 0xFB00
+        pop, push = s.pop, s.push
+        if op == 0xD3:  # ref.eq: `is`, or `==` for i31 values (Python ints)
+            b, a = pop(), pop()
+            ha, hb = ref_nn(a.t)[1], ref_nn(b.t)[1]
+            if ha == hb == I31:
+                c = "(%s == %s)"
+            elif I31 not in (ha, hb) and EQ not in (ha, hb):
+                c = "(%s is %s)"
+            else:
+                c = "_refeq(%s, %s)"
+            push(E(c % (a.c, b.c), "bool", 1, **dep(a, b)))
+            return
+        if sub in (26, 27):  # any.convert_extern / extern.convert_any
+            a = pop()
+            push(
+                E(
+                    ("_int(%s)" if sub == 26 else "_ext(%s)") % a.c,
+                    gc_ref(ANY if sub == 26 else EXTERN, nullable(a.t)),
+                    **dep(a),
+                )
+            )
+            return
+        if sub == 28:  # ref.i31: the low 31 bits, sign-extended
+            a = pop()
+            push(E("(((%s&2147483647)^1073741824)-1073741824)" % s.n(a), (0, I31), **dep(a)))
+            return
+        if sub in (29, 30):  # i31.get_s / i31.get_u
+            a = pop()
+            s.flush_trapping()
+            an = s.nm(a)
+            s.nullchk(an, a.t, "_ti31")
+            t = s.newtmp(I32)
+            s.emit("%s = %s&%d" % (t, an, 0xFFFFFFFF if sub == 29 else 0x7FFFFFFF))
+            push(E(t, I32, M32 if sub == 29 else 0x7FFFFFFF, k=True))
+            return
+        if sub in (20, 21, 22, 23):  # ref.test / ref.cast
+            a = pop()
+            null = sub & 1
+            s.flush_trapping()
+            an = s.nm(a)
+            if sub < 22:
+                push(E(s.rtest(an, x[1], null), "bool", 1, **(dep(a) if an == a.c else {})))
+                return
+            c = s.rtest(an, x[1], null)
+            if c != "True":
+                s.emit("if not %s: _tcast()" % c)
+            push(E(an, gc_ref(x[1], null), **(dep(a) if an == a.c else {}), k=an != a.c or a.k))
+            return
+        if sub == 15:  # array.len
+            a = pop()
+            s.flush_trapping()
+            an = s.nm(a)
+            s.nullchk(an, a.t, "_tna")
+            t = s.newtmp(I32)
+            s.emit("%s = len(%s[1])" % (t, an))
+            push(E(t, I32, M32, k=True))
+            return
+        tdef = mg.tdefs[x[1]][0]
+        ty = (0, x[1])
+        if sub <= 5:  # struct
+            fs = tdef[1]
+            if sub <= 1:
+                vals = s.popn(len(fs)) if sub == 0 else []
+                s.flush_trapping()
+                items = (
+                    [s.field(v, f[0]) for v, f in zip(vals, fs)]
+                    if sub == 0
+                    else [gc_default(f[0], mg.fb) for f in fs]
+                )
+                t = s.newtmp(ty)
+                s.emit("%s = [RT%d%s]" % (t, x[1], "".join(", " + i for i in items)))
+                push(E(t, ty, k=True))
+                return
+            st = fs[x[2]][0]
+            if sub == 5:  # struct.set
+                v, a = pop(), pop()
+                s.flush_trapping()
+                an = s.nm(a)
+                vn = s.name(s.field(v, st), st)
+                s.nullchk(an, a.t, "_tns")
+                s.emit("%s[%d] = %s" % (an, x[2] + 1, vn))
+                return
+            a = pop()
+            s.flush_trapping()
+            an = s.nm(a)
+            s.nullchk(an, a.t, "_tns")
+            s.loaded(st, "%s[%d]" % (an, x[2] + 1), sub)
+            return
+        st = tdef[1][0]
+        sz = gc_size(st)
+        if sub in (6, 7):  # array.new / array.new_default
+            n = pop()
+            v = pop() if sub == 6 else None
+            s.flush_trapping()
+            t = s.newtmp(ty)
+            s.emit(
+                "%s = _aalloc(RT%d, %s, %s, %d)"
+                % (t, x[1], s.field(v, st) if v else gc_default(st, mg.fb), s.n(n), sz)
+            )
+            push(E(t, ty, k=True))
+            return
+        if sub == 8:  # array.new_fixed
+            vals = s.popn(x[2])
+            s.flush_trapping()
+            t = s.newtmp(ty)
+            items = "".join(s.field(v, st) + ", " for v in vals)
+            s.emit(
+                "%s = [RT%d, %s]"
+                % (t, x[1], "bytearray((%s))" % items if sz == 1 else "[%s]" % items)
+            )
+            push(E(t, ty, k=True))
+            return
+        if sub in (9, 10):  # array.new_data / array.new_elem: segment x[2], offset, length
+            n, o = pop(), pop()
+            s.flush_trapping()
+            t = s.newtmp(ty)
+            if sub == 9:
+                mg.dused.add(x[2])
+                cv = {F32: "_f32_i32", F64: "_f64_i64"}.get(st) if not mg.fb else None
+                src = "_adata(RT%d, D%d, %s, %s, %d, %s)" % (x[1], x[2], s.n(o), s.n(n), sz, cv)
+            else:
+                src = "_aelem(RT%d, ES%d, %s, %s)" % (x[1], x[2], s.n(o), s.n(n))
+            s.emit("%s = %s" % (t, src))
+            push(E(t, ty, k=True))
+            return
+        if sub in (11, 12, 13, 14):  # array.get / get_s / get_u / set
+            v = pop() if sub == 14 else None
+            i, a = pop(), pop()
+            s.flush_trapping()
+            an, i_ = s.nm(a), s.nm(i)
+            vn = s.name(s.field(v, st), st) if v else None
+            s.nullchk(an, a.t, "_tna")
+            d = s.newtmp()
+            s.emit("%s = %s[1]" % (d, an))
+            s.emit("if %s >= len(%s): _taoob()" % (i_, d))
+            if v:
+                s.emit("%s[%s] = %s" % (d, i_, vn))
+            else:
+                s.loaded(st, "%s[%s]" % (d, i_), sub)
+            return
+        # the bulk operators: one helper each, which checks null, then bounds (stack order)
+        if sub == 16:  # array.fill
+            n, v, i, a = pop(), pop(), pop(), pop()
+            args = [a.c, s.n(i), s.field(v, st), s.n(n)]
+            helper = "_afill"
+        elif sub == 17:  # array.copy
+            n, si, src, di, dst = pop(), pop(), pop(), pop(), pop()
+            args = [dst.c, s.n(di), src.c, s.n(si), s.n(n)]
+            helper = "_acopy"
+        elif sub in (18, 19):  # array.init_data / array.init_elem: segment x[2]
+            n, so, di, a = pop(), pop(), pop(), pop()
+            args = [a.c, s.n(di), "%s%d" % ("D" if sub == 18 else "ES", x[2]), s.n(so), s.n(n)]
+            if sub == 18:
+                mg.dused.add(x[2])
+                args += [str(sz), {F32: "_f32_i32", F64: "_f64_i64"}.get(st) if not mg.fb else None]
+            helper = "_aidata" if sub == 18 else "_aielem"
+        s.flush_trapping()
+        s.emit("%s(%s)" % (helper, ", ".join(map(str, args))))
+
 
 # ----------------------------------------------------------------------------- module compiler
 class ModGen:
@@ -1711,6 +2003,8 @@ class ModGen:
         s.mod = mod
         s.fb = _rt.FBITS if fb is None else fb  # f32/f64 as int bit patterns (host quiets a sNaN)
         s.types = mod["types"]
+        s.tdefs = mod["tdefs"]
+        s.pre = []  # statements of the nested allocating constant expression being written
         im = mod["imports"]
         s.fimports = [i for i in im if i[0] == "func"]
         s.nimp = len(s.fimports)
@@ -1738,6 +2032,13 @@ class ModGen:
             i for i, m in enumerate(s.gmut) if m and (i < len(s.gimports) or s.exported(3, i))
         }
 
+    def depth(s, i):
+        """The number of supertypes of type `i` (the index of its own entry in the RTT display)."""
+        d = 0
+        while s.tdefs[i][1]:
+            i, d = s.tdefs[i][1][0], d + 1
+        return d
+
     def exported(s, kind, i):
         return any(k == kind and x == i for _, k, x in s.mod["exports"])
 
@@ -1757,6 +2058,36 @@ class ModGen:
     def gname(s, gi):
         return "C%d.v" % gi if gi in s.cells else "G%d" % gi
 
+    def gcnode(s, ins, a):
+        """Source of one allocating constant instruction over the sources `a` of its operands."""
+        sub, ty = ins[0] - 0xFB00, ins[1] if len(ins) > 1 else 0
+        if sub in (26, 27):
+            return "%s(%s)" % ("_int" if sub == 26 else "_ext", a[0])
+        if sub == 28:
+            return "(((%s&2147483647)^1073741824)-1073741824)" % a[0]
+        if sub < 2:
+            fs = s.tdefs[ty][0][1]
+            a = [gc_default(f[0], s.fb) for f in fs] if sub else a
+            a = ["(%s&%d)" % (v, PACK[f[0]]) if f[0] in PACK else v for v, f in zip(a, fs)]
+            return "[RT%d%s]" % (ty, "".join(", " + v for v in a))
+        st = s.tdefs[ty][0][1][0]
+        if sub == 8:
+            a = ["(%s&%d)" % (v, PACK[st]) if st in PACK else v for v in a]
+            return "[RT%d, %s]" % (
+                ty,
+                "bytearray((%s))" % "".join(v + ", " for v in a)
+                if gc_size(st) == 1
+                else "[%s]" % ", ".join(a),
+            )
+        v = (
+            "(%s&%d)" % (a[0], PACK[st])
+            if sub == 6 and st in PACK
+            else a[0]
+            if sub == 6
+            else gc_default(st, s.fb)
+        )
+        return "_aalloc(RT%d, %s, %s, %d)" % (ty, v, a[-1], gc_size(st))
+
     def val(s, init):
         if init[0] in ("add", "sub", "mul"):
             o = {"add": "+", "sub": "-", "mul": "*"}[init[0]]
@@ -1770,6 +2101,20 @@ class ModGen:
             return s.gname(init[1])
         if init[0] == "func":
             return s.fname(init[1])
+        if init[0] == "gc":  # S0013: statements into `s.pre` (a nest of any depth), a name back
+            names: dict[int, str] = {}
+            stack = [init]
+            while stack:  # operands first, in order; no recursion per nesting level
+                n = stack[-1]
+                todo = [a for a in n[2] if a[0] == "gc" and id(a) not in names]
+                if todo:
+                    stack.extend(reversed(todo))
+                    continue
+                stack.pop()
+                a = [names[id(e)] if e[0] == "gc" else s.val(e) for e in n[2]]
+                names[id(n)] = "t%d" % len(s.pre)
+                s.pre.append("    %s = %s" % (names[id(n)], s.gcnode(n[1], a)))
+            return names[id(init)]
         if init[0] in ("f32", "f64"):
             return flit(init[1], s.fb, 32 if init[0] == "f32" else 64)
         return "None" if init[0] == "null" else repr(init[1])
@@ -1794,6 +2139,14 @@ class ModGen:
             out.append(
                 "%s = %d" % (s.mname(k, "_MAXPAGES"), cap if mem[1] is None else min(mem[1], cap))
             )
+        if mod.get("gc") or any(
+            not t[2] for t in s.tdefs
+        ):  # the runtime types of S0013 (see `_RTT`)
+            for i, (c, sup, fin, _, _) in enumerate(s.tdefs):
+                out.append(
+                    "RT%d = _rtt(%r, %r, %r, %s)"
+                    % (i, types_key(mod, i), c[0], fin, "RT%d" % sup[0] if sup else None)
+                )
         L = ["def instantiate(imports):"]
         gl = []  # module globals that instantiate assigns
         gi = []  # global initializers: after the function imports (ref.func may name one)
@@ -1811,7 +2164,7 @@ class ModGen:
                 )
                 gl.append("C%d" % i if i in s.cells else "G%d" % i)
                 continue
-            first = init[0] not in ("global", "func", "add", "sub", "mul")
+            first = init[0] not in ("global", "func", "add", "sub", "mul", "gc")
             if i in s.cells:
                 out.append("C%d = _Cell(%s)" % (i, s.val(init) if first else "0"))
             else:
@@ -1819,7 +2172,10 @@ class ModGen:
                 if not first:
                     gl.append("G%d" % i)
             if not first:
-                gi.append("    %s = %s" % (s.gname(i), s.val(init)))
+                v = s.val(init)
+                gi.extend(s.pre)
+                s.pre.clear()
+                gi.append("    %s = %s" % (s.gname(i), v))
         for j in range(len(s.tagimports), len(s.tagtypes)):
             out.append("TG%d = _Tag(%r)" % (j, tuple(mod["types"][s.tagtypes[j]][0])))
         for ti, (mn, mx) in enumerate(mod["tables"]):
@@ -1859,12 +2215,25 @@ class ModGen:
         for ti, init in enumerate(mod["tinit"]):
             if init is not None:
                 k = len(s.timports) + ti
-                L.append("    T%d[:] = [%s] * len(T%d)" % (k, s.val(init), k))
+                v = s.val(init)
+                L.extend(s.pre)
+                s.pre.clear()
+                L.append("    T%d[:] = [%s] * len(T%d)" % (k, v, k))
+        # an item that allocates may trap: every segment's items come before the first active
+        # write (spec, instantiation; the other items cannot trap, so their code is as before)
+        early = any(e[0] == "gc" for info in mod["elem_info"] for e in info[3])
+        for i, (info, mode) in enumerate(zip(mod["elem_info"], mod["elem_mode"], strict=True)):
+            gl.append("ES%d" % i)
+            if early:
+                items = [s.val(e) for e in info[3]]
+                L.extend(s.pre)
+                s.pre.clear()
+                L.append("    ES%d = [%s]" % (i, ", ".join(items)))
         for i, ((ti, off, _, items), mode) in enumerate(
             zip(mod["elem_info"], mod["elem_mode"], strict=True)
         ):
-            gl.append("ES%d" % i)
-            L.append("    ES%d = [%s]" % (i, ", ".join(s.val(e) for e in items)))
+            if not early:
+                L.append("    ES%d = [%s]" % (i, ", ".join(s.val(e) for e in items)))
             if mode == "active":
                 L.append(
                     "    _eseg%s(T%d, %s, ES%d)"

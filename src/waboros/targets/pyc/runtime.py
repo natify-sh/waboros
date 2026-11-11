@@ -2,8 +2,11 @@
 """Runtime helpers imported by generated `pyc` modules (D18); ported from the poc/w2py.py prelude."""
 
 import struct as _st, math as _m, os as _os
-
 from waboros.targets.base import Trap, TrapCode
+
+TYPE_CHECKING = False  # `typing` does not exist on MicroPython: the annotations are strings
+if TYPE_CHECKING:
+    from typing import NoReturn
 
 
 INF = float("inf")
@@ -270,6 +273,171 @@ def _rethrow(x):
         raise TypeError(f"not an exception reference: {x!r}")
     x.__traceback__ = x.__context__ = x.__cause__ = None
     raise x
+
+
+# ---- GC (S0013): runtime types, the host boundary of anyref/externref, traps, array bulk operators
+class _RTT:
+    """The runtime type of a struct, array or function type: one per canonical key (`types.key`) in
+    the process-wide registry `_RTTS`; `display` is the tuple of supertypes by depth, ending with itself."""
+
+    __slots__ = ("key", "kind", "final", "depth", "display")
+
+    def __init__(self, key, kind, final, sup):
+        self.key, self.kind, self.final = key, kind, final
+        self.depth = 0 if sup is None else sup.depth + 1
+        self.display = (() if sup is None else sup.display) + (self,)
+
+
+_RTTS = {}
+
+
+def _rtt(key, kind, final, sup):
+    r = _RTTS.get(key)
+    return r if r is not None else _RTTS.setdefault(key, _RTT(key, kind, final, sup))
+
+
+class _Host:
+    """A host value seen as an anyref (`any.convert_extern`)."""
+
+    __slots__ = ("v",)
+
+    def __init__(self, v):
+        self.v = v
+
+
+class _Ext:
+    """A GC value (struct, array, i31) seen as an externref (`extern.convert_any`)."""
+
+    __slots__ = ("x",)
+
+    def __init__(self, x):
+        self.x = x
+
+
+def _ext(x):
+    return None if x is None else x.v if x.__class__ is _Host else _Ext(x)
+
+
+def _int(x):
+    return None if x is None else x.x if x.__class__ is _Ext else _Host(x)
+
+
+def _refeq(a, b):  # i31 values are ints: equal by value; structs and arrays by identity
+    return a is b or (a.__class__ is int and a == b)
+
+
+def _fsub(k, T):
+    """The function type with key `k` is `T` or a declared subtype of it (a function type only a GC
+    module can have a proper subtype of is in the registry)."""
+    if k == T.key:
+        return True
+    r = _RTTS.get(k)
+    return r is not None and r.depth >= T.depth and r.display[T.depth] is T
+
+
+def _ftest(f, T):  # ref.test of a function reference against a function type
+    return _fsub(getattr(f, "s", None), T)
+
+
+def _tns() -> "NoReturn":
+    raise Trap(TrapCode.NULL_REFERENCE, "null structure reference")
+
+
+def _tna() -> "NoReturn":
+    raise Trap(TrapCode.NULL_REFERENCE, "null array reference")
+
+
+def _ti31() -> "NoReturn":
+    raise Trap(TrapCode.NULL_REFERENCE, "null i31 reference")
+
+
+def _tcast() -> "NoReturn":
+    raise Trap(TrapCode.CAST_FAILURE, "cast failure")
+
+
+def _taoob() -> "NoReturn":
+    raise Trap(TrapCode.ARRAY_OUT_OF_BOUNDS, "out of bounds array access")
+
+
+# the largest array length that does not trap ALLOCATION_TOO_LARGE, by element size in bytes
+# (a reference is 4): Wasmtime 50.0.1, found by bisection (docs/specs/S0013-gc.md, Changes 2026-11-11);
+# the bytes of header (44, 48 for 8- and 16-byte elements: alignment) plus the elements fit in 32 bits
+_ALIM = {1: 4294967251, 2: 2147483625, 4: 1073741812, 8: 536870905, 16: 268435452}
+
+
+def _aalloc(rt, v, n, sz):
+    if n > _ALIM[sz]:
+        raise Trap(TrapCode.ALLOCATION_TOO_LARGE, "allocation size too large")
+    return [rt, bytearray([v]) * n if sz == 1 else [v] * n]
+
+
+def _adec(D, o, n, w, cv):
+    """n elements of w bytes of the data segment D from offset o (an i8 array is a bytearray);
+    cv converts the bits of an f32/f64 element. The caller checked the bounds."""
+    if w == 1:
+        return bytearray(D[o : o + n])
+    r = [int.from_bytes(D[i : i + w], "little") for i in range(o, o + n * w, w)]
+    return r if cv is None else [cv(x) for x in r]
+
+
+def _dbound(D, o, n, w):
+    if o + n * w > len(D):
+        raise Trap(TrapCode.MEMORY_OUT_OF_BOUNDS, "out of bounds memory access")
+
+
+def _adata(rt, D, o, n, w, cv):  # the segment bounds come before the allocation limit (Wasmtime)
+    _dbound(D, o, n, w)
+    return [rt, _adec(D, o, n, w, cv)]
+
+
+def _aelem(rt, E, o, n):
+    if o + n > len(E):
+        raise Trap(TrapCode.TABLE_OUT_OF_BOUNDS, "out of bounds table access")
+    return [rt, E[o : o + n]]
+
+
+def _afill(a, i, v, n):
+    if a is None:
+        _tna()
+    d = a[1]
+    if i + n > len(d):
+        _taoob()
+    d[i : i + n] = bytes([v]) * n if d.__class__ is bytearray else [v] * n
+
+
+def _acopy(D, di, S, si, n):  # Wasmtime's order: dst null, dst bounds, src null, src bounds
+    if D is None:
+        _tna()
+    d = D[1]
+    if di + n > len(d):
+        _taoob()
+    if S is None:
+        _tna()
+    s = S[1]
+    if si + n > len(s):
+        _taoob()
+    d[di : di + n] = s[si : si + n]  # the slice is a copy: overlapping ranges are safe
+
+
+def _aidata(a, di, D, so, n, w, cv):
+    if a is None:
+        _tna()
+    d = a[1]
+    if di + n > len(d):
+        _taoob()
+    _dbound(D, so, n, w)
+    d[di : di + n] = _adec(D, so, n, w, cv)
+
+
+def _aielem(a, di, E, so, n):
+    if a is None:
+        _tna()
+    d = a[1]
+    if di + n > len(d):
+        _taoob()
+    if so + n > len(E):
+        raise Trap(TrapCode.TABLE_OUT_OF_BOUNDS, "out of bounds table access")
+    d[di : di + n] = E[so : so + n]
 
 
 def _pc(x):

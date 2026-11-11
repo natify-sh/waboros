@@ -7,7 +7,8 @@ breaks a validation rule. A valid construct this front end cannot validate (inst
 the set it knows) ends validation of that module without a verdict (it is left to the code
 generator as before): never `Invalid`, because a wrong "invalid" on a valid module would be a wrong
 kind. Constructs the reader does not decode are its `NotImplementedError`. A module with GC types
-or instructions is validated in full (`mod["gc"]`: no target runs it yet, they refuse it; S0013).
+or instructions is validated in full (`mod["gc"]`: `pyc` runs it, the JITs refuse it until S0013
+step 3b).
 
 Basic pyright mode: the module dict and the instruction tuples are untyped data of the reader.
 """
@@ -29,6 +30,7 @@ I32, I64, F32, F64, FUNCREF, EXTERNREF = 0x7F, 0x7E, 0x7D, 0x7C, 0x70, 0x6F
 EXNREF, NOEXNREF = 0x69, 0x74  # (ref null exn), (ref null noexn); heap types -23 and -12
 EXN = (0, -23)  # (ref exn)
 UNKNOWN = 0  # the type of a value popped from a polymorphic stack
+UREF = -1  # an unknown reference (ref.as_non_null, br_on_null of an unknown operand): any heap type
 MAX_PAGES, MAX_TABLE = 65536, 0xFFFFFFFF
 MAX_PAGES64, MAX_TABLE64 = 1 << 48, 0xFFFFFFFFFFFFFFFF  # i64 memories and tables (memory64)
 
@@ -157,8 +159,8 @@ def _root(mod: dict, t) -> bool:
 
 
 def _vt(t, mod: dict):
-    """A type index in a reference type must exist. A GC heap type marks the module `gc`: no
-    target runs it yet (S0013)."""
+    """A type index in a reference type must exist. A GC heap type marks the module `gc`
+    (the JITs refuse it until S0013 step 3b)."""
     if isref(t):
         h = nn(t)[1]
         if h >= len(mod["types"]):
@@ -231,7 +233,7 @@ def _conv(mod: dict, sub: int, x):
     (UNKNOWN: unreachable code, then `(ref any)` / `(ref extern)`, as Wasmtime); the nullability
     is kept."""
     src, dst = (0x6F, ANY) if sub == 26 else (0x6E, EXTERN)
-    if not x:
+    if x in (UNKNOWN, UREF):
         return (0, dst)
     if not match(mod, x, src):
         raise Invalid("type mismatch")
@@ -306,12 +308,15 @@ def _gcsig(c: _Ctx, ins: tuple, room: int):
 
 
 def _frefs(e: tuple):
-    """The function indices a constant expression names (spec: C.refs)."""
-    if e[0] == "func":
-        yield e[1]
-    elif e[0] == "gc":
-        for a in e[2]:
-            yield from _frefs(a)
+    """The function indices a constant expression names (spec: C.refs); no recursion, an
+    allocating expression may nest as deep as the binary is long."""
+    stack = [e]
+    while stack:
+        n = stack.pop()
+        if n[0] == "func":
+            yield n[1]
+        elif n[0] == "gc":
+            stack.extend(n[2])
 
 
 def _const(c: _Ctx, e: tuple, nglobals: int):
@@ -341,15 +346,29 @@ def _const(c: _Ctx, e: tuple, nglobals: int):
     if k == "null":
         return _ref(c, e[1])
     if k == "gc":  # struct.new .. extern.convert_any; the reader took the operands
-        c.mod["gc"] = True  # no target evaluates these yet: every one refuses the module
-        sub = e[1][0] - 0xFB00
-        if sub in (26, 27):
-            return _conv(c.mod, sub, _const(c, e[2][0], nglobals))
-        pops, res = _gcsig(c, e[1], len(e[2]))
-        for a, t in zip(e[2], pops, strict=True):
-            if not match(c.mod, _const(c, a, nglobals), t):
-                raise Invalid("type mismatch")
-        return res[0]
+        c.mod["gc"] = (
+            True  # evaluated by `pyc` only until S0013 step 3b: the JITs refuse the module
+        )
+        types: dict[int, object] = {}  # type of each allocating node by id, operands first
+        stack = [e]
+        while stack:  # no recursion per nesting level
+            n = stack[-1]
+            todo = [a for a in n[2] if a[0] == "gc" and id(a) not in types]
+            if todo:
+                stack.extend(reversed(todo))
+                continue
+            stack.pop()
+            ts = [types[id(a)] if a[0] == "gc" else _const(c, a, nglobals) for a in n[2]]
+            sub = n[1][0] - 0xFB00
+            if sub in (26, 27):
+                types[id(n)] = _conv(c.mod, sub, ts[0])
+                continue
+            pops, res = _gcsig(c, n[1], len(n[2]))
+            for t, want in zip(ts, pops, strict=True):
+                if not match(c.mod, t, want):
+                    raise Invalid("type mismatch")
+            types[id(n)] = res[0]
+        return types[id(e)]
     if e[1] >= nglobals:
         raise Invalid("unknown global")
     if c.gmut[e[1]]:
@@ -394,7 +413,7 @@ def _check_types(mod: dict) -> None:
 def validate(mod: dict) -> None:
     mod["validated"] = False  # True only after a full verdict; JIT targets require it (S0002)
     # struct / array types, declared supertypes, GC heap types and instructions: validated in
-    # full, but no target runs them yet and each refuses `gc` (S0013)
+    # full; `pyc` runs them and the JITs refuse `gc` until S0013 step 3b
     mod["gc"] = any(c[0] != "func" or sp for c, sp, _, _, _ in mod["tdefs"])
     mod["anyext"] = any(c[0] != "func" for c, _, _, _, _ in mod["tdefs"])  # for refmasks
     try:
@@ -523,6 +542,10 @@ def _body(c: _Ctx, lt: list, nparams: int, results: list, insns: list[tuple]) ->
                 return UNKNOWN
             raise Invalid("type mismatch")
         x = vals.pop()
+        if x == UREF:  # a reference of unknown type: acceptable where a reference is expected
+            if expect and not isref(expect):
+                raise Invalid("type mismatch")
+            return expect or UREF
         if expect and x and not match(c.mod, x, expect):
             raise Invalid("type mismatch")
         return x
@@ -715,7 +738,7 @@ def _body(c: _Ctx, lt: list, nparams: int, results: list, insns: list[tuple]) ->
                 vals.append(t)
             else:
                 a, b = pop(), pop()
-                if isref(a) or isref(b) or (a and b and a != b):
+                if UREF in (a, b) or isref(a) or isref(b) or (a and b and a != b):
                     raise Invalid("type mismatch")
                 vals.append(a or b)
                 if (a or b) == simd.V:
@@ -763,7 +786,9 @@ def _body(c: _Ctx, lt: list, nparams: int, results: list, insns: list[tuple]) ->
             c.mod["gc"] = True
             rt = _ref(c, ins[1], op in (0xFB15, 0xFB17))
             x = pop()
-            if x and not (isref(x) and top(c.mod, nn(x)[1]) == top(c.mod, ins[1])):
+            if x not in (UNKNOWN, UREF) and not (
+                isref(x) and top(c.mod, nn(x)[1]) == top(c.mod, ins[1])
+            ):
                 raise Invalid("type mismatch")
             vals.append(I32 if op < 0xFB16 else rt)
         elif op in (0xFB18, 0xFB19):  # br_on_cast / br_on_cast_fail flags label rt1 rt2
@@ -788,18 +813,18 @@ def _body(c: _Ctx, lt: list, nparams: int, results: list, insns: list[tuple]) ->
             vals.extend(res)
         elif op == 0xD4:
             x = pop()
-            if x and not isref(x):
+            if x not in (UNKNOWN, UREF) and not isref(x):
                 raise Invalid("type mismatch")
-            vals.append((0, nn(x)[1]) if x else UNKNOWN)
+            vals.append((0, nn(x)[1]) if isref(x) else UREF)
         elif op in (0xD5, 0xD6):
             ts = label(ins[1])
             if op == 0xD5:
                 x = pop()
-                if x and not isref(x):
+                if x not in (UNKNOWN, UREF) and not isref(x):
                     raise Invalid("type mismatch")
                 popn(ts)
                 vals.extend(ts)
-                vals.append((0, nn(x)[1]) if x else UNKNOWN)
+                vals.append((0, nn(x)[1]) if isref(x) else UREF)
             else:
                 if not ts or not isref(ts[-1]):
                     raise Invalid("type mismatch")

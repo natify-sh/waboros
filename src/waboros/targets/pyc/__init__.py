@@ -7,6 +7,7 @@ from types import CodeType
 from typing import Any, Literal, cast
 
 from waboros.frontend.binary import F32, F64, parse
+from waboros.frontend.types import ANY, isref, nn, top
 from waboros.frontend.types import key as types_key
 from waboros.frontend.validate import validate
 from waboros.runtime.link import LinkError, func_type, global_type
@@ -36,6 +37,21 @@ _f32_i32 = cast(Callable[[int], float], _rt._f32_i32)
 _f64_i64 = cast(Callable[[int], float], _rt._f64_i64)
 _i32_f32 = cast(Callable[[float], int], _rt._i32_f32)
 _i64_f64 = cast(Callable[[float], int], _rt._i64_f64)
+
+
+def _host_any(mod: ValidModule, ty: Any, r: Any) -> Any:
+    """A host value for an any-hierarchy type is an anyref as `any.convert_extern` makes it
+    (S0013): `None`, an i31 (an int), a GC object (a list led by its runtime type) and a box the
+    runtime made pass as they are."""
+    if (
+        not isref(ty)
+        or r is None
+        or r.__class__ in (int, _rt._Host)
+        or (r.__class__ is list and r and r[0].__class__ is _rt._RTT)
+        or top(mod, nn(ty)[1]) != ANY
+    ):
+        return r
+    return _rt._Host(r)
 
 
 def _from_raw(ty: Any, r: Any) -> Any:
@@ -127,7 +143,7 @@ class PycInstance:
     def call(self, func_index: int, args: Sequence[Raw]) -> list[Raw]:
         ps, rs = func_type(self.module, func_index)
         name = f"I{func_index}" if func_index < self._nimp() else f"f{func_index}"
-        raw = [_from_raw(t, a) for t, a in zip(ps, args, strict=True)]
+        raw = [_from_raw(t, _host_any(self.module, t, a)) for t, a in zip(ps, args, strict=True)]
         res = _run(self.store, self.ns[name], *raw)
         vals = [] if not rs else [res] if len(rs) == 1 else list(res)
         return [_to_raw(t, v) for t, v in zip(rs, vals, strict=True)]
@@ -153,12 +169,14 @@ class PycInstance:
         return _to_raw(ty, cell.v if cell is not None else self.ns[f"G{global_index}"])
 
 
-def _host_adapter(h: HostFunc, ps: list[int], rs: list[int], sig: str) -> Callable[..., Any]:
+def _host_adapter(
+    mod: ValidModule, h: HostFunc, ps: list[int], rs: list[int], sig: str
+) -> Callable[..., Any]:
     """A `HostFunc` as a function on `pyc` values; `.s` lets it sit in a table."""
 
     def w(*a: Any) -> Any:
         res = h([_to_raw(t, v) for t, v in zip(ps, a, strict=True)])
-        vals = [_from_raw(t, r) for t, r in zip(rs, res, strict=True)]
+        vals = [_from_raw(t, _host_any(mod, t, r)) for t, r in zip(rs, res, strict=True)]
         return None if not rs else vals[0] if len(rs) == 1 else tuple(vals)
 
     w.s = sig  # pyright: ignore[reportFunctionMemberAccess]
@@ -173,9 +191,7 @@ class PycTarget:
         return None
 
     def supports(self, module: ValidModule) -> str | None:
-        # a module the validator does not cover may run (a Python exception is safe), but not GC
-        # types, which no target runs yet (S0013, D25 parity with the JITs)
-        return "GC types" if module.get("gc") else None
+        return None
 
     def compile(self, module: ValidModule) -> object:
         return _Compiled(module, compile(generate(module), "<waboros-pyc>", "exec", optimize=2))
@@ -197,7 +213,9 @@ class PycTarget:
             if im[0] == "func":
                 if ext.owner is None:
                     ps, rs = c.module["types"][im[3]]
-                    val = _host_adapter(cast(HostFunc, val), ps, rs, types_key(c.module, im[3]))
+                    val = _host_adapter(
+                        c.module, cast(HostFunc, val), ps, rs, types_key(c.module, im[3])
+                    )
             wired.setdefault(im[1], {})[im[2]] = val
         exports = cast(dict[str, Any], _run(store, namespace["instantiate"], wired))
         inst = PycInstance(c, namespace, exports, store)

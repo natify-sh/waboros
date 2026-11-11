@@ -393,7 +393,16 @@ def test_the_jit_fails_exactly_what_pyc_fails(jit: str) -> None:
     """D25: `auto` selects a JIT whose probe succeeds, so its expected failures must equal pyc's
     in the directories both claim."""
     both = ("pyc", jit)
-    assert _xfail_keys(jit, both) == _xfail_keys("pyc", both)
+    # GC (S0013): pyc runs it since step 2, the JITs say unsupported until steps 3b-4
+    from tests.spec.claims import claimed
+
+    entries = run.read_xfail(Path(__file__).parent / "xfail" / f"{jit}.txt")
+    ahead = (
+        set[str]()
+        if claimed(jit, "gc")
+        else {k for k, r in entries.items() if r == "unsupported: GC types"}
+    )
+    assert _xfail_keys(jit, both) - ahead == _xfail_keys("pyc", both)
 
 
 @pytest.mark.parametrize("jit", _jits(False))

@@ -761,3 +761,17 @@ What went wrong or surprised us while building the PoC, so it is not found again
     function types by parameter/result strings, which ignored rec groups and finality; an identity
     that the language defines (type equivalence) has one function, used by every target. Found:
     S0013 step 1a review, 2026-11-11.
+102. **The spec suite passes with the wrong order of two traps that have the same kind of cause.**
+    `gc/` passed on `pyc` with `array.copy` checking both nulls before any bound, and with
+    `array.new_data` / `array.new_elem` checking the allocation limit before the segment. One probe
+    of Wasmtime 50.0.1 showed otherwise: the order is destination null, destination bounds, source
+    null, source bounds (a null source with an out-of-range destination is `ARRAY_OUT_OF_BOUNDS`);
+    `array.init_data` / `init_elem` check the array, then the segment; a segment bound comes before
+    the allocation limit (the one `array.wast` case that did fail: `new_elem` of 2³¹ elements from
+    offset 2³¹). Separately, a reference that is unknown in unreachable code (`ref.as_non_null`,
+    `br_on_null`) cannot be the unknown type of a numeric operand: the validator gave the same
+    "any type" marker (`UNKNOWN`) and accepted `(unreachable) (ref.as_non_null) (i32.eqz)`, where
+    Wasmtime rejects 6 of the 30 probed forms. Rule: a rule that is an order or a type sentence is
+    verified by a table of mixed-failure cases run through wasmtime-py (`null` + `out of bounds`,
+    each operand failing alone), not by the spec files; keep the table as a test with the oracle's
+    verdicts written in. Found: S0013 step 2, 2026-11-11.
