@@ -118,11 +118,12 @@ def tail_switch(a: Asm) -> None:
     a.br(17)
 
 
-def host_thunk(a: Asm, word: int) -> None:
+def host_thunk(a: Asm, word: int) -> int:
     """The code a host import's function record points to (D32): called like a wasm function
     (frame in x27, context in x28), it calls the import in context word `word` through the
     bridge with its frame as the slots and returns the bridge's status. It reloads x26/x25: as a
-    tail-call target it returns to callers that do not (LESSONS 33)."""
+    tail-call target it returns to callers that do not (LESSONS 33). Returns the offset of
+    the bridge call's return address (its site, S0013 3a)."""
     a.bti("c")
     a.pair(False, FP, LR, SP, -16, "pre")
     a.mov(FP, SP)
@@ -130,9 +131,11 @@ def host_thunk(a: Asm, word: int) -> None:
     a.mov_imm(0, word, wide=False)
     a.ld(16, CTX, 8 * HOST_BRIDGE)
     a.blr(16)
+    ret = len(a.buf)
     reload_memory(a)
     a.pair(True, FP, LR, SP, 16, "post")
     a.ret()
+    return ret
 
 
 def assemble() -> tuple[bytes, list[int]]:

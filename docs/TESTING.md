@@ -271,7 +271,8 @@ ARMv8.0-A and the `bti` HINTs only (tests: `tests/jit/test_isa_aarch64.py`, plan
 HINT words must fail).
 
 Cross-compilation (D35): `tools/jit_dump.py --target T OUT` writes a sha256 list of the code of every
-spec module and CoreMark. The `jit` job uploads its lists for both targets (artifact `jit-dump-x86`);
+spec module and CoreMark, and from S0013 step 3a a fourth column, the sha256 of its stack maps
+(`STACKMAPS`; code bytes and maps are compared as separate columns). The `jit` job uploads its lists for both targets (artifact `jit-dump-x86`);
 the `arm64` job (Linux) compiles the same modules and `diff`s its lists with them, so code compiled on
 x86-64 and on arm64 is the same bytes both ways.
 

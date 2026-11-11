@@ -24,8 +24,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from waboros.frontend.validate import _root  # pyright: ignore[reportPrivateUsage, reportUnknownVariableType]
 from waboros.targets.base import TrapCode, Unsupported, ValidModule
-from waboros.targets.jit.common import simd
+from waboros.targets.jit.common import gc, simd
 from waboros.targets.jit.common.backend import NEGATE, AddK, Backend, Imm, Operand, Reg, Slot
 from waboros.targets.jit.common.context import (
     DATA_DROP,
@@ -186,6 +187,7 @@ class Compiled:
     ]  # imported function -> code offset of its host thunk (its record if host)
     flags: int = 0  # artifact header flags: guard.BOUNDS_GUARD | GUARD_LOG2 << 8 (S0006)
     faults: list[tuple[int, int]] = field(default_factory=lambda: [])  # S0006 fault map
+    stackmaps: bytes | None = None  # the STACKMAPS section (S0013 3a); None: not instantiable
 
 
 @dataclass(slots=True)
@@ -219,6 +221,7 @@ class _Mod:
     mlo: list[int] = field(default_factory=list[int])
     t64: list[bool] = field(default_factory=list[bool])
     tagw: list[int] = field(default_factory=list[int])  # payload slots of each tag (S0012)
+    mod: Any = None  # the validated module: reference masks and types for the stack maps
 
 
 def compile_module(mod: ValidModule, b: Backend[Any, Any], target: str) -> Compiled:
@@ -255,21 +258,39 @@ def compile_module(mod: ValidModule, b: Backend[Any, Any], target: str) -> Compi
     m.t64 = [at == I64 for at in mod["taddr"]]
     tts: list[int] = [im[3] for im in imps if im[0] == "tag"] + mod["tags"]
     m.tagw = [simd.width(m.types[ti][0]) for ti in tts]
+    m.mod = mod
     nopin = os.environ.get("WABOROS_JIT_NOPIN", "")
     funcs: list[tuple[int, int]] = []
+    s0 = len(b.sites)
+    maps: list[tuple[int, int, int]] = []  # (shift, nslots, bits) of each of b.sites[s0:]
     for k, ((locs, _), insns) in enumerate(zip(mod["codes"], mod["insns"], strict=True)):
         fidx = len(fimps) + k
         pin = not (nopin == "all" or str(fidx) in nopin.split(","))
         pos = b.here()
         funcs.append((pos, simd.width(m.types[m.ftypes[fidx]][1])))
-        if not _Func(m, fidx, locs, insns, pin).run(False):  # a branch does not reach
+        fn = _Func(m, fidx, locs, insns, pin)
+        if not fn.run(False):  # a branch does not reach
             b.rewind(pos)
-            far_ok = _Func(m, fidx, locs, insns, pin).run(True)  # never inside an assert (-O)
-            if not far_ok:
+            fn = _Func(m, fidx, locs, insns, pin)
+            if not fn.run(True):  # never inside an assert (-O)
                 raise Unsupported(target, "function too large for this architecture's branches")
-    thunks = {i: b.host_thunk(layout.import_(i)) for i in sorted(refd) if i < len(fimps)}
+        maps += fn.sites
+        # every call the backend recorded has the core's map, and nothing else (S0013 3a)
+        assert len(b.sites) - s0 == len(maps), (fidx, len(b.sites) - s0, len(maps))
+    thunks: dict[int, int] = {}
+    for i in sorted(refd):
+        if i < len(fimps):  # its frame is the host function's arguments: no map
+            thunks[i] = b.host_thunk(layout.import_(i))
+            maps.append((0, 0, 0))
+    assert len(b.sites) - s0 == len(maps)
     code, data = b.finish()
-    return Compiled(mod, code, data, funcs, layout, sorted(refd), sigs, thunks)
+    sites = [
+        (ret, shift, ret_at, up, n, bits)
+        for (ret, ret_at, up), (shift, n, bits) in zip(b.sites[s0:], maps, strict=True)
+    ]
+    c = Compiled(mod, code, data, funcs, layout, sorted(refd), sigs, thunks)
+    c.stackmaps = gc.encode(sites)
+    return c
 
 
 class _Func:
@@ -293,6 +314,26 @@ class _Func:
         self.tos_taken = False  # an operand of the current instruction is in `tos` (LESSONS 32)
         self.f: Any = None  # the backend's frame, from run()
         self.pads: list[tuple[Any, Any, list[tuple[int, int | None, _Ctl]]]] = []  # S0012, cold
+        # stack maps (S0013 3a): (shift, nslots, bits) per call site, in code order; with the
+        # validator's masks on, every reference local is marked at every site (liveness: step 7)
+        self.sites: list[tuple[int, int, int]] = []
+        self.rm: dict[int, int] | None = None
+        mod, k = m.mod, fidx - m.nimp
+        if mod is not None and mod["refmasks"]:
+            self.rm, self.vm = mod["refmasks"][k], mod["v128masks"][k]
+            self.lmask = sum(1 << self.slot[j] for j, t in enumerate(self.ltypes) if _root(mod, t))
+            # I1: a reference is never in a pool register (choose_pins takes i32/i64 only)
+            assert not any(self.lmask >> self.slot[j] & 1 for j in self.pins)
+
+    def site(self, pc: int, shift: int, keep: int, top: int) -> None:
+        """The map of the call the backend just recorded: slots [0, L + keep) of this frame; the
+        validator's mask at instruction `pc` covers the `top` operand slots before it popped."""
+        bits = 0
+        if self.rm is not None:
+            ops = gc.slot_bits(self.rm[pc], self.vm[pc])
+            assert ops >> top == 0, (pc, ops, top)  # the core's stack and the validator's agree
+            bits = (self.lmask | ops << self.L) & ((1 << (self.L + keep)) - 1)
+        self.sites.append((shift, self.L + keep, bits))
 
     def choose_pins(self) -> dict[int, int]:
         """Integer locals by uses weighted by loop depth (as w2jit2), as many as the pool holds."""
@@ -566,7 +607,7 @@ class _Func:
             b.jump(c.label)
         self.dead = True
 
-    def call(self, fi: int) -> None:
+    def call(self, fi: int, pc: int) -> None:
         m, b = self.m, self.b
         ps, rs = m.types[m.ftypes[fi]]
         n, nres = simd.width(ps), simd.width(rs)
@@ -577,10 +618,11 @@ class _Func:
             b.call_record(self.f, m.layout.record(m.records[fi]), self.L + h0)
         else:
             b.call_direct(self.f, m.labels[fi - m.nimp], self.L + h0)
+        self.site(pc, self.L + h0, h0, h0 + n)  # the arguments are the callee's parameters
         self.st += [SLOTE] * nres
         self.maxh = max(self.maxh, h0 + max(n, nres))
 
-    def call_indirect(self, ti: int, table: int) -> None:
+    def call_indirect(self, ti: int, table: int, pc: int) -> None:
         m, b = self.m, self.b
         ps, rs = m.types[ti]
         n, nres = simd.width(ps), simd.width(rs)
@@ -590,10 +632,11 @@ class _Func:
         del self.st[h0:]
         lay, a64 = m.layout, self.t64(table)
         b.call_indirect(self.f, lay.table(table), lay.sig(m.sigs[ti]), index, self.L + h0, a64=a64)
+        self.site(pc, self.L + h0, h0, h0 + n + 1)
         self.st += [SLOTE] * nres
         self.maxh = max(self.maxh, h0 + max(n, nres))
 
-    def call_ref(self, ti: int) -> None:
+    def call_ref(self, ti: int, pc: int) -> None:
         ps, rs = self.m.types[ti]
         n, nres = simd.width(ps), simd.width(rs)
         ref = self.pop()  # stays valid across flush, as call_indirect's index
@@ -601,6 +644,7 @@ class _Func:
         h0 = len(self.st) - n
         del self.st[h0:]
         self.b.call_ref(self.f, ref, self.L + h0)
+        self.site(pc, self.L + h0, h0, h0 + n + 1)
         self.st += [SLOTE] * nres
         self.maxh = max(self.maxh, h0 + max(n, nres))
 
@@ -655,7 +699,7 @@ class _Func:
         else:
             self.st.pop()
 
-    def service(self, j: int, nargs: int, imms: Sequence[int], nres: int) -> None:
+    def service(self, pc: int, j: int, nargs: int, imms: Sequence[int], nres: int) -> None:
         """A runtime service through the host bridge (D25): its operands, then the immediates,
         in slots; results replace the operands."""
         self.flush()
@@ -663,6 +707,7 @@ class _Func:
         for k, v in enumerate(imms):
             self.b.move(Slot(self.L + h0 + nargs + k), Imm(v), True)
         self.b.call_host(self.f, self.m.layout.libcall(j), self.L + h0)
+        self.site(pc, 0, h0 + nargs + len(imms), h0 + nargs)  # a service never calls wasm
         del self.st[h0:]
         self.st += [SLOTE] * nres
         self.maxh = max(self.maxh, h0 + max(nargs + len(imms), nres))
@@ -729,13 +774,14 @@ class _Func:
             else:
                 b.jump(outer)
 
-    def throw(self, t: int) -> None:
+    def throw(self, t: int, pc: int) -> None:
         """The payload (slots h0..h0+n) becomes a new object of the store's arena, in machine
         code; the slot above it carries the size to the refill service when the chunk is full."""
         n = self.m.tagw[t]
         self.flush()
         h0 = len(self.st) - n
         self.b.throw(self.f, self.m.layout.tag(t), self.L + h0, n)
+        self.site(pc, 0, h0 + n + 1, h0 + n)  # its refill call: the payload and the size slot
         self.maxh = max(self.maxh, h0 + n + 1)
         del self.st[h0:]
         self.dead = True
@@ -754,7 +800,7 @@ class _Func:
                     b.move(Slot(k), Imm(0), True)
         self.ctl.append(_Ctl("func", b.new_label(), 0, 0, simd.width(self.results), 0))
         tos, push, pop = self.TOS, self.push, self.pop
-        for ins in self.insns:
+        for pc, ins in enumerate(self.insns):
             op = ins[0]
             self.tos_taken = False
             if self.dead:  # skip to the end (or else) of the block that became unreachable
@@ -826,7 +872,7 @@ class _Func:
             elif op == 0x1F:
                 self.try_table(ins[1], ins[2])
             elif op == 0x08:
-                self.throw(ins[1])
+                self.throw(ins[1], pc)
             elif op == 0x0A:  # a reference is never a pending compare
                 b.throw_ref(f, self.pop())
                 self.dead = True
@@ -839,7 +885,7 @@ class _Func:
             elif op == 0x05:
                 self.else_()
             elif op == 0x10:
-                self.call(ins[1])
+                self.call(ins[1], pc)
             elif op == 0x23 or op == 0x24:
                 g = ins[1]
                 word, indirect = self.m.layout.global_(g), g < self.m.nimpg
@@ -902,16 +948,16 @@ class _Func:
                 b.memory_size(tos, lay.memory(ins[1]))
                 push((TOS, None))
             elif op == 0x40:  # delta (+ memory if several) -> old pages or -1
-                self.service(MEMORY_GROW, 1, self.mem_imm(ins[1]), 1)
+                self.service(pc, MEMORY_GROW, 1, self.mem_imm(ins[1]), 1)
             elif op == 0x00:
                 b.trap(f, TrapCode.UNREACHABLE)
                 self.dead = True
             elif op == 0x11:
-                self.call_indirect(ins[1], ins[2])
+                self.call_indirect(ins[1], ins[2], pc)
             elif op in (0x12, 0x13, 0x15):
                 self.tail_call(op, ins)
             elif op == 0x14:
-                self.call_ref(ins[1])
+                self.call_ref(ins[1], pc)
             elif op == 0xD4:  # a reference is never a pending compare
                 b.null_check(f, self.opnd(self.st[-1], len(self.st) - 1), TrapCode.NULL_REFERENCE)
             elif op == 0xD5 or op == 0xD6:
@@ -949,15 +995,15 @@ class _Func:
                 a2 = (self.a64(ins[1])[0], self.a64(ins[2])[0])
                 b.memory_copy(f, *self.pop3(), lay.memory(ins[1]), lay.memory(ins[2]), a64=a2)
             elif op == 0xFC0F:  # (init, delta) + table -> old size or -1
-                self.service(TABLE_GROW, 2, [ins[1]], 1)
+                self.service(pc, TABLE_GROW, 2, [ins[1]], 1)
             elif op == 0xFC0C:  # (d, s, n) + segment, table
-                self.service(TABLE_INIT, 3, [ins[1], ins[2]], 0)
+                self.service(pc, TABLE_INIT, 3, [ins[1], ins[2]], 0)
             elif op == 0xFC0D:
-                self.service(ELEM_DROP, 0, [ins[1]], 0)
+                self.service(pc, ELEM_DROP, 0, [ins[1]], 0)
             elif op == 0xFC08:  # (d, s, n) + segment (+ memory if several)
-                self.service(MEMORY_INIT, 3, [ins[1], *self.mem_imm(ins[2])], 0)
+                self.service(pc, MEMORY_INIT, 3, [ins[1], *self.mem_imm(ins[2])], 0)
             elif op == 0xFC09:
-                self.service(DATA_DROP, 0, [ins[1]], 0)
+                self.service(pc, DATA_DROP, 0, [ins[1]], 0)
             elif op in REINTERPRET or op == 0x01:
                 pass
             elif op in WIDEOPS:  # two i64 results, low first, into the operands' first slots

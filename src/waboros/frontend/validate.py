@@ -208,6 +208,7 @@ class _Ctx:
         self.ndatas = len(mod["datas"])
         self.refs: set[int] = set()
         self.masks = False  # record reference masks (`mod["refmasks"]`)
+        self.v128: dict[int, int] = {}  # the same safepoints: positions holding a v128
 
 
 def _comp(mod: dict, x: int, kind: str) -> tuple:
@@ -509,19 +510,22 @@ def _validate(mod: dict) -> None:
                 raise Invalid("type mismatch")
     nimpf = len(c.funcs) - len(mod["funcs"])
     c.masks = bool(mod["anyext"])  # an any- or extern-hierarchy type is declared
-    mod["refmasks"] = []
+    mod["refmasks"], mod["v128masks"] = [], []
     for k, ((locs, _), insns) in enumerate(zip(mod["codes"], mod["insns"], strict=True)):
         ps, rs = c.funcs[nimpf + k]
+        c.v128 = {}
         masks = _body(c, ps + locs, len(ps), rs, insns)
         if c.masks:
             mod["refmasks"].append(masks)
+            mod["v128masks"].append(c.v128)
 
 
 def _body(c: _Ctx, lt: list, nparams: int, results: list, insns: list[tuple]) -> dict[int, int]:
     """Validate a function body. Returns its reference masks: for each safepoint (`_SAFEPOINTS`,
     every 0xFB instruction) at instruction index `pc` of reachable code, a bitmask with bit i set
     when operand-stack position i (from the bottom of the function's stack, across all open
-    blocks, before the instruction pops) holds an any- or extern-hierarchy reference. Empty if
+    blocks, before the instruction pops) holds an any- or extern-hierarchy reference; `c.v128`
+    gets, at the same safepoints, the positions holding a v128 (two slots in the JITs). Empty if
     `c.masks` is off."""
     masks: dict[int, int] = {}
     types, funcs, ttypes, gtypes = c.types, c.funcs, c.ttypes, c.gtypes
@@ -592,6 +596,7 @@ def _body(c: _Ctx, lt: list, nparams: int, results: list, insns: list[tuple]) ->
         op = ins[0]
         if c.masks and (op in _SAFEPOINTS or 0xFB00 <= op < 0xFC00) and not any(f[4] for f in ctl):
             masks[pc] = sum(1 << i for i, t in enumerate(vals) if _root(c.mod, t))
+            c.v128[pc] = sum(1 << i for i, t in enumerate(vals) if t == simd.V)
         sig = OPSIG.get(op)
         if sig is not None:
             if 0x28 <= op <= 0x3E:

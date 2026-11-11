@@ -87,6 +87,9 @@ class Backend:
         self.faults: list[tuple[int, int]] = []  # (fault offset, resume offset), by `finish`
         self._faults: list[tuple[int, Label]] = []
         self._oob: Label | None = None  # the stub of the unchecked access `_bounds` just formed
+        # (ret, ret_at, up) per call (S0013 3a): the return address's offset; this frame's own
+        # return address (x30 in its frame record) and the caller's sp, from sp at the call
+        self.sites: list[tuple[int, int, int]] = []
         self.align = int(os.environ.get("WABOROS_JIT_LOOP_ALIGN") or 0)  # placement study only
         self.a.pad_here(int(os.environ.get("WABOROS_JIT_PAD") or 0))  # (tools/placement_sweep.py)
 
@@ -166,6 +169,7 @@ class Backend:
         self.a.rewind(pos)
         self.tables = [t for t in self.tables if t[2] < pos]
         self._faults = [x for x in self._faults if x[0] < pos]
+        self.sites = [x for x in self.sites if x[0] < pos]
 
     def finish(self) -> tuple[bytes, int]:
         """The code, then the data area: jump tables of 32-bit offsets of their pads from the
@@ -229,13 +233,14 @@ class Backend:
         if shift_slots:
             self._add_k(FRAME, FRAME, 8 * shift_slots)
         self.a.bl(label)
+        self.sites.append((len(self.a.buf), 8, f.size))
         if shift_slots:
             self._add_k(FRAME, FRAME, -8 * shift_slots)
         self._cbz(0, f.error, wide=False, nz=True)
 
     def host_thunk(self, word: int) -> int:
         at = len(self.a.buf)
-        abi.host_thunk(self.a, word)
+        self.sites.append((abi.host_thunk(self.a, word), 8, 16))
         return at
 
     def call_host(self, f: Frame, word: int, slot: int) -> None:
@@ -246,6 +251,7 @@ class Backend:
         a.mov_imm(0, word, wide=False)
         a.ld(16, CTX, 8 * HOST_BRIDGE)
         a.blr(16)
+        self.sites.append((len(a.buf), 8, f.size))
         abi.reload_memory(a)  # memory.grow may have run
         self._cbz(0, f.error, wide=False, nz=True)
 
@@ -256,12 +262,12 @@ class Backend:
         if shift_slots:
             self._add_k(FRAME, FRAME, 8 * shift_slots)
         self._add_k(16, CTX, 8 * word)
-        self._enter_record(16)
+        self._enter_record(f, 16)
         if shift_slots:
             self._add_k(FRAME, FRAME, -8 * shift_slots)
         self._cbz(0, f.error, wide=False, nz=True)
 
-    def _enter_record(self, r: int) -> None:
+    def _enter_record(self, f: Frame, r: int) -> None:
         """Call the function record at x<r> on its context (x28 saved in a 16-byte frame)."""
         a = self.a
         a.pair(False, CTX, ZR, SP, -16, "pre")
@@ -269,6 +275,7 @@ class Backend:
         abi.reload_memory(a)
         a.ld(17, r)
         a.blr(17)
+        self.sites.append((len(a.buf), 24, f.size + 16))
         a.pair(True, CTX, ZR, SP, 16, "post")
         abi.reload_memory(a)
 
@@ -943,7 +950,7 @@ class Backend:
     def _call_x15(self, f: Frame, shift_slots: int) -> None:
         if shift_slots:
             self._add_k(FRAME, FRAME, 8 * shift_slots)  # x16 at most: the record is in x15
-        self._enter_record(15)
+        self._enter_record(f, 15)
         if shift_slots:
             self._add_k(FRAME, FRAME, -8 * shift_slots)
         self._cbz(0, f.error, wide=False, nz=True)
