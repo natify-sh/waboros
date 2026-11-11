@@ -88,8 +88,12 @@ jobs:
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         with: { cache-python: true }  # the managed Pythons too, not only the packages
       - run: uv sync --python 3.13
-      # llvm-mc (encoder check) and objdump/objcopy (ISA check); the tests skip without them.
-      - run: (command -v llvm-mc && command -v llvm-objcopy) || (sudo apt-get update && sudo apt-get install -y llvm binutils)
+      # llvm-mc (encoder check) and objdump/objcopy (ISA check; binutils is in the image).
+      - run: |  # the runner image's own LLVM (installed with its Clang), no apt: Ubuntu's mirrors failed for hours
+          for d in $(ls -d /usr/lib/llvm-*/bin 2>/dev/null | sort -V -r); do
+            if [ -x "$d/llvm-mc" ] && [ -x "$d/llvm-objcopy" ]; then echo "$d" >> "$GITHUB_PATH"; exit 0; fi
+          done
+          echo "no llvm-mc and llvm-objcopy under /usr/lib/llvm-*/bin: the runner image changed" >&2; exit 1
       - run: llvm-mc --version && llvm-objcopy --version | head -1 && objdump --version | head -1
       - run: uv run pytest tests/jit -n auto -v -rs
         env:
@@ -212,7 +216,11 @@ jobs:
         with: { cache-python: true }  # the managed Pythons too, not only the packages
       - run: uv sync --python 3.13
       # llvm-mc and llvm-objcopy for the encoder tests (WABOROS_JIT_REQUIRE=1 below)
-      - run: (command -v llvm-mc && command -v llvm-objcopy) || (sudo apt-get update && sudo apt-get install -y llvm)
+      - run: |  # the runner image's own LLVM (installed with its Clang), no apt: Ubuntu's mirrors failed for hours
+          for d in $(ls -d /usr/lib/llvm-*/bin 2>/dev/null | sort -V -r); do
+            if [ -x "$d/llvm-mc" ] && [ -x "$d/llvm-objcopy" ]; then echo "$d" >> "$GITHUB_PATH"; exit 0; fi
+          done
+          echo "no llvm-mc and llvm-objcopy under /usr/lib/llvm-*/bin: the runner image changed" >&2; exit 1
       - run: llvm-mc --version && llvm-objcopy --version | head -1
       # what this runner gives the JIT; fails unless native arm64 with a working probe
       - run: >-
