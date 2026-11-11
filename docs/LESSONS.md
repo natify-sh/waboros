@@ -786,3 +786,20 @@ What went wrong or surprised us while building the PoC, so it is not found again
     stack when it is freed; accepted as a platform limitation (D55). Rule: a test that builds a
     deep object graph on `pyc` keeps it shallow on emscripten; find such a crash locally with
     `ulimit -s 128` and `-p no:xdist`. Found: S0013 step 2 CI, 2026-11-11.
+104. **A hand-built context missed the new word, and only a CI tool used it.** S0013 step 3a.2 made
+    every entry trampoline read context word 14 (the store's exit record). The runtime sets it in
+    every context it makes, but `tools/stack_info.py` calls the entry with a zeroed context of its
+    own (to read the stack pointer through the stub), so the entry loaded from address 0 and the
+    tool died with SIGSEGV (exit 139) in three CI steps; no test ran the tool, and the spec suite and
+    `pytest` were green. Found by the reviewer reading every caller of the entry. Rule: when a
+    trampoline starts to rely on a context word, grep for every place that builds a context or
+    calls a trampoline by hand (tools, tests, PoC) and give each the word; a tool that CI runs gets a
+    test that runs it. Found: S0013 step 3a.2 review, 2026-11-11.
+105. **A defence that a correct invariant makes unobservable cannot have a mutation test.** The
+    bridge clears the exit record's `sp` after every host call (S0013), and the plan listed "the
+    bridge does not clear `sp`" as a mutation to be caught. It cannot be: every entry restores the
+    record it found, and the outermost one found 0 (the store's initial value), so outside a host call
+    the record is 0 whether or not the bridge clears it, and inside one it is current. The mutant
+    passed every test, as it must. Rule: before listing a mutation, say which observable result it
+    changes; if none does while the other invariants hold, it is a defence (kept or dropped by
+    decision), not a test target. Found: S0013 step 3a.2, 2026-11-11.

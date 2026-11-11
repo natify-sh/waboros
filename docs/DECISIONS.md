@@ -2,7 +2,7 @@
 title: Decisions
 kind: log
 status: current
-updated: 2026-11-05
+updated: 2026-11-11
 ---
 
 # Decisions
@@ -558,7 +558,7 @@ the opcode sets out of `common/compiler.py`. Measured for that decision (S0004 4
 abi ~930 code lines on aarch64 (integer core) vs ~1490 on x86-64 (full); compile 0.19–0.22 vs
 0.14–0.18 ms per module.
 
-Amended four times: S0005 (D41) added the `simd` method and the meaning of a v128 operand, in both backends, approved by the maintainer; then S0005 (D39 amendment item 5, Changes of 2026-11-02) added `move_v128`, which moves a v128 slot pair or writes a 128-bit constant as one 16-byte store (the store-forwarding fix, LESSONS 44), in both backends, approved by the maintainer. S0007 (amendment A, step 3) added the operand kind `AddK` (a pinned i32 plus a constant mod 2³²), accepted only by `move` and as the `load`/`store` address, in both backends, approved by the maintainer with x86-64 byte identity waived (amendment F). S0009 (amendment B, step 2a, 2026-11-04; maintainer, Q3 (b)) gave every method that addresses a memory or a table a **required keyword-only** `a64` (the i64 address type; a `(dst, src)` pair for `memory_copy`/`table_copy`), and `load`, `store` and `simd` a required keyword-only `lo` (an i64 memory's declared minimum in bytes, a lower bound of its size at run time; 0 for an i32 memory or a non-memory operator), neither with a default, so a forgotten argument is a `TypeError`, never i32 checks for an i64 memory. With `a64` the address or index operand is a full 64-bit value (a copy's `n` only when both sides are i64) and no `AddK` is passed; with `a64` false the method emits exactly the earlier code. In both backends; the code of every module without an i64 memory is unchanged on both JITs, guard and explicit (D35 lists; CoreMark included). The table methods assert `not a64` until S0009 step 3.
+Amended four times: S0005 (D41) added the `simd` method and the meaning of a v128 operand, in both backends, approved by the maintainer; then S0005 (D39 amendment item 5, Changes of 2026-11-02) added `move_v128`, which moves a v128 slot pair or writes a 128-bit constant as one 16-byte store (the store-forwarding fix, LESSONS 44), in both backends, approved by the maintainer. S0007 (amendment A, step 3) added the operand kind `AddK` (a pinned i32 plus a constant mod 2³²), accepted only by `move` and as the `load`/`store` address, in both backends, approved by the maintainer with x86-64 byte identity waived (amendment F). S0009 (amendment B, step 2a, 2026-11-04; maintainer, Q3 (b)) gave every method that addresses a memory or a table a **required keyword-only** `a64` (the i64 address type; a `(dst, src)` pair for `memory_copy`/`table_copy`), and `load`, `store` and `simd` a required keyword-only `lo` (an i64 memory's declared minimum in bytes, a lower bound of its size at run time; 0 for an i32 memory or a non-memory operator), neither with a default, so a forgotten argument is a `TypeError`, never i32 checks for an i64 memory. With `a64` the address or index operand is a full 64-bit value (a copy's `n` only when both sides are i64) and no `AddK` is passed; with `a64` false the method emits exactly the earlier code. In both backends; the code of every module without an i64 memory is unchanged on both JITs, guard and explicit (D35 lists; CoreMark included). The table methods assert `not a64` until S0009 step 3. S0013 step 3a (2026-11-11, maintainer's Q9 decision of 2026-11-06): every method that emits a call (`call_direct`, `call_record`, `call_indirect`, `call_ref`, `call_host`, `host_thunk`, and `throw` through its refill call) appends a site record `(ret, ret_at, up)` to `Backend.sites`, in both backends; no operand or instruction changes, code byte-identical on both JITs in both bounds modes (D56).
 
 Added without an amendment (the rule above: a method only a new opcode reaches): S0008 (Q2 (a), step 3) added `wide(op, dst: Slot, args)` for the four wide-arithmetic opcodes `0xFC13`-`0xFC16`, in both backends: the low and high 64 bits into slots `dst.k`, `dst.k + 1` (the first operand's slots, each operand read before its slot is written), may write `tos` (the core spills it first), no flags live afterwards, no trap; read by a `reviewer` (S0008 step 4). The code of every module without these opcodes is unchanged on both JITs (D35 lists).
 
@@ -999,3 +999,42 @@ a `pyc` object representation that is not nested (one object store per store and
 references, as the JIT heap), which would rewrite S0013 step 2 and slow `pyc`. Recorded in TARGETS.md
 (the Pyodide row); revisited if a real program on Pyodide needs long linked structures.
 
+
+### D56. JIT roots: a return-address walk from an exit record, a site table in every module; context ABI v1 amended
+Status: accepted (maintainer, 2026-11-06 and 2026-11-10: S0013 Q3, Q5, Q9, Q13) · Date: 2026-11-11 · Supersedes: — · Evidence: S0013 step 3a (Changes 3a.1-3a.4); the whole spec suite with `WABOROS_JIT_WALK_CHECK=1` on both JITs, both bounds modes; BENCHMARKS.md, "GC safepoints (S0013 step 3a)"
+
+The JIT's copying collector (S0013) needs precise roots on the native stack, so every frame of a
+store must be found without frame pointers or per-call stores:
+* **Site records.** Every call site of every module is a safepoint, whatever its types. Each
+  backend records per call site the code offset of the return address and two native numbers,
+  `ret_at` (where this frame's own return address is) and `up` (where the caller's stack pointer
+  is), both from the stack pointer at the call; the shared core adds the slot shift to the callee
+  and a bitmap of the frame's reference slots (from the validator's `refmasks` and `v128masks`:
+  value positions, which the core turns into slots, a v128 taking two). They form the artifact's
+  `STACKMAPS` section (ARTIFACT.md part 2, id 15). Machine code does not change: the D39 amendment
+  is an output of the call methods (`Backend.sites`), not an instruction.
+* **Exit record.** Context word 14 (`EXIT_RECORD`) holds, in every context of a store, the address
+  of the store's `{sp, pc, frame}`; the bridge writes it before every host call and clears `sp`
+  after; every entry keeps the enclosing record and its frame on the native stack while it runs
+  and puts the record back. The walk starts there and crosses nested entries by those saved
+  blocks and `tail_switch` restore frames by fixed numbers. Cost: about 1 ns per host call (8
+  instructions on x86-64, 6 on aarch64) and about 15 (x86-64) or 10 (aarch64) instructions per
+  entry, nothing on a call between wasm functions; not measurable on host calls, entries or
+  CoreMark.
+* **Checked, not trusted.** The walk validates every return address against the store's site
+  tables and reads only between the store's native limit and the thread's stack top; an
+  inconsistency is a `RuntimeError`, never a guess. `WABOROS_JIT_WALK_CHECK=1` walks at every host
+  call and compares the walk with the runtime's own record of its entries; CI runs one spec run
+  per architecture with it.
+* **ABI v1 amended without a bump** (S0013 Q5, as D34, D50 and D52): no artifact file has been
+  written, the trampolines are the runtime's own, word 14 was reserved, and module code is
+  byte-identical. The hard rule's test is that a compiled module without its site table is
+  refused at instantiation (`ValueError`).
+
+Rejected (S0013 "Alternatives considered"): a frame-pointer chain on x86-64 (a pool register and two
+instructions per frame), frame records written on the value stack at each call (stores on every
+call, every module's code changes), a shadow stack of references, and a conservative scan (a
+collector cannot rewrite a word it is not sure is a reference). Cost accepted: native debuggers and
+profilers cannot unwind through JIT frames (ROADMAP.md, phase 6). The bridge's clearing of `sp` is
+not observable by any walk while every entry restores the record (LESSONS 105); it is kept as a
+defence.

@@ -99,7 +99,21 @@ Wasmtime does; see [ARTIFACT-CONTAINER.md](ARTIFACT-CONTAINER.md) (maintainer's 
 | 12 | `TRAPMAP` | code offset ranges → wasm function index + wasm byte offset (for `Trap.frames`); with the guard flag also the fault map, `{fault_offset, resume_offset}` per memory instruction ([S0006](specs/S0006-guard-pages.md), "Artifact"). Neither is written to a file yet |
 | 13 | `RELOCS` | empty in version 1 (code is position-independent); reserved for copy-and-patch |
 | 14 | `WASM` | optional: the original wasm bytes. Its presence makes a **fat** file (below) |
+| 15 | `STACKMAPS` | one record per call site of the code, for the frame walk of the GC (S0013, below). Required: a loader refuses a module without it, since every frame of a store must be walkable |
 | 0xFFFF | `CHECKSUM` | sha256 of everything before it |
+
+**`STACKMAPS`** (S0013 step 3a; added to version 1 without a bump, as no artifact file has been
+written, S0013 Q5). Little-endian: `u32 nsites`; per site, sorted by `ret`: `u32 ret` (the code
+offset of the return address of a call), `u32 shift` (slots from this frame's base to the callee's:
+0 for a host or service call and in a host thunk), `u16 ret_at` (bytes from the stack pointer at the
+call, before x86-64's `call` pushes, to this frame's own return address), `u16 up` (bytes from that
+stack pointer to the caller's stack pointer at its own call), `u32 map` (0: no reference slot; k:
+the k-th map of the pool); then `u32 nmaps` and per map `u32 nslots` and `ceil(nslots / 32)` u32
+words, bit i set when value-stack slot i of the frame (locals first, a v128 two slots) holds a
+reference of the any or extern hierarchy at that site. Equal maps are stored once. Every call site
+has a record, a module without any reference type too (16 bytes per site: CoreMark 108 sites, 1 736
+bytes). The trampolines' own points (the entry's return point and its saved block, `tail_switch`'s
+`restore` frame) are part 3's, not this section's.
 
 Strings are UTF-8 with a u32 length prefix. A loader refuses an artifact whose `magic`,
 `format_version` major, `ctx_abi_version`, `arch` or ISA it does not support — it never "tries".
@@ -200,7 +214,9 @@ The trampoline (one per process and convention, in the host's code area like the
 following. If that return address is its own `restore` point, it loads the record's context and jumps
 to its code. Otherwise it saves the current context, loads the record's context and memory words, and
 calls the code; at `restore` it puts the saved context back, reloads the memory words and returns the
-callee's status. Every return matches its call.
+callee's status. Every return matches its call. The restore frame is 16 bytes on both
+architectures, the saved context at the stack pointer of the `call`/`blr` and the real return
+address 8 above it; the GC's frame walk steps over it by these numbers (S0013).
 
 **Per architecture** (S0004, D38; an amendment of version 1, which phase 5 fixes): what a host that
 provides the bridge or the tail-call trampoline itself must follow. Everything else in this part is

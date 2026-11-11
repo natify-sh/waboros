@@ -400,3 +400,4 @@ uv run pytest tests/jit -k "entry or trap or reentry or host or interrupt or sta
   `EXIT_RECORD`; the bridge writes the store's exit record `{sp, pc, frame}` before the host and
   clears its `sp` after; the entry keeps the enclosing record and its frame on the native stack
   during its call and puts the record back (x86-64: the pad 8 → 40 bytes, the block at `[rsp, rsp + 32)` in SysV and Win64). Module code is unchanged.
+* 2026-11-11 (S0013 steps 3a.3-3a.4, D56): the runtime walks a store's frames from the exit record by the per-site numbers of the `STACKMAPS` section and the trampolines' points (the entry's return point and its saved block, `tail_switch`'s 16-byte restore frame: the saved context, then the real return address); `WABOROS_JIT_WALK_CHECK=1` checks the walk at every host call. A compiled module without its site table is refused at instantiation (`ValueError`). No change of code or context words beyond step 3a.2's.
