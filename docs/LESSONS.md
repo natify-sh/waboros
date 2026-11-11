@@ -783,6 +783,6 @@ What went wrong or surprised us while building the PoC, so it is not found again
     (300 is fine; 1 000 needs 256 KiB), while on the default 8 MiB stack 3
     million is fine on 3.11, 3.13 and 3.14: the trashcan that bounds this recursion triggers too late
     for a small stack. So a long linked list of structs on `pyc` can crash a host with a small C
-    stack when it is freed; not fixed (open question to the maintainer). Rule: a test that builds a
+    stack when it is freed; accepted as a platform limitation (D55). Rule: a test that builds a
     deep object graph on `pyc` keeps it shallow on emscripten; find such a crash locally with
     `ulimit -s 128` and `-p no:xdist`. Found: S0013 step 2 CI, 2026-11-11.

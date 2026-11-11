@@ -987,3 +987,15 @@ Why: a module written once runs on every JIT architecture and ports to JIT-AS-WA
 and the source is reviewable rather than a binary built elsewhere; the test keeps the two from
 drifting. Rejected: building the module at run time (needs a parser or a compiler in the package,
 D1); bytes without a source in the tree (unreviewable).
+
+### D55. `pyc` on a small C stack: freeing a long chain of GC objects may crash the host (accepted)
+Status: accepted (maintainer, 2026-11-11) · Date: 2026-11-11 · Supersedes: — · Evidence: LESSONS 103; S0013 step 2 CI (Pyodide)
+
+CPython frees a chain of lists recursively in C, and its trashcan bounds that recursion too late for
+a small C stack: on Pyodide (or Linux with `ulimit -s 128`) a chain of about 1 000 `pyc` structs
+crashes the host when it is freed; on the default 8 MiB stack 3 million is fine. This is a
+deliberate exception to "never crash the interpreter", accepted as a platform limitation instead of
+a `pyc` object representation that is not nested (one object store per store and integer
+references, as the JIT heap), which would rewrite S0013 step 2 and slow `pyc`. Recorded in TARGETS.md
+(the Pyodide row); revisited if a real program on Pyodide needs long linked structures.
+
