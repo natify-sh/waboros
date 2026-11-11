@@ -12,14 +12,15 @@ from waboros.frontend import simd
 
 M32, M64 = 0xFFFFFFFF, 0xFFFFFFFFFFFFFFFF
 I32, I64, F32, F64 = 0x7F, 0x7E, 0x7D, 0x7C
-TN = dict.fromkeys((0x70, 0x6F, 0x69, 0x74), "ref") | {
+# nullable reference types of one byte: func extern exn noexn, then the GC abstract heap types
+REFBYTES = (0x70, 0x6F, 0x69, 0x74, 0x6E, 0x6D, 0x6C, 0x6B, 0x6A, 0x71, 0x72, 0x73)
+TN = dict.fromkeys(REFBYTES, "ref") | {
     I32: "i32",
     I64: "i64",
     F32: "f32",
     F64: "f64",
     0x7B: "v128",
 }
-UNSUPPORTED_TYPES = frozenset((0x63, 0x64, 0x6A, 0x6B, 0x6C, 0x6D, 0x6E, 0x71, 0x72, 0x73))
 UNSUPPORTED_OPS = frozenset(
     (6, 7, 9, 0x18, 0x19, 0xFB, 0xFE)
 )  # 6, 7, 9, 0x18, 0x19: legacy exceptions
@@ -77,15 +78,16 @@ def _illegal(op):
     raise Malformed("illegal opcode %#x" % op)
 
 
-_NULLABLE = {-16: 0x70, -17: 0x6F, -23: 0x69, -12: 0x74}
+# heap type code (the signed 7-bit value of the byte) -> its one-byte nullable reference type
+NULLABLE = {b - 128: b for b in REFBYTES}
 
 
 def _reftype(nullable, ht):
-    """(ref null func / extern / exn / noexn) are the bytes 0x70 / 0x6F / 0x69 / 0x74; any other
-    reference type is the tuple (nullable, heap type), the heap type a type index or a negative
-    abstract-type code."""
-    if nullable and ht in _NULLABLE:
-        return _NULLABLE[ht]
+    """(ref null <abstract type>) is the byte of that type (`REFBYTES`); any other reference type
+    is the tuple (nullable, heap type), the heap type a type index or a negative abstract-type
+    code."""
+    if nullable and ht in NULLABLE:
+        return NULLABLE[ht]
     return (int(nullable), ht)
 
 
@@ -148,12 +150,10 @@ class R:
 
     def vt(s, refs=False):
         b = s.u8()
-        if b in (0x70, 0x6F, 0x69, 0x74) or (not refs and b in (I32, I64, F32, F64, 0x7B)):
+        if b in REFBYTES or (not refs and b in (I32, I64, F32, F64, 0x7B)):
             return b
         if b in (0x63, 0x64):  # (ref null? ht)
             return _reftype(b == 0x63, s.ht())
-        if b in UNSUPPORTED_TYPES:
-            raise NotImplementedError("value type %#x" % b)
         raise Malformed("malformed reference type" if refs else "malformed value type")
 
     def mut(s):
@@ -202,6 +202,11 @@ def parse(data):
         maddr=[],  # address type (0x7F / 0x7E) of every memory, imported first (memory64)
         taddr=[],  # address type of every table, imported first (table64)
         tags=[],  # type index of every defined tag (imported tags are in `imports`, first)
+        # per type: (composite, supertype indices (at most one is valid), final, rec group start, rec group end);
+        # composite: ("func", params, results) / ("struct", fields) / ("array", field), a field
+        # (storage type, mutable), storage a value type or 0x78 (i8) / 0x77 (i16). `types` keeps
+        # ([], []) for a struct / array so code that reads every entry as a function type works.
+        tdefs=[],
     )
     datacount = None
     rank = 0
@@ -269,15 +274,43 @@ def parse(data):
                     )  # tag attribute; the reference interpreter's text
                 mod["tags"].append(r.u())
         elif sid == 1:
-            for _ in range(r.u()):
+
+            def field():
+                st = r.u8() if r.p < r.n and r.b[r.p] in (0x78, 0x77) else r.vt()
+                return st, r.mut()
+
+            def comp():
                 form = r.u8()
-                if form in (0x4E, 0x4F, 0x50, 0x5E, 0x5F):
-                    raise NotImplementedError("rec / sub / struct / array types")
-                if form != 0x60:
+                if form == 0x60:
+                    ps = [r.vt() for _ in range(r.u())]
+                    c = ("func", ps, [r.vt() for _ in range(r.u())])
+                    mod["types"].append((c[1], c[2]))
+                    return c
+                if form not in (0x5E, 0x5F):
                     raise Malformed("malformed function type")
-                ps = [r.vt() for _ in range(r.u())]
-                rs = [r.vt() for _ in range(r.u())]
-                mod["types"].append((ps, rs))
+                mod["types"].append(([], []))
+                return (
+                    ("struct", [field() for _ in range(r.u())])
+                    if form == 0x5F
+                    else ("array", field())
+                )
+
+            def sub():  # [sub | sub final] (supertype index)* comptype; the group is added later
+                form = r.p < r.n and r.b[r.p]
+                if form not in (0x4F, 0x50):
+                    return comp(), (), True
+                r.p += 1
+                sup = tuple(r.u() for _ in range(r.u()))  # more than one: the validator rejects
+                return comp(), sup, form == 0x4F
+
+            for _ in range(r.u()):
+                gs = len(mod["tdefs"])
+                if r.p < r.n and r.b[r.p] == 0x4E:  # rec: a group of subtypes
+                    r.p += 1
+                    group = [sub() for _ in range(r.u())]
+                else:
+                    group = [sub()]
+                mod["tdefs"].extend((c, sp, fin, gs, gs + len(group)) for c, sp, fin in group)
         elif sid == 2:
             for _ in range(r.u()):
                 m, n, k = r.name(), r.name(), r.u8()
@@ -426,11 +459,7 @@ def decode(body):
             else:
                 idx = r.s(33)
                 if idx < 0:
-                    raise (
-                        NotImplementedError("block type")
-                        if (idx & 0x7F) in UNSUPPORTED_TYPES
-                        else Malformed("malformed block type")
-                    )
+                    raise Malformed("malformed block type")
                 bt = ("idx", idx)
             if op == 0x1F:  # try_table: catch clauses (kind, tag index or None, label)
                 cl = []

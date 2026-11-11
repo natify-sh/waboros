@@ -38,7 +38,7 @@ directories (`test/core/<dir>/`) count only on a target that claims the feature
 | Custom Page Sizes (`customPageSizes`) | 3 | flag | - | - | - |
 | ESM Integration (`esmIntegration`) | 3 | - | - | - | - |
 | Legacy Exception Handling (`exceptions`) | inactive | - | - | - | - |
-| Exception Handling with exnref (`exceptionsFinal`) | 5 | since 47 | partial 102/110 | partial 102/110 | partial 102/110 |
+| Exception Handling with exnref (`exceptionsFinal`) | 5 | since 47 | partial 105/110 | partial 105/110 | partial 105/110 |
 | Extended Constant Expressions (`extendedConst`) | 5 | since 25 | yes 346/346 | yes 346/346 | yes 346/346 |
 | Extended Name Section (`extendedNameSection`) | 2 | - | - | - | - |
 | Flexible Vectors (`flexibleVectors`) | 1 | - | - | - | - |
@@ -89,7 +89,7 @@ directories (`test/core/<dir>/`) count only on a target that claims the feature
 * tail calls (`wasm_tail_call`): done; `pyc` uses a trampoline for functions with `return_call*`; the JIT replaces the frame.
 * custom page sizes (`wasm_custom_page_sizes`): a property of the `Memory` facade.
 * threads (`wasm_threads`, `Config.shared_memory`): `SharedMemory`; `pyc` atomics under the GIL, care for free-threaded builds.
-* exceptions (`wasm_exceptions`): done and claimed on all three targets (S0012, D52): `pyc` runs `try_table` as a `try`/`except` of one private class, the JITs propagate a status through frames with landing pads, objects bumped from a store arena in code. 100 of 110 `exceptions/` commands pass, 2 are skipped and 8 are expected failures that need GC (5 in `cast.wast`: `ref.test`/`ref.cast`; 3 in `tag.wast`: rec groups). The legacy proposal (`exceptions`) is not run.
+* exceptions (`wasm_exceptions`): done and claimed on all three targets (S0012, D52): `pyc` runs `try_table` as a `try`/`except` of one private class, the JITs propagate a status through frames with landing pads, objects bumped from a store arena in code. 103 of 110 `exceptions/` commands pass, 2 are skipped and 5 are expected failures that need GC (`cast.wast`: `ref.test`/`ref.cast`); the 3 `tag.wast` rec groups pass since S0013 step 1a. The legacy proposal (`exceptions`) is not run.
 * typed function references (`wasm_function_references`): `call_ref`, non-null types.
 * GC (`wasm_gc`, `Config.gc_support`): structs/arrays map naturally to Python objects in `pyc`.
 * wide arithmetic (`wasm_wide_arithmetic`): done and claimed on `pyc` (big ints; S0008 step 1), `jit-x86_64` and `jit-aarch64` (step 3: one backend method, `wide`; `add`/`adc`, `sub`/`sbb`, one-operand `mul`/`imul` on x86-64, `adds`/`adc`, `subs`/`sbc`, `mul` + `umulh`/`smulh` on aarch64).

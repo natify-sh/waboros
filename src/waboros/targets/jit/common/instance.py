@@ -15,7 +15,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
-from waboros.frontend import validate
+from waboros.frontend.types import key as types_key
 from waboros.runtime.link import LinkError
 from waboros.runtime.store import StoreState
 from waboros.targets.base import Extern, HostError, HostFunc, Raw, Trap, TrapCode
@@ -72,10 +72,10 @@ _TYPE_IDS: dict[Any, int] = {}  # canonical function type ids of the process (st
 _TYPE_IDS_LOCK = threading.Lock()  # stores on different threads register types concurrently
 
 
-def type_id(types: Any, ti: int) -> int:
+def type_id(mod: Any, ti: int) -> int:
     """The canonical id of function type `ti` of a module: equal for equivalent types of any
     module (never 0)."""
-    key: Any = validate.functype_key(types, ti)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+    key: Any = types_key(mod, ti)
     with _TYPE_IDS_LOCK:  # the size read and the insert must be one step: ids stay distinct
         return _TYPE_IDS.setdefault(key, len(_TYPE_IDS) + 1)
 
@@ -714,7 +714,7 @@ class JitFunc:
     def record(self) -> tuple[int, int, int]:
         inst = self.inst
         offset = inst.funcs[self.idx - inst.nimports][0]
-        tid = type_id(inst.module["types"], inst.ftypes[self.idx])
+        tid = type_id(inst.module, inst.ftypes[self.idx])
         return inst.code.addr + offset, tid, ctypes.addressof(inst.ctx)
 
 
@@ -825,11 +825,11 @@ class JitInstance(Instance):
             elif isinstance(v, JitFunc) and v.inst.store is store:
                 rec = v.record()  # a direct call into the exporting instance
             else:  # a host function: the module's thunk calls it through the bridge
-                rec = (self.code.addr + c.thunks[f], type_id(types, self.ftypes[f]), base)
+                rec = (self.code.addr + c.thunks[f], type_id(mod, self.ftypes[f]), base)
             word = (addr - base) // 8
             ctx[word : word + RECORD] = list(rec)
         for k, ti in enumerate(c.sigs):
-            ctx[lay.sig(k)] = type_id(types, ti)
+            ctx[lay.sig(k)] = type_id(mod, ti)
         for t, tag in enumerate(self.tags):
             ctx[lay.tag(t)] = tag.id
         for i in range(ng):

@@ -569,7 +569,8 @@ def test_type_ids_from_threads_are_distinct() -> None:
     def work(n: int) -> None:
         types = [([0x7F] * (5000 + 1000 * n + i), [0x7E]) for i in range(300)]
         start.wait()
-        got[n] = [type_id(types, i) for i in range(len(types))]
+        tdefs = [(("func", ps, rs), (), True, i, i + 1) for i, (ps, rs) in enumerate(types)]
+        got[n] = [type_id({"types": types, "tdefs": tdefs}, i) for i in range(len(types))]
 
     threads = [threading.Thread(target=work, args=(n,)) for n in range(8)]
     for t in threads:

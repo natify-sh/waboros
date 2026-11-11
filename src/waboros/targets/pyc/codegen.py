@@ -5,7 +5,7 @@ import os
 import struct
 
 from waboros.frontend.binary import F32, F64, I32, I64, M32, M64
-from waboros.frontend.validate import valtype_key
+from waboros.frontend.types import valtype_key
 from waboros.targets.base import Unsupported
 from waboros.targets.pyc import runtime as _rt
 
@@ -1747,7 +1747,7 @@ class ModGen:
         return s.types[s.mod["funcs"][fi - s.nimp]]
 
     def sig(s, ps, rs):
-        return ">".join(",".join(str(valtype_key(s.types, t)) for t in ts) for ts in (ps, rs))
+        return ">".join(",".join(str(valtype_key(s.mod, t)) for t in ts) for ts in (ps, rs))
 
     def fname(s, fi):
         if fi < s.nimp:

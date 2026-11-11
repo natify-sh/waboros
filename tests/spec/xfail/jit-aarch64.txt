@@ -1,78 +1,57 @@
-bulk-memory/table_init.wast:2272  LoadError: NotImplementedError: rec / sub / struct / array types
+bulk-memory/table_init.wast:2272  LoadError: NotImplementedError: opcode 0xfb
 bulk-memory/table_init.wast:2286  LookupError: no exported function run
-exceptions/cast.wast:1  LoadError: NotImplementedError: opcode 0xfb (GC ref.test / ref.cast)
+exceptions/cast.wast:1  LoadError: NotImplementedError: opcode 0xfb
 exceptions/cast.wast:21  no current module
 exceptions/cast.wast:22  no current module
 exceptions/cast.wast:23  no current module
 exceptions/cast.wast:24  no current module
-exceptions/tag.wast:30  LoadError: NotImplementedError: rec / sub / struct / array types
-exceptions/tag.wast:40  LoadError: NotImplementedError: rec / sub / struct / array types
-exceptions/tag.wast:49  LoadError: NotImplementedError: rec / sub / struct / array types
-linking.wast:112  LinkError: incompatible import type Mref_ex.g-const-func
-memory64/table_init64.wast:2457  LoadError: NotImplementedError: rec / sub / struct / array types
+memory64/table_init64.wast:2457  LoadError: NotImplementedError: opcode 0xfb
 memory64/table_init64.wast:2471  LookupError: no exported function run
-ref_null.wast:1  LoadError: NotImplementedError: value type 0x6e
-ref_null.wast:16  no current module
-ref_null.wast:17  no current module
-ref_null.wast:18  no current module
-ref_null.wast:19  no current module
-ref_null.wast:20  no current module
-ref_null.wast:23  LoadError: NotImplementedError: value type 0x6e
-ref_null.wast:55  no current module
-ref_null.wast:56  no current module
-ref_null.wast:57  no current module
-ref_null.wast:58  no current module
-ref_null.wast:59  no current module
-ref_null.wast:60  no current module
-ref_null.wast:61  no current module
-ref_null.wast:62  no current module
-ref_null.wast:63  no current module
-ref_null.wast:64  no current module
-ref_null.wast:65  no current module
-ref_null.wast:66  no current module
-ref_null.wast:67  no current module
-ref_null.wast:68  no current module
-ref_null.wast:69  no current module
-ref_null.wast:70  no current module
-ref_null.wast:71  no current module
-ref_null.wast:72  no current module
-ref_null.wast:73  no current module
-ref_null.wast:74  no current module
-ref_null.wast:75  no current module
-ref_null.wast:76  no current module
-ref_null.wast:77  no current module
-ref_null.wast:78  no current module
-ref_null.wast:79  no current module
-ref_null.wast:80  no current module
-ref_null.wast:81  no current module
-type-canon.wast:1  LoadError: NotImplementedError: rec / sub / struct / array types
-type-canon.wast:9  LoadError: NotImplementedError: rec / sub / struct / array types
-type-equivalence.wast:136  LoadError: NotImplementedError: rec / sub / struct / array types
-type-equivalence.wast:161  LoadError: NotImplementedError: rec / sub / struct / array types
-type-equivalence.wast:233  LoadError: NotImplementedError: rec / sub / struct / array types
-type-equivalence.wast:238  LoadError: NotImplementedError: rec / sub / struct / array types
-type-equivalence.wast:246  LoadError: NotImplementedError: rec / sub / struct / array types
-type-equivalence.wast:257  LoadError: NotImplementedError: rec / sub / struct / array types
-type-equivalence.wast:268  LoadError: NotImplementedError: rec / sub / struct / array types
-type-equivalence.wast:279  LoadError: NotImplementedError: rec / sub / struct / array types
-type-equivalence.wast:290  LoadError: NotImplementedError: rec / sub / struct / array types
-type-equivalence.wast:30  LoadError: NotImplementedError: rec / sub / struct / array types
-type-equivalence.wast:308  LoadError: NotImplementedError: rec / sub / struct / array types
-type-equivalence.wast:49  LoadError: NotImplementedError: rec / sub / struct / array types
-type-rec.wast:137  LoadError: NotImplementedError: rec / sub / struct / array types
-type-rec.wast:141  KeyError: 'M'
-type-rec.wast:143  LoadError: NotImplementedError: rec / sub / struct / array types
-type-rec.wast:149  LoadError: NotImplementedError: rec / sub / struct / array types
-type-rec.wast:157  LoadError: NotImplementedError: rec / sub / struct / array types
-type-rec.wast:167  LoadError: NotImplementedError: rec / sub / struct / array types
-type-rec.wast:174  no current module
-type-rec.wast:176  LoadError: NotImplementedError: rec / sub / struct / array types
-type-rec.wast:183  no current module
-type-rec.wast:185  LoadError: NotImplementedError: rec / sub / struct / array types
-type-rec.wast:192  no current module
-type-rec.wast:197  LoadError: NotImplementedError: rec / sub / struct / array types
-type-rec.wast:3  LoadError: NotImplementedError: rec / sub / struct / array types
-type-rec.wast:39  LoadError: NotImplementedError: rec / sub / struct / array types
-type-rec.wast:45  LoadError: NotImplementedError: rec / sub / struct / array types
-type-rec.wast:71  LoadError: NotImplementedError: rec / sub / struct / array types
-type-rec.wast:78  LoadError: NotImplementedError: rec / sub / struct / array types
+ref_null.wast:1  unsupported: module not fully validated
+ref_null.wast:16  unsupported: module not fully validated
+ref_null.wast:17  unsupported: module not fully validated
+ref_null.wast:18  unsupported: module not fully validated
+ref_null.wast:19  unsupported: module not fully validated
+ref_null.wast:20  unsupported: module not fully validated
+ref_null.wast:23  unsupported: module not fully validated
+ref_null.wast:55  unsupported: module not fully validated
+ref_null.wast:56  unsupported: module not fully validated
+ref_null.wast:57  unsupported: module not fully validated
+ref_null.wast:58  unsupported: module not fully validated
+ref_null.wast:59  unsupported: module not fully validated
+ref_null.wast:60  unsupported: module not fully validated
+ref_null.wast:61  unsupported: module not fully validated
+ref_null.wast:62  unsupported: module not fully validated
+ref_null.wast:63  unsupported: module not fully validated
+ref_null.wast:64  unsupported: module not fully validated
+ref_null.wast:65  unsupported: module not fully validated
+ref_null.wast:66  unsupported: module not fully validated
+ref_null.wast:67  unsupported: module not fully validated
+ref_null.wast:68  unsupported: module not fully validated
+ref_null.wast:69  unsupported: module not fully validated
+ref_null.wast:70  unsupported: module not fully validated
+ref_null.wast:71  unsupported: module not fully validated
+ref_null.wast:72  unsupported: module not fully validated
+ref_null.wast:73  unsupported: module not fully validated
+ref_null.wast:74  unsupported: module not fully validated
+ref_null.wast:75  unsupported: module not fully validated
+ref_null.wast:76  unsupported: module not fully validated
+ref_null.wast:77  unsupported: module not fully validated
+ref_null.wast:78  unsupported: module not fully validated
+ref_null.wast:79  unsupported: module not fully validated
+ref_null.wast:80  unsupported: module not fully validated
+ref_null.wast:81  unsupported: module not fully validated
+type-rec.wast:137  unsupported: module not fully validated
+type-rec.wast:143  unsupported: module not fully validated
+type-rec.wast:149  unsupported: module not fully validated
+type-rec.wast:157  unsupported: module not fully validated
+type-rec.wast:167  unsupported: module not fully validated
+type-rec.wast:174  unsupported: module not fully validated
+type-rec.wast:176  unsupported: module not fully validated
+type-rec.wast:183  unsupported: module not fully validated
+type-rec.wast:185  unsupported: module not fully validated
+type-rec.wast:192  unsupported: module not fully validated
+type-rec.wast:197  unsupported: module not fully validated
+type-rec.wast:39  unsupported: module not fully validated
+type-rec.wast:71  unsupported: module not fully validated
+type-rec.wast:78  unsupported: module not fully validated

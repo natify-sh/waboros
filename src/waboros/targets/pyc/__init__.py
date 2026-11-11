@@ -7,7 +7,8 @@ from types import CodeType
 from typing import Any, Literal, cast
 
 from waboros.frontend.binary import F32, F64, parse
-from waboros.frontend.validate import validate, valtype_key
+from waboros.frontend.types import valtype_key
+from waboros.frontend.validate import validate
 from waboros.runtime.link import LinkError, func_type, global_type
 from waboros.runtime.store import StoreState
 from waboros.targets.base import (
@@ -172,7 +173,9 @@ class PycTarget:
         return None
 
     def supports(self, module: ValidModule) -> str | None:
-        return None  # a module the validator does not cover may run: a Python exception is safe
+        # a module the validator does not cover may run (a Python exception is safe), but not GC
+        # types, which no target runs yet (S0013, D25 parity with the JITs)
+        return "GC types" if module.get("gc") else None
 
     def compile(self, module: ValidModule) -> object:
         return _Compiled(module, compile(generate(module), "<waboros-pyc>", "exec", optimize=2))
@@ -194,8 +197,9 @@ class PycTarget:
             if im[0] == "func":
                 if ext.owner is None:
                     ps, rs = c.module["types"][im[3]]
-                    ty = c.module["types"]
-                    sig = ">".join(",".join(str(valtype_key(ty, t)) for t in ts) for ts in (ps, rs))
+                    sig = ">".join(
+                        ",".join(str(valtype_key(c.module, t)) for t in ts) for ts in (ps, rs)
+                    )
                     val = _host_adapter(cast(HostFunc, val), ps, rs, sig)
             wired.setdefault(im[1], {})[im[2]] = val
         exports = cast(dict[str, Any], _run(store, namespace["instantiate"], wired))
