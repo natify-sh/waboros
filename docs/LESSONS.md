@@ -752,7 +752,9 @@ What went wrong or surprised us while building the PoC, so it is not found again
     signatures) re-hashed the tree (64 s at n=30), and building it recursed once per chain link
     (`RecursionError` at 250). Rule: reduce a key to a flat value as soon as it is made and refer to
     that value (groups are keyed in index order, a group refers only to earlier ones or itself);
-    comparison and hashing are then constant, no recursion. Prefer a digest (SHA-256 of the flat
+    comparison and hashing are then constant, no recursion; and key only the groups
+    the asked type reaches (an explicit stack), not every type up to it: a caller without the
+    module's cache (a fresh dict per call) made that quadratic, 334 s of one test. Prefer a digest (SHA-256 of the flat
     `repr`) to an interned counter: it is the same in every process (generated code may embed it)
     and needs no shared state (a counter two threads read at once gives two types one id, 3.15t).
     Also: `pyc` once compared

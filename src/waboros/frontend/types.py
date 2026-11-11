@@ -52,12 +52,63 @@ def key(mod: dict[str, Any], i: int) -> str:
     the same in every process and on every machine (no shared state, so no race on 3.15t).
     A rec group (its composite types, supertypes and final flags; a reference inside it is
     `("rec", position)`, one outside it the digest of that type) is digested together with the
-    position; `repr` of tuples of ints, strings and bools is deterministic. Groups are keyed in
-    index order, so a key is never a nested tree (hashing and comparing stay constant-time, no
-    recursion)."""
+    position; `repr` of tuples of ints, strings and bools is deterministic. Only the groups a type
+    needs are keyed, earliest first, with an explicit stack: a key is never a nested tree
+    (hashing and comparing stay constant-time) and there is no recursion."""
     cache = mod.setdefault("tkeys", {})
     if i in cache:
         return cache[i]
+    tdefs = mod["tdefs"]
+
+    def outside(gs: int, ge: int) -> set[int]:
+        """The types outside group [gs, ge) that the group refers to (all earlier)."""
+        out: set[int] = set()
+
+        def vt(t):
+            if t.__class__ is tuple and 0 <= t[1] < gs:
+                out.add(t[1])
+
+        for c, sp, _, _, _ in tdefs[gs:ge]:
+            out.update(j for j in sp if j < gs)
+            if c[0] == "func":
+                for t in (*c[1], *c[2]):
+                    vt(t)
+            else:
+                for f in c[1] if c[0] == "struct" else (c[1],):
+                    vt(f[0])
+        return out
+
+    # Only the groups `i` needs, earliest first, with an explicit stack (no recursion).
+    stack = [i]
+    while stack:
+        gs, ge = tdefs[stack[-1]][3:]
+        if gs in cache:
+            stack.pop()
+            continue
+        missing = [j for j in outside(gs, ge) if j not in cache]
+        if missing:
+            stack.extend(missing)
+            continue
+        stack.pop()
+
+        def ref(t, gs=gs):
+            return ("rec", t - gs) if t >= gs else cache[t]
+
+        def vk(t, ref=ref):
+            return (t[0], ref(t[1])) if t.__class__ is tuple and t[1] >= 0 else t
+
+        def fk(f, vk=vk):
+            return vk(f[0]), f[1]
+
+        def ck(c, vk=vk, fk=fk):
+            if c[0] == "func":
+                return ("func", tuple(map(vk, c[1])), tuple(map(vk, c[2])))
+            return ("struct", tuple(map(fk, c[1]))) if c[0] == "struct" else ("array", fk(c[1]))
+
+        group = repr(tuple((ck(c), tuple(map(ref, sp)), fin) for c, sp, fin, _, _ in tdefs[gs:ge]))
+        for t in range(gs, ge):
+            cache[t] = sha256(f"{group},{t - gs}".encode()).hexdigest()
+    return cache[i]
     tdefs = mod["tdefs"]
     for j in range(i + 1):
         if j in cache:
