@@ -19,7 +19,7 @@ from waboros.frontend.types import key as types_key
 from waboros.runtime.link import LinkError
 from waboros.runtime.store import StoreState
 from waboros.targets.base import Extern, HostError, HostFunc, Raw, Trap, TrapCode
-from waboros.targets.jit.common import guard, simd
+from waboros.targets.jit.common import guard, simd, walk
 from waboros.targets.jit.common.compiler import I64, M32, M64, NARROW, Compiled
 from waboros.targets.jit.common.context import (
     ARENA_CURSOR,
@@ -177,6 +177,8 @@ class _StoreStacks:
         self.refill: Any = None  # context word EXN_REFILL (a ctypes callback)
         # the exit record {sp, pc, frame} of the innermost host call (S0013 3a), word EXIT_RECORD
         self.exit = (ctypes.c_uint64 * 3)()
+        self.walk_ranges: Any = None  # walk.py: the store's code ranges, built at the first walk
+        self.walk_vsp: list[int] = []  # check mode: the frames of the nested entries (walk.check)
 
     def new_chunk(self, words: int) -> None:
         c = (ctypes.c_uint64 * words)()
@@ -229,9 +231,33 @@ def _stacks(store: StoreState) -> _StoreStacks:
     return store.target_state
 
 
-def _refill_service(store: StoreState, st: _StoreStacks) -> Any:
+def _checked(
+    store: StoreState, tramp: Trampolines, cb: Callable[[int, int], int], n: int
+) -> Callable[[int, int], int]:
+    """Check mode (S0013 3a, walk.py): walk the store's frames before serving a host call; a nested
+    entry of this call gets the frame slots + 8n, which the check of a deeper call expects."""
+
+    def checked(ctx: int, slots: int) -> int:
+        st = _stacks(store)
+        try:
+            walk.check(store, st, tramp, slots)
+        except BaseException as e:
+            store.pending = e
+            ctypes.c_uint64.from_address(ctx + 8 * HOST_ERROR).value = STATUS_HOST_ERROR
+            return 0
+        st.walk_vsp.append(slots + 8 * n)
+        try:
+            return cb(ctx, slots)
+        finally:
+            st.walk_vsp.pop()
+
+    return checked
+
+
+def _refill_service(store: StoreState, st: _StoreStacks, tramp: Trampolines | None) -> Any:
     """Context word EXN_REFILL (S0012): slots[0] = the words a throw needs; a new arena chunk of
-    at least that many. Status 0 written last (D34); 13 with the error pending if it fails."""
+    at least that many. Status 0 written last (D34); 13 with the error pending if it fails.
+    With `tramp`, checked (walk.py)."""
 
     def refill(ctx: int, slots: int) -> int:
         status = STATUS_HOST_ERROR
@@ -244,7 +270,7 @@ def _refill_service(store: StoreState, st: _StoreStacks) -> Any:
             ctypes.c_uint64.from_address(ctx + 8 * HOST_ERROR).value = status  # last
         return 0
 
-    return HOST(refill)
+    return HOST(_checked(store, tramp, refill, 1) if tramp else refill)
 
 
 _thread = threading.local()
@@ -255,6 +281,14 @@ def _stack_low() -> int | None:
     if not hasattr(_thread, "low"):
         _thread.low = _read_stack()[0]
     return _thread.low
+
+
+def stack_top() -> int | None:
+    """The end of the current thread's native stack (cached per thread), None if unknown: the
+    frame walk (walk.py) reads no stack word at or above it."""
+    if not hasattr(_thread, "high"):
+        _thread.high = _stack_bounds()[1]
+    return _thread.high
 
 
 def linux_main_low(high: int, soft: int | None) -> int | None:
@@ -282,13 +316,19 @@ def _linux_stack_vma_top() -> int | None:
 
 def _read_stack() -> tuple[int | None, str]:
     """(low, the rule that gave it)."""
+    low, _, rule = _stack_bounds()
+    return low, rule
+
+
+def _stack_bounds() -> tuple[int | None, int | None, str]:
+    """(low, high, the rule that gave low) of the current thread's native stack."""
     vp, size_t = ctypes.c_void_p, ctypes.c_size_t
     try:
         if sys.platform == "win32":
             lo, hi = vp(), vp()
             k32 = ctypes.WinDLL("kernel32")
             k32.GetCurrentThreadStackLimits(ctypes.byref(lo), ctypes.byref(hi))
-            return lo.value, "GetCurrentThreadStackLimits"
+            return lo.value, hi.value, "GetCurrentThreadStackLimits"
         libc = ctypes.CDLL(None)
         libc.pthread_self.restype = vp
         me = libc.pthread_self()
@@ -304,11 +344,11 @@ def _read_stack() -> tuple[int | None, str]:
 
                 soft = resource.getrlimit(resource.RLIMIT_STACK)[0]
                 size = min(size, soft) if soft > 0 else size
-            return (top - size + mmap.PAGESIZE if top else None), "pthread_get_stack*_np"
+            return (top - size + mmap.PAGESIZE if top else None), top, "pthread_get_stack*_np"
         attr = ctypes.create_string_buffer(256)  # >= sizeof(pthread_attr_t) on glibc and musl
         libc.pthread_getattr_np.argtypes = [vp, ctypes.c_char_p]
         if libc.pthread_getattr_np(me, attr) != 0:
-            return None, "pthread_getattr_np failed"
+            return None, None, "pthread_getattr_np failed"
         addr, size = vp(), size_t()
         libc.pthread_attr_getstack(attr, ctypes.byref(addr), ctypes.byref(size))
         libc.pthread_attr_destroy(attr)
@@ -318,10 +358,10 @@ def _read_stack() -> tuple[int | None, str]:
             soft = resource.getrlimit(resource.RLIMIT_STACK)[0]
             finite = None if soft == resource.RLIM_INFINITY else soft
             high = _linux_stack_vma_top() or (addr.value or 0) + size.value
-            return linux_main_low(high, finite), "linux main thread: top - RLIMIT_STACK"
-        return addr.value, "pthread_getattr_np"
+            return linux_main_low(high, finite), high, "linux main thread: top - RLIMIT_STACK"
+        return addr.value, (addr.value or 0) + size.value or None, "pthread_getattr_np"
     except (OSError, AttributeError):
-        return None, "unavailable"
+        return None, None, "unavailable"
 
 
 def native_budget(sp: int, low: int | None, budget: int) -> int:
@@ -517,8 +557,12 @@ class Instance:
         memories: Sequence[Memory] = (),
         nglobals: int = 0,
         layout: Layout | None = None,
+        stackmaps: bytes | None = None,
     ) -> None:
         self.store, self.tramp, self.funcs = store, tramp, funcs
+        # the STACKMAPS section (S0013 3a): None for hand-assembled code, which is never checked
+        self.stackmaps, self.walk_sites = stackmaps, None
+        self.walk = stackmaps is not None and walk.checking()
         self.nimports = len(imports)
         self.layout = layout or Layout(
             memories=len(memories), globals=nglobals, imports=len(imports)
@@ -529,7 +573,7 @@ class Instance:
         st = _stacks(store)  # call_indirect may enter this context without `call`: limits now
         self.ctx[NSTACK_LIMIT], self.ctx[VSTACK_LIMIT] = st.nlimit, st.vtop
         if st.refill is None:
-            st.refill = _refill_service(store, st)
+            st.refill = _refill_service(store, st, tramp if self.walk else None)
         exn = ctypes.addressof(st.exn)  # S0012: in every context (throw_ref needs no tag)
         self.ctx[EXCEPTION], self.ctx[ARENA_CURSOR], self.ctx[ARENA_LIMIT] = exn, exn + 8, exn + 16
         self.ctx[EXN_REFILL] = ctypes.cast(st.refill, ctypes.c_void_p).value or 0
@@ -688,7 +732,7 @@ class Instance:
                 ctypes.c_uint64.from_address(ctx + 8 * HOST_ERROR).value = status  # last
             return 0
 
-        return callback
+        return _checked(store, self.tramp, callback, n) if self.walk else callback
 
     def interrupt(self) -> None:
         """Any thread: the next poll of this instance's code returns INTERRUPT."""
@@ -770,6 +814,8 @@ class JitInstance(Instance):
         imports: Sequence[Extern],
         owner: str,
     ) -> None:
+        if c.stackmaps is None:  # every frame of a store must be walkable (S0013 Q5)
+            raise ValueError("compiled module has no stack-map table (STACKMAPS); recompile it")
         mod = self.module = c.module
         types = mod["types"]
         self.owner = owner
@@ -819,7 +865,7 @@ class JitInstance(Instance):
         self.gtypes = [im[3][0] for im in mod["imports"] if im[0] == "global"]
         self.gtypes += [g[0] for g in mod["globals"]]
         ng = len(self.gtypes)
-        super().__init__(store, tramp, c.code, c.funcs, hosts, memories, ng, c.layout)
+        super().__init__(store, tramp, c.code, c.funcs, hosts, memories, ng, c.layout, c.stackmaps)
         lay, ctx = self.layout, self.ctx
         if c.flags & guard.BOUNDS_GUARD:  # before any of its code can run (S0006)
             guard.add_code(self.code, c.faults)

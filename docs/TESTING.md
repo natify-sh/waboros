@@ -62,6 +62,20 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   of our validator.
 * Expected failures are listed per target in a file in the repo (feature not implemented yet), so
   progress is visible and regressions fail.
+* **The walk check** (`WABOROS_JIT_WALK_CHECK=1`, both JITs, S0013 step 3a): every JIT instance
+  created while it is set serves each of its host calls and libcalls only after walking the store's
+  whole native stack (`jit/common/walk.py`); the exception arena's refill service is checked too
+  when the store's first instance (the one that creates it) was created with the switch. The exit
+  record must be written, every return address must be a recorded call site, every stack word read
+  must lie between the store's native limit and the thread's stack top, the walk must cross exactly
+  the active entries and end each segment at the frame the runtime gave that entry, and every slot
+  the stack maps mark must hold 0 or a word no greater than the number of externref handles. That
+  last test cannot see a wrongly marked i32 slot holding a small integer, nor a missing mark
+  (nothing moves before the collector, S0013 step 5). A failure is a `RuntimeError` raised by the
+  call, so a broken frame layout or table shows up as a spec failure. Off by default: the
+  instances then use the same host callbacks as without the switch. Hand-assembled instances
+  (`tests/jit/test_abi*.py`, no stack-map table) are never checked. CI runs one spec run per
+  architecture with it (below); `tests/jit/test_walk.py` sets it itself.
 
 ## Differential testing
 
@@ -176,7 +190,9 @@ explicitly (guard pages, S0006; the same two in a `python:3.13-alpine` container
 x86-64, `MUSL_GUARD`; the test file runs on the JIT of the machine and skips
 on other hosts, but fails under
 `WABOROS_JIT_REQUIRE=1` when `auto` does not give guard pages), so a regression in the
-verified-row check cannot silently turn guard pages off;
+verified-row check cannot silently turn guard pages off (that `jit-x86_64` guard run, the
+explicit `jit-aarch64` run under QEMU and the guard run of the `arm64` job also set
+`WABOROS_JIT_WALK_CHECK=1`);
 then both ISA gates and the D35 lists of both targets in both bounds modes, named on both hosts);
 `spec` (the spec run on `wasmtime`, `pyc` (also with `WABOROS_PYC_FBITS=1`), `jit-x86_64` in the default mode and with
 `WABOROS_JIT_BOUNDS=explicit`, then `auto` under `no_exec.py`); `arm64`
