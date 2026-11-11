@@ -750,11 +750,12 @@ What went wrong or surprised us while building the PoC, so it is not found again
     first `types.key` wrote a reference outside the rec group as that type's whole key, so a chain
     where each type uses the previous one twice has 2**n leaves: every dict lookup (`type_id`, `pyc`
     signatures) re-hashed the tree (64 s at n=30), and building it recursed once per chain link
-    (`RecursionError` at 250). Rule: intern a key as soon as it is made and refer to the interned
-    id (groups are keyed in index order, a group refers only to earlier ones or itself); a key is
-    then an integer, comparison and hashing are constant, no recursion. Make the id race-free
-    without a lock (the front end imports no `threading`): the `id()` of the tuple that an atomic
-    `dict.setdefault(k, k)` keeps, not a counter two threads could read at once (3.15t). Also: `pyc` once compared
+    (`RecursionError` at 250). Rule: reduce a key to a flat value as soon as it is made and refer to
+    that value (groups are keyed in index order, a group refers only to earlier ones or itself);
+    comparison and hashing are then constant, no recursion. Prefer a digest (SHA-256 of the flat
+    `repr`) to an interned counter: it is the same in every process (generated code may embed it)
+    and needs no shared state (a counter two threads read at once gives two types one id, 3.15t).
+    Also: `pyc` once compared
     function types by parameter/result strings, which ignored rec groups and finality; an identity
     that the language defines (type equivalence) has one function, used by every target. Found:
     S0013 step 1a review, 2026-11-11.

@@ -169,6 +169,20 @@ def test_keys_of_a_deep_chain_are_cheap() -> None:
     assert key(module(*entries), 29) == key(mod, 29)
 
 
+def test_keys_are_the_same_in_another_process() -> None:
+    """Generated `pyc` code embeds the keys (`f.s`, the `call_indirect` check): they must not
+    depend on the process (no counters, no `id()`)."""
+    import subprocess
+    import sys
+
+    code = (
+        "from tests.test_gc_types import func, module, ref; from waboros.frontend.types import key;"
+        "m = module(b'\\x60\\x00\\x00', func(ref(0))); print(key(m, 1))"
+    )
+    other = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+    assert other.stdout.strip() == key(module(b"\x60\x00\x00", func(ref(0))), 1)
+
+
 _A = """(module
  (rec (type $a (func (result i32))) (type $b (func (result i32))))
  (type $nf (sub (func (result i32))))

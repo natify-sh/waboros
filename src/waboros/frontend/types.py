@@ -8,6 +8,7 @@ inside it is relative) and from wasmparser's canonicalisation (types.rs): the ke
 whole group with in-group references written as positions.
 """
 
+from hashlib import sha256
 from typing import Any
 
 from waboros.frontend.binary import NULLABLE
@@ -46,18 +47,14 @@ def isref(t: Any) -> bool:
     return t.__class__ is tuple or t in _NN
 
 
-# (group, position) -> itself, process-wide. The canonical key is the id() of the one stored tuple:
-# `setdefault` is atomic (also free-threaded), so equal tuples get one object and distinct tuples
-# distinct live objects, without a counter that two threads could read at once.
-_KEYS: dict[Any, Any] = {}
-
-
-def key(mod: dict[str, Any], i: int) -> int:
-    """Canonical key of type `i`: a small integer, equal for equivalent types of any module.
+def key(mod: dict[str, Any], i: int) -> str:
+    """Canonical key of type `i`: a SHA-256 hex digest, equal for equivalent types of any module,
+    the same in every process and on every machine (no shared state, so no race on 3.15t).
     A rec group (its composite types, supertypes and final flags; a reference inside it is
-    `("rec", position)`, one outside it the interned key of that type) is interned together with
-    the position. Groups are keyed in index order, so a key is never a nested tree (hashing and
-    comparing stay constant-time, no recursion)."""
+    `("rec", position)`, one outside it the digest of that type) is digested together with the
+    position; `repr` of tuples of ints, strings and bools is deterministic. Groups are keyed in
+    index order, so a key is never a nested tree (hashing and comparing stay constant-time, no
+    recursion)."""
     cache = mod.setdefault("tkeys", {})
     if i in cache:
         return cache[i]
@@ -83,8 +80,7 @@ def key(mod: dict[str, Any], i: int) -> int:
 
         group = tuple((ck(c), tuple(map(ref, sp)), fin) for c, sp, fin, _, _ in tdefs[gs:ge])
         for t in range(gs, ge):
-            k = (group, t - gs)
-            cache[t] = id(_KEYS.setdefault(k, k))
+            cache[t] = sha256(repr((group, t - gs)).encode()).hexdigest()
     return cache[i]
 
 

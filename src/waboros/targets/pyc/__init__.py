@@ -153,7 +153,7 @@ class PycInstance:
         return _to_raw(ty, cell.v if cell is not None else self.ns[f"G{global_index}"])
 
 
-def _host_adapter(h: HostFunc, ps: list[int], rs: list[int], sig: int) -> Callable[..., Any]:
+def _host_adapter(h: HostFunc, ps: list[int], rs: list[int], sig: str) -> Callable[..., Any]:
     """A `HostFunc` as a function on `pyc` values; `.s` lets it sit in a table."""
 
     def w(*a: Any) -> Any:
