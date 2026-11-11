@@ -77,7 +77,7 @@ def test_reader_shapes() -> None:
         ((1,), False, 2, 3),
         ((), True, 3, 4),
     ]
-    assert m["gc"] and m["validated"] is False  # a struct type: no target runs it yet
+    assert m["gc"] and m["validated"] is True  # a struct type: validated, no target runs it yet
 
 
 def test_func_only_module_stays_validated() -> None:

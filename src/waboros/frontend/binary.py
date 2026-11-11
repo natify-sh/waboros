@@ -7,6 +7,7 @@ a valid module would be a wrong kind.
 """
 
 import struct
+from typing import Any
 
 from waboros.frontend import simd
 
@@ -21,9 +22,7 @@ TN = dict.fromkeys(REFBYTES, "ref") | {
     F64: "f64",
     0x7B: "v128",
 }
-UNSUPPORTED_OPS = frozenset(
-    (6, 7, 9, 0x18, 0x19, 0xFB, 0xFE)
-)  # 6, 7, 9, 0x18, 0x19: legacy exceptions
+UNSUPPORTED_OPS = frozenset((6, 7, 9, 0x18, 0x19, 0xFE))  # 6, 7, 9, 0x18, 0x19: legacy exceptions
 SIMPLE_OPS = frozenset(
     (0, 1, 5, 0x0A, 0x0B, 0x0F, 0x1A, 0x1B, 0xD1, 0xD3, 0xD4, *range(0x45, 0xC5))
 )
@@ -242,6 +241,22 @@ def parse(data):
                 st.append(("null", r.ht()))
             elif op == 0xFD:
                 st.append(simd.const(r))
+            elif op == 0xFB:  # GC: ("gc", instruction, operand expressions) or not constant
+                ins: Any = _gc(r, r.u())
+                sub = ins[0] - 0xFB00
+                n = {1: 0, 6: 2, 7: 1, 26: 1, 27: 1, 28: 1}.get(sub, -1)  # operands it takes
+                if sub == 8:
+                    n = ins[2]
+                elif sub == 0:
+                    tdefs: Any = mod["tdefs"]
+                    comp: Any = tdefs[ins[1]][0] if ins[1] < len(tdefs) else ()
+                    n = len(comp[1]) if comp[:1] == ("struct",) else -1
+                if 0 <= n <= len(st):
+                    args = st[len(st) - n :]
+                    del st[len(st) - n :]
+                    st.append(("gc", ins, args))
+                else:  # not a constant instruction, or the type does not exist
+                    bad = True
             elif op in (0x6A, 0x6B, 0x6C, 0x7C, 0x7D, 0x7E):  # extended constant expressions
                 if len(st) < 2:
                     bad = True
@@ -401,8 +416,9 @@ def parse(data):
                 for n, t in groups:
                     locs += [t] * n
                 body = data[r.p : e]
-                if datacount is None and b"\xfc" in body:  # memory.init / data.drop need the count
-                    if any(i[0] in (0xFC08, 0xFC09) for i in decode(body)):
+                if datacount is None and (b"\xfc" in body or b"\xfb" in body):
+                    # memory.init, data.drop, array.new_data, array.init_data need the count
+                    if any(i[0] in (0xFC08, 0xFC09, 0xFB09, 0xFB12) for i in decode(body)):
                         raise Malformed("data count section required")
                 mod["codes"].append((locs, body))
                 r.p = e
@@ -437,6 +453,25 @@ def parse(data):
 
 # ----------------------------------------------------------------------------- instruction decode
 MEMOPS = set(range(0x28, 0x3F))
+# 0xFB sub-opcode -> number of u32 immediates; the heap-type and branch-cast forms are in `_gc`
+GC_IMMS = {**dict(enumerate((1, 1, 2, 2, 2, 2, 1, 1, 2, 2, 2, 1, 1, 1, 1, 0, 1, 2, 2, 2))),
+           **dict.fromkeys(range(26, 31), 0)}  # fmt: skip
+
+
+def _gc(r, sub):
+    """A 0xFB instruction as (0xFB00 + sub, immediates...): type, field, segment and count
+    indices; a heap type for ref.test / ref.cast (+ null); flags, label and two heap types for
+    br_on_cast / br_on_cast_fail (flag bit 0: the source, bit 1: the target is nullable)."""
+    if 20 <= sub <= 23:
+        return (0xFB00 + sub, r.ht())
+    if sub in (24, 25):
+        fl = r.u8()
+        if fl > 3:
+            raise Malformed("malformed cast flags")
+        return (0xFB00 + sub, fl, r.u(), r.ht(), r.ht())
+    if sub not in GC_IMMS:
+        raise Malformed("illegal opcode 0xfb %d" % sub)
+    return (0xFB00 + sub, *[r.u() for _ in range(GC_IMMS[sub])])
 
 
 @_guard
@@ -554,6 +589,8 @@ def decode(body):
                 out.append((0xFC00 + sub,))
             else:
                 raise Malformed("illegal opcode 0xfc %d" % sub)
+        elif op == 0xFB:
+            out.append(_gc(r, r.u()))
         elif op == 0xFD:
             out.append(simd.decode(r))
         elif op in SIMPLE_OPS:

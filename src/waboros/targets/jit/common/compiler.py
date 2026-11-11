@@ -121,6 +121,8 @@ HEAPS = (-16, -17, -13, -14)
 
 def feature(op: int) -> str:
     """The name an `Unsupported` carries for an opcode this core does not compile (yet)."""
+    if op == 0xD3 or 0xFB00 <= op < 0xFC00:  # ref.eq, the 0xFB instructions
+        return "GC types"
     return "exceptions" if op in (0x08, 0x0A, 0x1F) else f"opcode {op:#x}"
 
 
@@ -143,6 +145,8 @@ def unsupported(mod: ValidModule, ops: frozenset[int]) -> str | None:
     def bad(t: Any) -> str | None:
         return None if vec and t == simd.V128 else type_ok(t, exn)
 
+    if mod.get("gc"):  # types or instructions of the GC proposal (S0013): first, whatever else
+        return "GC types"
     if not mod.get("validated"):
         return "module not fully validated"
     imps: list[tuple[Any, ...]] = mod["imports"]

@@ -48,12 +48,12 @@ type-rec.wast:71  unsupported: GC types
 type-rec.wast:78  unsupported: GC types
 
 # proposal subdirectories (S0001): every claimed one is in tests/spec/claims.py; the rest need GC types
-bulk-memory/table_init.wast:2272  LoadError: NotImplementedError: opcode 0xfb
-bulk-memory/table_init.wast:2286  LookupError: no exported function run
-memory64/table_init64.wast:2457  LoadError: NotImplementedError: opcode 0xfb
-memory64/table_init64.wast:2471  LookupError: no exported function run
-exceptions/cast.wast:1  LoadError: NotImplementedError: opcode 0xfb
-exceptions/cast.wast:21  no current module
-exceptions/cast.wast:22  no current module
-exceptions/cast.wast:23  no current module
-exceptions/cast.wast:24  no current module
+bulk-memory/table_init.wast:2272  unsupported: GC types
+bulk-memory/table_init.wast:2286  unsupported: GC types
+memory64/table_init64.wast:2457  unsupported: GC types
+memory64/table_init64.wast:2471  unsupported: GC types
+exceptions/cast.wast:1  unsupported: GC types
+exceptions/cast.wast:21  unsupported: GC types
+exceptions/cast.wast:22  unsupported: GC types
+exceptions/cast.wast:23  unsupported: GC types
+exceptions/cast.wast:24  unsupported: GC types

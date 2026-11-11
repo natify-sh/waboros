@@ -140,6 +140,16 @@ def _kind(mod: dict, i: int) -> str:
     return mod["tdefs"][i][0][0]
 
 
+_TOP = {NOFUNC: FUNC, NOEXTERN: EXTERN, NOEXN: EXN, FUNC: FUNC, EXTERN: EXTERN, EXN: EXN}
+
+
+def top(mod: dict, h: int) -> int:
+    """The top of heap type `h`'s hierarchy: `FUNC`, `EXTERN`, `EXN` or `ANY`."""
+    if h >= 0:
+        return FUNC if _kind(mod, h) == "func" else ANY
+    return _TOP.get(h, ANY)
+
+
 def _heap(ma: dict, a: int, mb: dict, b: int) -> bool:
     """Heap type `a` of `ma` is a subtype of heap type `b` of `mb` (the same module, or linking)."""
     if b >= 0:

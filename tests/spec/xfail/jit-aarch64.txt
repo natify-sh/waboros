@@ -1,57 +1,57 @@
-bulk-memory/table_init.wast:2272  LoadError: NotImplementedError: opcode 0xfb
-bulk-memory/table_init.wast:2286  LookupError: no exported function run
-exceptions/cast.wast:1  LoadError: NotImplementedError: opcode 0xfb
-exceptions/cast.wast:21  no current module
-exceptions/cast.wast:22  no current module
-exceptions/cast.wast:23  no current module
-exceptions/cast.wast:24  no current module
-memory64/table_init64.wast:2457  LoadError: NotImplementedError: opcode 0xfb
-memory64/table_init64.wast:2471  LookupError: no exported function run
-ref_null.wast:1  unsupported: module not fully validated
-ref_null.wast:16  unsupported: module not fully validated
-ref_null.wast:17  unsupported: module not fully validated
-ref_null.wast:18  unsupported: module not fully validated
-ref_null.wast:19  unsupported: module not fully validated
-ref_null.wast:20  unsupported: module not fully validated
-ref_null.wast:23  unsupported: module not fully validated
-ref_null.wast:55  unsupported: module not fully validated
-ref_null.wast:56  unsupported: module not fully validated
-ref_null.wast:57  unsupported: module not fully validated
-ref_null.wast:58  unsupported: module not fully validated
-ref_null.wast:59  unsupported: module not fully validated
-ref_null.wast:60  unsupported: module not fully validated
-ref_null.wast:61  unsupported: module not fully validated
-ref_null.wast:62  unsupported: module not fully validated
-ref_null.wast:63  unsupported: module not fully validated
-ref_null.wast:64  unsupported: module not fully validated
-ref_null.wast:65  unsupported: module not fully validated
-ref_null.wast:66  unsupported: module not fully validated
-ref_null.wast:67  unsupported: module not fully validated
-ref_null.wast:68  unsupported: module not fully validated
-ref_null.wast:69  unsupported: module not fully validated
-ref_null.wast:70  unsupported: module not fully validated
-ref_null.wast:71  unsupported: module not fully validated
-ref_null.wast:72  unsupported: module not fully validated
-ref_null.wast:73  unsupported: module not fully validated
-ref_null.wast:74  unsupported: module not fully validated
-ref_null.wast:75  unsupported: module not fully validated
-ref_null.wast:76  unsupported: module not fully validated
-ref_null.wast:77  unsupported: module not fully validated
-ref_null.wast:78  unsupported: module not fully validated
-ref_null.wast:79  unsupported: module not fully validated
-ref_null.wast:80  unsupported: module not fully validated
-ref_null.wast:81  unsupported: module not fully validated
-type-rec.wast:137  unsupported: module not fully validated
-type-rec.wast:143  unsupported: module not fully validated
-type-rec.wast:149  unsupported: module not fully validated
-type-rec.wast:157  unsupported: module not fully validated
-type-rec.wast:167  unsupported: module not fully validated
-type-rec.wast:174  unsupported: module not fully validated
-type-rec.wast:176  unsupported: module not fully validated
-type-rec.wast:183  unsupported: module not fully validated
-type-rec.wast:185  unsupported: module not fully validated
-type-rec.wast:192  unsupported: module not fully validated
-type-rec.wast:197  unsupported: module not fully validated
-type-rec.wast:39  unsupported: module not fully validated
-type-rec.wast:71  unsupported: module not fully validated
-type-rec.wast:78  unsupported: module not fully validated
+bulk-memory/table_init.wast:2272  unsupported: GC types
+bulk-memory/table_init.wast:2286  unsupported: GC types
+exceptions/cast.wast:1  unsupported: GC types
+exceptions/cast.wast:21  unsupported: GC types
+exceptions/cast.wast:22  unsupported: GC types
+exceptions/cast.wast:23  unsupported: GC types
+exceptions/cast.wast:24  unsupported: GC types
+memory64/table_init64.wast:2457  unsupported: GC types
+memory64/table_init64.wast:2471  unsupported: GC types
+ref_null.wast:1  unsupported: GC types
+ref_null.wast:16  unsupported: GC types
+ref_null.wast:17  unsupported: GC types
+ref_null.wast:18  unsupported: GC types
+ref_null.wast:19  unsupported: GC types
+ref_null.wast:20  unsupported: GC types
+ref_null.wast:23  unsupported: GC types
+ref_null.wast:55  unsupported: GC types
+ref_null.wast:56  unsupported: GC types
+ref_null.wast:57  unsupported: GC types
+ref_null.wast:58  unsupported: GC types
+ref_null.wast:59  unsupported: GC types
+ref_null.wast:60  unsupported: GC types
+ref_null.wast:61  unsupported: GC types
+ref_null.wast:62  unsupported: GC types
+ref_null.wast:63  unsupported: GC types
+ref_null.wast:64  unsupported: GC types
+ref_null.wast:65  unsupported: GC types
+ref_null.wast:66  unsupported: GC types
+ref_null.wast:67  unsupported: GC types
+ref_null.wast:68  unsupported: GC types
+ref_null.wast:69  unsupported: GC types
+ref_null.wast:70  unsupported: GC types
+ref_null.wast:71  unsupported: GC types
+ref_null.wast:72  unsupported: GC types
+ref_null.wast:73  unsupported: GC types
+ref_null.wast:74  unsupported: GC types
+ref_null.wast:75  unsupported: GC types
+ref_null.wast:76  unsupported: GC types
+ref_null.wast:77  unsupported: GC types
+ref_null.wast:78  unsupported: GC types
+ref_null.wast:79  unsupported: GC types
+ref_null.wast:80  unsupported: GC types
+ref_null.wast:81  unsupported: GC types
+type-rec.wast:137  unsupported: GC types
+type-rec.wast:143  unsupported: GC types
+type-rec.wast:149  unsupported: GC types
+type-rec.wast:157  unsupported: GC types
+type-rec.wast:167  unsupported: GC types
+type-rec.wast:174  unsupported: GC types
+type-rec.wast:176  unsupported: GC types
+type-rec.wast:183  unsupported: GC types
+type-rec.wast:185  unsupported: GC types
+type-rec.wast:192  unsupported: GC types
+type-rec.wast:197  unsupported: GC types
+type-rec.wast:39  unsupported: GC types
+type-rec.wast:71  unsupported: GC types
+type-rec.wast:78  unsupported: GC types

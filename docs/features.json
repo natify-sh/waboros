@@ -10,7 +10,7 @@
         "branchHinting": null,
         "bulkMemory": [
           "partial",
-          "7483/7485 over bulk-memory/; xfail 2 (bulk-memory/table_init 2); mostly: LoadError: NotImplementedError: opcode 0xfb"
+          "7483/7485 over bulk-memory/; xfail 2 (bulk-memory/table_init 2); mostly: unsupported: GC types"
         ],
         "compactImportSection": null,
         "compilationHints": null,
@@ -22,7 +22,7 @@
         "exceptions": null,
         "exceptionsFinal": [
           "partial",
-          "105/110 over exceptions/; xfail 5 (exceptions/cast 5); mostly: no current module"
+          "105/110 over exceptions/; xfail 5 (exceptions/cast 5); mostly: unsupported: GC types"
         ],
         "extendedConst": true,
         "extendedNameSection": null,
@@ -37,7 +37,7 @@
         "jspi": null,
         "memory64": [
           "partial",
-          "8717/8719 over memory64/; xfail 2 (memory64/table_init64 2); mostly: LoadError: NotImplementedError: opcode 0xfb"
+          "8717/8719 over memory64/; xfail 2 (memory64/table_init64 2); mostly: unsupported: GC types"
         ],
         "memoryControl": null,
         "moreArrayConstructors": null,
@@ -79,7 +79,7 @@
         "branchHinting": null,
         "bulkMemory": [
           "partial",
-          "7483/7485 over bulk-memory/; xfail 2 (bulk-memory/table_init 2); mostly: LoadError: NotImplementedError: opcode 0xfb"
+          "7483/7485 over bulk-memory/; xfail 2 (bulk-memory/table_init 2); mostly: unsupported: GC types"
         ],
         "compactImportSection": null,
         "compilationHints": null,
@@ -91,7 +91,7 @@
         "exceptions": null,
         "exceptionsFinal": [
           "partial",
-          "105/110 over exceptions/; xfail 5 (exceptions/cast 5); mostly: no current module"
+          "105/110 over exceptions/; xfail 5 (exceptions/cast 5); mostly: unsupported: GC types"
         ],
         "extendedConst": true,
         "extendedNameSection": null,
@@ -106,7 +106,7 @@
         "jspi": null,
         "memory64": [
           "partial",
-          "8717/8719 over memory64/; xfail 2 (memory64/table_init64 2); mostly: LoadError: NotImplementedError: opcode 0xfb"
+          "8717/8719 over memory64/; xfail 2 (memory64/table_init64 2); mostly: unsupported: GC types"
         ],
         "memoryControl": null,
         "moreArrayConstructors": null,
@@ -118,7 +118,7 @@
         "profiles": null,
         "referenceTypes": [
           "partial",
-          "397/431 over ref_func+ref_is_null+ref_null+ref+table_get+table_set+table_grow+table_size+table+select; xfail 34 (ref_null 34); mostly: unsupported: module not fully validated"
+          "397/431 over ref_func+ref_is_null+ref_null+ref+table_get+table_set+table_grow+table_size+table+select; xfail 34 (ref_null 34); mostly: unsupported: GC types"
         ],
         "relaxedDeadCodeValidation": null,
         "relaxedSimd": true,
@@ -148,7 +148,7 @@
         "branchHinting": null,
         "bulkMemory": [
           "partial",
-          "7483/7485 over bulk-memory/; xfail 2 (bulk-memory/table_init 2); mostly: LoadError: NotImplementedError: opcode 0xfb"
+          "7483/7485 over bulk-memory/; xfail 2 (bulk-memory/table_init 2); mostly: unsupported: GC types"
         ],
         "compactImportSection": null,
         "compilationHints": null,
@@ -160,7 +160,7 @@
         "exceptions": null,
         "exceptionsFinal": [
           "partial",
-          "105/110 over exceptions/; xfail 5 (exceptions/cast 5); mostly: no current module"
+          "105/110 over exceptions/; xfail 5 (exceptions/cast 5); mostly: unsupported: GC types"
         ],
         "extendedConst": true,
         "extendedNameSection": null,
@@ -175,7 +175,7 @@
         "jspi": null,
         "memory64": [
           "partial",
-          "8717/8719 over memory64/; xfail 2 (memory64/table_init64 2); mostly: LoadError: NotImplementedError: opcode 0xfb"
+          "8717/8719 over memory64/; xfail 2 (memory64/table_init64 2); mostly: unsupported: GC types"
         ],
         "memoryControl": null,
         "moreArrayConstructors": null,
@@ -187,7 +187,7 @@
         "profiles": null,
         "referenceTypes": [
           "partial",
-          "397/431 over ref_func+ref_is_null+ref_null+ref+table_get+table_set+table_grow+table_size+table+select; xfail 34 (ref_null 34); mostly: unsupported: module not fully validated"
+          "397/431 over ref_func+ref_is_null+ref_null+ref+table_get+table_set+table_grow+table_size+table+select; xfail 34 (ref_null 34); mostly: unsupported: GC types"
         ],
         "relaxedDeadCodeValidation": null,
         "relaxedSimd": true,
