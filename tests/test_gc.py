@@ -4,6 +4,7 @@
 expressions, the array operators, trap order and the allocation limits. The expected values were
 checked against Wasmtime 50.0.1. The JITs join at step 3b."""
 
+import sys
 from typing import Any
 
 import pytest
@@ -562,7 +563,9 @@ def test_element_expressions_run_before_any_active_write(target: str) -> None:
 
 @pytest.mark.parametrize("target", TARGETS)
 def test_deeply_nested_constant_expressions(target: str) -> None:
-    n = 10_000  # Wasmtime accepts at least 20 000; the validator and the generated code must not recurse
+    # Wasmtime accepts at least 20 000; the validator and the generated code must not recurse.
+    # Pyodide: CPython frees a chain this deep recursively in C and overflows its small stack (LESSONS 103)
+    n = 300 if sys.platform == "emscripten" else 10_000
     e = "(ref.null $l)"
     for _ in range(n):
         e = f"(struct.new $l {e})"

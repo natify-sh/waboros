@@ -775,3 +775,14 @@ What went wrong or surprised us while building the PoC, so it is not found again
     verified by a table of mixed-failure cases run through wasmtime-py (`null` + `out of bounds`,
     each operand failing alone), not by the spec files; keep the table as a test with the oracle's
     verdicts written in. Found: S0013 step 2, 2026-11-11.
+103. **CPython frees a deep chain of lists recursively in C; a small C stack (Pyodide) overflows.** A
+    10 000-deep chain of GC structs on `pyc` (each a list holding the next) crashed the Pyodide CI
+    job with a JS `RangeError: Maximum call stack size exceeded` when the cyclic collector freed it
+    in a later test. Reproduced on Linux with `ulimit -s 128`: plain Python freeing `l = [0, l]`
+    3 000 deep segfaults (by refcount or by `gc.collect()`), a chain of `pyc` structs already at 1 000
+    (300 is fine; 1 000 needs 256 KiB), while on the default 8 MiB stack 3
+    million is fine on 3.11, 3.13 and 3.14: the trashcan that bounds this recursion triggers too late
+    for a small stack. So a long linked list of structs on `pyc` can crash a host with a small C
+    stack when it is freed; not fixed (open question to the maintainer). Rule: a test that builds a
+    deep object graph on `pyc` keeps it shallow on emscripten; find such a crash locally with
+    `ulimit -s 128` and `-p no:xdist`. Found: S0013 step 2 CI, 2026-11-11.
