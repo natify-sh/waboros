@@ -49,7 +49,10 @@ def isref(t: Any) -> bool:
 
 def key(mod: dict[str, Any], i: int) -> str:
     """Canonical key of type `i`: a SHA-256 hex digest, equal for equivalent types of any module,
-    the same in every process and on every machine (no shared state, so no race on 3.15t).
+    the same in every process and on every machine. `mod["tkeys"]` caches them and may be shared
+    by threads (stores instantiating one compiled module): a type is done when its own entry is
+    there, and a group's entries are written after all are computed, so a reader never sees a
+    half group (at worst two threads compute the same values).
     A rec group (its composite types, supertypes and final flags; a reference inside it is
     `("rec", position)`, one outside it the digest of that type) is digested together with the
     position; `repr` of tuples of ints, strings and bools is deterministic. Only the groups a type
@@ -81,10 +84,10 @@ def key(mod: dict[str, Any], i: int) -> str:
     # Only the groups `i` needs, earliest first, with an explicit stack (no recursion).
     stack = [i]
     while stack:
-        gs, ge = tdefs[stack[-1]][3:]
-        if gs in cache:
+        if stack[-1] in cache:
             stack.pop()
             continue
+        gs, ge = tdefs[stack[-1]][3:]
         missing = [j for j in outside(gs, ge) if j not in cache]
         if missing:
             stack.extend(missing)
@@ -106,32 +109,13 @@ def key(mod: dict[str, Any], i: int) -> str:
             return ("struct", tuple(map(fk, c[1]))) if c[0] == "struct" else ("array", fk(c[1]))
 
         group = repr(tuple((ck(c), tuple(map(ref, sp)), fin) for c, sp, fin, _, _ in tdefs[gs:ge]))
+        h = sha256(group.encode())  # hashed once; each member adds its position (O(G), not G**2)
+        keys = {}
         for t in range(gs, ge):
-            cache[t] = sha256(f"{group},{t - gs}".encode()).hexdigest()
-    return cache[i]
-    tdefs = mod["tdefs"]
-    for j in range(i + 1):
-        if j in cache:
-            continue
-        gs, ge = tdefs[j][3:]
-
-        def ref(t, gs=gs):
-            return ("rec", t - gs) if t >= gs else cache[t]
-
-        def vk(t, ref=ref):
-            return (t[0], ref(t[1])) if t.__class__ is tuple and t[1] >= 0 else t
-
-        def fk(f, vk=vk):
-            return vk(f[0]), f[1]
-
-        def ck(c, vk=vk, fk=fk):
-            if c[0] == "func":
-                return ("func", tuple(map(vk, c[1])), tuple(map(vk, c[2])))
-            return ("struct", tuple(map(fk, c[1]))) if c[0] == "struct" else ("array", fk(c[1]))
-
-        group = tuple((ck(c), tuple(map(ref, sp)), fin) for c, sp, fin, _, _ in tdefs[gs:ge])
-        for t in range(gs, ge):
-            cache[t] = sha256(repr((group, t - gs)).encode()).hexdigest()
+            m = h.copy()
+            m.update(b",%d" % (t - gs))
+            keys[t] = m.hexdigest()
+        cache.update(keys)  # after every member is known: an interrupt leaves no half group
     return cache[i]
 
 
