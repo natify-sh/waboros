@@ -205,6 +205,7 @@ def test_auto_is_explicit_silently_where_guard_cannot_be(
     warning, and it runs; `guard` there compiles but refuses to instantiate."""
     monkeypatch.setenv("WABOROS_JIT_BOUNDS", "auto")
     tgt = type(base.TARGETS[JIT]())
+    wat(LOAD)  # wasmtime (the WAT tool) imported before `platform.machine` is patched (xdist order)
     if why == "unverified row":
         monkeypatch.setattr(tgt, "verified", frozenset())
     elif why == "unknown libc":
