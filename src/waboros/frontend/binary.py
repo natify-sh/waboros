@@ -80,6 +80,7 @@ def _illegal(op):
 
 # heap type code (the signed 7-bit value of the byte) -> its one-byte nullable reference type
 NULLABLE = {b - 128: b for b in REFBYTES}
+_HEAP_CODES = frozenset(range(-23, -11))  # func, extern, any, ... exn: the abstract heap types
 
 
 def _reftype(nullable, ht):
@@ -143,6 +144,8 @@ class R:
         v = s.s(33)
         if v < 0 and s.p - p > 1:
             raise Malformed("integer representation too long")
+        if v < 0 and v not in _HEAP_CODES:
+            raise Malformed("malformed heap type")
         return v
 
     def name(s):

@@ -5,7 +5,7 @@ import os
 import struct
 
 from waboros.frontend.binary import F32, F64, I32, I64, M32, M64
-from waboros.frontend.types import valtype_key
+from waboros.frontend.types import key as types_key
 from waboros.targets.base import Unsupported
 from waboros.targets.pyc import runtime as _rt
 
@@ -1191,7 +1191,7 @@ class FuncGen:
                 s.emit("    _toob()")
                 s.emit("except AttributeError:")
                 s.emit("    _tnull()")
-                s.emit("if %s != %r:" % (q, mg.sig(*mg.types[x[1]])))
+                s.emit("if %s != %r:" % (q, types_key(mg.mod, x[1])))
                 s.emit("    _tsig()")
             ac = ", ".join(n(a) if a.t in (I32, I64) else a.c for a in args)
             if tail:
@@ -1746,9 +1746,6 @@ class ModGen:
             return s.types[s.fimports[fi][3]]
         return s.types[s.mod["funcs"][fi - s.nimp]]
 
-    def sig(s, ps, rs):
-        return ">".join(",".join(str(valtype_key(s.mod, t)) for t in ts) for ts in (ps, rs))
-
     def fname(s, fi):
         if fi < s.nimp:
             return "I%d" % fi
@@ -1853,7 +1850,7 @@ class ModGen:
             gl.append("I%d" % i)
         for k, ((locs, _), tidx) in enumerate(zip(mod["codes"], mod["funcs"])):
             out.append(FuncGen(s, s.nimp + k, tidx, locs, mod["insns"][k]).gen())
-            out.append("f%d.s = %r" % (s.nimp + k, s.sig(*s.types[tidx])))
+            out.append("f%d.s = %r" % (s.nimp + k, types_key(s.mod, tidx)))
             if s.nimp + k in s.tc:
                 out.append("f%d.t = f%d_b" % (s.nimp + k, s.nimp + k))
         for i, im in enumerate(s.fimports):

@@ -46,31 +46,45 @@ def isref(t: Any) -> bool:
     return t.__class__ is tuple or t in _NN
 
 
-def key(mod: dict[str, Any], i: int) -> Any:
-    """Canonical key of type `i`: `(group, position)`, equal for equivalent types of any module.
-    The group is the rec group's composite types, supertypes and final flags; a reference inside
-    it is `("rec", position)`, one outside it that type's own key."""
+# (group, position) -> itself, process-wide. The canonical key is the id() of the one stored tuple:
+# `setdefault` is atomic (also free-threaded), so equal tuples get one object and distinct tuples
+# distinct live objects, without a counter that two threads could read at once.
+_KEYS: dict[Any, Any] = {}
+
+
+def key(mod: dict[str, Any], i: int) -> int:
+    """Canonical key of type `i`: a small integer, equal for equivalent types of any module.
+    A rec group (its composite types, supertypes and final flags; a reference inside it is
+    `("rec", position)`, one outside it the interned key of that type) is interned together with
+    the position. Groups are keyed in index order, so a key is never a nested tree (hashing and
+    comparing stay constant-time, no recursion)."""
     cache = mod.setdefault("tkeys", {})
-    if i not in cache:
-        gs, ge = mod["tdefs"][i][3:]
+    if i in cache:
+        return cache[i]
+    tdefs = mod["tdefs"]
+    for j in range(i + 1):
+        if j in cache:
+            continue
+        gs, ge = tdefs[j][3:]
 
-        def ref(j):
-            return ("rec", j - gs) if j >= gs else key(mod, j)
+        def ref(t, gs=gs):
+            return ("rec", t - gs) if t >= gs else cache[t]
 
-        def vk(t):
+        def vk(t, ref=ref):
             return (t[0], ref(t[1])) if t.__class__ is tuple and t[1] >= 0 else t
 
-        def fk(f):
+        def fk(f, vk=vk):
             return vk(f[0]), f[1]
 
-        def ck(c):
+        def ck(c, vk=vk, fk=fk):
             if c[0] == "func":
                 return ("func", tuple(map(vk, c[1])), tuple(map(vk, c[2])))
             return ("struct", tuple(map(fk, c[1]))) if c[0] == "struct" else ("array", fk(c[1]))
 
-        group = tuple((ck(c), tuple(map(ref, sp)), fin) for c, sp, fin, _, _ in mod["tdefs"][gs:ge])
-        for j in range(gs, ge):
-            cache[j] = (group, j - gs)
+        group = tuple((ck(c), tuple(map(ref, sp)), fin) for c, sp, fin, _, _ in tdefs[gs:ge])
+        for t in range(gs, ge):
+            k = (group, t - gs)
+            cache[t] = id(_KEYS.setdefault(k, k))
     return cache[i]
 
 

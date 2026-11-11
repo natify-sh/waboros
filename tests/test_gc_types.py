@@ -5,9 +5,15 @@ from typing import Any
 
 import pytest
 
-from waboros.frontend.binary import parse
+from tests.jit.test_compiler import build, outcome
+from tests.jit.test_tables import provider
+from tests.watcache import wat2wasm
+from waboros.frontend.binary import Malformed, parse
 from waboros.frontend.types import key, match, sub_key
 from waboros.frontend.validate import Invalid, validate
+from waboros.runtime.store import StoreState
+from waboros.targets import base as target_base
+from waboros.targets.base import TrapCode
 
 HEAD = b"\0asm\1\0\0\0"
 FUNC0 = b"\x60\x00\x00"
@@ -44,7 +50,10 @@ def rec(*types: bytes) -> bytes:
 
 def module(*entries: bytes) -> dict[str, Any]:
     body = bytes([len(entries)]) + b"".join(entries)
-    m = parse(HEAD + b"\x01" + bytes([len(body)]) + body)
+    size = (
+        bytes([len(body) & 0x7F | 0x80, len(body) >> 7]) if len(body) > 127 else bytes([len(body)])
+    )
+    m = parse(HEAD + b"\x01" + size + body)
     validate(m)
     return m
 
@@ -136,3 +145,69 @@ def test_function_must_use_a_function_type() -> None:
     data = HEAD + b"\x01\x03\x01" + STRUCT0 + b"\x03\x02\x01\x00" + b"\x0a\x04\x01\x02\x00\x0b"
     with pytest.raises(Invalid):
         validate(parse(data))
+
+
+def test_unknown_heap_type_code_is_malformed() -> None:
+    def sec(i: int, body: bytes) -> bytes:
+        return bytes([i, len(body)]) + body
+
+    for body in (
+        b"\x01\x70\x00\xd0\x7f\x0b",
+        b"\x01\x63\x7f\x00\xd0\x70\x0b",
+        b"\x01\x63\x58\x00\xd0\x58\x0b",
+    ):
+        with pytest.raises(Malformed):
+            validate(parse(HEAD + sec(6, body)))
+
+
+def test_keys_of_a_deep_chain_are_cheap() -> None:
+    entries = [b"\x60\x00\x00"]
+    for i in range(1, 30):  # each type takes the previous one twice: a tree of 2**30 leaves
+        entries.append(func(ref(i - 1) + ref(i - 1)))
+    mod = module(*entries)
+    assert key(mod, 29) != key(mod, 28)
+    assert key(module(*entries), 29) == key(mod, 29)
+
+
+_A = """(module
+ (rec (type $a (func (result i32))) (type $b (func (result i32))))
+ (type $nf (sub (func (result i32))))
+ (table (export "t") 4 funcref)
+ (func $f (type $a) i32.const 7)
+ (func $g (type $nf) i32.const 8)
+ (elem (i32.const 0) $f $g))"""
+_CALL = """(module {types}
+ (import "a" "t" (table 4 funcref))
+ (func (export "go") (result i32) (call_indirect (type {ti}) (i32.const {idx}))))"""
+_REC = "(rec (type $a (func (result i32))) (type $b (func (result i32))))"
+_REC_SWAPPED = "(rec (type $b (func (result i32))) (type $a (func (result i32))))"
+
+
+@pytest.mark.parametrize(
+    ("types", "ti", "idx", "expected"),
+    [
+        ("(type $c (func (result i32)))", "$c", 0, TrapCode.BAD_SIGNATURE),
+        (_REC, "$a", 0, [7]),
+        (_REC, "$b", 0, TrapCode.BAD_SIGNATURE),
+        (_REC_SWAPPED, "$b", 0, [7]),
+        ("(type $c (func (result i32)))", "$c", 1, TrapCode.BAD_SIGNATURE),
+        ("(type $c (sub (func (result i32))))", "$c", 1, [8]),
+        (
+            "(type $c (sub final (func (result i32))))",
+            "$c",
+            0,
+            TrapCode.BAD_SIGNATURE,
+        ),
+    ],
+)
+@pytest.mark.parametrize("target", ("pyc", "jit-x86_64"))
+def test_call_indirect_checks_rec_groups_and_finality(
+    target: str, types: str, ti: str, idx: int, expected: Any
+) -> None:
+    if target_base.TARGETS[target]().probe() is not None:
+        pytest.skip(target)
+    store = StoreState()
+    a = build(wat2wasm(_A), target=target, store=store)
+    text = _CALL.format(types=types, ti=ti, idx=idx)
+    b = build(wat2wasm(text), target=target, imports={"a": provider(a)}, store=store)
+    assert outcome(b, "go") == expected

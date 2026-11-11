@@ -2,7 +2,7 @@
 title: Lessons
 kind: log
 status: current
-updated: 2026-11-05
+updated: 2026-11-11
 ---
 
 # Lessons
@@ -746,3 +746,15 @@ What went wrong or surprised us while building the PoC, so it is not found again
     wasmtime-py 50. We keep 50.0.1 with the workaround until a release built with the fixed
     toolchain is pinned, then drop it. Upstream: [wasmtime#15216](https://github.com/bytecodealliance/wasmtime/issues/15216); the wrapper's gaps (the abort, no `anyref` in `Val`) in [wasmtime-py#283](https://github.com/bytecodealliance/wasmtime-py/issues/283#issuecomment-6770652941). Rule: classify an anyref by `i31_get_u`, never by `is_i31`;
     read types through `wasmtime_valtype_t`. Found: S0013 step 0, 2026-11-10.
+101. **A canonical key that nests the keys it refers to is a tree with uncached hashes.** The
+    first `types.key` wrote a reference outside the rec group as that type's whole key, so a chain
+    where each type uses the previous one twice has 2**n leaves: every dict lookup (`type_id`, `pyc`
+    signatures) re-hashed the tree (64 s at n=30), and building it recursed once per chain link
+    (`RecursionError` at 250). Rule: intern a key as soon as it is made and refer to the interned
+    id (groups are keyed in index order, a group refers only to earlier ones or itself); a key is
+    then an integer, comparison and hashing are constant, no recursion. Make the id race-free
+    without a lock (the front end imports no `threading`): the `id()` of the tuple that an atomic
+    `dict.setdefault(k, k)` keeps, not a counter two threads could read at once (3.15t). Also: `pyc` once compared
+    function types by parameter/result strings, which ignored rec groups and finality; an identity
+    that the language defines (type equivalence) has one function, used by every target. Found:
+    S0013 step 1a review, 2026-11-11.

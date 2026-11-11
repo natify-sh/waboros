@@ -7,7 +7,7 @@ from types import CodeType
 from typing import Any, Literal, cast
 
 from waboros.frontend.binary import F32, F64, parse
-from waboros.frontend.types import valtype_key
+from waboros.frontend.types import key as types_key
 from waboros.frontend.validate import validate
 from waboros.runtime.link import LinkError, func_type, global_type
 from waboros.runtime.store import StoreState
@@ -153,7 +153,7 @@ class PycInstance:
         return _to_raw(ty, cell.v if cell is not None else self.ns[f"G{global_index}"])
 
 
-def _host_adapter(h: HostFunc, ps: list[int], rs: list[int], sig: str) -> Callable[..., Any]:
+def _host_adapter(h: HostFunc, ps: list[int], rs: list[int], sig: int) -> Callable[..., Any]:
     """A `HostFunc` as a function on `pyc` values; `.s` lets it sit in a table."""
 
     def w(*a: Any) -> Any:
@@ -197,10 +197,7 @@ class PycTarget:
             if im[0] == "func":
                 if ext.owner is None:
                     ps, rs = c.module["types"][im[3]]
-                    sig = ">".join(
-                        ",".join(str(valtype_key(c.module, t)) for t in ts) for ts in (ps, rs)
-                    )
-                    val = _host_adapter(cast(HostFunc, val), ps, rs, sig)
+                    val = _host_adapter(cast(HostFunc, val), ps, rs, types_key(c.module, im[3]))
             wired.setdefault(im[1], {})[im[2]] = val
         exports = cast(dict[str, Any], _run(store, namespace["instantiate"], wired))
         inst = PycInstance(c, namespace, exports, store)
