@@ -741,5 +741,8 @@ What went wrong or surprised us while building the PoC, so it is not found again
     13 up exn). The binding of `is_i31` matches the C header (`bool (wasmtime_context_t*, const
     wasmtime_anyref_t*)`), and the call leaves a non-normalised value in `rax` (0xb for an i31, 0x10
     for a struct), so the fault is in the C library, not in wasmtime-py; in the v50 source both
-    functions call `AnyRef::is_i31`. Upstream: [wasmtime#15216](https://github.com/bytecodealliance/wasmtime/issues/15216); the wrapper's gaps (the abort, no `anyref` in `Val`) in [wasmtime-py#283](https://github.com/bytecodealliance/wasmtime-py/issues/283#issuecomment-6770652941). Rule: classify an anyref by `i31_get_u`, never by `is_i31`;
+    functions call `AnyRef::is_i31`. Upstream's answer (2026-11-10): a Rust miscompilation in the
+    toolchain that built 50.x, fixed by a newer toolchain in a later release; their advice is to skip
+    wasmtime-py 50. We keep 50.0.1 with the workaround until a release built with the fixed
+    toolchain is pinned, then drop it. Upstream: [wasmtime#15216](https://github.com/bytecodealliance/wasmtime/issues/15216); the wrapper's gaps (the abort, no `anyref` in `Val`) in [wasmtime-py#283](https://github.com/bytecodealliance/wasmtime-py/issues/283#issuecomment-6770652941). Rule: classify an anyref by `i31_get_u`, never by `is_i31`;
     read types through `wasmtime_valtype_t`. Found: S0013 step 0, 2026-11-10.
