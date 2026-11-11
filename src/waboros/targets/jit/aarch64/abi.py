@@ -10,6 +10,7 @@ record {x29, x30} (tail_switch: a {x28, x30} restore frame); every `ret` returns
 
 from waboros.targets.jit.aarch64.encoder import FP, LR, SP, ZR, Asm
 from waboros.targets.jit.common.context import (
+    EXIT_RECORD,
     HOST_BRIDGE,
     HOST_ERROR,
     STATUS_HOST_ERROR,
@@ -19,33 +20,50 @@ from waboros.targets.jit.common.context import (
 
 CTX, FRAME, MBASE, MSIZE = 28, 27, 26, 25
 MEM0 = 8 * Layout().memory(0)  # byte offset of memory 0's base word; its size word follows
+EXIT = 8 * EXIT_RECORD  # the store's exit record {sp, pc, frame} (S0013 3a)
+# where the entry keeps the enclosing exit record and its frame, from sp at its `blr`
+ENTRY_SAVED = 96
 
 
 def reload_memory(a: Asm) -> None:
     a.pair(True, MBASE, MSIZE, CTX, MEM0)
 
 
-def entry(a: Asm) -> None:
+def entry(a: Asm) -> int:
     """int32_t entry(x0 = ctx, x1 = frame, x2 = code): save x19-x28 under a frame record, set up
     x28/x27/x26/x25, call the code, keep a non-zero status in ctx[TRAP_CODE]. Nothing else is
-    stored in the context, so entries nest (LESSONS 4)."""
+    stored in the context, so entries nest (LESSONS 4). The store's exit record of the enclosing
+    host call and our frame are kept at [sp + ENTRY_SAVED, +32) during the call and the record is
+    put back after it (S0013 3a). Returns the offset of the return point."""
     done = a.label()
     a.bti("c")
-    a.pair(False, FP, LR, SP, -96, "pre")
+    a.pair(False, FP, LR, SP, -128, "pre")
     a.mov(FP, SP)
     for i, r in enumerate(range(19, 29, 2)):
         a.pair(False, r, r + 1, SP, 16 + 16 * i)
     a.mov(CTX, 0)
     a.mov(FRAME, 1)
+    a.ld(9, CTX, EXIT)  # x9-x12: scratch; x2 (the code) kept
+    a.pair(True, 10, 11, 9)
+    a.ld(12, 9, 16)
+    a.pair(False, 10, 11, SP, ENTRY_SAVED)
+    a.pair(False, 12, FRAME, SP, ENTRY_SAVED + 16)
     reload_memory(a)
     a.blr(2)
+    ret = len(a.buf)
+    a.ld(9, CTX, EXIT)  # w0 (the status) kept
+    a.pair(True, 10, 11, SP, ENTRY_SAVED)
+    a.ld(12, SP, ENTRY_SAVED + 16)
+    a.pair(False, 10, 11, 9)
+    a.st(12, 9, 16)
     a.cbz(0, done, wide=False)
     a.st(0, CTX, 8 * TRAP_CODE)  # w0 was written by a 32-bit operation: x0 is zero-extended
     a.bind(done)
     for i, r in enumerate(range(19, 29, 2)):
         a.pair(True, r, r + 1, SP, 16 + 16 * i)
-    a.pair(True, FP, LR, SP, 96, "post")
+    a.pair(True, FP, LR, SP, 128, "post")
     a.ret()
+    return ret
 
 
 def bridge(a: Asm) -> None:
@@ -54,9 +72,14 @@ def bridge(a: Asm) -> None:
     to 13 and returns the status the host left there in w0 (its C return value is ignored, D34);
     the word's previous value (an enclosing host call's preset) is put back. Saves x2-x8 for every
     frame above (LESSONS 2); x19-x28 are callee-saved for the host. The call site reloads
-    x26/x25."""
+    x26/x25. First it writes the store's exit record {the caller's sp, x30, x27} (x10, x11 are
+    scratch at every call site), and clears its sp after the host returns (S0013 3a)."""
     status = 8 * HOST_ERROR
     a.bti("c")
+    a.ld(10, CTX, EXIT)
+    a.mov(11, SP)
+    a.pair(False, 11, LR, 10)
+    a.st(FRAME, 10, 16)
     a.pair(False, FP, LR, SP, -80, "pre")
     a.mov(FP, SP)
     a.pair(False, 2, 3, SP, 16)
@@ -69,6 +92,8 @@ def bridge(a: Asm) -> None:
     a.ld_idx(16, CTX, 0, scaled=True)  # x16 = ctx[x0]
     a.mov(0, CTX)  # x1 already holds the slots
     a.blr(16)
+    a.ld(10, CTX, EXIT)
+    a.st(ZR, 10)  # no wasm frame waits in a host call any more
     a.ld(0, CTX, status, size=4)  # 32-bit: zero-extended
     a.pair(True, 8, 9, SP, 64)
     a.st(9, CTX, status)
@@ -88,7 +113,7 @@ def sp_stub(a: Asm) -> None:
     a.ret()
 
 
-def tail_switch(a: Asm) -> None:
+def tail_switch(a: Asm) -> int:
     """A tail call into a function record whose context is not the caller's (D30). Entered by
     `br x17` after the caller has torn down its frame: x16 = the record, the arguments at x27,
     x30 = the caller's return address (S0004; on x86-64 it is on the stack).
@@ -108,6 +133,7 @@ def tail_switch(a: Asm) -> None:
     a.ld(17, 16)
     a.blr(17)
     a.bind(restore)  # the status stays in w0
+    at = len(a.buf)
     a.pair(True, CTX, LR, SP, 16, "post")
     reload_memory(a)
     a.ret()
@@ -116,6 +142,7 @@ def tail_switch(a: Asm) -> None:
     reload_memory(a)
     a.ld(17, 16)
     a.br(17)
+    return at
 
 
 def host_thunk(a: Asm, word: int) -> int:
@@ -139,13 +166,17 @@ def host_thunk(a: Asm, word: int) -> int:
 
 
 def assemble() -> tuple[bytes, list[int]]:
-    """The four trampolines in one blob and their offsets (entry, bridge, sp stub, tail_switch)."""
+    """The four trampolines in one blob and their offsets (entry, bridge, sp stub, tail_switch),
+    then the walk's table (S0013 3a): the entry's return point and tail_switch's `restore`."""
     a = Asm()
-    offsets: list[int] = []
-    for emit in (entry, bridge, sp_stub, tail_switch):
-        offsets.append(len(a.buf))
-        emit(a)
-    return a.finish(), offsets
+    ret = entry(a)
+    offsets = [0, len(a.buf)]
+    bridge(a)
+    offsets.append(len(a.buf))
+    sp_stub(a)
+    offsets.append(len(a.buf))
+    restore = tail_switch(a)
+    return a.finish(), [*offsets, ret, restore]
 
 
 # The S0006 fault handler, Linux aarch64: the kernel's siginfo_t and ucontext_t (the same for

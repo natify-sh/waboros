@@ -66,7 +66,7 @@ def test_trampolines_are_landing_pads(tramp: Trampolines) -> None:
     for addr in (tramp.entry, tramp.bridge, tramp.sp_stub, tramp.tail_switch):
         assert ctypes.string_at(addr, 4) == BTI_C
     code, offsets = assemble()
-    assert [code[o : o + 4] for o in offsets] == [BTI_C] * 4
+    assert [code[o : o + 4] for o in offsets[:4]] == [BTI_C] * 4
 
 
 def test_bti_is_enforced_where_the_cpu_has_it(tramp: Trampolines) -> None:

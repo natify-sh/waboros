@@ -72,6 +72,6 @@ class JitX86_64Target(JitTarget):
 def trampolines() -> "Trampolines":
     """This process's trampolines, assembled by abi.py and sealed once by the host side."""
     from waboros.targets.jit.common.instance import load_trampolines
-    from waboros.targets.jit.x86_64.abi import assemble
+    from waboros.targets.jit.x86_64.abi import ENTRY_SAVED, assemble
 
-    return load_trampolines(*assemble(sys.platform == "win32"))
+    return load_trampolines(*assemble(sys.platform == "win32"), ENTRY_SAVED)

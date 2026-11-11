@@ -67,7 +67,7 @@ class JitAarch64Target(JitTarget):
 @cache
 def trampolines() -> "Trampolines":
     """This process's trampolines, assembled by abi.py and sealed once by the host side."""
-    from waboros.targets.jit.aarch64.abi import assemble
+    from waboros.targets.jit.aarch64.abi import ENTRY_SAVED, assemble
     from waboros.targets.jit.common.instance import load_trampolines
 
-    return load_trampolines(*assemble())
+    return load_trampolines(*assemble(), ENTRY_SAVED)

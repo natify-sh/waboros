@@ -27,6 +27,7 @@ from waboros.targets.jit.common.context import (
     DATA_DROP,
     ELEM_DROP,
     EXCEPTION,
+    EXIT_RECORD,
     EXN_REFILL,
     HOST_BRIDGE,
     HOST_ERROR,
@@ -129,6 +130,12 @@ class Trampolines:
     bridge: int
     sp_stub: int
     tail_switch: int
+    # the walk's table (S0013 3a): the entry's return point, tail_switch's `restore` point, and
+    # where the entry keeps {exit record of the enclosing host call, its frame} from the stack
+    # pointer at its call
+    entry_ret: int
+    restore: int
+    saved: int
     keep: object = None  # the code area
 
 
@@ -168,6 +175,8 @@ class _StoreStacks:
         self.exnrefs: dict[int, ExnRef] = {}
         self.tags: dict[int, Tag] = {}  # every tag of the store by identity
         self.refill: Any = None  # context word EXN_REFILL (a ctypes callback)
+        # the exit record {sp, pc, frame} of the innermost host call (S0013 3a), word EXIT_RECORD
+        self.exit = (ctypes.c_uint64 * 3)()
 
     def new_chunk(self, words: int) -> None:
         c = (ctypes.c_uint64 * words)()
@@ -206,11 +215,12 @@ class _StoreStacks:
         return ref
 
 
-def load_trampolines(code: bytes, offsets: Sequence[int]) -> Trampolines:
-    """Seal an architecture's trampoline blob (its abi.assemble) into one code area, kept for the
-    process's lifetime by the cache of the target that calls this."""
+def load_trampolines(code: bytes, offsets: Sequence[int], saved: int) -> Trampolines:
+    """Seal an architecture's trampoline blob (its abi.assemble: four entry points, then the entry's
+    return point and `restore`) into one code area, kept for the process's lifetime by the cache of
+    the target that calls this; `saved` is its abi.ENTRY_SAVED."""
     mem = load(code)
-    return Trampolines(*(mem.addr + o for o in offsets), keep=mem)
+    return Trampolines(*(mem.addr + o for o in offsets), saved=saved, keep=mem)
 
 
 def _stacks(store: StoreState) -> _StoreStacks:
@@ -523,6 +533,7 @@ class Instance:
         exn = ctypes.addressof(st.exn)  # S0012: in every context (throw_ref needs no tag)
         self.ctx[EXCEPTION], self.ctx[ARENA_CURSOR], self.ctx[ARENA_LIMIT] = exn, exn + 8, exn + 16
         self.ctx[EXN_REFILL] = ctypes.cast(st.refill, ctypes.c_void_p).value or 0
+        self.ctx[EXIT_RECORD] = ctypes.addressof(st.exit)  # every entry reads it (S0013 3a)
         self.code: ExecMem = load(code)
         self.entry = ENTRY(tramp.entry)
         self.callbacks = [HOST(self._host(*im)) for im in imports]  # kept alive here

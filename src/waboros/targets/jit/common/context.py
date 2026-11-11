@@ -16,7 +16,10 @@ TAIL_SWITCH = 9  # address of the cross-context tail-call trampoline (D30)
 # limit (one arena per store: every context of the store allocates from it), and the service that
 # gives the arena a new chunk, called through the bridge only when the current one is full
 EXCEPTION, EXN_REFILL, ARENA_CURSOR, ARENA_LIMIT = 10, 11, 12, 13
-FIRST_VAR = 16  # words 14-15 are reserved, zero
+# the address of the store's exit record {sp, pc, frame}: written by the bridge at every host
+# call, sp cleared after it, saved and restored by every entry (S0013 3a)
+EXIT_RECORD = 14
+FIRST_VAR = 16  # word 15 is reserved, zero
 
 # Status values returned by the entry, the bridge and every function (0 = success).
 STATUS_INTERRUPT = 12
