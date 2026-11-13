@@ -15,6 +15,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
+from waboros.frontend.types import ANY, EXN, FUNC, nn, top  # pyright: ignore[reportUnknownVariableType]
 from waboros.frontend.types import key as types_key
 from waboros.runtime.link import LinkError
 from waboros.runtime.store import StoreState
@@ -89,8 +90,11 @@ def isref(t: Any) -> bool:
     return t.__class__ is tuple or t in (0x70, 0x6F, 0x69, 0x74)
 
 
-def isexn(t: Any) -> bool:
-    return t in (0x69, 0x74) or t.__class__ is tuple and t[1] in (-23, -12)
+def hierarchies(mod: Any, ts: Sequence[Any]) -> list[int | None]:
+    """Per value type of `mod`: its reference hierarchy (FUNC, EXTERN, EXN or ANY; S0013 3b: by the
+    type, so `anyref` and a concrete struct reference are not funcrefs), None for a number. Found
+    once per signature, not per value (a host call crosses at ctypes speed)."""
+    return [top(mod, nn(t)[1]) if isref(t) else None for t in ts]
 
 
 ARENA_WORDS = 8192  # exception objects are bump-allocated in chunks of 64 KiB (S0012 Q3)
@@ -102,12 +106,12 @@ class Tag:
     """A tag's handle on the JIT targets (S0012): its identity, which code compares, and its
     parameter types (of the defining module) to read a payload."""
 
-    __slots__ = ("id", "params", "store")
+    __slots__ = ("id", "params", "store", "module")
 
-    def __init__(self, params: Sequence[Any], store: object) -> None:
+    def __init__(self, params: Sequence[Any], store: object, module: Any) -> None:
         with _TAG_LOCK:
             self.id = next(_TAG_IDS)
-        self.params, self.store = tuple(params), store
+        self.params, self.store, self.module = tuple(params), store, module
 
 
 @dataclass(frozen=True)
@@ -118,8 +122,15 @@ class ExnRef:
     store: object
 
 
-def isextern(t: Any) -> bool:
-    return t == 0x6F or t.__class__ is tuple and t[1] in (-17, -14)
+@dataclass(frozen=True, eq=False)
+class GcRef:
+    """A GC object (or, seen as an externref, an i31) outside the code: entry `index` of its store's
+    handle table, which holds the word (the collector rewrites it, S0013 Q10); one object per word.
+    `kind`: "struct", "array" or "i31"."""
+
+    index: int
+    kind: str
+    store: object
 
 
 @dataclass(frozen=True)
@@ -165,6 +176,12 @@ class _StoreStacks:
         self.externs: list[object] = []
         self.extern_ids: dict[int, int] = {}
         self.funcrefs: dict[int, FuncRef] = {}
+        # GC (S0013 3b): the store's heap (heap.GcHeap, with the first instance that uses GC) and
+        # the handle table: the word of each GcRef given to the host, kept until the store is
+        # dropped (Q10: generations and a free list come with release in phase 6)
+        self.heap: Any = None
+        self.gc_handles: list[int] = []
+        self.gcrefs: dict[int, GcRef] = {}
         # exceptions (S0012): {pending exnref, arena cursor, arena limit}, which context words
         # 10, 12 and 13 point to; code bumps objects {tag, payload words} from the arena's last
         # chunk. Chunks never move and are kept until the store is dropped (Q3); the first comes
@@ -185,35 +202,61 @@ class _StoreStacks:
         self.chunks.append(c)
         self.exn[1], self.exn[2] = ctypes.addressof(c), ctypes.addressof(c) + 8 * words
 
-    def to_raw(self, t: Any, v: object) -> int:
+    def to_raw(self, h: int, v: object) -> int:
+        """A host value of a reference type of hierarchy `h` -> its word. An externref host value is
+        `(h << 2) | 2`, h its 1-based handle (S0013); for an any-hierarchy type an int is an i31 in
+        [-2**30, 2**30) and any other non-GC value is internalized the same way."""
         if v is None:
             return 0
-        if isexn(t):
+        if h == EXN:
             if not isinstance(v, ExnRef) or self.exnrefs.get(v.addr) is not v:
                 raise TypeError(f"not an exception reference of this store: {v!r}")
             return v.addr
-        if not isextern(t):
+        if h == FUNC:
             # only a reference this store handed out: a record of another store would run on that
             # store's context and value stack, a forged address anywhere (LESSONS 35)
             if not isinstance(v, FuncRef) or self.funcrefs.get(v.addr) is not v:  # one object each
                 raise TypeError(f"not a function reference of this store: {v!r}")
             return v.addr
-        h = self.extern_ids.get(id(v))
-        if h is None:
+        if isinstance(v, GcRef):
+            i = v.index
+            if not 0 <= i < len(self.gc_handles) or self.gcrefs.get(self.gc_handles[i]) is not v:
+                raise TypeError(f"not a GC reference of this store: {v!r}")
+            return self.gc_handles[i]
+        if h == ANY and v.__class__ is int:
+            if not -(1 << 30) <= v < 1 << 30:  # pyright: ignore[reportOperatorIssue]
+                raise ValueError(f"{v} is not an i31 value (from -2**30 to 2**30 - 1)")
+            return (cast(int, v) << 1 | 1) & M32
+        n = self.extern_ids.get(id(v))
+        if n is None:
+            if len(self.externs) >= (1 << 30) - 1:  # a host word fits a 4-byte reference field
+                raise MemoryError("too many host references in one store")
             self.externs.append(v)
-            h = self.extern_ids[id(v)] = len(self.externs)
-        return h
+            n = self.extern_ids[id(v)] = len(self.externs)
+        return n << 2 | 2
 
-    def from_raw(self, t: Any, r: int) -> object:
+    def from_raw(self, h: int, r: int) -> object:
         if not r:
             return None
-        if isextern(t):
-            return self.externs[r - 1]
-        if isexn(t):
+        if h == EXN:
             return self.exnrefs.setdefault(r, ExnRef(r, self))
-        ref = self.funcrefs.get(r)
+        if h == FUNC:
+            ref = self.funcrefs.get(r)
+            if ref is None:
+                ref = self.funcrefs[r] = FuncRef(r, self)
+            return ref
+        if r & 3 == 2:
+            return self.externs[(r >> 2) - 1]
+        if h == ANY and r & 1:
+            v = r >> 1 & 0x7FFFFFFF
+            return v - (v >> 30 << 31)
+        ref = self.gcrefs.get(r)
         if ref is None:
-            ref = self.funcrefs[r] = FuncRef(r, self)
+            if not r & 1 and (self.heap is None or not self.heap.is_object(r)):
+                raise RuntimeError(f"JIT code returned {r:#x}, not a reference of this store")
+            kind = "i31" if r & 1 else self.heap.kind_of(r)
+            ref = self.gcrefs[r] = GcRef(len(self.gc_handles), kind, self)
+            self.gc_handles.append(r)
         return ref
 
 
@@ -585,6 +628,12 @@ class Instance:
             self.ctx[self.layout.import_(i)] = ctypes.cast(cb, ctypes.c_void_p).value or 0
         for i, mem in enumerate(memories):
             mem.bind(self.ctx, self.layout.memory(i))
+        if self.layout.heap:  # the store's GC heap, as the memory after the declared ones (S0013)
+            if st.heap is None:
+                from waboros.targets.jit.common.heap import GcHeap  # (heap imports this module)
+
+                st.heap = GcHeap(store)
+            st.heap.mem.bind(self.ctx, self.layout.memory(self.layout.memories))
         if memories:  # delta, then the memory index if there are several (S0003)
             many = len(memories) > 1
 
@@ -603,9 +652,11 @@ class Instance:
         # instead of the bridge calling address 0 (a subclass replaces the ones it serves)
         missing = HOST(self._host(_no_service, 0, []))
         self.callbacks.append(missing)
-        for j in range(LIBCALLS):
-            if not self.ctx[self.layout.libcall(j)]:
-                self.ctx[self.layout.libcall(j)] = ctypes.cast(missing, ctypes.c_void_p).value or 0
+        words = [self.layout.libcall(j) for j in range(LIBCALLS)]
+        words += [self.layout.service(j) for j in range(self.layout.gcsvc)]
+        for w in words:
+            if not self.ctx[w]:
+                self.ctx[w] = ctypes.cast(missing, ctypes.c_void_p).value or 0
         store.instances.append(self)
 
     def call(self, func_index: int, args: Sequence[Raw]) -> list[Raw]:
@@ -684,9 +735,10 @@ class Instance:
         if tag is None:
             return RuntimeError("JIT code returned status 14 without an exception")
         raw = list((ctypes.c_uint64 * simd.width(tag.params)).from_address(addr + 8))
-        vals = zip(tag.params, simd.join(tag.params, raw), strict=True)
+        hs = hierarchies(tag.module, tag.params)
+        vals = zip(hs, simd.join(tag.params, raw), strict=True)
         t = Trap(TrapCode.UNCAUGHT_EXCEPTION, "thrown Wasm exception")
-        t.exn = (tag, tuple(st.from_raw(p, v) if isref(p) else v for p, v in vals))
+        t.exn = (tag, tuple(v if h is None else st.from_raw(h, v) for h, v in vals))
         return t
 
     def _host(self, f: HostFunc, nparams: int, masks: Sequence[int]) -> Callable[[int, int], int]:
@@ -773,15 +825,19 @@ class JitFunc:
         return inst.code.addr + offset, tid, ctypes.addressof(inst.ctx)
 
 
-def _ref_host(st: _StoreStacks, f: HostFunc, ps: Sequence[Any], rs: Sequence[Any]) -> HostFunc:
-    """A host function whose signature has references: they cross as objects (S0002)."""
+def _ref_host(
+    st: _StoreStacks, mod: Any, f: HostFunc, ps: Sequence[Any], rs: Sequence[Any]
+) -> HostFunc:  # fmt: skip
+    """A host function whose signature (in `mod`) has references: they cross as objects (S0002)."""
+
+    hp, hr = hierarchies(mod, ps), hierarchies(mod, rs)
 
     def call(args: Sequence[Raw]) -> list[Raw]:
         objs: list[Any] = [
-            st.from_raw(t, a) if isref(t) else a for t, a in zip(ps, args, strict=True)
+            a if h is None else st.from_raw(h, a) for h, a in zip(hp, args, strict=True)
         ]
         res = f(objs)
-        return [st.to_raw(t, r) if isref(t) else r for t, r in zip(rs, res, strict=True)]
+        return [r if h is None else st.to_raw(h, r) for h, r in zip(hr, res, strict=True)]
 
     return cast(HostFunc, call)
 
@@ -817,6 +873,7 @@ class JitInstance(Instance):
         if c.stackmaps is None:  # every frame of a store must be walkable (S0013 Q5)
             raise ValueError("compiled module has no stack-map table (STACKMAPS); recompile it")
         mod = self.module = c.module
+        self.hier: dict[int, tuple[list[int | None], list[int | None]]] = {}  # call's, per export
         types = mod["types"]
         self.owner = owner
         st = _stacks(store)
@@ -834,7 +891,7 @@ class JitInstance(Instance):
                 f = cast(HostFunc, ext.value)
                 self.hosts.append(f)
                 if any(isref(t) for t in (*ps, *rs)):
-                    f = _ref_host(st, f, ps, rs)
+                    f = _ref_host(st, mod, f, ps, rs)
                 if simd.V128 in (*ps, *rs):
                     f = _v128_host(f, ps, rs)
                 hosts.append((f, simd.width(ps), _masks(rs)))
@@ -855,7 +912,7 @@ class JitInstance(Instance):
                     raise ValueError("tag import belongs to another store")
                 self.tags.append(tag)
         for ti in mod["tags"]:
-            self.tags.append(Tag(types[ti][0], store))
+            self.tags.append(Tag(types[ti][0], store, mod))
         for tag in self.tags:
             st.tags[tag.id] = tag
         for mt in mod["mems"]:
@@ -872,7 +929,11 @@ class JitInstance(Instance):
             for m in memories:  # an i64 memory has no fault point and may move (S0009)
                 if not m.a64:
                     guard.add_reservation(m.res)
+            if lay.heap:
+                guard.add_reservation(st.heap.mem.res)
             st.guard = True
+        for k, ti in enumerate(c.rtts):  # type-info records before any code runs (S0013 3b)
+            ctx[lay.rtt(k)] = st.heap.rtt(mod, ti)
         base = ctypes.addressof(ctx)
         self.records = {f: base + 8 * lay.record(r) for r, f in enumerate(c.records)}
         for f, addr in self.records.items():
@@ -1003,9 +1064,15 @@ class JitInstance(Instance):
         if not any(isref(t) or t == simd.V128 for t in (*ps, *rs)):
             return super().call(func_index, args)
         st = _stacks(self.store)
-        raw = [st.to_raw(t, a) if isref(t) else a for t, a in zip(ps, args, strict=True)]
+        hs = self.hier.get(func_index)
+        if hs is None:
+            hs = self.hier[func_index] = (
+                hierarchies(self.module, ps),
+                hierarchies(self.module, rs),
+            )
+        raw = [a if h is None else st.to_raw(h, a) for h, a in zip(hs[0], args, strict=True)]
         res = simd.join(rs, super().call(func_index, simd.split(ps, raw)))
-        return [st.from_raw(t, r) if isref(t) else r for t, r in zip(rs, res, strict=True)]  # pyright: ignore[reportReturnType]
+        return [r if h is None else st.from_raw(h, r) for h, r in zip(hs[1], res, strict=True)]  # pyright: ignore[reportReturnType]
 
     def export(self, name: str) -> Extern:
         exports: list[tuple[str, int, int]] = self.module["exports"]
@@ -1044,4 +1111,5 @@ class JitInstance(Instance):
     def global_get(self, global_index: int) -> Raw:
         r = self._read_global(global_index)
         t = self.gtypes[global_index]
-        return _stacks(self.store).from_raw(t, r) if isref(t) else r  # pyright: ignore[reportReturnType]
+        h = hierarchies(self.module, [t])[0]
+        return r if h is None else _stacks(self.store).from_raw(h, r)  # pyright: ignore[reportReturnType]

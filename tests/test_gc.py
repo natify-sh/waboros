@@ -303,10 +303,16 @@ def test_a_host_value_for_an_anyref_is_internalized(target: str) -> None:
     assert call(p, "eq") == [0] and call(p, "any") == [1]
     box[0] = -7  # an int is an i31 value
     assert call(p, "i31") == [U32 - 6]
+    box[0] = -(2**30)
+    assert call(p, "i31") == [U32 + 1 - 2**30]
+    for v in (2**30, -(2**30) - 1):  # outside the i31 range: an error, not a wrap (S0013 3b.1)
+        box[0] = v
+        with pytest.raises(ValueError, match="i31"):
+            call(p, "any")
+        with pytest.raises(ValueError, match="i31"):
+            call(p, "echo", v)
     o = object()
-    assert call(p, "echo", o)[0].v is o and call(p, "echo", None) == [
-        None
-    ]  # the box of the runtime
+    assert call(p, "echo", o)[0] is o and call(p, "echo", None) == [None]  # the object itself
 
 
 # ---- allocating constant expressions

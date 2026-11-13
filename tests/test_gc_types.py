@@ -225,6 +225,8 @@ def test_call_indirect_checks_rec_groups_and_finality(
 ) -> None:
     if target_base.TARGETS[target]().probe() is not None:
         pytest.skip(target)
+    if target != "pyc" and "(sub (func" in types:  # refused ("GC types") until the JIT claims gc
+        pytest.skip("a non-final call_indirect type needs the JIT's GC group (S0013 3b.2)")
     store = StoreState()
     a = build(wat2wasm(_A), target=target, store=store)
     text = _CALL.format(types=types, ti=ti, idx=idx)

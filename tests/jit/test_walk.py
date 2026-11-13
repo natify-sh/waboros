@@ -13,6 +13,7 @@ import pytest
 from tests.jit import native, native_jit
 from tests.jit.test_compiler import Inst, wat
 from waboros.frontend.binary import parse
+from waboros.frontend.types import EXTERN
 from waboros.frontend.validate import validate
 from waboros.runtime import link
 from waboros.runtime.store import StoreState
@@ -162,7 +163,8 @@ def test_reference_slots_are_checked(checks: list[int]) -> None:
       (local.get $x) (drop (call $h (i32.const 1)))))""", store, {"env": {"h": host}})  # fmt: skip
     assert jit("f", 0) == [0]  # null: valid
     st = _stacks(store)
-    h = st.to_raw(0x6F, object())
+    h = st.to_raw(EXTERN, object())
+    assert h & 3 == 2  # a host value: (h << 2) | 2 (S0013 3b)
     assert jit.inst.call(0 + 1, [h]) == [h] and hits == [1, 1]  # type: ignore[attr-defined]
 
 

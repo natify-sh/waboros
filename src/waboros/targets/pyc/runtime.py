@@ -2,7 +2,7 @@
 """Runtime helpers imported by generated `pyc` modules (D18); ported from the poc/w2py.py prelude."""
 
 import struct as _st, math as _m, os as _os
-from waboros.targets.base import Trap, TrapCode
+from waboros.targets.base import ALLOC_LIMIT, Trap, TrapCode
 
 TYPE_CHECKING = False  # `typing` does not exist on MicroPython: the annotations are strings
 if TYPE_CHECKING:
@@ -359,10 +359,7 @@ def _taoob() -> "NoReturn":
     raise Trap(TrapCode.ARRAY_OUT_OF_BOUNDS, "out of bounds array access")
 
 
-# the largest array length that does not trap ALLOCATION_TOO_LARGE, by element size in bytes
-# (a reference is 4): Wasmtime 50.0.1, found by bisection (docs/specs/S0013-gc.md, Changes 2026-11-11);
-# the bytes of header (44, 48 for 8- and 16-byte elements: alignment) plus the elements fit in 32 bits
-_ALIM = {1: 4294967251, 2: 2147483625, 4: 1073741812, 8: 536870905, 16: 268435452}
+_ALIM = ALLOC_LIMIT  # by element size in bytes, a reference 4 (targets/base.py)
 
 
 def _aalloc(rt, v, n, sz):

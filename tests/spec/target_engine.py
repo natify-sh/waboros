@@ -104,8 +104,8 @@ def _from_raw(mod: base.ValidModule, ty: Any, r: Any) -> Value:
         if hierarchy == EXTERN:  # a host value, or a GC value boxed by extern.convert_any
             return OpaqueRef("extern") if r.__class__ is _pyc._Ext else cast(Value, r)
         if hierarchy == ANY and r is not None:
-            if r.__class__ is _pyc._Host:
-                return HostRef(r.v.n)
+            if isinstance(r, ExternRef):  # a host value: the object itself (S0013 3b.1)
+                return HostRef(r.n)
             return OpaqueRef("i31" if r.__class__ is int else r[0].kind)
         return None if r is None else FuncRef(r)
     if ty in (I32, I64):

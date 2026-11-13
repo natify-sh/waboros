@@ -101,7 +101,7 @@ def walk(store: Any, st: Any, tramp: Any) -> list[tuple[list[Frame], int]]:
 def check(store: Any, st: Any, tramp: Any, slots: int) -> None:
     """At a host call (check mode): the record was written for this call, the walk crosses exactly
     the active entries, each segment ends at the frame the runtime gave its entry, and every
-    marked slot holds a valid reference word (0 or a live externref handle)."""
+    marked slot holds a valid reference word (`valid`)."""
     sp, _, frame = st.exit
     if not sp or frame > slots:
         raise RuntimeError(f"JIT walk check: exit record not written ({sp:#x}, {frame:#x})")
@@ -110,11 +110,21 @@ def check(store: Any, st: Any, tramp: Any, slots: int) -> None:
     found = [b for _, b in reversed(segments)]
     if found != entries:
         raise RuntimeError(f"JIT walk check: segments at {found}, entries at {entries}")
-    handles = len(st.externs)
     for frames, _ in segments:
         for _, (_, _, _, n, bits), _, base in frames:
             if bits and not st.vstack.addr <= base <= st.vtop - 8 * n:
                 raise RuntimeError(f"JIT walk check: frame base {base:#x} outside the value stack")
             for k in range(n):
-                if bits >> k & 1 and _word(base + 8 * k) > handles:
+                if bits >> k & 1 and not valid(st, _word(base + 8 * k)):
                     raise RuntimeError(f"JIT walk check: slot {k} of {base:#x} not a reference")
+
+
+def valid(st: Any, w: int) -> bool:
+    """`w` is a reference word of the any or extern hierarchy in store `st` (S0013 3b): null, an i31
+    `(v << 1) | 1`, a host value `(h << 2) | 2` with a live handle h, or an object of the heap."""
+    if w == 0:
+        return True
+    if w & 3 == 2:
+        return 1 <= w >> 2 <= len(st.externs)
+    # an i31 or an object only where GC code ran: a store without a heap keeps 3a's check
+    return st.heap is not None and w < 1 << 32 and (w & 1 == 1 or st.heap.is_object(w))

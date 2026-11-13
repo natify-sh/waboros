@@ -42,14 +42,19 @@ _i64_f64 = cast(Callable[[float], int], _rt._i64_f64)
 def _host_any(mod: ValidModule, ty: Any, r: Any) -> Any:
     """A host value for an any-hierarchy type is an anyref as `any.convert_extern` makes it
     (S0013): `None`, an i31 (an int), a GC object (a list led by its runtime type) and a box the
-    runtime made pass as they are."""
+    runtime made pass as they are. An int is an i31 only in [-2**30, 2**30), else `ValueError`, as
+    on the JITs (S0013 3b.1)."""
     if (
         not isref(ty)
         or r is None
-        or r.__class__ in (int, _rt._Host)
+        or r.__class__ is _rt._Host
         or (r.__class__ is list and r and r[0].__class__ is _rt._RTT)
         or top(mod, nn(ty)[1]) != ANY
     ):
+        return r
+    if r.__class__ is int:
+        if not -(1 << 30) <= r < 1 << 30:
+            raise ValueError(f"{r} is not an i31 value (from -2**30 to 2**30 - 1)")
         return r
     return _rt._Host(r)
 
@@ -62,6 +67,10 @@ def _from_raw(ty: Any, r: Any) -> Any:
 
 
 def _to_raw(ty: Any, v: Any) -> Any:
+    """The value `pyc` code uses -> raw; a host value in an anyref is the host object itself, as on
+    the JITs (S0013 3b.1: one interface)."""
+    if v.__class__ is _rt._Host:
+        return v.v
     if _rt.FBITS:
         return v
     return _i32_f32(v) if ty == F32 else _i64_f64(v) if ty == F64 else v

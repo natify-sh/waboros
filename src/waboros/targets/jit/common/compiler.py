@@ -31,6 +31,7 @@ from waboros.targets.jit.common.backend import NEGATE, AddK, Backend, Imm, Opera
 from waboros.targets.jit.common.context import (
     DATA_DROP,
     ELEM_DROP,
+    GC_SERVICES,
     MEMORY_GROW,
     MEMORY_INIT,
     TABLE_GROW,
@@ -144,8 +145,8 @@ def unsupported(mod: ValidModule, ops: frozenset[int]) -> str | None:
     def bad(t: Any) -> str | None:
         return None if vec and t == simd.V128 else type_ok(t, exn)
 
-    if mod.get("gc"):  # types or instructions of the GC proposal (S0013): first, whatever else
-        return "GC types"
+    if not gc.OPS <= ops and gc.uses_gc(mod):  # S0013: first, whatever else; also a module whose
+        return "GC types"  # only GC feature is a non-final type in call_indirect (3b, decision K)
     if not mod.get("validated"):
         return "module not fully validated"
     imps: list[tuple[Any, ...]] = mod["imports"]
@@ -188,6 +189,7 @@ class Compiled:
     flags: int = 0  # artifact header flags: guard.BOUNDS_GUARD | GUARD_LOG2 << 8 (S0006)
     faults: list[tuple[int, int]] = field(default_factory=lambda: [])  # S0006 fault map
     stackmaps: bytes | None = None  # the STACKMAPS section (S0013 3a); None: not instantiable
+    rtts: list[int] = field(default_factory=lambda: [])  # the type of each RTT word (S0013 3b)
 
 
 @dataclass(slots=True)
@@ -246,6 +248,7 @@ def compile_module(mod: ValidModule, b: Backend[Any, Any], target: str) -> Compi
         memories=nmem, tables=len(mod["ttypes"]),
         globals=len(gimps) + len(mod["globals"]), imports=len(fimps), sigs=len(sigs),
         records=len(refd), wide=wide, tags=sum(im[0] == "tag" for im in imps) + len(mod["tags"]),
+        heap=gc.uses_gc(mod), gcsvc=GC_SERVICES if gc.uses_gc(mod) else 0,
     )  # fmt: skip
     m = _Mod(
         b, mod["types"], fimps + mod["funcs"], len(fimps), [b.new_label() for _ in mod["funcs"]],

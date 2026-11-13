@@ -33,6 +33,13 @@ class TrapCode(IntEnum):
     ALLOCATION_TOO_LARGE = 18
 
 
+# GC (S0013): the largest array length that does not trap ALLOCATION_TOO_LARGE, by Wasmtime's
+# element size in bytes (every reference 4): Wasmtime 50.0.1, found by bisection (S0013, Changes
+# 2026-11-11). The header (44 bytes, 48 for 8- and 16-byte elements) and the elements fit in 32
+# bits. Every target traps at these lengths, whatever its own element size.
+ALLOC_LIMIT = {1: 4294967251, 2: 2147483625, 4: 1073741812, 8: 536870905, 16: 268435452}
+
+
 class Trap(Exception):
     """The only trap type of the package."""
 

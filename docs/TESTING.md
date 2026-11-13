@@ -69,9 +69,11 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   record must be written, every return address must be a recorded call site, every stack word read
   must lie between the store's native limit and the thread's stack top, the walk must cross exactly
   the active entries and end each segment at the frame the runtime gave that entry, and every slot
-  the stack maps mark must hold 0 or a word no greater than the number of externref handles. That
-  last test cannot see a wrongly marked i32 slot holding a small integer, nor a missing mark
-  (nothing moves before the collector, S0013 step 5). A failure is a `RuntimeError` raised by the
+  the stack maps mark must hold a reference word: 0, a host value `(h << 2) | 2` with a live handle,
+  and, only in a store with a GC heap, an i31 below 2³² or the offset of a heap object (allocated,
+  8-aligned, its header a type-info record; S0013 step 3b). That last test cannot see a wrongly
+  marked i32 slot holding a small integer, nor a missing mark (nothing moves before the
+  collector, S0013 step 5). A failure is a `RuntimeError` raised by the
   call, so a broken frame layout or table shows up as a spec failure. Off by default: the
   instances then use the same host callbacks as without the switch. Hand-assembled instances
   (`tests/jit/test_abi*.py`, no stack-map table) are never checked. CI runs one spec run per
