@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 
+from tests.jit import native, native_jit
 from tests.watcache import wat2wasm
 from waboros.frontend.binary import parse  # pyright: ignore[reportUnknownVariableType]
 from waboros.frontend.types import ANY, EXTERN
@@ -32,6 +33,13 @@ def mod(text: str) -> Any:
     return m
 
 
+def heap(st: Any) -> GcHeap:
+    """A heap of a store: a reservation through the JIT's memory code, so only where a JIT runs
+    (Pyodide's ctypes cannot pass a 64-bit size to mmap: a fatal error, not an exception)."""
+    native(native_jit())
+    return GcHeap(st)
+
+
 def u32s(h: GcHeap, off: int, n: int) -> list[int]:
     return list(struct.unpack_from(f"<{n}I", ctypes.string_at(h.base + off, 4 * n)))
 
@@ -42,7 +50,7 @@ OTHERPOS = """(module (rec (type $pad (sub (struct (field i32)))) (type $a (sub 
 
 
 def test_records_are_canonical_in_a_store() -> None:
-    h = GcHeap(StoreState())
+    h = heap(StoreState())
     a, same, other = mod(RECA), mod(RECA), mod(OTHERPOS)
     ra, rb = h.rtt(a, 0), h.rtt(a, 1)
     assert (h.rtt(same, 0), h.rtt(same, 1)) == (ra, rb)  # an equivalent rec group: the same records
@@ -59,7 +67,7 @@ def test_record_fields_and_layout() -> None:
     offs, size = gc.struct_layout(m, m["tdefs"][0][0][1])
     assert offs == [8, 16, 24, 32, 40, 44, 48] and size == 64
     assert gc.struct_layout(m, [])[1] == 8  # the header: room for the forwarding word
-    h = GcHeap(StoreState())
+    h = heap(StoreState())
     r = h.rtt(m, 0)
     assert u32s(h, r, 7) == [
         gc.KIND_STRUCT | 1 << 8,
@@ -79,7 +87,7 @@ def test_record_fields_and_layout() -> None:
 def test_display_of_depth_three() -> None:
     m = mod("""(module (type $t0 (sub (struct))) (type $t1 (sub $t0 (struct (field i32))))
       (type $t2 (sub $t1 (struct (field i32) (field i32)))) (type $t3 (sub final $t2 (struct (field i32) (field i32) (field i32)))))""")
-    h = GcHeap(StoreState())
+    h = heap(StoreState())
     r3 = h.rtt(m, 3)  # registers its supertypes first
     rs = [h.rtt(m, i) for i in range(4)]
     assert u32s(h, r3, 8)[1] == 3 and u32s(h, r3, 8)[4:] == rs
@@ -89,7 +97,7 @@ def test_display_of_depth_three() -> None:
 def test_allocation_commits_and_grows(monkeypatch: pytest.MonkeyPatch, poison: bool) -> None:
     if poison:
         monkeypatch.setenv("WABOROS_JIT_GC_POISON", "1")
-    h = GcHeap(StoreState())
+    h = heap(StoreState())
     assert u32s(h, gc.CURSOR, 2) == [gc.OBJ, gc.OBJ] and h.mem.pages == 1  # nothing committed yet
     a = h.alloc(24)
     assert a == gc.OBJ and u32s(h, gc.CURSOR, 2) == [gc.OBJ + 24, gc.OBJ + (1 << 20)]
@@ -105,7 +113,7 @@ def test_allocation_commits_and_grows(monkeypatch: pytest.MonkeyPatch, poison: b
 def test_object_words_for_the_walk_check() -> None:
     st = _stacks(StoreState())
     m = mod(RECA)
-    st.heap = GcHeap(None)
+    st.heap = heap(None)
     o = st.heap.alloc(16)
     ctypes.c_uint32.from_address(st.heap.base + o).value = st.heap.rtt(m, 0)
     st.externs.append(object())
@@ -130,7 +138,7 @@ def test_records_across_many_pages() -> None:
         )
         + ")"
     )
-    h = GcHeap(StoreState())
+    h = heap(StoreState())
     offs = [h.rtt(m, i) for i in range(2000)]
     assert offs[-1] - offs[0] > 5 * 64 << 10 and h.mem.pages << 16 >= h.types
     for i in (0, 1, 999, 1999):
