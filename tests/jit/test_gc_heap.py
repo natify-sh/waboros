@@ -111,6 +111,7 @@ def test_allocation_commits_and_grows(monkeypatch: pytest.MonkeyPatch, poison: b
 
 
 def test_object_words_for_the_walk_check() -> None:
+    native(native_jit())  # the store's JIT stacks are reserved through the same memory code
     st = _stacks(StoreState())
     m = mod(RECA)
     st.heap = heap(None)
