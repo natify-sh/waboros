@@ -21,6 +21,7 @@ from typing import Any
 
 from waboros.frontend.types import key as types_key
 from waboros.frontend.validate import _root  # pyright: ignore[reportPrivateUsage, reportUnknownVariableType]
+from waboros.targets.base import Trap, TrapCode
 from waboros.targets.jit.common import gc
 from waboros.targets.jit.common.instance import Memory
 
@@ -128,9 +129,38 @@ class GcHeap:
         self.u32(o, self.rtt(mod, ti))
         self.u32(o + 4, 0)
         for (st, _), off, v in zip(fields, offs, vals or [0] * len(fields), strict=True):
-            n = gc.storage_size(mod, st)
-            ctypes.memmove(self.base + o + off, (v & ((1 << 8 * n) - 1)).to_bytes(n, "little"), n)
+            self.put(o + off, gc.storage_size(mod, st), v)
         return o
+
+    def put(self, at: int, n: int, v: int) -> None:
+        """The low n bytes of `v` at offset `at`, little-endian."""
+        ctypes.memmove(self.base + at, (v & ((1 << 8 * n) - 1)).to_bytes(n, "little"), n)
+
+    def new_array(self, mod: Any, ti: int, n: int, fill: int = 0, vals: Any = None) -> int:
+        """An array of type `ti`, n elements of `fill` or `vals`; past Wasmtime's bound, a trap."""
+        st = mod["tdefs"][ti][0][1][0]
+        es = gc.storage_size(mod, st)
+        if n > gc.limit(st):
+            raise Trap(TrapCode.ALLOCATION_TOO_LARGE, "allocation size too large")
+        o = self.alloc(-(-(gc.ARRAY_DATA + n * es) // 8) * 8)
+        self.u32(o, self.rtt(mod, ti))
+        self.u32(o + 4, 0)
+        self.u32(o + gc.ARRAY_LEN, n)
+        if vals is None:
+            self.fill(o + gc.ARRAY_DATA, es, fill, n)
+        for k, v in enumerate(vals or ()):
+            self.put(o + gc.ARRAY_DATA + k * es, es, v)
+        return o
+
+    def fill(self, at: int, es: int, v: int, n: int) -> None:
+        """n elements of es bytes, each `v`, from offset `at`: one written, then doubled."""
+        if n:
+            self.put(at, es, v)
+        done = 1
+        while done < n:
+            k = min(done, n - done)
+            ctypes.memmove(self.base + at + done * es, self.base + at, k * es)
+            done += k
 
     def is_object(self, w: int) -> bool:
         """`w` is the offset of an object: in the allocated space, aligned, its header a record."""

@@ -29,7 +29,7 @@ When the pinned wasmtime / wasmtime-py version moves, the API-surface diff and t
 show what is new; the spec commit moves the same way, in small steps.
 
 `FEATURES.md` is generated from the expected-failures files (feature × target) by `tools/features.py`.
-The D25 parity test (`tests/spec/test_runner.py`) requires every JIT to fail what `pyc` fails in the directories both claim, except the JITs' `unsupported: GC types` lines while the JIT does not claim `gc` (S0013 step 2; the exemption goes at steps 3b-4).
+The D25 parity test (`tests/spec/test_runner.py`) requires every JIT to fail what `pyc` fails in the directories both claim, except the JITs' `unsupported: GC types` lines while the JIT does not claim `gc` (S0013 step 2): `jit-x86_64` claims `gc` since S0013 step 3b.3 and is compared whole (no expected failure left, as `pyc`); `jit-aarch64` keeps the exemption until step 4.
 
 ## Development dependencies (never runtime)
 

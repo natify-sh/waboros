@@ -19,21 +19,15 @@ from waboros.targets.base import Trap, TrapCode
 from waboros.targets.pyc import translate
 
 TARGETS = ["pyc", "jit-x86_64"]
-ARRAYS = [  # tests that need array instructions
-    "pyc",
-    pytest.param("jit-x86_64", marks=pytest.mark.skip(reason="arrays on the JIT: S0013 step 3b.3")),
-]
 
 
 @pytest.fixture(autouse=True)
-def _jit(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A JIT parameter runs only where that JIT runs; GC is compiled through WABOROS_JIT_GC=1 until
-    `jit-x86_64` claims it (S0013 step 3b.3)."""
+def _jit(request: pytest.FixtureRequest) -> None:
+    """A JIT parameter runs only where that JIT runs."""
     spec = getattr(request.node, "callspec", None)
     target = spec.params.get("target", "") if spec else ""
     if target.startswith("jit-"):
         native(target)
-        monkeypatch.setenv("WABOROS_JIT_GC", "1")
 
 
 U32 = 0xFFFFFFFF
@@ -51,7 +45,7 @@ def sx(v: int, bits: int) -> int:
 
 
 # ---- every storage type, packed reads
-@pytest.mark.parametrize("target", ARRAYS)
+@pytest.mark.parametrize("target", TARGETS)
 def test_every_storage_type_in_structs_and_arrays(target: str) -> None:
     kinds = [  # (storage type, value type, two constants, their raw form)
         ("i8", "i32", "(i32.const 7)", "(i32.const 250)", 7, 250),
@@ -99,7 +93,7 @@ def test_every_storage_type_in_structs_and_arrays(target: str) -> None:
     assert call(p, "v") == [7] and call(p, "w") == [9] and call(p, "n") == [1]
 
 
-@pytest.mark.parametrize("target", ARRAYS)
+@pytest.mark.parametrize("target", TARGETS)
 def test_packed_fields_and_elements_sign_and_zero_extend(target: str) -> None:
     p = make(
         target,
@@ -186,7 +180,7 @@ def test_casts_follow_canonical_types_across_modules(target: str) -> None:
         ]
 
 
-@pytest.mark.parametrize("target", ARRAYS)
+@pytest.mark.parametrize("target", TARGETS)
 def test_display_depths_and_finality(target: str) -> None:
     types = """(type $t0 (sub (struct))) (type $t1 (sub $t0 (struct (field i32))))
       (type $t2 (sub $t1 (struct (field i32) (field i32)))) (type $t3 (sub final $t2 (struct (field i32) (field i32) (field i32))))
@@ -390,7 +384,7 @@ def test_host_values_are_checked_against_the_parameter_type(target: str) -> None
 
 
 # ---- allocating constant expressions
-@pytest.mark.parametrize("target", ARRAYS)
+@pytest.mark.parametrize("target", TARGETS)
 def test_constant_expressions_allocate(target: str) -> None:
     src = """(module (type $s (struct (field i32) (field (mut i8)))) (type $a (array (mut i16)))
       (global $gs (ref $s) (struct.new $s (i32.const 7) (i32.const 0x1FF)))
@@ -460,7 +454,7 @@ def contents(p: Any, which: int, n: int) -> list[int]:
     return [call(p, "get", which, i)[0] for i in range(n)]
 
 
-@pytest.mark.parametrize("target", ARRAYS)
+@pytest.mark.parametrize("target", TARGETS)
 def test_array_copy_and_fill_with_overlap(target: str) -> None:
     p = make(target, BULK)
     for fn, which, n in (("cp_aa", 1, 7), ("cp_ii", 3, 7)):
@@ -487,7 +481,7 @@ def test_array_copy_and_fill_with_overlap(target: str) -> None:
     assert trap(p, "fill_i", 5, 5, 3) is TrapCode.ARRAY_OUT_OF_BOUNDS and contents(p, 1, 7)[4] == 99
 
 
-@pytest.mark.parametrize("target", ARRAYS)
+@pytest.mark.parametrize("target", TARGETS)
 def test_array_operators_check_the_bound_of_the_right_operand(target: str) -> None:
     p = make(target, BULK)  # A has 7 elements, B 9, the data segment 11 bytes, the elem segment 5
     assert call(p, "len", 1) == [7] and call(p, "len", 0) == [9]
@@ -523,7 +517,7 @@ def test_array_operators_check_the_bound_of_the_right_operand(target: str) -> No
     assert trap(p, "ndata", 0, U32) is TrapCode.MEMORY_OUT_OF_BOUNDS
 
 
-@pytest.mark.parametrize("target", ARRAYS)
+@pytest.mark.parametrize("target", TARGETS)
 def test_trap_order_is_operands_null_bounds_access(target: str) -> None:
     p = make(
         target,
@@ -550,7 +544,7 @@ def test_trap_order_is_operands_null_bounds_access(target: str) -> None:
 
 # ---- the allocation limits (Wasmtime 50.0.1, found by bisection: the header plus the elements fit
 # 32 bits); the largest allowed length would allocate gigabytes, so only the first trap is tested
-@pytest.mark.parametrize("target", ARRAYS)
+@pytest.mark.parametrize("target", TARGETS)
 @pytest.mark.parametrize(
     ("elem", "limit"),
     [("i8", 4294967251), ("i16", 2147483625), ("i32", 1073741812), ("f32", 1073741812),
@@ -615,18 +609,20 @@ def test_a_module_without_gc_has_no_runtime_types() -> None:
 
 
 # ---- instantiation order and deep allocating constant expressions
-@pytest.mark.parametrize("target", ARRAYS)
+@pytest.mark.parametrize("target", TARGETS)
 def test_element_expressions_run_before_any_active_write(target: str) -> None:
     # Wasmtime: every segment's items first (an allocation trap), then the active writes
+    store = StoreState()
     a = make(
         target,
         '(module (table (export "t") 2 funcref) (func (export "isnull") (result i32) (ref.is_null (table.get 0 (i32.const 0)))))',
+        store=store,
     )
     b = """(module (type $a (array i8)) (import "a" "t" (table 2 funcref)) (func $f)
       (elem (table 0) (i32.const 0) func $f)
       (elem anyref (item (array.new_default $a (i32.const -1)))))"""
     with pytest.raises(Trap) as e:
-        make(target, b, {"a": a})
+        make(target, b, {"a": a}, store)
     assert e.value.code is TrapCode.ALLOCATION_TOO_LARGE
     assert call(a, "isnull") == [1]  # the imported table was not written
     with pytest.raises(

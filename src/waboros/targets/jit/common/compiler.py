@@ -720,14 +720,16 @@ class _Func:
         else:
             self.st.pop()
 
-    def service(self, pc: int, j: int, nargs: int, imms: Sequence[int], nres: int) -> None:
+    def service(
+        self, pc: int, j: int, nargs: int, imms: Sequence[int], nres: int, word: int = 0
+    ) -> None:  # fmt: skip
         """A runtime service through the host bridge (D25): its operands, then the immediates,
-        in slots; results replace the operands."""
+        in slots; results replace the operands. Libcall j, or the context word `word` (S0013)."""
         self.flush()
         h0 = len(self.st) - nargs
         for k, v in enumerate(imms):
             self.b.move(Slot(self.L + h0 + nargs + k), Imm(v), True)
-        self.b.call_host(self.f, self.m.layout.libcall(j), self.L + h0)
+        self.b.call_host(self.f, word or self.m.layout.libcall(j), self.L + h0)
         self.maxh = max(self.maxh, h0 + max(nargs + len(imms), nres))
         self.site(pc, 0, h0 + nargs + len(imms), h0 + nargs)  # a service never calls wasm
         del self.st[h0:]

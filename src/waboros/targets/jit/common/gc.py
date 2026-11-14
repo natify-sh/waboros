@@ -13,11 +13,20 @@ from typing import Any
 
 from waboros.frontend import types as T
 from waboros.frontend.validate import _root  # pyright: ignore[reportPrivateUsage, reportUnknownVariableType]
-from waboros.targets.base import TrapCode
+from waboros.targets.base import ALLOC_LIMIT, TrapCode
 from waboros.targets.jit.common import compiler as core
 from waboros.targets.jit.common import simd
 from waboros.targets.jit.common.backend import Imm, Slot
-from waboros.targets.jit.common.context import ALLOC, FUNC_SUBTYPE
+from waboros.targets.jit.common.context import (
+    ALLOC,
+    ARRAY_FILL,
+    ARRAY_INIT_DATA,
+    ARRAY_INIT_ELEM,
+    ARRAY_NEW,
+    ARRAY_NEW_DATA,
+    ARRAY_NEW_ELEM,
+    FUNC_SUBTYPE,
+)
 
 Site = tuple[int, int, int, int, int, int]  # ret, shift, ret_at, up, nslots, bits
 
@@ -126,7 +135,6 @@ def decode(data: bytes) -> dict[int, tuple[int, int, int, int, int]]:
 # service when full, then the code retries from the slots (no reference survives the call, I4).
 # Casts follow the display test of V8's and SpiderMonkey's descriptions: a final type is one compare
 # with its record, a non-final one the display entry at the target's depth.
-STEP_3B2 = frozenset((*range(0xFB00, 0xFB06), *range(0xFB14, 0xFB1F), 0xD3))  # no arrays yet
 
 
 def depth(mod: Any, ti: int) -> int:
@@ -151,14 +159,14 @@ def consts(mod: Any) -> list[Any]:
 
 
 def _targets(mod: Any) -> set[int]:
-    """The type of every allocation and concrete cast target, in code and constants."""
+    """The type of every allocation the code makes inline and every concrete cast target (a
+    constant expression or a service allocates in the runtime, which finds the record itself)."""
     out = {
         ins[1] if ins[0] < 0xFB18 else ins[4]
         for body in mod.get("insns") or ()
         for ins in body
-        if 0xFB00 <= ins[0] <= 0xFB01 or 0xFB14 <= ins[0] <= 0xFB19
+        if ins[0] in (0xFB00, 0xFB01, 0xFB06, 0xFB07, 0xFB08) or 0xFB14 <= ins[0] <= 0xFB19
     }
-    out |= {e[1][1] for e in consts(mod) if e[0] == "gc" and e[1][0] <= 0xFB01}
     return {t for t in out if t >= 0}
 
 
@@ -421,8 +429,124 @@ def op(fn: Any, ins: Any, pc: int) -> None:
         x, v = (ops[0], v) if v is not None else (ops[0], ops[1])
         b.null_check(fn.f, x, TrapCode.NULL_REFERENCE)
         _set(fn, st, x, _offset(fn, fields, ins[2]), v)
+    elif o < 0xFB14:
+        array(fn, pc, ins)
     else:
         cast(fn, pc, ins)
+
+
+def limit(st: Any) -> int:
+    """The longest array of storage type `st` that does not trap ALLOCATION_TOO_LARGE: Wasmtime's
+    bound by its element size (every reference 4 bytes), whatever the JIT's own (S0013)."""
+    return ALLOC_LIMIT[_SIZES.get(st, 4)]
+
+
+def _range(fn: Any, a: Any, i: Any, n: Any, log: int, h: int, k: int) -> Slot:
+    """Array `a` non-null (NULL_REFERENCE) and i + n within its length (ARRAY_OUT_OF_BOUNDS, in 64
+    bits: no wrap); scratch slot h + k gets the address of element i, formed in 32 bits."""
+    b, tos, s = fn.b, fn.TOS, scratch(fn, h, k)
+    b.null_check(fn.f, a, TrapCode.NULL_REFERENCE)
+    b.load(fn.f, 4, False, False, tos, a, ARRAY_LEN, _mem(fn), a64=False, lo=0)
+    b.move(s, tos, True)
+    b.binop("add", tos, i, n, True)
+    b.cmp_branch("gt_u", tos, s, trap(fn, TrapCode.ARRAY_OUT_OF_BOUNDS), True)
+    b.binop("shl", tos, i, Imm(log), False)
+    b.binop("add", tos, tos, a, False)
+    b.binop("add", tos, tos, Imm(ARRAY_DATA), False)
+    b.move(s, tos, True)
+    return s
+
+
+def _pad(fn: Any, k: int) -> None:
+    """Stack entry k (a scalar value, in its slot) takes two slots, as a v128 would: the service
+    reads every element value as two words (the entries above move up one)."""
+    for j in range(len(fn.st) - 1, k, -1):
+        fn.b.move(Slot(fn.L + j + 1), Slot(fn.L + j), True)
+    fn.b.move(Slot(fn.L + k + 1), Imm(0), True)
+    fn.st.insert(k + 1, core.SLOTE)
+    fn.maxh = max(fn.maxh, len(fn.st))
+
+
+def array(fn: Any, pc: int, ins: Any) -> None:
+    """Array instructions: allocation, element access and length inline; the bulk operators inline
+    when they are a plain memory_fill / memory_copy on the heap (1-byte fills, every copy), else
+    the GC group's services (S0013 "Services"). Trap order as `pyc` and Wasmtime (LESSONS 102)."""
+    b, f, o, tos, mod = fn.b, fn.f, ins[0], fn.TOS, fn.m.mod
+    if o == 0xFB0F:  # array.len
+        (a,) = take(fn, 1)
+        b.null_check(f, a, TrapCode.NULL_REFERENCE)
+        b.load(f, 4, False, False, tos, a, ARRAY_LEN, _mem(fn), a64=False, lo=0)
+        fn.push((core.TOS, None))
+        return
+    st = mod["tdefs"][ins[1]][0][1][0]
+    es = storage_size(mod, st)
+    log, word = es.bit_length() - 1, fn.m.layout.service
+    if o in (0xFB0B, 0xFB0C, 0xFB0D, 0xFB0E):  # array.get / get_s / get_u / set
+        v = simd._pair(fn) if o == 0xFB0E and st == 0x7B else None  # pyright: ignore[reportPrivateUsage]
+        ops = take(fn, 2 + (o == 0xFB0E and v is None))
+        a, i = ops[0], ops[1]
+        b.null_check(f, a, TrapCode.NULL_REFERENCE)
+        b.load(f, 4, False, False, tos, a, ARRAY_LEN, _mem(fn), a64=False, lo=0)
+        b.cmp_branch("ge_u", i, tos, trap(fn, TrapCode.ARRAY_OUT_OF_BOUNDS), False)
+        b.binop("shl", tos, i, Imm(log), False)  # the address in 32 bits: inside the reservation
+        b.binop("add", tos, tos, a, False)
+        if o == 0xFB0E:
+            _set(fn, st, tos, ARRAY_DATA, v if v is not None else ops[2])
+        else:
+            _field(fn, st, tos, ARRAY_DATA, o == 0xFB0C)
+        return
+    fn.flush()  # the rest are safepoints or bulk operators: every operand in its slot
+    h = len(fn.st)
+    at = [Slot(fn.L + k) for k in range(h)]
+    if o in (0xFB06, 0xFB07) and (o == 0xFB07 or es == 1):  # new_default, new of bytes: inline
+        n, v = at[h - 1], (Imm(0) if o == 0xFB07 else at[h - 2])
+        b.cmp_branch("gt_u", n, Imm(limit(st)), trap(fn, TrapCode.ALLOCATION_TOO_LARGE), True)
+        size, obj, d = scratch(fn, h, 3), scratch(fn, h, 4), scratch(fn, h, 5)
+        b.binop("shl", tos, n, Imm(log), True)
+        b.binop("add", tos, tos, Imm(ARRAY_DATA + 7), True)
+        b.binop("and", tos, tos, Imm(-8 & (1 << 64) - 1), True)
+        b.move(size, tos, True)
+        alloc(fn, pc, ins[1], size, h)
+        b.store(f, 4, tos, ARRAY_LEN, n, _mem(fn), a64=False, lo=0)
+        b.move(obj, tos, True)
+        b.binop("add", tos, tos, Imm(ARRAY_DATA), False)
+        b.move(d, tos, True)
+        b.binop("shl", tos, n, Imm(log), True)
+        b.move(size, tos, True)  # every element written, defaults included (S0013 Q2)
+        b.memory_fill(f, d, v, size, _mem(fn), a64=False)
+        b.move(tos, obj, True)
+        del fn.st[h - (2 if o == 0xFB06 else 1) :]
+        fn.push((core.TOS, None))
+    elif o == 0xFB08:  # array.new_fixed: N values from their slots
+        nslots = ins[2] * (1 + (st == 0x7B))
+        alloc(fn, pc, ins[1], Imm(-(-(ARRAY_DATA + ins[2] * es) // 8) * 8), h)
+        b.store(f, 4, tos, ARRAY_LEN, Imm(ins[2]), _mem(fn), a64=False, lo=0)
+        for k in range(ins[2]):
+            _set(fn, st, tos, ARRAY_DATA + k * es, at[h - nslots + k * (1 + (st == 0x7B))])
+        del fn.st[h - nslots :]
+        fn.push((core.TOS, None))
+    elif o == 0xFB10 and es == 1:  # array.fill of bytes: memory_fill after the checks
+        a, i, v, n = at[h - 4 :]
+        d = _range(fn, a, i, n, 0, h, 0)
+        b.memory_fill(f, d, v, n, _mem(fn), a64=False)
+        del fn.st[h - 4 :]
+    elif o == 0xFB11:  # array.copy: dst null, dst range, src null, src range, then memmove
+        da, di, sa, si, n = at[h - 5 :]
+        d, s_ = _range(fn, da, di, n, log, h, 0), _range(fn, sa, si, n, log, h, 1)
+        b.binop("shl", tos, n, Imm(log), True)
+        nb = scratch(fn, h, 2)
+        b.move(nb, tos, True)
+        b.memory_copy(f, d, s_, nb, _mem(fn), _mem(fn), a64=(False, False))
+        del fn.st[h - 5 :]
+    elif o in (0xFB06, 0xFB10):  # array.new, array.fill of wider elements: a service
+        if st != 0x7B:
+            _pad(fn, h - 2)  # the value: two words
+        j, nargs = (ARRAY_NEW, 3) if o == 0xFB06 else (ARRAY_FILL, 5)
+        fn.service(pc, j, nargs, [ins[1]], o == 0xFB06, word(j))
+    else:  # new_data, new_elem (offset, n); init_data, init_elem (array, d, s, n): services
+        j = {0xFB09: ARRAY_NEW_DATA, 0xFB0A: ARRAY_NEW_ELEM, 0xFB12: ARRAY_INIT_DATA}.get(o)
+        j = ARRAY_INIT_ELEM if j is None else j
+        fn.service(pc, j, 2 if o < 0xFB12 else 4, [ins[1], ins[2]], o < 0xFB12, word(j))
 
 
 def call_open(fn: Any, ti: int, table: int, pc: int, tail: bool) -> None:

@@ -10,7 +10,6 @@ Every method that compares emits only `mov` between the `cmp` and its consumer (
 Everything here is x86-64-v1 (D24): bsr/bsf with an explicit zero case, popcnt by SWAR.
 """
 
-import os
 import struct
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -90,7 +89,7 @@ def _imm32(o: Operand, wide: bool) -> int | None:
 class Backend:
     pool = POOL
     tos = RAX
-    supported = SUPPORTED | v128.SUPPORTED | frozenset(WIDEOPS) | EXN
+    supported = SUPPORTED | v128.SUPPORTED | frozenset(WIDEOPS) | EXN | gc.OPS  # GC: S0013
 
     def __init__(self, check_align: bool = False, *, guard: bool = False) -> None:
         self.a = Asm()
@@ -101,8 +100,6 @@ class Backend:
         self._faults: list[tuple[int, Label]] = []
         self._oob: Label | None = None  # the stub of the unchecked access `_bounds` just formed
         self.sites: list[tuple[int, int, int]] = []  # (ret, ret_at, up) per call (S0013 3a)
-        if os.environ.get("WABOROS_JIT_GC") == "1":  # S0013 3b.2 only: GC before the claim (3b.3)
-            self.supported = Backend.supported | gc.STEP_3B2
 
     # ---------------------------------------------------------------- labels, frames, traps
     def new_label(self) -> Label:

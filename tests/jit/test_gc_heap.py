@@ -192,12 +192,11 @@ NONFINAL = """(module (type $f (sub (func (result i32)))) (table 1 funcref)
   (func (export "go") (result i32) (call_indirect (type $f) (i32.const 0))))"""
 
 
-def test_a_non_final_call_indirect_type_needs_gc(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("WABOROS_JIT_GC", raising=False)  # the 3b.2 switch lets x86-64 compile GC
+def test_a_non_final_call_indirect_type_needs_gc() -> None:
     m = mod(NONFINAL)
     assert gc.uses_gc(m) and not gc.uses_gc(mod("(module (type $f (sub (func))))"))
-    for name in ("jit-x86_64", "jit-aarch64"):  # neither claims gc yet (decision K)
-        assert base.TARGETS[name]().supports(m) == "GC types"
+    assert base.TARGETS["jit-x86_64"]().supports(m) is None  # claims gc (S0013 step 3b.3)
+    assert base.TARGETS["jit-aarch64"]().supports(m) == "GC types"  # until step 4 (decision K)
 
 
 @pytest.mark.parametrize("name", JITS)
@@ -225,10 +224,9 @@ def test_host_values_cross_as_tagged_words(name: str) -> None:
         st.from_raw(ANY, 64)  # an untagged word with no heap (or no object there)
 
 
-# ---- compiled GC code (S0013 step 3b.2: jit-x86_64 behind WABOROS_JIT_GC=1 until it claims gc)
+# ---- compiled GC code (S0013 step 3b)
 def gc_jit(monkeypatch: pytest.MonkeyPatch, bounds: str = "guard") -> Any:
     native("jit-x86_64")
-    monkeypatch.setenv("WABOROS_JIT_GC", "1")
     monkeypatch.setenv("WABOROS_JIT_BOUNDS", bounds)
     return base.TARGETS["jit-x86_64"]()
 

@@ -36,12 +36,18 @@ from waboros.frontend.types import key as types_key
 from waboros.runtime.link import LinkError
 from waboros.runtime.store import StoreState
 from waboros.targets.base import Extern, HostError, HostFunc, Raw, Trap, TrapCode
-from waboros.targets.jit.common import guard, simd, walk
+from waboros.targets.jit.common import gc, guard, simd, walk
 from waboros.targets.jit.common.compiler import I64, M32, M64, NARROW, Compiled
 from waboros.targets.jit.common.context import (
     ALLOC,
     ARENA_CURSOR,
     ARENA_LIMIT,
+    ARRAY_FILL,
+    ARRAY_INIT_DATA,
+    ARRAY_INIT_ELEM,
+    ARRAY_NEW,
+    ARRAY_NEW_DATA,
+    ARRAY_NEW_ELEM,
     DATA_DROP,
     ELEM_DROP,
     EXCEPTION,
@@ -1067,6 +1073,9 @@ class JitInstance(Instance):
             self.callbacks.append(cb)
             ctx[lay.libcall(j)] = ctypes.cast(cb, ctypes.c_void_p).value or 0
         gcs = [(ALLOC, self._alloc, 1, 0), (FUNC_SUBTYPE, self._func_subtype, 2, 1)]
+        gcs += [(ARRAY_NEW, self._array_new, 4, 1), (ARRAY_NEW_DATA, self._array_data, 4, 1)]
+        gcs += [(ARRAY_NEW_ELEM, self._array_elem, 4, 1), (ARRAY_FILL, self._array_fill, 6, 0)]
+        gcs += [(ARRAY_INIT_DATA, self._init_data, 6, 0), (ARRAY_INIT_ELEM, self._init_elem, 6, 0)]
         for j, fn, nargs, nres in gcs if lay.gcsvc else ():  # the GC group (S0013)
             cb = HOST(self._host(fn, nargs, [M64] * nres))
             self.callbacks.append(cb)
@@ -1122,8 +1131,14 @@ class JitInstance(Instance):
                 vals[id(n)] = (a[0] << 1 | 1) & M32
             elif o in (0xFB1A, 0xFB1B):
                 vals[id(n)] = a[0]
-            else:  # struct.new, struct.new_default (arrays: step 3b.3)
+            elif o in (0xFB00, 0xFB01):  # struct.new, struct.new_default
                 vals[id(n)] = _stacks(self.store).heap.new_struct(self.module, n[1][1], a or None)
+            else:  # array.new (value, n), array.new_default (n), array.new_fixed (values)
+                heap, ti = _stacks(self.store).heap, n[1][1]
+                if o == 0xFB08:
+                    vals[id(n)] = heap.new_array(self.module, ti, len(a), vals=a)
+                else:
+                    vals[id(n)] = heap.new_array(self.module, ti, a[-1], a[0] if o == 0xFB06 else 0)
         return vals[id(e)]
 
     # the GC group's services (S0013): arguments as the compiler put them in the slots
@@ -1132,6 +1147,63 @@ class JitInstance(Instance):
         heap = _stacks(self.store).heap
         if heap.cursor + a[0] > heap.limit:
             heap.grow(a[0])
+        return []
+
+    def _array_new(self, a: Sequence[Raw]) -> list[Raw]:  # (value low, high, n) + type
+        return [_stacks(self.store).heap.new_array(self.module, a[3], a[2], a[0] | a[1] << 64)]
+
+    def _array_data(self, a: Sequence[Raw]) -> list[Raw]:
+        """(offset, n) + type, segment: the segment's bounds first (Wasmtime, LESSONS 102)."""
+        o, n, ti, seg = a
+        heap, data, es = _stacks(self.store).heap, self.datas[seg], self._es(ti)
+        if o + n * es > len(data):
+            raise Trap(TrapCode.MEMORY_OUT_OF_BOUNDS, "out of bounds memory access")
+        r = heap.new_array(self.module, ti, n)
+        ctypes.memmove(heap.base + r + gc.ARRAY_DATA, data[o : o + n * es], n * es)
+        return [r]
+
+    def _array_elem(self, a: Sequence[Raw]) -> list[Raw]:
+        o, n, ti, seg = a  # (offset, n) + type, segment
+        if o + n > len(self.elems[seg]):
+            raise Trap(TrapCode.TABLE_OUT_OF_BOUNDS, "out of bounds table access")
+        heap = _stacks(self.store).heap
+        return [heap.new_array(self.module, ti, n, vals=self.elems[seg][o : o + n])]
+
+    def _range(self, r: int, i: int, n: int, ti: int) -> tuple[Any, int]:
+        """(heap, element size) after array `r`'s null and range checks, in that order."""
+        heap = _stacks(self.store).heap
+        if not r:
+            raise Trap(TrapCode.NULL_REFERENCE, "null array reference")
+        if i + n > heap.u32(r + gc.ARRAY_LEN):
+            raise Trap(TrapCode.ARRAY_OUT_OF_BOUNDS, "out of bounds array access")
+        return heap, self._es(ti)
+
+    def _es(self, ti: int) -> int:  # the element size of array type ti in the heap
+        return gc.storage_size(self.module, self.module["tdefs"][ti][0][1][0])
+
+    def _array_fill(self, a: Sequence[Raw]) -> list[Raw]:
+        r, i, lo, hi, n, ti = a  # (array, i, value low, high, n) + type
+        heap, es = self._range(r, i, n, ti)
+        heap.fill(r + gc.ARRAY_DATA + i * es, es, lo | hi << 64, n)
+        return []
+
+    def _init_data(self, a: Sequence[Raw]) -> list[Raw]:
+        r, d, s, n, ti, seg = a  # (array, d, s, n) + type, segment: array, then segment checks
+        heap, es = self._range(r, d, n, ti)
+        data = self.datas[seg]
+        if s + n * es > len(data):
+            raise Trap(TrapCode.MEMORY_OUT_OF_BOUNDS, "out of bounds memory access")
+        ctypes.memmove(heap.base + r + gc.ARRAY_DATA + d * es, data[s : s + n * es], n * es)
+        return []
+
+    def _init_elem(self, a: Sequence[Raw]) -> list[Raw]:
+        r, d, s, n, ti, seg = a  # (array, d, s, n) + type, segment
+        heap, es = self._range(r, d, n, ti)
+        items = self.elems[seg]
+        if s + n > len(items):
+            raise Trap(TrapCode.TABLE_OUT_OF_BOUNDS, "out of bounds table access")
+        for k, v in enumerate(items[s : s + n]):
+            heap.put(r + gc.ARRAY_DATA + (d + k) * es, es, v)
         return []
 
     def _func_subtype(self, a: Sequence[Raw]) -> list[Raw]:
