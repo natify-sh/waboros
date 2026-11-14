@@ -2,7 +2,7 @@
 title: Lessons
 kind: log
 status: current
-updated: 2026-11-05
+updated: 2026-11-11
 ---
 
 # Lessons
@@ -732,3 +732,74 @@ What went wrong or surprised us while building the PoC, so it is not found again
     personality and libunwind's `Unwind-wasm.c` yourself, plus the tag `__cpp_exception` (an assembly
     `.tagtype` stub); `-mllvm -wasm-use-legacy-eh=false` then selects `try_table`. `zig c++ -S -o -` also
     writes a file named `-`. Found: corpus C++ exceptions, 2026-11-09.
+100. **Wasmtime 50.0.1's C API: `wasmtime_anyref_is_i31` answers true for every anyref; wasmtime-py's
+    `Func.type()` aborts on references.** Measured on an i31, a struct and a host value made by
+    `any.convert_extern`: `is_i31` is true for all three, while `wasmtime_anyref_i31_get_u`'s success
+    flag is right (true only for the i31), as are `_is_struct`, `_is_array`. Separately, `func.type()`
+    and `str(ValType)` abort the process on a concrete reference type; `wasmtime_valtype_new` into a
+    `wasmtime_valtype_t` does not (kind 5 = reference, heap kind 0-1 extern, 2-4 func, 5-12 any,
+    13 up exn). The binding of `is_i31` matches the C header (`bool (wasmtime_context_t*, const
+    wasmtime_anyref_t*)`), and the call leaves a non-normalised value in `rax` (0xb for an i31, 0x10
+    for a struct), so the fault is in the C library, not in wasmtime-py; in the v50 source both
+    functions call `AnyRef::is_i31`. Upstream's answer (2026-11-10): a Rust miscompilation in the
+    toolchain that built 50.x, fixed by a newer toolchain in a later release; their advice is to skip
+    wasmtime-py 50. We keep 50.0.1 with the workaround until a release built with the fixed
+    toolchain is pinned, then drop it. Upstream: [wasmtime#15216](https://github.com/bytecodealliance/wasmtime/issues/15216); the wrapper's gaps (the abort, no `anyref` in `Val`) in [wasmtime-py#283](https://github.com/bytecodealliance/wasmtime-py/issues/283#issuecomment-6770652941). Rule: classify an anyref by `i31_get_u`, never by `is_i31`;
+    read types through `wasmtime_valtype_t`. Found: S0013 step 0, 2026-11-10.
+101. **A canonical key that nests the keys it refers to is a tree with uncached hashes.** The
+    first `types.key` wrote a reference outside the rec group as that type's whole key, so a chain
+    where each type uses the previous one twice has 2**n leaves: every dict lookup (`type_id`, `pyc`
+    signatures) re-hashed the tree (64 s at n=30), and building it recursed once per chain link
+    (`RecursionError` at 250). Rule: reduce a key to a flat value as soon as it is made and refer to
+    that value (groups are keyed in index order, a group refers only to earlier ones or itself);
+    comparison and hashing are then constant, no recursion; and key only the groups
+    the asked type reaches (an explicit stack), not every type up to it: a caller without the
+    module's cache (a fresh dict per call) made that quadratic, 334 s of one test. Prefer a digest (SHA-256 of the flat
+    `repr`) to an interned counter: it is the same in every process (generated code may embed it)
+    and needs no shared state (a counter two threads read at once gives two types one id, 3.15t).
+    Also: `pyc` once compared
+    function types by parameter/result strings, which ignored rec groups and finality; an identity
+    that the language defines (type equivalence) has one function, used by every target. Found:
+    S0013 step 1a review, 2026-11-11.
+102. **The spec suite passes with the wrong order of two traps that have the same kind of cause.**
+    `gc/` passed on `pyc` with `array.copy` checking both nulls before any bound, and with
+    `array.new_data` / `array.new_elem` checking the allocation limit before the segment. One probe
+    of Wasmtime 50.0.1 showed otherwise: the order is destination null, destination bounds, source
+    null, source bounds (a null source with an out-of-range destination is `ARRAY_OUT_OF_BOUNDS`);
+    `array.init_data` / `init_elem` check the array, then the segment; a segment bound comes before
+    the allocation limit (the one `array.wast` case that did fail: `new_elem` of 2³¹ elements from
+    offset 2³¹). Separately, a reference that is unknown in unreachable code (`ref.as_non_null`,
+    `br_on_null`) cannot be the unknown type of a numeric operand: the validator gave the same
+    "any type" marker (`UNKNOWN`) and accepted `(unreachable) (ref.as_non_null) (i32.eqz)`, where
+    Wasmtime rejects 6 of the 30 probed forms. Rule: a rule that is an order or a type sentence is
+    verified by a table of mixed-failure cases run through wasmtime-py (`null` + `out of bounds`,
+    each operand failing alone), not by the spec files; keep the table as a test with the oracle's
+    verdicts written in. Found: S0013 step 2, 2026-11-11.
+103. **CPython frees a deep chain of lists recursively in C; a small C stack (Pyodide) overflows.** A
+    10 000-deep chain of GC structs on `pyc` (each a list holding the next) crashed the Pyodide CI
+    job with a JS `RangeError: Maximum call stack size exceeded` when the cyclic collector freed it
+    in a later test. Reproduced on Linux with `ulimit -s 128`: plain Python freeing `l = [0, l]`
+    3 000 deep segfaults (by refcount or by `gc.collect()`), a chain of `pyc` structs already at 1 000
+    (300 is fine; 1 000 needs 256 KiB), while on the default 8 MiB stack 3
+    million is fine on 3.11, 3.13 and 3.14: the trashcan that bounds this recursion triggers too late
+    for a small stack. So a long linked list of structs on `pyc` can crash a host with a small C
+    stack when it is freed; accepted as a platform limitation (D55). Rule: a test that builds a
+    deep object graph on `pyc` keeps it shallow on emscripten; find such a crash locally with
+    `ulimit -s 128` and `-p no:xdist`. Found: S0013 step 2 CI, 2026-11-11.
+104. **A hand-built context missed the new word, and only a CI tool used it.** S0013 step 3a.2 made
+    every entry trampoline read context word 14 (the store's exit record). The runtime sets it in
+    every context it makes, but `tools/stack_info.py` calls the entry with a zeroed context of its
+    own (to read the stack pointer through the stub), so the entry loaded from address 0 and the
+    tool died with SIGSEGV (exit 139) in three CI steps; no test ran the tool, and the spec suite and
+    `pytest` were green. Found by the reviewer reading every caller of the entry. Rule: when a
+    trampoline starts to rely on a context word, grep for every place that builds a context or
+    calls a trampoline by hand (tools, tests, PoC) and give each the word; a tool that CI runs gets a
+    test that runs it. Found: S0013 step 3a.2 review, 2026-11-11.
+105. **A defence that a correct invariant makes unobservable cannot have a mutation test.** The
+    bridge clears the exit record's `sp` after every host call (S0013), and the plan listed "the
+    bridge does not clear `sp`" as a mutation to be caught. It cannot be: every entry restores the
+    record it found, and the outermost one found 0 (the store's initial value), so outside a host call
+    the record is 0 whether or not the bridge clears it, and inside one it is current. The mutant
+    passed every test, as it must. Rule: before listing a mutation, say which observable result it
+    changes; if none does while the other invariants hold, it is a defence (kept or dropped by
+    decision), not a test target. Found: S0013 step 3a.2, 2026-11-11.

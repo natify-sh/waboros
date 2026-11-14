@@ -10,13 +10,14 @@ Every method that compares emits only `mov` between the `cmp` and its consumer (
 Everything here is x86-64-v1 (D24): bsr/bsf with an explicit zero case, popcnt by SWAR.
 """
 
+import os
 import struct
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import cast
 
 from waboros.targets.base import TrapCode
-from waboros.targets.jit.common import lower
+from waboros.targets.jit.common import gc, lower
 from waboros.targets.jit.common.backend import NEGATE, SWAP, AddK, Dst, Imm, Operand, Reg, Slot
 from waboros.targets.jit.common.compiler import EXN, SUPPORTED, WIDEOPS
 from waboros.targets.jit.common.context import (
@@ -99,6 +100,9 @@ class Backend:
         self.faults: list[tuple[int, int]] = []  # (fault offset, resume offset), by `finish`
         self._faults: list[tuple[int, Label]] = []
         self._oob: Label | None = None  # the stub of the unchecked access `_bounds` just formed
+        self.sites: list[tuple[int, int, int]] = []  # (ret, ret_at, up) per call (S0013 3a)
+        if os.environ.get("WABOROS_JIT_GC") == "1":  # S0013 3b.2 only: GC before the claim (3b.3)
+            self.supported = Backend.supported | gc.STEP_3B2
 
     # ---------------------------------------------------------------- labels, frames, traps
     def new_label(self) -> Label:
@@ -1146,6 +1150,11 @@ class Backend:
             self.a.jcc("ne", misaligned or self._stub(cast(Frame, f), STATUS_MISALIGNED))
         self.a.call(target)
 
+    def _site(self, ret_at: int) -> None:
+        """Record the call just emitted: the return address's offset, and where this frame's
+        own return address is (`ret_at`) and the caller's rsp (`up`), from rsp at the call."""
+        self.sites.append((len(self.a.buf), ret_at, ret_at + 8))
+
     def call_direct(self, f: Frame, label: Label, shift_slots: int) -> None:
         """The callee's frame starts `shift_slots` above ours (frame overlap: its arguments are
         our slots there). A non-zero status unwinds this frame too."""
@@ -1153,6 +1162,7 @@ class Backend:
         if shift_slots:
             a.lea(R12, Mem(R12, 8 * shift_slots))
         self._call(f, label)
+        self._site(8 * (len(f.pins) + f.pad))
         if shift_slots:
             a.lea(R12, Mem(R12, -8 * shift_slots))
         a.test(RAX, RAX)
@@ -1192,6 +1202,7 @@ class Backend:
         a.mov(R13, Mem(R15, MEM0), w=True)
         a.mov(R14, Mem(R15, MEM0 + 8), w=True)
         self._call(f, Mem(RDX))
+        self._site(8 * (len(f.pins) + f.pad) + 16)  # r15 and its pad
         a.alu_imm("add", RSP, 8, w=True)
         a.pop(R15)
         a.mov(R13, Mem(R15, MEM0), w=True)
@@ -1288,6 +1299,7 @@ class Backend:
         a.mov_imm(RAX, word)
         bad = a.label()  # no frame here: a misaligned call returns the status itself
         self._call(None, Mem(R15, 8 * HOST_BRIDGE), bad)
+        self._site(8)
         a.alu_imm("add", RSP, 8, w=True)
         a.mov(R13, Mem(R15, MEM0), w=True)  # as a tail-call target it returns to a caller that
         a.mov(R14, Mem(R15, MEM0 + 8), w=True)  # does not reload them (memory.grow may have run)
@@ -1306,6 +1318,7 @@ class Backend:
         a.lea(RDX, Mem(R12, 8 * slot))
         a.mov_imm(RAX, word)
         self._call(f, Mem(R15, 8 * HOST_BRIDGE))
+        self._site(8 * (len(f.pins) + f.pad))
         a.mov(R13, Mem(R15, MEM0), w=True)  # memory.grow may have run
         a.mov(R14, Mem(R15, MEM0 + 8), w=True)
         a.test(RAX, RAX)

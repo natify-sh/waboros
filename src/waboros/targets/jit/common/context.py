@@ -16,7 +16,10 @@ TAIL_SWITCH = 9  # address of the cross-context tail-call trampoline (D30)
 # limit (one arena per store: every context of the store allocates from it), and the service that
 # gives the arena a new chunk, called through the bridge only when the current one is full
 EXCEPTION, EXN_REFILL, ARENA_CURSOR, ARENA_LIMIT = 10, 11, 12, 13
-FIRST_VAR = 16  # words 14-15 are reserved, zero
+# the address of the store's exit record {sp, pc, frame}: written by the bridge at every host
+# call, sp cleared after it, saved and restored by every entry (S0013 3a)
+EXIT_RECORD = 14
+FIRST_VAR = 16  # word 15 is reserved, zero
 
 # Status values returned by the entry, the bridge and every function (0 = success).
 STATUS_INTERRUPT = 12
@@ -27,6 +30,11 @@ STATUS_EXCEPTION = 14  # inside code: an exception is in flight (S0012)
 MEMORY_GROW, TABLE_GROW, TABLE_INIT, ELEM_DROP, MEMORY_INIT, DATA_DROP = range(6)
 LIBCALLS = 6
 RECORD = 3  # words of a function record: code address, canonical type id, context address
+# The GC group (S0013 3b), after the tag words of a module that uses GC: these services, in this
+# order, then one RTT word per type of `Compiled.rtts` (its type-info record's offset in the heap)
+ALLOC, ARRAY_NEW, ARRAY_NEW_DATA, ARRAY_NEW_ELEM, ARRAY_FILL = range(5)
+ARRAY_INIT_DATA, ARRAY_INIT_ELEM, FUNC_SUBTYPE = 5, 6, 7
+GC_SERVICES = 8
 
 
 @dataclass(frozen=True)
@@ -43,21 +51,26 @@ class Layout:
     # without v128 stay as they were (the word numbers in the code show it anyway)
     wide: tuple[int, ...] = field(default=(), repr=False)
     tags: int = field(default=0, repr=False)  # tag identity words after the records (S0012)
+    # GC (S0013 3b), not in the repr (D35 lists): the store's heap as a hidden memory, its two
+    # words right after the declared memories; the GC group's services and RTT words after the tags
+    heap: bool = field(default=False, repr=False)
+    gcsvc: int = field(default=0, repr=False)
+    rtts: int = field(default=0, repr=False)
 
     def memory(self, i: int) -> int:
-        """`base`; `size_bytes` is the next word."""
+        """`base`; `size_bytes` is the next word. i = `memories` is the hidden heap (`heap`)."""
         return FIRST_VAR + 2 * i
 
     def table(self, i: int) -> int:
         """`base` (address of the element words); `size` (elements) is the next word."""
-        return FIRST_VAR + 2 * self.memories + 2 * i
+        return FIRST_VAR + 2 * (self.memories + self.heap) + 2 * i
 
     def global_(self, i: int) -> int:
         """Global i (imports first): its value, or for an imported one the address of it."""
-        return FIRST_VAR + 2 * self.memories + 2 * self.tables + i + sum(w < i for w in self.wide)
+        return self.table(self.tables) + i + sum(w < i for w in self.wide)
 
     def import_(self, i: int) -> int:
-        return FIRST_VAR + 2 * self.memories + 2 * self.tables + self.globals + len(self.wide) + i
+        return self.table(self.tables) + self.globals + len(self.wide) + i
 
     def libcall(self, j: int) -> int:
         return self.import_(self.imports) + j
@@ -71,7 +84,14 @@ class Layout:
     def tag(self, t: int) -> int:
         return self.record(self.records) + t
 
+    def service(self, j: int) -> int:
+        """GC service j (ALLOC, ...), when `gcsvc`."""
+        return self.tag(self.tags) + j
+
+    def rtt(self, k: int) -> int:
+        return self.service(self.gcsvc) + k
+
     @property
     def words(self) -> int:
         # at least memory 0's two words: the entry loads them whether or not the module has a memory
-        return max(self.tag(self.tags), FIRST_VAR + 2)
+        return max(self.rtt(self.rtts), FIRST_VAR + 2)

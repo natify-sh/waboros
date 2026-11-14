@@ -6,7 +6,7 @@ status: implemented
 superseded_by:
 related: [D10, D14, D23, D24, D25, D26, D29, D30, D31, D32, D34, D35, D36, D37, R2, R3, R6, S0002, S0003]
 owner: maintainer
-updated: 2026-11-05
+updated: 2026-11-11
 ---
 
 # S0004 jit-aarch64, the second architecture (phase 4, integer core)
@@ -92,15 +92,18 @@ what our code never uses (`x18`, Apple's 128-byte red zone and variadic and sub-
 Windows unwind data and stack probes). So **one entry, one bridge, one stub, one `tail_switch` serve
 all of them**; the artifact's `ENTRIES` gives the same offset for `aapcs64` and `win-arm64`.
 
-* **Entry** `int32_t entry(x0 = ctx, x1 = frame, x2 = code)`: `bti c`; `stp x29, x30, [sp, #-96]!`;
-  `mov x29, sp`; `stp` x19–x28 (five pairs); `x28 ← x0`, `x27 ← x1`, `ldp x26, x25, [x28, #128]`;
-  `blr x2`; `cbz w0, done`; `str x0, [x28, #8]`
+* **Entry** `int32_t entry(x0 = ctx, x1 = frame, x2 = code)`: `bti c`; `stp x29, x30, [sp, #-128]!`;
+  `mov x29, sp`; `stp` x19–x28 (five pairs); `x28 ← x0`, `x27 ← x1`; the store's exit record (word
+  14) and x27 saved at `[sp, #96]` (S0013 3a); `ldp x26, x25, [x28, #128]`;
+  `blr x2`; the exit record put back; `cbz w0, done`; `str x0, [x28, #8]`
   (`TRAP_CODE`; w0 was written by a 32-bit op, so x0 is zero-extended); restore; `ret`.
 * **Bridge**, reached by wasm code as `ldr x16, [x28, #8*HOST_BRIDGE]; blr x16` with
-  **`x0` = context word of the host function, `x1` = slots**: `bti c`; frame record; save `x2`–`x8`
+  **`x0` = context word of the host function, `x1` = slots**: `bti c`; the exit record `{sp, x30,
+  x27}` written through x10/x11 (S0013 3a); frame record; save `x2`–`x8`
   and `ctx[HOST_ERROR]` (the enclosing call's preset) in 64 bytes; `ctx[HOST_ERROR] ← 13`;
   `ldr x16, [x28, x0, lsl #3]`; `mov x0, x28`; `blr x16`; `ldr w0, [x28, #56]`; put the saved word
-  back; restore; `ret` with the status in `w0` (D34; the C return value is ignored). The call site
+  back (after `sp` of the exit record is cleared); restore; `ret` with the status in `w0` (D34; the
+  C return value is ignored). The call site
   then reloads `x26`/`x25` and does `cbnz w0, unwind`.
 * **Host thunk** (per module, the record target of a host import): `bti c`; frame record;
   `mov x1, x27`; `mov w0, #word`; bridge call; reload `x26`/`x25` (S0003 3e: it returns to callers
@@ -475,3 +478,8 @@ Resolved by the maintainer on 2026-11-01 (see Changes); none open.
 * 2026-11-05: S0012 step 4 (exceptions, D52): the frame's `error` label and the six exception
   methods; the call sites' `cbnz w0` goes to `error` (the epilogue outside a `try_table`, so code
   without one is unchanged). `jit-aarch64` claims `exceptions/`.
+* 2026-11-11 (S0013 step 3a.2, an amendment of v1 without a bump, S0013 Q5): context word 14
+  `EXIT_RECORD`; the bridge writes the store's exit record `{sp, pc, frame}` before the host and
+  clears its `sp` after; the entry keeps the enclosing record and its frame on the native stack
+  during its call and puts the record back (the entry frame 96 → 128 bytes, the block at `[sp + 96, sp + 128)`). Module code is unchanged.
+* 2026-11-11 (S0013 steps 3a.3-3a.4, D56): the runtime walks a store's frames from the exit record by the per-site numbers of the `STACKMAPS` section and the trampolines' points (the entry's return point and its saved block, `tail_switch`'s 16-byte restore frame: the saved context, then the real return address); `WABOROS_JIT_WALK_CHECK=1` checks the walk at every host call. A compiled module without its site table is refused at instantiation (`ValueError`). No change of code or context words beyond step 3a.2's.

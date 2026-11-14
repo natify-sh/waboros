@@ -7,22 +7,22 @@ a valid module would be a wrong kind.
 """
 
 import struct
+from typing import Any
 
 from waboros.frontend import simd
 
 M32, M64 = 0xFFFFFFFF, 0xFFFFFFFFFFFFFFFF
 I32, I64, F32, F64 = 0x7F, 0x7E, 0x7D, 0x7C
-TN = dict.fromkeys((0x70, 0x6F, 0x69, 0x74), "ref") | {
+# nullable reference types of one byte: func extern exn noexn, then the GC abstract heap types
+REFBYTES = (0x70, 0x6F, 0x69, 0x74, 0x6E, 0x6D, 0x6C, 0x6B, 0x6A, 0x71, 0x72, 0x73)
+TN = dict.fromkeys(REFBYTES, "ref") | {
     I32: "i32",
     I64: "i64",
     F32: "f32",
     F64: "f64",
     0x7B: "v128",
 }
-UNSUPPORTED_TYPES = frozenset((0x63, 0x64, 0x6A, 0x6B, 0x6C, 0x6D, 0x6E, 0x71, 0x72, 0x73))
-UNSUPPORTED_OPS = frozenset(
-    (6, 7, 9, 0x18, 0x19, 0xFB, 0xFE)
-)  # 6, 7, 9, 0x18, 0x19: legacy exceptions
+UNSUPPORTED_OPS = frozenset((6, 7, 9, 0x18, 0x19, 0xFE))  # 6, 7, 9, 0x18, 0x19: legacy exceptions
 SIMPLE_OPS = frozenset(
     (0, 1, 5, 0x0A, 0x0B, 0x0F, 0x1A, 0x1B, 0xD1, 0xD3, 0xD4, *range(0x45, 0xC5))
 )
@@ -77,15 +77,17 @@ def _illegal(op):
     raise Malformed("illegal opcode %#x" % op)
 
 
-_NULLABLE = {-16: 0x70, -17: 0x6F, -23: 0x69, -12: 0x74}
+# heap type code (the signed 7-bit value of the byte) -> its one-byte nullable reference type
+NULLABLE = {b - 128: b for b in REFBYTES}
+_HEAP_CODES = frozenset(range(-23, -11))  # func, extern, any, ... exn: the abstract heap types
 
 
 def _reftype(nullable, ht):
-    """(ref null func / extern / exn / noexn) are the bytes 0x70 / 0x6F / 0x69 / 0x74; any other
-    reference type is the tuple (nullable, heap type), the heap type a type index or a negative
-    abstract-type code."""
-    if nullable and ht in _NULLABLE:
-        return _NULLABLE[ht]
+    """(ref null <abstract type>) is the byte of that type (`REFBYTES`); any other reference type
+    is the tuple (nullable, heap type), the heap type a type index or a negative abstract-type
+    code."""
+    if nullable and ht in NULLABLE:
+        return NULLABLE[ht]
     return (int(nullable), ht)
 
 
@@ -141,6 +143,8 @@ class R:
         v = s.s(33)
         if v < 0 and s.p - p > 1:
             raise Malformed("integer representation too long")
+        if v < 0 and v not in _HEAP_CODES:
+            raise Malformed("malformed heap type")
         return v
 
     def name(s):
@@ -148,12 +152,10 @@ class R:
 
     def vt(s, refs=False):
         b = s.u8()
-        if b in (0x70, 0x6F, 0x69, 0x74) or (not refs and b in (I32, I64, F32, F64, 0x7B)):
+        if b in REFBYTES or (not refs and b in (I32, I64, F32, F64, 0x7B)):
             return b
         if b in (0x63, 0x64):  # (ref null? ht)
             return _reftype(b == 0x63, s.ht())
-        if b in UNSUPPORTED_TYPES:
-            raise NotImplementedError("value type %#x" % b)
         raise Malformed("malformed reference type" if refs else "malformed value type")
 
     def mut(s):
@@ -202,6 +204,11 @@ def parse(data):
         maddr=[],  # address type (0x7F / 0x7E) of every memory, imported first (memory64)
         taddr=[],  # address type of every table, imported first (table64)
         tags=[],  # type index of every defined tag (imported tags are in `imports`, first)
+        # per type: (composite, supertype indices (at most one is valid), final, rec group start, rec group end);
+        # composite: ("func", params, results) / ("struct", fields) / ("array", field), a field
+        # (storage type, mutable), storage a value type or 0x78 (i8) / 0x77 (i16). `types` keeps
+        # ([], []) for a struct / array so code that reads every entry as a function type works.
+        tdefs=[],
     )
     datacount = None
     rank = 0
@@ -234,6 +241,22 @@ def parse(data):
                 st.append(("null", r.ht()))
             elif op == 0xFD:
                 st.append(simd.const(r))
+            elif op == 0xFB:  # GC: ("gc", instruction, operand expressions) or not constant
+                ins: Any = _gc(r, r.u())
+                sub = ins[0] - 0xFB00
+                n = {1: 0, 6: 2, 7: 1, 26: 1, 27: 1, 28: 1}.get(sub, -1)  # operands it takes
+                if sub == 8:
+                    n = ins[2]
+                elif sub == 0:
+                    tdefs: Any = mod["tdefs"]
+                    comp: Any = tdefs[ins[1]][0] if ins[1] < len(tdefs) else ()
+                    n = len(comp[1]) if comp[:1] == ("struct",) else -1
+                if 0 <= n <= len(st):
+                    args = st[len(st) - n :]
+                    del st[len(st) - n :]
+                    st.append(("gc", ins, args))
+                else:  # not a constant instruction, or the type does not exist
+                    bad = True
             elif op in (0x6A, 0x6B, 0x6C, 0x7C, 0x7D, 0x7E):  # extended constant expressions
                 if len(st) < 2:
                     bad = True
@@ -269,15 +292,43 @@ def parse(data):
                     )  # tag attribute; the reference interpreter's text
                 mod["tags"].append(r.u())
         elif sid == 1:
-            for _ in range(r.u()):
+
+            def field():
+                st = r.u8() if r.p < r.n and r.b[r.p] in (0x78, 0x77) else r.vt()
+                return st, r.mut()
+
+            def comp():
                 form = r.u8()
-                if form in (0x4E, 0x4F, 0x50, 0x5E, 0x5F):
-                    raise NotImplementedError("rec / sub / struct / array types")
-                if form != 0x60:
+                if form == 0x60:
+                    ps = [r.vt() for _ in range(r.u())]
+                    c = ("func", ps, [r.vt() for _ in range(r.u())])
+                    mod["types"].append((c[1], c[2]))
+                    return c
+                if form not in (0x5E, 0x5F):
                     raise Malformed("malformed function type")
-                ps = [r.vt() for _ in range(r.u())]
-                rs = [r.vt() for _ in range(r.u())]
-                mod["types"].append((ps, rs))
+                mod["types"].append(([], []))
+                return (
+                    ("struct", [field() for _ in range(r.u())])
+                    if form == 0x5F
+                    else ("array", field())
+                )
+
+            def sub():  # [sub | sub final] (supertype index)* comptype; the group is added later
+                form = r.p < r.n and r.b[r.p]
+                if form not in (0x4F, 0x50):
+                    return comp(), (), True
+                r.p += 1
+                sup = tuple(r.u() for _ in range(r.u()))  # more than one: the validator rejects
+                return comp(), sup, form == 0x4F
+
+            for _ in range(r.u()):
+                gs = len(mod["tdefs"])
+                if r.p < r.n and r.b[r.p] == 0x4E:  # rec: a group of subtypes
+                    r.p += 1
+                    group = [sub() for _ in range(r.u())]
+                else:
+                    group = [sub()]
+                mod["tdefs"].extend((c, sp, fin, gs, gs + len(group)) for c, sp, fin in group)
         elif sid == 2:
             for _ in range(r.u()):
                 m, n, k = r.name(), r.name(), r.u8()
@@ -365,8 +416,9 @@ def parse(data):
                 for n, t in groups:
                     locs += [t] * n
                 body = data[r.p : e]
-                if datacount is None and b"\xfc" in body:  # memory.init / data.drop need the count
-                    if any(i[0] in (0xFC08, 0xFC09) for i in decode(body)):
+                if datacount is None and (b"\xfc" in body or b"\xfb" in body):
+                    # memory.init, data.drop, array.new_data, array.init_data need the count
+                    if any(i[0] in (0xFC08, 0xFC09, 0xFB09, 0xFB12) for i in decode(body)):
                         raise Malformed("data count section required")
                 mod["codes"].append((locs, body))
                 r.p = e
@@ -401,6 +453,25 @@ def parse(data):
 
 # ----------------------------------------------------------------------------- instruction decode
 MEMOPS = set(range(0x28, 0x3F))
+# 0xFB sub-opcode -> number of u32 immediates; the heap-type and branch-cast forms are in `_gc`
+GC_IMMS = {**dict(enumerate((1, 1, 2, 2, 2, 2, 1, 1, 2, 2, 2, 1, 1, 1, 1, 0, 1, 2, 2, 2))),
+           **dict.fromkeys(range(26, 31), 0)}  # fmt: skip
+
+
+def _gc(r, sub):
+    """A 0xFB instruction as (0xFB00 + sub, immediates...): type, field, segment and count
+    indices; a heap type for ref.test / ref.cast (+ null); flags, label and two heap types for
+    br_on_cast / br_on_cast_fail (flag bit 0: the source, bit 1: the target is nullable)."""
+    if 20 <= sub <= 23:
+        return (0xFB00 + sub, r.ht())
+    if sub in (24, 25):
+        fl = r.u8()
+        if fl > 3:
+            raise Malformed("malformed cast flags")
+        return (0xFB00 + sub, fl, r.u(), r.ht(), r.ht())
+    if sub not in GC_IMMS:
+        raise Malformed("illegal opcode 0xfb %d" % sub)
+    return (0xFB00 + sub, *[r.u() for _ in range(GC_IMMS[sub])])
 
 
 @_guard
@@ -426,11 +497,7 @@ def decode(body):
             else:
                 idx = r.s(33)
                 if idx < 0:
-                    raise (
-                        NotImplementedError("block type")
-                        if (idx & 0x7F) in UNSUPPORTED_TYPES
-                        else Malformed("malformed block type")
-                    )
+                    raise Malformed("malformed block type")
                 bt = ("idx", idx)
             if op == 0x1F:  # try_table: catch clauses (kind, tag index or None, label)
                 cl = []
@@ -522,6 +589,8 @@ def decode(body):
                 out.append((0xFC00 + sub,))
             else:
                 raise Malformed("illegal opcode 0xfc %d" % sub)
+        elif op == 0xFB:
+            out.append(_gc(r, r.u()))
         elif op == 0xFD:
             out.append(simd.decode(r))
         elif op in SIMPLE_OPS:

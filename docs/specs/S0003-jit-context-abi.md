@@ -6,7 +6,7 @@ status: implemented
 superseded_by:
 related: [D10, D14, D15, D18, D23, D24, R2, R3, R6, S0002]
 owner: maintainer
-updated: 2026-11-05
+updated: 2026-11-11
 ---
 
 # S0003 JIT context ABI and entry (phase 3, x86-64)
@@ -43,7 +43,8 @@ it is not a new format. The runtime side is [S0002](S0002-target-interface.md).
 | 10 | `EXCEPTION` | address of the store's pending-exception word (S0012) |
 | 11 | `EXN_REFILL` | the exception arena's refill service, called through the bridge (S0012) |
 | 12, 13 | `ARENA_CURSOR`, `ARENA_LIMIT` | addresses of the store's arena cursor and limit (S0012) |
-| 14–15 | reserved | zero |
+| 14 | `EXIT_RECORD` | address of the store's exit record `{sp, pc, frame}`: written by the bridge, saved and restored by every entry (S0013) |
+| 15 | reserved | zero |
 | 16 … | memory *i*: `base`, `size_bytes` | memory 0 also in r13/r14; any other read here at each access |
 | … | table *i*: `base`, `size` | element words (record address / extern handle, 0 = null); step 3d |
 | … | global *i*: 1 word | defined: the value; imported: a pointer to the owner's word (same target, S0002) |
@@ -83,15 +84,18 @@ int32_t host (uint64_t *ctx, uint64_t *slots);                     /* imports an
 * **Entry, SysV** (`rdi`, `rsi`, `rdx`): `endbr64`; push `rbx rbp r12–r15` (+ pad to 16); `r15 ← ctx`,
   `r12 ← frame`, `r13/r14 ←` memory 0 words; `call rdx`; if `eax ≠ 0` store it in `ctx[1]`; pop;
   `ret`. **Win64 shape** (`rcx`, `rdx`, `r8`): also push `rsi rdi` (callee-saved there); the same
-  body. The code itself is identical under both (D23).
+  body. The code itself is identical under both (D23). Since S0013 3a the pad is 40 bytes and
+  holds, at `[rsp, rsp + 32)` during the call, the enclosing exit record and the frame; the record
+  is put back right after the call, before the status test.
 * **Bridge**: wasm code sets `eax` = context word index of the import or libcall, `rdx` = slot
   pointer of the arguments, then `call [r15 + 8*HOST_BRIDGE]`. SysV bridge: `endbr64`; push the pool
   registers SysV lets a callee clobber (`rsi rdi r8–r11`; all of them, not only the caller's pins:
   frames above keep pins there too, LESSONS 2); push `ctx[HOST_ERROR]` (an enclosing host call's
   preset); `ctx[HOST_ERROR] ← 13`; `rdi ← r15`, `rsi ← rdx`; `call [r15+8*rax]`; `eax ←
   ctx[HOST_ERROR]`; pop it back into the word; pop; `ret` with the status in `eax`. Win64 bridge: saves `r8–r11` only, passes `rcx`/`rdx`, and
-  reserves the 32-byte shadow space. The wasm call site then reloads `r13`/`r14` and does
-  `test eax, eax; jnz unwind`.
+  reserves the 32-byte shadow space. Both write the store's exit record (word 14) through r8/r9
+  after pushing them, and clear its `sp` after the host returns (S0013 3a). The wasm call site then
+  reloads `r13`/`r14` and does `test eax, eax; jnz unwind`.
 
 ## Semantics
 
@@ -392,3 +396,8 @@ uv run pytest tests/jit -k "entry or trap or reentry or host or interrupt or sta
   `cbnz w0` goes to `error`; at a landing pad only w0 (the status) and the pins are live, x27 and
   x28/x26/x25 restored before the test; a pad does `cmp w0, #14; b.ne`, and the clauses re-read
   word 10 into x9-x10. `throw` uses x9-x12 (x16/x17 for offsets no immediate takes).
+* 2026-11-11 (S0013 step 3a.2, an amendment of v1 without a bump, S0013 Q5): context word 14
+  `EXIT_RECORD`; the bridge writes the store's exit record `{sp, pc, frame}` before the host and
+  clears its `sp` after; the entry keeps the enclosing record and its frame on the native stack
+  during its call and puts the record back (x86-64: the pad 8 → 40 bytes, the block at `[rsp, rsp + 32)` in SysV and Win64). Module code is unchanged.
+* 2026-11-11 (S0013 steps 3a.3-3a.4, D56): the runtime walks a store's frames from the exit record by the per-site numbers of the `STACKMAPS` section and the trampolines' points (the entry's return point and its saved block, `tail_switch`'s 16-byte restore frame: the saved context, then the real return address); `WABOROS_JIT_WALK_CHECK=1` checks the walk at every host call. A compiled module without its site table is refused at instantiation (`ValueError`). No change of code or context words beyond step 3a.2's.

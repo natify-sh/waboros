@@ -29,6 +29,7 @@ When the pinned wasmtime / wasmtime-py version moves, the API-surface diff and t
 show what is new; the spec commit moves the same way, in small steps.
 
 `FEATURES.md` is generated from the expected-failures files (feature × target) by `tools/features.py`.
+The D25 parity test (`tests/spec/test_runner.py`) requires every JIT to fail what `pyc` fails in the directories both claim, except the JITs' `unsupported: GC types` lines while the JIT does not claim `gc` (S0013 step 2; the exemption goes at steps 3b-4).
 
 ## Development dependencies (never runtime)
 
@@ -61,6 +62,22 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   of our validator.
 * Expected failures are listed per target in a file in the repo (feature not implemented yet), so
   progress is visible and regressions fail.
+* **The walk check** (`WABOROS_JIT_WALK_CHECK=1`, both JITs, S0013 step 3a): every JIT instance
+  created while it is set serves each of its host calls and libcalls only after walking the store's
+  whole native stack (`jit/common/walk.py`); the exception arena's refill service is checked too
+  when the store's first instance (the one that creates it) was created with the switch. The exit
+  record must be written, every return address must be a recorded call site, every stack word read
+  must lie between the store's native limit and the thread's stack top, the walk must cross exactly
+  the active entries and end each segment at the frame the runtime gave that entry, and every slot
+  the stack maps mark must hold a reference word: 0, a host value `(h << 2) | 2` with a live handle,
+  and, only in a store with a GC heap, an i31 below 2³² or the offset of a heap object (allocated,
+  8-aligned, its header a type-info record; S0013 step 3b). That last test cannot see a wrongly
+  marked i32 slot holding a small integer, nor a missing mark (nothing moves before the
+  collector, S0013 step 5). A failure is a `RuntimeError` raised by the
+  call, so a broken frame layout or table shows up as a spec failure. Off by default: the
+  instances then use the same host callbacks as without the switch. Hand-assembled instances
+  (`tests/jit/test_abi*.py`, no stack-map table) are never checked. CI runs one spec run per
+  architecture with it (below); `tests/jit/test_walk.py` sets it itself.
 
 ## Differential testing
 
@@ -175,7 +192,9 @@ explicitly (guard pages, S0006; the same two in a `python:3.13-alpine` container
 x86-64, `MUSL_GUARD`; the test file runs on the JIT of the machine and skips
 on other hosts, but fails under
 `WABOROS_JIT_REQUIRE=1` when `auto` does not give guard pages), so a regression in the
-verified-row check cannot silently turn guard pages off;
+verified-row check cannot silently turn guard pages off (that `jit-x86_64` guard run, the
+explicit `jit-aarch64` run under QEMU and the guard run of the `arm64` job also set
+`WABOROS_JIT_WALK_CHECK=1`);
 then both ISA gates and the D35 lists of both targets in both bounds modes, named on both hosts);
 `spec` (the spec run on `wasmtime`, `pyc` (also with `WABOROS_PYC_FBITS=1`), `jit-x86_64` in the default mode and with
 `WABOROS_JIT_BOUNDS=explicit`, then `auto` under `no_exec.py`); `arm64`
@@ -214,8 +233,10 @@ child processes in parallel (`--jobs`, default the CPU count); with `--in-proces
 Measured on GitHub runners, one run each (2026-11-09; serial: `ci` run 42715354410, `platforms` 42715354559;
 parallel: 42723969981, 42723969854): `spec` 3:11 → 1:30, `test` 3.13 2:39 → 1:38 (the other CPython cells
 −27…−43 %, PyPy 0:53 → 0:56), `arm64` 6:43 → 4:38, coverage 3:15 → 2:07, cibuildwheel cells −26…−58 %
-(Android and Pyodide, serial: −7 % and −4 %); `jit` 10:48 → 16:28, all of it in its QEMU steps, which did
-not change (runner variance).
+(Android and Pyodide, serial: −7 % and −4 %); `jit` 10:48 → 16:28 and 17:52 (`main` run 42730778821
+with the caches): its native pytest step got faster (0:54 → 0:40), but every QEMU step and both
+`isa_all.py` runs, none of which changed, took about 1.5-1.8× as long in both later runs. Cause not
+established (the runner's CPU is not logged); probably the runner, not the change.
 
 `tests/jit/test_fault_handler.py` checks the emitted fault handlers off their OS: the Darwin and
 Windows offsets against ctypes mirrors of xnu's and the Windows SDK's headers, the Darwin and Windows
@@ -268,7 +289,8 @@ ARMv8.0-A and the `bti` HINTs only (tests: `tests/jit/test_isa_aarch64.py`, plan
 HINT words must fail).
 
 Cross-compilation (D35): `tools/jit_dump.py --target T OUT` writes a sha256 list of the code of every
-spec module and CoreMark. The `jit` job uploads its lists for both targets (artifact `jit-dump-x86`);
+spec module and CoreMark, and from S0013 step 3a a fourth column, the sha256 of its stack maps
+(`STACKMAPS`; code bytes and maps are compared as separate columns). The `jit` job uploads its lists for both targets (artifact `jit-dump-x86`);
 the `arm64` job (Linux) compiles the same modules and `diff`s its lists with them, so code compiled on
 x86-64 and on arm64 is the same bytes both ways.
 

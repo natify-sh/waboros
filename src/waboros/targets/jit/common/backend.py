@@ -59,6 +59,11 @@ class Backend(Protocol[L, F]):
     pool: tuple[int, ...]
     tos: int
     supported: frozenset[int]  # the opcodes this backend compiles (S0004)
+    # D39 amendment (S0013 3a): every method that emits a call (call_*, call_host, host_thunk,
+    # and throw through its refill call) appends (ret, ret_at, up), in code order: the offset
+    # of the return address; the bytes from the stack pointer at the call (before a pushing
+    # `call`) to this frame's own return address, and to the caller's stack pointer at its call
+    sites: list[tuple[int, int, int]]
 
     # frames, traps, labels. A function whose conditional branches do not all reach their
     # targets (func_end returns False) is dropped (`rewind` to its start) and compiled again

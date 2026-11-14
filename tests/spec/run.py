@@ -17,10 +17,12 @@ from tests.spec.claims import CORE, claimed
 from tests.spec.engine import (
     ExternRef,
     FuncRef,
+    HostRef,
     Instance,
     LinkError,
     LoadError,
     Module,
+    OpaqueRef,
     SpecEngine,
     Trap,
     TrapCode,
@@ -75,6 +77,11 @@ TRAP_CODES = {
     "indirect call type mismatch": TrapCode.BAD_SIGNATURE,
     "null function reference": TrapCode.NULL_REFERENCE,
     "null reference": TrapCode.NULL_REFERENCE,
+    "null structure reference": TrapCode.NULL_REFERENCE,
+    "null array reference": TrapCode.NULL_REFERENCE,
+    "null i31 reference": TrapCode.NULL_REFERENCE,
+    "out of bounds array access": TrapCode.ARRAY_OUT_OF_BOUNDS,
+    "cast failure": TrapCode.CAST_FAILURE,
 }
 
 
@@ -93,6 +100,27 @@ NANS = {
     32: (0x7FFFFFFF, 0x7FC00000, 0x7FC00000),
     64: (0x7FFF_FFFF_FFFF_FFFF, 0x7FF8_0000_0000_0000, 0x7FF8_0000_0000_0000),
 }
+
+
+NON_NULL = {  # the expected type of a reference given without a value -> the kinds it accepts
+    "funcref": {"func"},
+    "externref": {"extern"},
+    "i31ref": {"i31"},
+    "structref": {"struct"},
+    "arrayref": {"array"},
+    "eqref": {"i31", "struct", "array"},
+    "anyref": {"i31", "struct", "array", "host"},
+}
+
+
+def _ref_kind(v: Value) -> str | None:
+    if isinstance(v, FuncRef):
+        return "func"
+    if isinstance(v, ExternRef):
+        return "extern"
+    if isinstance(v, HostRef):
+        return "host"
+    return v.kind if isinstance(v, OpaqueRef) else None
 
 
 class Failure(Exception):
@@ -126,6 +154,8 @@ def parse_value(v: Json) -> Value:
         return None
     if t == "externref" and s is not None:
         return None if s == "null" else ExternRef(int(s))
+    if t == "anyref" and s is not None:  # (ref.host N)
+        return HostRef(int(s))
     raise Failure("unsupported value type")
 
 
@@ -157,8 +187,8 @@ def matches(exp: Json, got: Value) -> bool:
             elif _scalar(lt, x) & ((1 << w) - 1) != lane:
                 return False
         return True
-    if t == "funcref" and s is None:
-        return isinstance(got, FuncRef)
+    if s is None and t in NON_NULL:  # a non-null reference, told by its kind only
+        return _ref_kind(got) in NON_NULL[t]
     want = parse_value(exp)
     if isinstance(want, int):
         return type(got) is int and got == want

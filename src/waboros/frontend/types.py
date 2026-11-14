@@ -1,0 +1,203 @@
+# pyright: basic, reportArgumentType=false, reportOptionalMemberAccess=false, reportAttributeAccessIssue=false
+"""Type definitions of a module: canonical keys and subtyping (docs/specs/S0013, "Types in the front
+end"). Reads `mod["tdefs"]` and `mod["types"]` of `frontend.binary.parse`; raises nothing: the
+validator (`validate.py`) checks the type section before any key is asked for.
+
+Ideas from the WebAssembly GC spec (iso-recursive types: a rec group is one unit, a reference
+inside it is relative) and from wasmparser's canonicalisation (types.rs): the key of a type is its
+whole group with in-group references written as positions.
+"""
+
+from hashlib import sha256
+from typing import Any
+
+from waboros.frontend.binary import NULLABLE
+
+FUNC, EXTERN, EXN, NOEXN = -16, -17, -23, -12
+ANY, EQ, I31, STRUCT, ARRAY, NONE = -18, -19, -20, -21, -22, -15
+NOFUNC, NOEXTERN = -13, -14
+
+# heap type -> the abstract heap types above it (itself included); the bottoms sit first
+_ABOVE = {
+    NONE: {NONE, I31, STRUCT, ARRAY, EQ, ANY},
+    I31: {I31, EQ, ANY},
+    STRUCT: {STRUCT, EQ, ANY},
+    ARRAY: {ARRAY, EQ, ANY},
+    EQ: {EQ, ANY},
+    ANY: {ANY},
+    NOFUNC: {NOFUNC, FUNC},
+    FUNC: {FUNC},
+    NOEXTERN: {NOEXTERN, EXTERN},
+    EXTERN: {EXTERN},
+    NOEXN: {NOEXN, EXN},
+    EXN: {EXN},
+}
+_BOTTOM = {"func": NOFUNC, "struct": NONE, "array": NONE}
+_SUPER = {"func": FUNC, "struct": STRUCT, "array": ARRAY}
+# the one-byte nullable reference types as (nullable, heap type)
+_NN = {b: (1, h) for h, b in NULLABLE.items()}
+
+
+def nn(t: Any) -> Any:
+    """(nullable, heap type) of a reference type, `t` itself for any other value type."""
+    return _NN.get(t, t) if t.__class__ is not tuple else t
+
+
+def isref(t: Any) -> bool:
+    return t.__class__ is tuple or t in _NN
+
+
+def key(mod: dict[str, Any], i: int) -> str:
+    """Canonical key of type `i`: a SHA-256 hex digest, equal for equivalent types of any module,
+    the same in every process and on every machine. `mod["tkeys"]` caches them and may be shared
+    by threads (stores instantiating one compiled module): a type is done when its own entry is
+    there, and a group's entries are written after all are computed, so a reader never sees a
+    half group (at worst two threads compute the same values).
+    A rec group (its composite types, supertypes and final flags; a reference inside it is
+    `("rec", position)`, one outside it the digest of that type) is digested together with the
+    position; `repr` of tuples of ints, strings and bools is deterministic. Only the groups a type
+    needs are keyed, earliest first, with an explicit stack: a key is never a nested tree
+    (hashing and comparing stay constant-time) and there is no recursion."""
+    cache = mod.setdefault("tkeys", {})
+    if i in cache:
+        return cache[i]
+    tdefs = mod["tdefs"]
+
+    def outside(gs: int, ge: int) -> set[int]:
+        """The types outside group [gs, ge) that the group refers to (all earlier)."""
+        out: set[int] = set()
+
+        def vt(t):
+            if t.__class__ is tuple and 0 <= t[1] < gs:
+                out.add(t[1])
+
+        for c, sp, _, _, _ in tdefs[gs:ge]:
+            out.update(j for j in sp if j < gs)
+            if c[0] == "func":
+                for t in (*c[1], *c[2]):
+                    vt(t)
+            else:
+                for f in c[1] if c[0] == "struct" else (c[1],):
+                    vt(f[0])
+        return out
+
+    # Only the groups `i` needs, earliest first, with an explicit stack (no recursion).
+    stack = [i]
+    while stack:
+        if stack[-1] in cache:
+            stack.pop()
+            continue
+        gs, ge = tdefs[stack[-1]][3:]
+        missing = [j for j in outside(gs, ge) if j not in cache]
+        if missing:
+            stack.extend(missing)
+            continue
+        stack.pop()
+
+        def ref(t, gs=gs):
+            return ("rec", t - gs) if t >= gs else cache[t]
+
+        def vk(t, ref=ref):
+            return (t[0], ref(t[1])) if t.__class__ is tuple and t[1] >= 0 else t
+
+        def fk(f, vk=vk):
+            return vk(f[0]), f[1]
+
+        def ck(c, vk=vk, fk=fk):
+            if c[0] == "func":
+                return ("func", tuple(map(vk, c[1])), tuple(map(vk, c[2])))
+            return ("struct", tuple(map(fk, c[1]))) if c[0] == "struct" else ("array", fk(c[1]))
+
+        group = repr(tuple((ck(c), tuple(map(ref, sp)), fin) for c, sp, fin, _, _ in tdefs[gs:ge]))
+        h = sha256(group.encode())  # hashed once; each member adds its position (O(G), not G**2)
+        keys = {}
+        for t in range(gs, ge):
+            m = h.copy()
+            m.update(b",%d" % (t - gs))
+            keys[t] = m.hexdigest()
+        cache.update(keys)  # after every member is known: an interrupt leaves no half group
+    return cache[i]
+
+
+def valtype_key(mod: dict[str, Any], t: Any) -> Any:
+    """Structural identity of a value type (`key` of its type index in a reference type)."""
+    return (t[0], key(mod, t[1])) if t.__class__ is tuple and t[1] >= 0 else t
+
+
+def sub_key(mod: dict, a: int, k) -> bool:
+    """Type `a` of `mod` is equivalent to, or declared a subtype (transitively) of, the type whose
+    key is `k`."""
+    while True:
+        if key(mod, a) == k:
+            return True
+        sup = mod["tdefs"][a][1]
+        if not sup:
+            return False
+        a = sup[0]
+
+
+def _kind(mod: dict, i: int) -> str:
+    return mod["tdefs"][i][0][0]
+
+
+_TOP = {NOFUNC: FUNC, NOEXTERN: EXTERN, NOEXN: EXN, FUNC: FUNC, EXTERN: EXTERN, EXN: EXN}
+
+
+def top(mod: dict, h: int) -> int:
+    """The top of heap type `h`'s hierarchy: `FUNC`, `EXTERN`, `EXN` or `ANY`."""
+    if h >= 0:
+        return FUNC if _kind(mod, h) == "func" else ANY
+    return _TOP.get(h, ANY)
+
+
+def _heap(ma: dict, a: int, mb: dict, b: int) -> bool:
+    """Heap type `a` of `ma` is a subtype of heap type `b` of `mb` (the same module, or linking)."""
+    if b >= 0:
+        if a >= 0:
+            return sub_key(ma, a, key(mb, b))
+        return a == _BOTTOM[_kind(mb, b)]
+    if a >= 0:
+        return b in _ABOVE[_SUPER[_kind(ma, a)]]
+    return b in _ABOVE[a]
+
+
+def match(ma: dict, a, b, mb: dict | None = None) -> bool:
+    """Value type `a` (of `ma`) is a subtype of `b` (of `mb`, default `ma`): numeric types are
+    equal, a reference type matches by nullability and heap type."""
+    if a == b and mb is None:
+        return True
+    ra, rb = nn(a), nn(b)
+    if not (ra.__class__ is tuple and rb.__class__ is tuple):
+        return a == b
+    if ra[0] and not rb[0]:
+        return False
+    return _heap(ma, ra[1], mb or ma, rb[1])
+
+
+def match_field(mod: dict, a: tuple, b: tuple) -> bool:
+    """Field `a` is a subtype of field `b`: an immutable field covariantly, a mutable one by
+    equivalence."""
+    if a[1] != b[1]:
+        return False
+    if a[1]:
+        return match(mod, a[0], b[0]) and match(mod, b[0], a[0])
+    return match(mod, a[0], b[0])
+
+
+def match_comp(mod: dict, a: tuple, b: tuple) -> bool:
+    """Composite type `a` extends composite type `b`: a struct with more fields, an array of a
+    matching field, a function contravariant in its parameters, covariant in its results."""
+    if a[0] != b[0]:
+        return False
+    if a[0] == "func":
+        return (
+            len(a[1]) == len(b[1])
+            and len(a[2]) == len(b[2])
+            and all(match(mod, y, x) for x, y in zip(a[1], b[1], strict=True))
+            and all(match(mod, x, y) for x, y in zip(a[2], b[2], strict=True))
+        )
+    if a[0] == "array":
+        return match_field(mod, a[1], b[1])
+    return len(a[1]) >= len(b[1]) and all(
+        match_field(mod, x, y) for x, y in zip(a[1], b[1], strict=False)
+    )

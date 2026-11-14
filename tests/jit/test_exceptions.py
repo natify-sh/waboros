@@ -350,18 +350,24 @@ LOOP = """
 def test_a_throw_runs_no_python() -> None:
     i = build(LOOP)
     i("loop", 10)
-    calls = [0]
 
-    def count(frame: FrameType, event: str, arg: object) -> None:
-        if event == "call":
-            calls[0] += 1
+    def calls(n: int) -> int:
+        c = [0]
 
-    sys.setprofile(count)
-    try:
-        assert i("loop", 2000) == [2000 * 2001 // 2]
-    finally:
-        sys.setprofile(None)
-    assert calls[0] < 50  # the entry's own calls; per throw there would be 2000 or more
+        def count(frame: FrameType, event: str, arg: object) -> None:
+            if event == "call":
+                c[0] += 1
+
+        sys.setprofile(count)
+        try:
+            assert i("loop", n) == [n * (n + 1) // 2]
+        finally:
+            sys.setprofile(None)
+        return c[0]
+
+    # the entry's own calls are the same for 1 and 2000 throws (their number depends on the
+    # runtime and on a tracer such as coverage); per throw there would be 2000 or more
+    assert calls(2000) - calls(1) < 50
 
 
 def test_the_refill_path(monkeypatch: pytest.MonkeyPatch) -> None:

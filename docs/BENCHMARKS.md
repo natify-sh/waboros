@@ -2,7 +2,7 @@
 title: Benchmarks
 kind: log
 status: current
-updated: 2026-11-05
+updated: 2026-11-11
 ---
 
 # Benchmarks
@@ -1405,7 +1405,7 @@ spread between rounds, so the effect is real on aarch64 too, but smaller than on
 Alignment to 32 is the closest to the rule (CoreMark +1.2…1.4 % at every pad, corpus +0.3…0.7 %), yet `dot`
 loses in explicit mode (0 of 4) and `nearest` in guard mode (0 of 4), for +4.5…6 % code; no alignment is a
 gain over CoreMark, the kernels and the corpus in both modes. By the rule: **not implemented** (the knobs
-stay, off by default); the decision is the maintainer's.
+stay, off by default). Decision (maintainer, 2026-11-10): not implemented, closed for aarch64.
 
 ## Exceptions: the status check after a call (S0012 Q1, 2026-11-05)
 
@@ -1467,3 +1467,42 @@ The two were alternated, three rounds, in one session.
   chain 100 deep is that slow on this machine whether or not it throws.
 * **Memory.** Each throw keeps 8·(1 + payload words) bytes until the store is dropped: 16 bytes
   here. One ctypes object per throw (the plan's first prototype) kept 137 bytes.
+
+## GC safepoints (S0013 step 3a, 2026-11-11)
+
+Step 3a adds a site record per call (data, no instruction), an exit record written by the host
+bridge (8 instructions per host call on x86-64) and saved and restored by every entry (15), and a
+frame walk that runs only with `WABOROS_JIT_WALK_CHECK=1`. Module code is byte-identical (D35 lists
+of both JITs, guard and explicit), so only compile time and the trampolines can change.
+
+Conditions: the dev VM (Intel Xeon @ 2.10 GHz, 4 vCPU), CPython 3.13.17, `jit-x86_64` in guard mode
+(the default) unless named, every process pinned with `taskset -c 2`. "Before" is the tree after
+S0013 step 2 (before 3a.1), "after" the tree after step 3a.3, both run from `git archive` copies, alternated (the order
+swapped every round) in one session, the machine just rebooted (load about 1 from the runs
+themselves). Scratch scripts, not in the tree.
+
+| measurement | rounds | before | after | change |
+|---|---|---|---|---|
+| compile, CoreMark + `hash` + `mono` + `zip`, `jit-x86_64` explicit (ms; median of each process's fastest of 10 compiles) | 30 | 217.5 | 219.8 | paired +0.9 % (slower in 19/30) |
+| the same, `jit-x86_64` guard | 30 | 196.4 | 195.8 | paired +0.3 % (17/30) |
+| the same, `jit-aarch64` explicit (cross-compiled) | 30 | 212.9 | 214.3 | paired −0.5 % (14/30) |
+| the same, `jit-aarch64` guard | 30 | 189.8 | 194.2 | paired +1.1 % (17/30) |
+| bridge round trip to a machine-code host (`mov qword [rdi+56], 0; ret`), 10⁷ calls, best of 7 (ns) | 12 | 4.42 (4.30–6.53) | 5.53 (5.41–8.38) | about +1.1 ns |
+| bare entry: the ctypes call of the entry trampoline on an empty function, 10⁶, best of 7 (ns) | 10 | 577.9 (545.0–631.6) | 554.1 (546.9–667.2) | none measurable (paired −29 ns, slower in 3/10) |
+| host call from a wasm loop to `lambda a: [a[0]]`, 2·10⁵, best of 5 (ns) | 28 | 4 977 | 5 029 | paired +1.0 % (interquartile −2.5 … +7.2 %, 16/28) |
+| libcall loop, `memory.grow 0` (ns) | 28 | 6 133 | 6 276 | paired +4.4 % (−4.1 … +6.9 %, 18/28) |
+| entry from Python, `Instance.call` of an exported `nop`, 10⁵ (ns) | 28 | 7 335 | 7 550 | paired +3.0 % (−3.3 … +5.8 %, 18/28) |
+| CoreMark (`tools/run_coremark_jit.py poc/in/core.wasm`, iterations/s, self-check passed) | 8 | 15 048 (14 039–15 722) | 14 853 (13 921–16 019) | paired −1.3 % (faster in 3/8) |
+
+* **Compile time** stays within the +3 % bound. The per-process median is too noisy on this VM (a
+  tree's own medians spanned 200-320 ms), so each process's fastest compile is compared; a profile
+  puts the new code (`site`, `_site`, `encode`) at 0.2 % of the compile. The step-3a.1 measurement
+  on a loaded VM gave the same picture (−0.2 … +1.8 % on the fastest).
+* **The trampolines** cost about 1.1 ns per host call (machine-code host); the entry's extra
+  instructions are not measurable against the ctypes call. The Python-level loops vary by ±5 %
+  between sessions with no code change: in the same comparison, step 3a.2 measured −1.5 % on host
+  calls and −3 % on entries, step 3a.3 (the walk off) −2.9 % and −0.6 %; their interquartile ranges
+  here straddle zero, so they show no change beyond the spread.
+* **CoreMark** runs the same code bytes; the difference is within the spread.
+* **Section size:** CoreMark 108 sites in 1 736 bytes (5.1 % of its 34 KB of code); every compiled
+  module now carries its table.

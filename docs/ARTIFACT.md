@@ -2,7 +2,7 @@
 title: JIT artifact, ISA levels and the context ABI
 kind: reference
 status: current
-updated: 2026-11-05
+updated: 2026-11-11
 ---
 
 # JIT artifact, ISA levels and the context ABI
@@ -99,7 +99,21 @@ Wasmtime does; see [ARTIFACT-CONTAINER.md](ARTIFACT-CONTAINER.md) (maintainer's 
 | 12 | `TRAPMAP` | code offset ranges → wasm function index + wasm byte offset (for `Trap.frames`); with the guard flag also the fault map, `{fault_offset, resume_offset}` per memory instruction ([S0006](specs/S0006-guard-pages.md), "Artifact"). Neither is written to a file yet |
 | 13 | `RELOCS` | empty in version 1 (code is position-independent); reserved for copy-and-patch |
 | 14 | `WASM` | optional: the original wasm bytes. Its presence makes a **fat** file (below) |
+| 15 | `STACKMAPS` | one record per call site of the code, for the frame walk of the GC (S0013, below). Required: a loader refuses a module without it, since every frame of a store must be walkable |
 | 0xFFFF | `CHECKSUM` | sha256 of everything before it |
+
+**`STACKMAPS`** (S0013 step 3a; added to version 1 without a bump, as no artifact file has been
+written, S0013 Q5). Little-endian: `u32 nsites`; per site, sorted by `ret`: `u32 ret` (the code
+offset of the return address of a call), `u32 shift` (slots from this frame's base to the callee's:
+0 for a host or service call and in a host thunk), `u16 ret_at` (bytes from the stack pointer at the
+call, before x86-64's `call` pushes, to this frame's own return address), `u16 up` (bytes from that
+stack pointer to the caller's stack pointer at its own call), `u32 map` (0: no reference slot; k:
+the k-th map of the pool); then `u32 nmaps` and per map `u32 nslots` and `ceil(nslots / 32)` u32
+words, bit i set when value-stack slot i of the frame (locals first, a v128 two slots) holds a
+reference of the any or extern hierarchy at that site. Equal maps are stored once. Every call site
+has a record, a module without any reference type too (16 bytes per site: CoreMark 108 sites, 1 736
+bytes). The trampolines' own points (the entry's return point and its saved block, `tail_switch`'s
+`restore` frame) are part 3's, not this section's.
 
 Strings are UTF-8 with a u32 length prefix. A loader refuses an artifact whose `magic`,
 `format_version` major, `ctx_abi_version`, `arch` or ISA it does not support — it never "tries".
@@ -155,9 +169,10 @@ the phase-3 meaning of each word and the register roles are in [S0003](specs/S00
 | 10 | `EXCEPTION` | host → code | address of the store's pending-exception word: the exnref of the exception in flight, valid only while status 14 propagates (S0012) |
 | 11 | `EXN_REFILL` | host → code | the exception arena's refill service (a host function, signature below; S0012) |
 | 12, 13 | `ARENA_CURSOR`, `ARENA_LIMIT` | host → code | addresses of the store's arena cursor (next free byte) and limit (end of the current chunk); code advances the cursor (S0012) |
-| 14–15 | reserved | | zero |
+| 14 | `EXIT_RECORD` | host → code | address of the store's exit record `{sp, pc, frame}` of the innermost host call: the bridge writes it before the host runs (the calling frame's stack pointer at its call, the return address, the frame register) and clears `sp` after; every entry keeps the enclosing record and its frame on the native stack during its call and puts the record back (S0013; an amendment of v1 without a bump, Q5) |
+| 15 | reserved | | zero |
 | 16 … | per memory *i*: `base`, `size_bytes` (2 words) | host ↔ code | imported memories first; an i32 memory's base never moves (4 GiB + 32 MiB reserved, committed on grow; S0006); an i64 memory's base and `size_bytes` may both change during any host call or libcall (a `memory.grow` that moves it; D50, S0009: an amendment of v1 without a bump), so code keeps neither across a call: code that keeps a memory in registers (x86-64: memory 0 in r13/r14; aarch64: x26/x25) reloads them after every host call, any other memory is read here at each access |
-| … | per table *i*: `base`, `size` (2 words) | host ↔ code | `base`: the element words (one per element), `size`: elements; `table.grow` may move the elements, so code reads both words at each use and never keeps them across a host call. A `funcref` element (and value) is 0 (null) or the address of a function record (below); an `externref` element is a host handle (0 = null) |
+| … | per table *i*: `base`, `size` (2 words) | host ↔ code | `base`: the element words (one per element), `size`: elements; `table.grow` may move the elements, so code reads both words at each use and never keeps them across a host call. A `funcref` element (and value) is 0 (null) or the address of a function record (below); an `externref` element is 0 (null) or a reference word: a host value is `(h << 2) \| 2`, *h* its 1-based handle in the store (S0013 step 3b; the encoding is the runtime's, no code reads the bits) |
 | … | per global *i*: 1 word (2 for v128) | both | imported globals: a pointer to the owner's word instead |
 | … | per function import *i*: 1 word | host → code | address of a host function (signature below) |
 | … | per libcall *j*: 1 word | host → code | a runtime service, same signature as an import, in a fixed order, all six words in every context: 0 `memory.grow`, 1 `table.grow`, 2 `table.init`, 3 `elem.drop`, 4 `memory.init`, 5 `data.drop`; never computation (D25). The operands are in the slots, the instruction's immediates (table, segment) after them; the memory index of `memory.grow` and `memory.init` only when the module has more than one memory. Operands and results have the address width of the memory or table they name (S0009, an amendment of v1 without a bump, Q4): for an i64 memory the delta, the old size and its failure −1 of `memory.grow` and the destination of `memory.init` are 64-bit values (−1 is `2⁶⁴−1`), for an i32 one they are i32 zero-extended as before; `table.grow` and `table.init` of an i64 table the same way (S0009 step 3) |
@@ -199,7 +214,9 @@ The trampoline (one per process and convention, in the host's code area like the
 following. If that return address is its own `restore` point, it loads the record's context and jumps
 to its code. Otherwise it saves the current context, loads the record's context and memory words, and
 calls the code; at `restore` it puts the saved context back, reloads the memory words and returns the
-callee's status. Every return matches its call.
+callee's status. Every return matches its call. The restore frame is 16 bytes on both
+architectures, the saved context at the stack pointer of the `call`/`blr` and the real return
+address 8 above it; the GC's frame walk steps over it by these numbers (S0013).
 
 **Per architecture** (S0004, D38; an amendment of version 1, which phase 5 fixes): what a host that
 provides the bridge or the tail-call trampoline itself must follow. Everything else in this part is
@@ -210,6 +227,8 @@ the same 64-bit little-endian words for every architecture.
 | bridge call | `eax` = word, `rdx` = slots; `call` | `x0` = word, `x1` = slots; `blr x16` |
 | bridge preserves | pool (`rbx rbp rsi rdi r8–r11`), `r12`–`r15` | `x2`–`x8`, `x19`–`x28`, `x29`, `sp` |
 | `tail_switch` | record in `rdx`, return address at `[rsp]` | record in `x16`, return address in `x30` |
+| exit record (bridge) | `sp` = rsp + 8 at entry (before the `call` pushed), `pc` = `[rsp]`, `frame` = `r12` | `sp` = sp at the `blr`, `pc` = `x30`, `frame` = `x27` |
+| entry's saved block | `[rsp, rsp + 32)` at its `call`: enclosing `{sp, pc, frame}`, then its frame | `[sp + 96, sp + 128)` at its `blr`, the same four words |
 | landing pad | `endbr64` | `bti c` (functions, trampolines), `bti j` (jump-table pads) |
 | `CODE` alignment | none | load address ≡ 0 mod 4096 (`adrp`) |
 | instruction cache | coherent | invalidate the loaded range before the first call |

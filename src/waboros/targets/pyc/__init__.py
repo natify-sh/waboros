@@ -7,7 +7,23 @@ from types import CodeType
 from typing import Any, Literal, cast
 
 from waboros.frontend.binary import F32, F64, parse
-from waboros.frontend.validate import validate, valtype_key
+from waboros.frontend.types import (
+    ANY,
+    EQ,
+    EXN,
+    FUNC,
+    I31,
+    NOEXN,
+    NOEXTERN,
+    NOFUNC,
+    NONE,
+    STRUCT,
+    isref,
+    nn,
+    top,
+)
+from waboros.frontend.types import key as types_key
+from waboros.frontend.validate import validate
 from waboros.runtime.link import LinkError, func_type, global_type
 from waboros.runtime.store import StoreState
 from waboros.targets.base import (
@@ -37,6 +53,57 @@ _i32_f32 = cast(Callable[[float], int], _rt._i32_f32)
 _i64_f64 = cast(Callable[[float], int], _rt._i64_f64)
 
 
+def _host_any(mod: ValidModule, ty: Any, r: Any) -> Any:
+    """A host value for a parameter (or a host function's result) of type `ty`, checked against
+    the type as on the JITs and in Wasmtime (`TypeError`; S0013 3b.2 review): null only if
+    nullable; for the any hierarchy an int is an i31 (in [-2**30, 2**30), else `ValueError`), a GC
+    object (a list led by its runtime type) must be of the type or a subtype, and any other value is
+    an `any` boxed as `any.convert_extern` makes it; a concrete function type takes a function of
+    that type or a subtype."""
+    if not isref(ty):
+        return r
+    null, ht = nn(ty)
+    if r is None:
+        if not null:
+            raise TypeError("null for a non-nullable reference")
+        return r
+    if ht in (NOFUNC, NOEXTERN, NONE, NOEXN):
+        raise TypeError(f"{r!r} for a reference type that holds only null")
+    h = top(mod, ht)
+    if h == FUNC and getattr(r, "s", None) is None:  # a wasm function carries its type key
+        raise TypeError(f"{r!r} is not a function reference")
+    if h == EXN and r.__class__ is not _rt._Thrown:
+        raise TypeError(f"{r!r} is not an exception reference")
+    if h == FUNC and ht >= 0:
+        q, k = getattr(r, "s", None), types_key(mod, ht)
+        t = _rt._RTTS.get(k)  # pyright: ignore[reportPrivateUsage]
+        if q != k and not (t is not None and _rt._fsub(q, t)):  # pyright: ignore[reportPrivateUsage]
+            raise TypeError(f"{r!r} is not a function of the parameter's type")
+    if h != ANY:
+        return r
+    if r.__class__ is _rt._Ext:  # a GC value seen as an externref: itself again
+        r = r.x
+    if r.__class__ is int:
+        if ht not in (ANY, EQ, I31):
+            raise TypeError(f"an i31 ({r}) for a reference type it does not match")
+        if not -(1 << 30) <= r < 1 << 30:
+            raise ValueError(f"{r} is not an i31 value (from -2**30 to 2**30 - 1)")
+        return r
+    if r.__class__ is list and r and r[0].__class__ is _rt._RTT:  # pyright: ignore[reportPrivateUsage]
+        rt = r[0]
+        if ht >= 0:
+            t = _rt._RTTS.get(types_key(mod, ht))  # pyright: ignore[reportPrivateUsage]
+            ok = t is not None and rt.depth >= t.depth and rt.display[t.depth] is t
+        else:
+            ok = ht in (ANY, EQ) or (ht != I31 and (rt.kind == "struct") == (ht == STRUCT))
+        if not ok:
+            raise TypeError(f"{r!r} does not match the parameter's type")
+        return r
+    if ht != ANY:  # a host value is an `any` and nothing below it
+        raise TypeError(f"{r!r} is a host value: only anyref or externref takes it")
+    return r if r.__class__ is _rt._Host else _rt._Host(r)
+
+
 def _from_raw(ty: Any, r: Any) -> Any:
     """Raw -> the value `pyc` code uses: f32/f64 become floats. References pass as they are."""
     if _rt.FBITS:
@@ -45,6 +112,10 @@ def _from_raw(ty: Any, r: Any) -> Any:
 
 
 def _to_raw(ty: Any, v: Any) -> Any:
+    """The value `pyc` code uses -> raw; a host value in an anyref is the host object itself, as on
+    the JITs (S0013 3b.1: one interface)."""
+    if v.__class__ is _rt._Host:
+        return v.v
     if _rt.FBITS:
         return v
     return _i32_f32(v) if ty == F32 else _i64_f64(v) if ty == F64 else v
@@ -126,7 +197,7 @@ class PycInstance:
     def call(self, func_index: int, args: Sequence[Raw]) -> list[Raw]:
         ps, rs = func_type(self.module, func_index)
         name = f"I{func_index}" if func_index < self._nimp() else f"f{func_index}"
-        raw = [_from_raw(t, a) for t, a in zip(ps, args, strict=True)]
+        raw = [_from_raw(t, _host_any(self.module, t, a)) for t, a in zip(ps, args, strict=True)]
         res = _run(self.store, self.ns[name], *raw)
         vals = [] if not rs else [res] if len(rs) == 1 else list(res)
         return [_to_raw(t, v) for t, v in zip(rs, vals, strict=True)]
@@ -152,12 +223,14 @@ class PycInstance:
         return _to_raw(ty, cell.v if cell is not None else self.ns[f"G{global_index}"])
 
 
-def _host_adapter(h: HostFunc, ps: list[int], rs: list[int], sig: str) -> Callable[..., Any]:
+def _host_adapter(
+    mod: ValidModule, h: HostFunc, ps: list[int], rs: list[int], sig: str
+) -> Callable[..., Any]:
     """A `HostFunc` as a function on `pyc` values; `.s` lets it sit in a table."""
 
     def w(*a: Any) -> Any:
         res = h([_to_raw(t, v) for t, v in zip(ps, a, strict=True)])
-        vals = [_from_raw(t, r) for t, r in zip(rs, res, strict=True)]
+        vals = [_from_raw(t, _host_any(mod, t, r)) for t, r in zip(rs, res, strict=True)]
         return None if not rs else vals[0] if len(rs) == 1 else tuple(vals)
 
     w.s = sig  # pyright: ignore[reportFunctionMemberAccess]
@@ -172,7 +245,7 @@ class PycTarget:
         return None
 
     def supports(self, module: ValidModule) -> str | None:
-        return None  # a module the validator does not cover may run: a Python exception is safe
+        return None
 
     def compile(self, module: ValidModule) -> object:
         return _Compiled(module, compile(generate(module), "<waboros-pyc>", "exec", optimize=2))
@@ -194,9 +267,9 @@ class PycTarget:
             if im[0] == "func":
                 if ext.owner is None:
                     ps, rs = c.module["types"][im[3]]
-                    ty = c.module["types"]
-                    sig = ">".join(",".join(str(valtype_key(ty, t)) for t in ts) for ts in (ps, rs))
-                    val = _host_adapter(cast(HostFunc, val), ps, rs, sig)
+                    val = _host_adapter(
+                        c.module, cast(HostFunc, val), ps, rs, types_key(c.module, im[3])
+                    )
             wired.setdefault(im[1], {})[im[2]] = val
         exports = cast(dict[str, Any], _run(store, namespace["instantiate"], wired))
         inst = PycInstance(c, namespace, exports, store)

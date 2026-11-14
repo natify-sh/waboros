@@ -401,6 +401,38 @@ Only explicit levels are valid for another target (`"native"` is the compiling C
 files come in phase 5; from phase 4 CI compares the aarch64 artifact made on x86-64 with the one made
 on the arm64 runner byte for byte. `pyc`/`mpy` artifacts belong to an interpreter version, not a CPU.
 
+## The kernel and runtime modules
+
+The direction (maintainer, 2026-11-10): a small native **kernel** that can do almost nothing, and
+everything else as wasm modules that run inside it and cannot reach past the memory they are given.
+The kernel is what cannot be done otherwise: allocate memory, run machine code, catch a trap, call
+the host (the context ABI, a few services, the bridge and the entry trampolines). The rest is
+runtime modules under D54 ([RUNTIME-MODULES.md](RUNTIME-MODULES.md)): the GC collector first (S0013),
+then instantiation and the segment libcalls, the decoder and validator, later the compilers
+themselves ([JIT-AS-WASM.md](JIT-AS-WASM.md)) and WASI's computing part. A new host (the C loader of
+D36, MicroPython, a host in another language) implements only the kernel; every capability comes
+as bytes, the same for all, written and tested once.
+
+What keeps it honest:
+* **The trusted base is the kernel and the machine-code generator**, not the kernel alone. A module
+  cannot reach outside its memory only if the code it was compiled to is correct; a JIT bug (a wrong
+  bounds check, a clobbered register) breaks isolation for every module at once. The spec suite, the
+  differential fuzz, the byte-identity lists (D35) and the ISA gates are therefore the safety
+  foundation, not only a quality measure. That stays true once the compiler is itself a module.
+* **Bootstrap is a required link**: modules need a compiler, and the compiler becomes a module. The
+  seed is an AOT artifact of the compiler in the wheel ([MICRO-COMPILERS-SHIPPING.md](MICRO-COMPILERS-SHIPPING.md)),
+  with `pyc` as the slowest path that is always there.
+* **The kernel boundary is described and frozen**: the context ABI v1 and the runtime services
+  specification (D36), fixed with the artifact format (ROADMAP "Next" item 6). The whole design
+  rests on that boundary being stable, which is why item 6 comes right after GC.
+* **Hot paths stay inline**: a call into a module costs a few ns, so whatever runs per instruction or
+  per memory access stays in the generated code (RUNTIME-MODULES.md, the criterion).
+
+Prior art for parts of it: RLBox in Firefox (C libraries sandboxed by compiling them to wasm),
+Wasmtime's `wasi_snapshot_preview1` adapter shipped as a wasm module, and self-hosting systems that
+grow from a small core (Forth, Smalltalk). A wasm runtime that grows itself this way from a kernel
+that ports by implementing only its ABI and services is not known to us.
+
 ## Versioned contracts
 
 Everything waboros generates is a derivative of the wasm and is consumed by code that may come from

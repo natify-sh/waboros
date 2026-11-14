@@ -88,8 +88,12 @@ jobs:
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         with: { cache-python: true }  # the managed Pythons too, not only the packages
       - run: uv sync --python 3.13
-      # llvm-mc (encoder check) and objdump/objcopy (ISA check); the tests skip without them.
-      - run: (command -v llvm-mc && command -v llvm-objcopy) || (sudo apt-get update && sudo apt-get install -y llvm binutils)
+      # llvm-mc (encoder check) and objdump/objcopy (ISA check; binutils is in the image).
+      - run: |  # the runner image's own LLVM (installed with its Clang), no apt: Ubuntu's mirrors failed for hours
+          for d in $(ls -d /usr/lib/llvm-*/bin 2>/dev/null | sort -V -r); do
+            if [ -x "$d/llvm-mc" ] && [ -x "$d/llvm-objcopy" ]; then echo "$d" >> "$GITHUB_PATH"; exit 0; fi
+          done
+          echo "no llvm-mc and llvm-objcopy under /usr/lib/llvm-*/bin: the runner image changed" >&2; exit 1
       - run: llvm-mc --version && llvm-objcopy --version | head -1 && objdump --version | head -1
       - run: uv run pytest tests/jit -n auto -v -rs
         env:
@@ -98,7 +102,7 @@ jobs:
       # arm64 runner's CPU has none); about 1.5 min
       - run: sudo apt-get install -y qemu-user libc6-arm64-cross libgcc-s1-arm64-cross
       - run: uv python install cpython-3.13-linux-aarch64-gnu
-      - run: python3 tools/run_arm64.py -m pytest tests/jit/test_abi_aarch64.py tests/jit/test_compiler.py tests/jit/test_compiler_aarch64.py tests/jit/test_tail.py -q
+      - run: python3 tools/run_arm64.py -m pytest tests/jit/test_abi_aarch64.py tests/jit/test_compiler.py tests/jit/test_compiler_aarch64.py tests/jit/test_tail.py tests/jit/test_exit_record.py tests/jit/test_walk.py -q
       # S0005: the v128 boundary tests and the NEON operators (5c, 5e1, 5e2) against pyc, BTI
       # enforced; about 2.5 min. Explicit bounds: QEMU TCG splits a straddling 16-byte store, so
       # guard mode may tear one (accepted, D45; `auto` gives guard in an aarch64 process)
@@ -116,9 +120,11 @@ jobs:
       # and jump tables land on their pads; simd/ since 5e2), in-process under QEMU; about 1 min.
       # Both bounds modes named (S0006 step 2), then the fault tests under QEMU (the subprocess
       # ones skip without binfmt; the arm64 runner runs them natively)
+      # (explicit: also with the frame walk checked at every host call, S0013 3a)
       - run: python3 tools/run_arm64.py -m tests.spec.run --engine jit-aarch64 --in-process
         env:
           WABOROS_JIT_BOUNDS: explicit
+          WABOROS_JIT_WALK_CHECK: "1"
       - run: python3 tools/run_arm64.py -m tests.spec.run --engine jit-aarch64 --in-process
         env:
           WABOROS_JIT_BOUNDS: guard
@@ -129,10 +135,12 @@ jobs:
       # S0006: guard pages, named explicitly although `auto` (the default, D44) gives them here,
       # so a regression in the verified-row check cannot silently turn them off: the spec suite
       # with the fault handler doing the bounds checks, then the fault tests (foreign faults, a
-      # broken chain, two copies of the package)
+      # broken chain, two copies of the package); the frame walk checked at every host call
+      # (S0013 3a)
       - run: uv run python -m tests.spec.run --engine jit-x86_64
         env:
           WABOROS_JIT_BOUNDS: guard
+          WABOROS_JIT_WALK_CHECK: "1"
       - run: uv run pytest tests/jit/test_guard.py -v -rs
         env:
           WABOROS_JIT_BOUNDS: guard
@@ -212,7 +220,11 @@ jobs:
         with: { cache-python: true }  # the managed Pythons too, not only the packages
       - run: uv sync --python 3.13
       # llvm-mc and llvm-objcopy for the encoder tests (WABOROS_JIT_REQUIRE=1 below)
-      - run: (command -v llvm-mc && command -v llvm-objcopy) || (sudo apt-get update && sudo apt-get install -y llvm)
+      - run: |  # the runner image's own LLVM (installed with its Clang), no apt: Ubuntu's mirrors failed for hours
+          for d in $(ls -d /usr/lib/llvm-*/bin 2>/dev/null | sort -V -r); do
+            if [ -x "$d/llvm-mc" ] && [ -x "$d/llvm-objcopy" ]; then echo "$d" >> "$GITHUB_PATH"; exit 0; fi
+          done
+          echo "no llvm-mc and llvm-objcopy under /usr/lib/llvm-*/bin: the runner image changed" >&2; exit 1
       - run: llvm-mc --version && llvm-objcopy --version | head -1
       # what this runner gives the JIT; fails unless native arm64 with a working probe
       - run: >-
@@ -258,10 +270,11 @@ jobs:
       - run: uv run python -m tests.spec.run --engine auto
       # S0006 step 2: Linux glibc aarch64 is a verified row (`auto` above gives guard pages
       # there); both modes named, the fault tests natively (foreign faults, chains, two copies),
-      # (tests/jit runs in explicit mode above)
+      # (tests/jit runs in explicit mode above); guard with the frame walk checked (S0013 3a)
       - run: uv run python -m tests.spec.run --engine jit-aarch64
         env:
           WABOROS_JIT_BOUNDS: guard
+          WABOROS_JIT_WALK_CHECK: "1"
       - run: uv run python -m tests.spec.run --engine jit-aarch64
         env:
           WABOROS_JIT_BOUNDS: explicit

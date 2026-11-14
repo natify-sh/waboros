@@ -1,78 +1,57 @@
-bulk-memory/table_init.wast:2272  LoadError: NotImplementedError: rec / sub / struct / array types
-bulk-memory/table_init.wast:2286  LookupError: no exported function run
-exceptions/cast.wast:1  LoadError: NotImplementedError: opcode 0xfb (GC ref.test / ref.cast)
-exceptions/cast.wast:21  no current module
-exceptions/cast.wast:22  no current module
-exceptions/cast.wast:23  no current module
-exceptions/cast.wast:24  no current module
-exceptions/tag.wast:30  LoadError: NotImplementedError: rec / sub / struct / array types
-exceptions/tag.wast:40  LoadError: NotImplementedError: rec / sub / struct / array types
-exceptions/tag.wast:49  LoadError: NotImplementedError: rec / sub / struct / array types
-linking.wast:112  LinkError: incompatible import type Mref_ex.g-const-func
-memory64/table_init64.wast:2457  LoadError: NotImplementedError: rec / sub / struct / array types
-memory64/table_init64.wast:2471  LookupError: no exported function run
-ref_null.wast:1  LoadError: NotImplementedError: value type 0x6e
-ref_null.wast:16  no current module
-ref_null.wast:17  no current module
-ref_null.wast:18  no current module
-ref_null.wast:19  no current module
-ref_null.wast:20  no current module
-ref_null.wast:23  LoadError: NotImplementedError: value type 0x6e
-ref_null.wast:55  no current module
-ref_null.wast:56  no current module
-ref_null.wast:57  no current module
-ref_null.wast:58  no current module
-ref_null.wast:59  no current module
-ref_null.wast:60  no current module
-ref_null.wast:61  no current module
-ref_null.wast:62  no current module
-ref_null.wast:63  no current module
-ref_null.wast:64  no current module
-ref_null.wast:65  no current module
-ref_null.wast:66  no current module
-ref_null.wast:67  no current module
-ref_null.wast:68  no current module
-ref_null.wast:69  no current module
-ref_null.wast:70  no current module
-ref_null.wast:71  no current module
-ref_null.wast:72  no current module
-ref_null.wast:73  no current module
-ref_null.wast:74  no current module
-ref_null.wast:75  no current module
-ref_null.wast:76  no current module
-ref_null.wast:77  no current module
-ref_null.wast:78  no current module
-ref_null.wast:79  no current module
-ref_null.wast:80  no current module
-ref_null.wast:81  no current module
-type-canon.wast:1  LoadError: NotImplementedError: rec / sub / struct / array types
-type-canon.wast:9  LoadError: NotImplementedError: rec / sub / struct / array types
-type-equivalence.wast:136  LoadError: NotImplementedError: rec / sub / struct / array types
-type-equivalence.wast:161  LoadError: NotImplementedError: rec / sub / struct / array types
-type-equivalence.wast:233  LoadError: NotImplementedError: rec / sub / struct / array types
-type-equivalence.wast:238  LoadError: NotImplementedError: rec / sub / struct / array types
-type-equivalence.wast:246  LoadError: NotImplementedError: rec / sub / struct / array types
-type-equivalence.wast:257  LoadError: NotImplementedError: rec / sub / struct / array types
-type-equivalence.wast:268  LoadError: NotImplementedError: rec / sub / struct / array types
-type-equivalence.wast:279  LoadError: NotImplementedError: rec / sub / struct / array types
-type-equivalence.wast:290  LoadError: NotImplementedError: rec / sub / struct / array types
-type-equivalence.wast:30  LoadError: NotImplementedError: rec / sub / struct / array types
-type-equivalence.wast:308  LoadError: NotImplementedError: rec / sub / struct / array types
-type-equivalence.wast:49  LoadError: NotImplementedError: rec / sub / struct / array types
-type-rec.wast:137  LoadError: NotImplementedError: rec / sub / struct / array types
-type-rec.wast:141  KeyError: 'M'
-type-rec.wast:143  LoadError: NotImplementedError: rec / sub / struct / array types
-type-rec.wast:149  LoadError: NotImplementedError: rec / sub / struct / array types
-type-rec.wast:157  LoadError: NotImplementedError: rec / sub / struct / array types
-type-rec.wast:167  LoadError: NotImplementedError: rec / sub / struct / array types
-type-rec.wast:174  no current module
-type-rec.wast:176  LoadError: NotImplementedError: rec / sub / struct / array types
-type-rec.wast:183  no current module
-type-rec.wast:185  LoadError: NotImplementedError: rec / sub / struct / array types
-type-rec.wast:192  no current module
-type-rec.wast:197  LoadError: NotImplementedError: rec / sub / struct / array types
-type-rec.wast:3  LoadError: NotImplementedError: rec / sub / struct / array types
-type-rec.wast:39  LoadError: NotImplementedError: rec / sub / struct / array types
-type-rec.wast:45  LoadError: NotImplementedError: rec / sub / struct / array types
-type-rec.wast:71  LoadError: NotImplementedError: rec / sub / struct / array types
-type-rec.wast:78  LoadError: NotImplementedError: rec / sub / struct / array types
+bulk-memory/table_init.wast:2272  unsupported: GC types
+bulk-memory/table_init.wast:2286  unsupported: GC types
+exceptions/cast.wast:1  unsupported: GC types
+exceptions/cast.wast:21  unsupported: GC types
+exceptions/cast.wast:22  unsupported: GC types
+exceptions/cast.wast:23  unsupported: GC types
+exceptions/cast.wast:24  unsupported: GC types
+memory64/table_init64.wast:2457  unsupported: GC types
+memory64/table_init64.wast:2471  unsupported: GC types
+ref_null.wast:1  unsupported: GC types
+ref_null.wast:16  unsupported: GC types
+ref_null.wast:17  unsupported: GC types
+ref_null.wast:18  unsupported: GC types
+ref_null.wast:19  unsupported: GC types
+ref_null.wast:20  unsupported: GC types
+ref_null.wast:23  unsupported: GC types
+ref_null.wast:55  unsupported: GC types
+ref_null.wast:56  unsupported: GC types
+ref_null.wast:57  unsupported: GC types
+ref_null.wast:58  unsupported: GC types
+ref_null.wast:59  unsupported: GC types
+ref_null.wast:60  unsupported: GC types
+ref_null.wast:61  unsupported: GC types
+ref_null.wast:62  unsupported: GC types
+ref_null.wast:63  unsupported: GC types
+ref_null.wast:64  unsupported: GC types
+ref_null.wast:65  unsupported: GC types
+ref_null.wast:66  unsupported: GC types
+ref_null.wast:67  unsupported: GC types
+ref_null.wast:68  unsupported: GC types
+ref_null.wast:69  unsupported: GC types
+ref_null.wast:70  unsupported: GC types
+ref_null.wast:71  unsupported: GC types
+ref_null.wast:72  unsupported: GC types
+ref_null.wast:73  unsupported: GC types
+ref_null.wast:74  unsupported: GC types
+ref_null.wast:75  unsupported: GC types
+ref_null.wast:76  unsupported: GC types
+ref_null.wast:77  unsupported: GC types
+ref_null.wast:78  unsupported: GC types
+ref_null.wast:79  unsupported: GC types
+ref_null.wast:80  unsupported: GC types
+ref_null.wast:81  unsupported: GC types
+type-rec.wast:137  unsupported: GC types
+type-rec.wast:143  unsupported: GC types
+type-rec.wast:149  unsupported: GC types
+type-rec.wast:157  unsupported: GC types
+type-rec.wast:167  unsupported: GC types
+type-rec.wast:174  unsupported: GC types
+type-rec.wast:176  unsupported: GC types
+type-rec.wast:183  unsupported: GC types
+type-rec.wast:185  unsupported: GC types
+type-rec.wast:192  unsupported: GC types
+type-rec.wast:197  unsupported: GC types
+type-rec.wast:39  unsupported: GC types
+type-rec.wast:71  unsupported: GC types
+type-rec.wast:78  unsupported: GC types
