@@ -148,8 +148,9 @@ _OK_HEAP = (-16, -17, -23, -12)  # heap types every target runs: func extern exn
 
 
 # instructions that call, throw, or that either JIT lowers to a host call or service: a safepoint
-# whose operand stack gets a reference mask (a superset is harmless; tail calls are not safepoints)
-_SAFEPOINTS = frozenset((0x08, 0x0A, 0x10, 0x11, 0x14, 0x40, *range(0xFC08, 0xFC10), 0xFC11))
+# whose operand stack gets a reference mask (a superset is harmless; tail calls are not safepoints,
+# but return_call_indirect to a non-final type calls the JIT's subtype service first, S0013 3b.2)
+_SAFEPOINTS = frozenset((0x08, 0x0A, 0x10, 0x11, 0x13, 0x14, 0x40, *range(0xFC08, 0xFC10), 0xFC11))
 PACKED = (0x78, 0x77)  # storage types i8, i16
 
 

@@ -7,7 +7,21 @@ from types import CodeType
 from typing import Any, Literal, cast
 
 from waboros.frontend.binary import F32, F64, parse
-from waboros.frontend.types import ANY, isref, nn, top
+from waboros.frontend.types import (
+    ANY,
+    EQ,
+    EXN,
+    FUNC,
+    I31,
+    NOEXN,
+    NOEXTERN,
+    NOFUNC,
+    NONE,
+    STRUCT,
+    isref,
+    nn,
+    top,
+)
 from waboros.frontend.types import key as types_key
 from waboros.frontend.validate import validate
 from waboros.runtime.link import LinkError, func_type, global_type
@@ -40,23 +54,54 @@ _i64_f64 = cast(Callable[[float], int], _rt._i64_f64)
 
 
 def _host_any(mod: ValidModule, ty: Any, r: Any) -> Any:
-    """A host value for an any-hierarchy type is an anyref as `any.convert_extern` makes it
-    (S0013): `None`, an i31 (an int), a GC object (a list led by its runtime type) and a box the
-    runtime made pass as they are. An int is an i31 only in [-2**30, 2**30), else `ValueError`, as
-    on the JITs (S0013 3b.1)."""
-    if (
-        not isref(ty)
-        or r is None
-        or r.__class__ is _rt._Host
-        or (r.__class__ is list and r and r[0].__class__ is _rt._RTT)
-        or top(mod, nn(ty)[1]) != ANY
-    ):
+    """A host value for a parameter (or a host function's result) of type `ty`, checked against
+    the type as on the JITs and in Wasmtime (`TypeError`; S0013 3b.2 review): null only if
+    nullable; for the any hierarchy an int is an i31 (in [-2**30, 2**30), else `ValueError`), a GC
+    object (a list led by its runtime type) must be of the type or a subtype, and any other value is
+    an `any` boxed as `any.convert_extern` makes it; a concrete function type takes a function of
+    that type or a subtype."""
+    if not isref(ty):
         return r
+    null, ht = nn(ty)
+    if r is None:
+        if not null:
+            raise TypeError("null for a non-nullable reference")
+        return r
+    if ht in (NOFUNC, NOEXTERN, NONE, NOEXN):
+        raise TypeError(f"{r!r} for a reference type that holds only null")
+    h = top(mod, ht)
+    if h == FUNC and getattr(r, "s", None) is None:  # a wasm function carries its type key
+        raise TypeError(f"{r!r} is not a function reference")
+    if h == EXN and r.__class__ is not _rt._Thrown:
+        raise TypeError(f"{r!r} is not an exception reference")
+    if h == FUNC and ht >= 0:
+        q, k = getattr(r, "s", None), types_key(mod, ht)
+        t = _rt._RTTS.get(k)  # pyright: ignore[reportPrivateUsage]
+        if q != k and not (t is not None and _rt._fsub(q, t)):  # pyright: ignore[reportPrivateUsage]
+            raise TypeError(f"{r!r} is not a function of the parameter's type")
+    if h != ANY:
+        return r
+    if r.__class__ is _rt._Ext:  # a GC value seen as an externref: itself again
+        r = r.x
     if r.__class__ is int:
+        if ht not in (ANY, EQ, I31):
+            raise TypeError(f"an i31 ({r}) for a reference type it does not match")
         if not -(1 << 30) <= r < 1 << 30:
             raise ValueError(f"{r} is not an i31 value (from -2**30 to 2**30 - 1)")
         return r
-    return _rt._Host(r)
+    if r.__class__ is list and r and r[0].__class__ is _rt._RTT:  # pyright: ignore[reportPrivateUsage]
+        rt = r[0]
+        if ht >= 0:
+            t = _rt._RTTS.get(types_key(mod, ht))  # pyright: ignore[reportPrivateUsage]
+            ok = t is not None and rt.depth >= t.depth and rt.display[t.depth] is t
+        else:
+            ok = ht in (ANY, EQ) or (ht != I31 and (rt.kind == "struct") == (ht == STRUCT))
+        if not ok:
+            raise TypeError(f"{r!r} does not match the parameter's type")
+        return r
+    if ht != ANY:  # a host value is an `any` and nothing below it
+        raise TypeError(f"{r!r} is a host value: only anyref or externref takes it")
+    return r if r.__class__ is _rt._Host else _rt._Host(r)
 
 
 def _from_raw(ty: Any, r: Any) -> Any:

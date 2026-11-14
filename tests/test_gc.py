@@ -9,17 +9,33 @@ from typing import Any
 
 import pytest
 
+from tests.jit import native
 from tests.test_exceptions_targets import call, make
 from tests.watcache import wat2wasm
 from waboros.frontend.binary import parse
 from waboros.frontend.validate import Invalid, validate
+from waboros.runtime.store import StoreState
 from waboros.targets.base import Trap, TrapCode
 from waboros.targets.pyc import translate
 
-TARGETS = [
+TARGETS = ["pyc", "jit-x86_64"]
+ARRAYS = [  # tests that need array instructions
     "pyc",
-    pytest.param("jit-x86_64", marks=pytest.mark.skip(reason="the JITs refuse GC until step 3b")),
+    pytest.param("jit-x86_64", marks=pytest.mark.skip(reason="arrays on the JIT: S0013 step 3b.3")),
 ]
+
+
+@pytest.fixture(autouse=True)
+def _jit(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A JIT parameter runs only where that JIT runs; GC is compiled through WABOROS_JIT_GC=1 until
+    `jit-x86_64` claims it (S0013 step 3b.3)."""
+    spec = getattr(request.node, "callspec", None)
+    target = spec.params.get("target", "") if spec else ""
+    if target.startswith("jit-"):
+        native(target)
+        monkeypatch.setenv("WABOROS_JIT_GC", "1")
+
+
 U32 = 0xFFFFFFFF
 
 
@@ -35,7 +51,7 @@ def sx(v: int, bits: int) -> int:
 
 
 # ---- every storage type, packed reads
-@pytest.mark.parametrize("target", TARGETS)
+@pytest.mark.parametrize("target", ARRAYS)
 def test_every_storage_type_in_structs_and_arrays(target: str) -> None:
     kinds = [  # (storage type, value type, two constants, their raw form)
         ("i8", "i32", "(i32.const 7)", "(i32.const 250)", 7, 250),
@@ -83,7 +99,7 @@ def test_every_storage_type_in_structs_and_arrays(target: str) -> None:
     assert call(p, "v") == [7] and call(p, "w") == [9] and call(p, "n") == [1]
 
 
-@pytest.mark.parametrize("target", TARGETS)
+@pytest.mark.parametrize("target", ARRAYS)
 def test_packed_fields_and_elements_sign_and_zero_extend(target: str) -> None:
     p = make(
         target,
@@ -156,7 +172,10 @@ OTHERPOS = """(module (rec (type $pad (sub (struct (field i32)))) (type $a (sub 
 
 @pytest.mark.parametrize("target", TARGETS)
 def test_casts_follow_canonical_types_across_modules(target: str) -> None:
-    a, same, other = (make(target, t) for t in (RECA, RECA.replace("mk_", "mm_"), OTHERPOS))
+    store = StoreState()  # objects cross between modules of one store (the JIT checks it)
+    a, same, other = (
+        make(target, t, store=store) for t in (RECA, RECA.replace("mk_", "mm_"), OTHERPOS)
+    )
     oa, ob = call(a, "mk_a")[0], call(a, "mk_b")[0]
     for p, want in ((a, (1, 0, 1, 1)), (same, (1, 0, 1, 1)), (other, (0, 0, 0, 0))):
         assert [call(p, f, o)[0] for f in ("is_a", "is_b") for o in (oa, ob)] == [
@@ -167,7 +186,7 @@ def test_casts_follow_canonical_types_across_modules(target: str) -> None:
         ]
 
 
-@pytest.mark.parametrize("target", TARGETS)
+@pytest.mark.parametrize("target", ARRAYS)
 def test_display_depths_and_finality(target: str) -> None:
     types = """(type $t0 (sub (struct))) (type $t1 (sub $t0 (struct (field i32))))
       (type $t2 (sub $t1 (struct (field i32) (field i32)))) (type $t3 (sub final $t2 (struct (field i32) (field i32) (field i32))))
@@ -218,6 +237,7 @@ FUNCS = """(type $f (sub (func (param i32) (result i32)))) (type $g (sub $f (fun
 
 @pytest.mark.parametrize("target", TARGETS)
 def test_call_indirect_to_a_non_final_expected_type(target: str) -> None:
+    store = StoreState()
     a = make(
         target,
         f"""(module {FUNCS} (table (export "t") funcref (elem $fg $fh $ff $fk))
@@ -228,6 +248,7 @@ def test_call_indirect_to_a_non_final_expected_type(target: str) -> None:
       (func (export "cf") (param i32 i32) (result i32) (call_indirect (type $f) (local.get 1) (local.get 0)))
       (func (export "cg") (param i32 i32) (result i32) (call_indirect (type $g) (local.get 1) (local.get 0)))
       (func (export "ch") (param i32 i32) (result i32) (call_indirect (type $h) (local.get 1) (local.get 0))))""",
+        store=store,
     )
     ok = {"cf": (0, 2, 3), "cg": (0, 3), "ch": (1,)}  # $k is a subtype of $g, which is one of $f
     for fn, good in ok.items():
@@ -244,8 +265,23 @@ def test_call_indirect_to_a_non_final_expected_type(target: str) -> None:
       (import "a" "fg" (func $fg (type $f))) (table funcref (elem $fg))
       (func (export "cf") (param i32) (result i32) (call_indirect (type $f) (local.get 0) (i32.const 0))))""",
         {"a": a},
+        store,
     )
     assert call(b, "cf", 5) == [6]
+
+
+@pytest.mark.parametrize("target", TARGETS)
+@pytest.mark.parametrize("extra", ["", "(type $S (struct))"])  # with a GC type: reference masks on
+def test_return_call_indirect_to_a_non_final_type(target: str, extra: str) -> None:
+    p = make(
+        target,
+        f"""(module (type $F (sub (func (result i32)))) {extra}
+      (func $a (type $F) (i32.const 5)) (table $t 2 funcref) (elem (i32.const 0) func $a)
+      (func (export "rci") (param i32) (result i32) (return_call_indirect $t (type $F) (local.get 0))))""",
+    )
+    assert call(p, "rci", 0) == [5]
+    assert trap(p, "rci", 1) is TrapCode.INDIRECT_CALL_TO_NULL
+    assert trap(p, "rci", 2) is TrapCode.TABLE_OUT_OF_BOUNDS
 
 
 # ---- conversions
@@ -315,8 +351,46 @@ def test_a_host_value_for_an_anyref_is_internalized(target: str) -> None:
     assert call(p, "echo", o)[0] is o and call(p, "echo", None) == [None]  # the object itself
 
 
-# ---- allocating constant expressions
+CHECKED = """(module (type $a (sub (struct (field i32)))) (type $b (sub $a (struct (field i32) (field i32))))
+  (type $f (func)) (type $g (func (param i32))) (func $ff (type $f)) (func $gg (type $g))
+  (elem declare func $ff $gg)
+  (func (export "mka") (result anyref) (struct.new $a (i32.const 1)))
+  (func (export "mkb") (result anyref) (struct.new $b (i32.const 2) (i32.const 3)))
+  (func (export "fa") (param (ref null $a)) (result i32) (struct.get $a 0 (local.get 0)))
+  (func (export "fb") (param (ref null $b)) (result i32) (struct.get $b 1 (local.get 0)))
+  (func (export "fnn") (param (ref $a)) (result i32) (struct.get $a 0 (local.get 0)))
+  (func (export "eq") (param eqref) (result i32) (ref.is_null (local.get 0)))
+  (func (export "st") (param structref) (result i32) (ref.is_null (local.get 0)))
+  (func (export "i31") (param i31ref) (result i32) (ref.is_null (local.get 0)))
+  (func (export "none") (param nullref) (result i32) (ref.is_null (local.get 0)))
+  (func (export "getf") (result funcref) (ref.func $ff))
+  (func (export "getg") (result funcref) (ref.func $gg))
+  (func (export "cf") (param (ref null $f)) (call_ref $f (local.get 0)))
+  (func (export "anyf") (param funcref) (result i32) (ref.is_null (local.get 0)))
+  (func (export "exn") (param exnref) (result i32) (ref.is_null (local.get 0))))"""
+
+
 @pytest.mark.parametrize("target", TARGETS)
+def test_host_values_are_checked_against_the_parameter_type(target: str) -> None:
+    """As Wasmtime: a value that does not match a reference parameter is a `TypeError` before the
+    call (S0013 3b.2 review: on the JIT a wrong word corrupts the heap)."""
+    p = make(target, CHECKED)
+    a, b, f, g = (call(p, n)[0] for n in ("mka", "mkb", "getf", "getg"))
+    assert call(p, "fa", b) == [2] and call(p, "fa", a) == [1]  # a subtype for its supertype
+    assert call(p, "eq", 5) == [0] and call(p, "eq", a) == [0] and call(p, "st", a) == [0]
+    assert call(p, "i31", 5) == [0] and call(p, "none", None) == [1] and call(p, "cf", f) == []
+    assert call(p, "anyf", g) == [0] and call(p, "exn", None) == [1]
+    bad = [("fb", a), ("fa", 0), ("fnn", None), ("eq", object()), ("st", 5), ("i31", a),
+           ("none", 5), ("cf", g), ("fa", object()), ("anyf", object()), ("anyf", 5),
+           ("anyf", a), ("exn", object()), ("exn", 5)]  # fmt: skip
+    for fn, v in bad:
+        with pytest.raises(TypeError):
+            call(p, fn, v)
+    assert trap(p, "fa", None) is TrapCode.NULL_REFERENCE  # nullable: wasm's own null check
+
+
+# ---- allocating constant expressions
+@pytest.mark.parametrize("target", ARRAYS)
 def test_constant_expressions_allocate(target: str) -> None:
     src = """(module (type $s (struct (field i32) (field (mut i8)))) (type $a (array (mut i16)))
       (global $gs (ref $s) (struct.new $s (i32.const 7) (i32.const 0x1FF)))
@@ -386,7 +460,7 @@ def contents(p: Any, which: int, n: int) -> list[int]:
     return [call(p, "get", which, i)[0] for i in range(n)]
 
 
-@pytest.mark.parametrize("target", TARGETS)
+@pytest.mark.parametrize("target", ARRAYS)
 def test_array_copy_and_fill_with_overlap(target: str) -> None:
     p = make(target, BULK)
     for fn, which, n in (("cp_aa", 1, 7), ("cp_ii", 3, 7)):
@@ -413,7 +487,7 @@ def test_array_copy_and_fill_with_overlap(target: str) -> None:
     assert trap(p, "fill_i", 5, 5, 3) is TrapCode.ARRAY_OUT_OF_BOUNDS and contents(p, 1, 7)[4] == 99
 
 
-@pytest.mark.parametrize("target", TARGETS)
+@pytest.mark.parametrize("target", ARRAYS)
 def test_array_operators_check_the_bound_of_the_right_operand(target: str) -> None:
     p = make(target, BULK)  # A has 7 elements, B 9, the data segment 11 bytes, the elem segment 5
     assert call(p, "len", 1) == [7] and call(p, "len", 0) == [9]
@@ -449,7 +523,7 @@ def test_array_operators_check_the_bound_of_the_right_operand(target: str) -> No
     assert trap(p, "ndata", 0, U32) is TrapCode.MEMORY_OUT_OF_BOUNDS
 
 
-@pytest.mark.parametrize("target", TARGETS)
+@pytest.mark.parametrize("target", ARRAYS)
 def test_trap_order_is_operands_null_bounds_access(target: str) -> None:
     p = make(
         target,
@@ -476,7 +550,7 @@ def test_trap_order_is_operands_null_bounds_access(target: str) -> None:
 
 # ---- the allocation limits (Wasmtime 50.0.1, found by bisection: the header plus the elements fit
 # 32 bits); the largest allowed length would allocate gigabytes, so only the first trap is tested
-@pytest.mark.parametrize("target", TARGETS)
+@pytest.mark.parametrize("target", ARRAYS)
 @pytest.mark.parametrize(
     ("elem", "limit"),
     [("i8", 4294967251), ("i16", 2147483625), ("i32", 1073741812), ("f32", 1073741812),
@@ -541,7 +615,7 @@ def test_a_module_without_gc_has_no_runtime_types() -> None:
 
 
 # ---- instantiation order and deep allocating constant expressions
-@pytest.mark.parametrize("target", TARGETS)
+@pytest.mark.parametrize("target", ARRAYS)
 def test_element_expressions_run_before_any_active_write(target: str) -> None:
     # Wasmtime: every segment's items first (an allocation trap), then the active writes
     a = make(

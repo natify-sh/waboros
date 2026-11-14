@@ -163,7 +163,7 @@ def test_reference_slots_are_checked(checks: list[int]) -> None:
       (local.get $x) (drop (call $h (i32.const 1)))))""", store, {"env": {"h": host}})  # fmt: skip
     assert jit("f", 0) == [0]  # null: valid
     st = _stacks(store)
-    h = st.to_raw(EXTERN, object())
+    h = st.to_raw((EXTERN, True, EXTERN, None, 0), object())
     assert h & 3 == 2  # a host value: (h << 2) | 2 (S0013 3b)
     assert jit.inst.call(0 + 1, [h]) == [h] and hits == [1, 1]  # type: ignore[attr-defined]
 

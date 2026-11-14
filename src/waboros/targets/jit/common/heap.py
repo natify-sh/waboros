@@ -34,8 +34,8 @@ class GcHeap:
         self.mem = Memory(1, None)  # the header page: null, the cursor and the limit
         self.mem.store = store
         self.base = self.mem.res.addr
-        self._u32(gc.CURSOR, gc.OBJ)  # empty: the first allocation commits the first chunk
-        self._u32(gc.LIMIT, gc.OBJ)
+        self.u32(gc.CURSOR, gc.OBJ)  # empty: the first allocation commits the first chunk
+        self.u32(gc.LIMIT, gc.OBJ)
         self.types = gc.TYPES  # next free byte of the type-info area
         self.records: dict[str, int] = {}  # canonical key -> record offset
         self.offsets: set[int] = set()  # every record offset (the walk check)
@@ -43,7 +43,7 @@ class GcHeap:
         self.kind: dict[int, int] = {}
         self.poison = os.environ.get("WABOROS_JIT_GC_POISON") == "1"
 
-    def _u32(self, off: int, v: int | None = None) -> int:
+    def u32(self, off: int, v: int | None = None) -> int:
         w = ctypes.c_uint32.from_address(self.base + off)
         if v is not None:
             w.value = v
@@ -92,16 +92,16 @@ class GcHeap:
     def alloc(self, size: int) -> int:
         """The offset of `size` new bytes (a multiple of 8), as the code's fast path bumps them;
         the heap grows when they do not fit (never a collection before step 5)."""
-        cur = self._u32(gc.CURSOR)
-        if cur + size > self._u32(gc.LIMIT):
+        cur = self.u32(gc.CURSOR)
+        if cur + size > self.u32(gc.LIMIT):
             self.grow(size)
-        self._u32(gc.CURSOR, cur + size)
+        self.u32(gc.CURSOR, cur + size)
         return cur
 
     def grow(self, need: int) -> None:
         """The allocation service's slow path at step 3b: commit at least `need` more bytes past
         the cursor (doubling, from 1 MiB) up to the end of semispace A, then move the limit."""
-        cur, lim = self._u32(gc.CURSOR), self._u32(gc.LIMIT)
+        cur, lim = self.u32(gc.CURSOR), self.u32(gc.LIMIT)
         if cur + need > gc.A_END:
             raise MemoryError("GC heap out of memory")
         new = min(gc.A_END, max(cur + need, lim + max(CHUNK, lim - gc.OBJ)))
@@ -109,11 +109,32 @@ class GcHeap:
         self._commit(new)
         if self.poison:
             ctypes.memset(self.base + lim, POISON, new - lim)
-        self._u32(gc.LIMIT, new)
+        self.u32(gc.LIMIT, new)
+
+    @property
+    def cursor(self) -> int:
+        return self.u32(gc.CURSOR)
+
+    @property
+    def limit(self) -> int:
+        return self.u32(gc.LIMIT)
+
+    def new_struct(self, mod: Any, ti: int, vals: list[int] | None) -> int:
+        """A struct of type `ti` with the field values `vals` (bit patterns; None: the defaults),
+        every field written: the collector never zeroes (S0013 Q2)."""
+        fields = mod["tdefs"][ti][0][1]
+        offs, size = gc.struct_layout(mod, fields)
+        o = self.alloc(size)
+        self.u32(o, self.rtt(mod, ti))
+        self.u32(o + 4, 0)
+        for (st, _), off, v in zip(fields, offs, vals or [0] * len(fields), strict=True):
+            n = gc.storage_size(mod, st)
+            ctypes.memmove(self.base + o + off, (v & ((1 << 8 * n) - 1)).to_bytes(n, "little"), n)
+        return o
 
     def is_object(self, w: int) -> bool:
         """`w` is the offset of an object: in the allocated space, aligned, its header a record."""
-        return gc.OBJ <= w < self._u32(gc.CURSOR) and not w & 7 and self._u32(w) in self.offsets
+        return gc.OBJ <= w < self.u32(gc.CURSOR) and not w & 7 and self.u32(w) in self.offsets
 
     def kind_of(self, w: int) -> str:
-        return "struct" if self.kind[self._u32(w)] == gc.KIND_STRUCT else "array"
+        return "struct" if self.kind[self.u32(w)] == gc.KIND_STRUCT else "array"

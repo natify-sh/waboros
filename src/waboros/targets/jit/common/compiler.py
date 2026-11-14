@@ -126,10 +126,17 @@ def feature(op: int) -> str:
     return "exceptions" if op in (0x08, 0x0A, 0x1F) else f"opcode {op:#x}"
 
 
-def type_ok(t: Any, exn: bool = False) -> str | None:
+# GC references (S0013): anyref eqref i31ref structref arrayref nullref nullexternref nullfuncref,
+# and the abstract heap types any eq i31 struct array none
+GCREFS, GCHEAPS = (0x6E, 0x6D, 0x6C, 0x6B, 0x6A, 0x71, 0x72, 0x73), (-18, -19, -20, -21, -22, -15)
+
+
+def type_ok(t: Any, exn: bool = False, gcs: bool = False) -> str | None:
     """None if values of type `t` are compiled here (numbers, function and extern references,
-    exnref with `exn`), else the feature."""
+    exnref with `exn`, GC references with `gcs`), else the feature."""
     if t in NUM or t in (0x70, 0x6F) or t.__class__ is tuple and (t[1] >= 0 or t[1] in HEAPS):
+        return None
+    if gcs and (t in GCREFS or t.__class__ is tuple and t[1] in GCHEAPS):
         return None
     if t in (0x69, 0x74) or t.__class__ is tuple and t[1] in (-23, -12):
         return None if exn else "exceptions"
@@ -141,12 +148,13 @@ def unsupported(mod: ValidModule, ops: frozenset[int]) -> str | None:
     is compiled where the backend compiles some SIMD operator (S0005)."""
     vec = any(op >= 0xFD000 for op in ops)
     exn = EXN <= ops
+    gcs = bool(gc.OPS & ops)  # GC types; each GC opcode the backend lacks is named (S0013 3b)
 
     def bad(t: Any) -> str | None:
-        return None if vec and t == simd.V128 else type_ok(t, exn)
+        return None if vec and t == simd.V128 else type_ok(t, exn, gcs)
 
-    if not gc.OPS <= ops and gc.uses_gc(mod):  # S0013: first, whatever else; also a module whose
-        return "GC types"  # only GC feature is a non-final type in call_indirect (3b, decision K)
+    if not gcs and gc.uses_gc(mod):  # S0013: first, whatever else; also a module whose only GC
+        return "GC types"  # feature is a non-final type in call_indirect (3b, decision K)
     if not mod.get("validated"):
         return "module not fully validated"
     imps: list[tuple[Any, ...]] = mod["imports"]
@@ -156,6 +164,9 @@ def unsupported(mod: ValidModule, ops: frozenset[int]) -> str | None:
     for t in vts:
         if bad(t):
             return bad(t)
+    for e in gc.consts(mod):  # allocating constant expressions, of any depth (S0013)
+        if e[0] == "gc" and e[1][0] not in ops:
+            return feature(e[1][0])
     for insns in mod["insns"]:
         for ins in insns:
             op = ins[0]
@@ -224,6 +235,7 @@ class _Mod:
     t64: list[bool] = field(default_factory=list[bool])
     tagw: list[int] = field(default_factory=list[int])  # payload slots of each tag (S0012)
     mod: Any = None  # the validated module: reference masks and types for the stack maps
+    rtts: dict[int, int] = field(default_factory=dict[int, int])  # type index -> RTT word (S0013)
 
 
 def compile_module(mod: ValidModule, b: Backend[Any, Any], target: str) -> Compiled:
@@ -238,17 +250,17 @@ def compile_module(mod: ValidModule, b: Backend[Any, Any], target: str) -> Compi
     # every function a reference can be taken to (the validator checks that ref.func names one
     # of them) and every function import (`call` goes through its record, D30) gets a record;
     # every type call_indirect names a signature word
-    inits = [e for _, _, _, items in mod["elem_info"] for e in items]
-    inits += [g[2] for g in mod["globals"]] + [e for e in mod["tinit"] if e is not None]
-    refd = {e[1] for e in inits if e[0] == "func"} | set(range(len(fimps)))
+    refd = {e[1] for e in gc.consts(mod) if e[0] == "func"} | set(range(len(fimps)))
     refd |= {i[1] for insns in mod["insns"] for i in insns if i[0] == 0xD2}
-    sigs = sorted({i[1] for insns in mod["insns"] for i in insns if i[0] in (0x11, 0x13)})
+    sigs = {i[1] for insns in mod["insns"] for i in insns if i[0] in (0x11, 0x13)}
+    sigs = sorted(sigs | gc.sigs(mod))  # and the function types casts name (S0013)
+    rtts = gc.rtts(mod)
     wide = tuple(len(gimps) + i for i, g in enumerate(mod["globals"]) if g[0] == simd.V128)
     layout = Layout(
         memories=nmem, tables=len(mod["ttypes"]),
         globals=len(gimps) + len(mod["globals"]), imports=len(fimps), sigs=len(sigs),
         records=len(refd), wide=wide, tags=sum(im[0] == "tag" for im in imps) + len(mod["tags"]),
-        heap=gc.uses_gc(mod), gcsvc=GC_SERVICES if gc.uses_gc(mod) else 0,
+        heap=gc.uses_gc(mod), gcsvc=GC_SERVICES if gc.uses_gc(mod) else 0, rtts=len(rtts),
     )  # fmt: skip
     m = _Mod(
         b, mod["types"], fimps + mod["funcs"], len(fimps), [b.new_label() for _ in mod["funcs"]],
@@ -262,6 +274,7 @@ def compile_module(mod: ValidModule, b: Backend[Any, Any], target: str) -> Compi
     tts: list[int] = [im[3] for im in imps if im[0] == "tag"] + mod["tags"]
     m.tagw = [simd.width(m.types[ti][0]) for ti in tts]
     m.mod = mod
+    m.rtts = {t: k for k, t in enumerate(rtts)}
     nopin = os.environ.get("WABOROS_JIT_NOPIN", "")
     funcs: list[tuple[int, int]] = []
     s0 = len(b.sites)
@@ -292,6 +305,7 @@ def compile_module(mod: ValidModule, b: Backend[Any, Any], target: str) -> Compi
         for (ret, ret_at, up), (shift, n, bits) in zip(b.sites[s0:], maps, strict=True)
     ]
     c = Compiled(mod, code, data, funcs, layout, sorted(refd), sigs, thunks)
+    c.rtts = rtts
     c.stackmaps = gc.encode(sites)
     return c
 
@@ -317,6 +331,8 @@ class _Func:
         self.tos_taken = False  # an operand of the current instruction is in `tos` (LESSONS 32)
         self.f: Any = None  # the backend's frame, from run()
         self.pads: list[tuple[Any, Any, list[tuple[int, int | None, _Ctl]]]] = []  # S0012, cold
+        self.gccold: list[Any] = []  # S0013: allocation slow paths and trap labels, cold
+        self.gctraps: dict[int, Any] = {}
         # stack maps (S0013 3a): (shift, nslots, bits) per call site, in code order; with the
         # validator's masks on, every reference local is marked at every site (liveness: step 7)
         self.sites: list[tuple[int, int, int]] = []
@@ -331,6 +347,8 @@ class _Func:
     def site(self, pc: int, shift: int, keep: int, top: int) -> None:
         """The map of the call the backend just recorded: slots [0, L + keep) of this frame; the
         validator's mask at instruction `pc` covers the `top` operand slots before it popped."""
+        # a call's slots are in the frame: the value-stack check covers L + maxh (S0013 3b.2 review)
+        assert keep <= self.maxh, (pc, keep, self.maxh)
         bits = 0
         if self.rm is not None:
             ops = gc.slot_bits(self.rm[pc], self.vm[pc])
@@ -710,10 +728,10 @@ class _Func:
         for k, v in enumerate(imms):
             self.b.move(Slot(self.L + h0 + nargs + k), Imm(v), True)
         self.b.call_host(self.f, self.m.layout.libcall(j), self.L + h0)
+        self.maxh = max(self.maxh, h0 + max(nargs + len(imms), nres))
         self.site(pc, 0, h0 + nargs + len(imms), h0 + nargs)  # a service never calls wasm
         del self.st[h0:]
         self.st += [SLOTE] * nres
-        self.maxh = max(self.maxh, h0 + max(nargs + len(imms), nres))
 
     def mem_imm(self, mi: int) -> list[int]:
         """The memory immediate of memory.grow / memory.init: written only when the module has
@@ -784,8 +802,8 @@ class _Func:
         self.flush()
         h0 = len(self.st) - n
         self.b.throw(self.f, self.m.layout.tag(t), self.L + h0, n)
-        self.site(pc, 0, h0 + n + 1, h0 + n)  # its refill call: the payload and the size slot
         self.maxh = max(self.maxh, h0 + n + 1)
+        self.site(pc, 0, h0 + n + 1, h0 + n)  # its refill call: the payload and the size slot
         del self.st[h0:]
         self.dead = True
 
@@ -955,6 +973,8 @@ class _Func:
             elif op == 0x00:
                 b.trap(f, TrapCode.UNREACHABLE)
                 self.dead = True
+            elif op in (0x11, 0x13) and not self.m.mod["tdefs"][ins[1]][2]:  # S0013 Q11
+                gc.call_open(self, ins[1], ins[2], pc, op == 0x13)
             elif op == 0x11:
                 self.call_indirect(ins[1], ins[2], pc)
             elif op in (0x12, 0x13, 0x15):
@@ -1018,8 +1038,11 @@ class _Func:
                 push(SLOTE)
             elif op >= 0xFD000:
                 simd.op(self, ins)
+            elif op == 0xD3 or 0xFB00 <= op < 0xFC00:
+                gc.op(self, ins, pc)
             else:  # unsupported() already refused it
                 raise AssertionError(f"opcode {op:#x}")
         assert not self.ctl
+        gc.cold(self)
         self.landing_pads()
         return b.func_end(f, L + self.maxh)

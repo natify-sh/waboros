@@ -164,3 +164,59 @@ def test_slot_bits() -> None:
     assert gc.slot_bits(0b101, 0) == 0b101
     assert gc.slot_bits(0b101, 0b010) == 0b1001
     assert gc.slot_bits(0b1001, 0b0110) == 0b100001
+
+
+# ---- GC reference slots (S0013 step 3b.2; jit-x86_64 behind WABOROS_JIT_GC=1 until it claims gc)
+@pytest.fixture
+def gc_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("WABOROS_JIT_GC", "1")
+
+
+@pytest.mark.usefixtures("gc_on")
+def test_struct_anyref_and_i31_locals_are_marked() -> None:
+    # slots: $a 0, $n 1, $s 2, $i 3 (L = 4); the operand $s below the call is slot 4
+    _, s = sites(
+        "jit-x86_64",
+        """(module (type $t (struct (field i32))) (func $g (param i32))
+      (func (param $a anyref) (param $n i32) (local $s (ref null $t)) (local $i i31ref)
+        local.get $s local.get $n call $g drop))""",
+    )
+    assert [(x[0], x[3], x[4]) for x in s] == [(5, 5, 0b11101)]
+
+
+@pytest.mark.usefixtures("gc_on")
+def test_a_struct_field_operand_is_marked_at_the_allocation_service() -> None:
+    # $a 0 (L = 1); struct.new's operands: the anyref field 1, the i32 field 2 (h = 2), then three
+    # scratch slots, the last the ALLOC service's argument: shift 0, 1 + 2 + 3 slots
+    _, s = sites(
+        "jit-x86_64",
+        """(module (type $p (struct (field anyref) (field i32)))
+      (func (param $a anyref) (result anyref) (struct.new $p (local.get $a) (i32.const 1))))""",
+    )
+    assert [(x[0], x[3], x[4]) for x in s] == [(0, 6, 0b11)]
+
+
+@pytest.mark.usefixtures("gc_on")
+def test_a_non_final_call_indirect_has_two_sites() -> None:
+    # $a 0 (L = 1); the operand $a below: slot 1; the argument slot 2, the index 3: FUNC_SUBTYPE
+    # (shift 0, its two slots from 3) then the call through the record (shift 2, the callee's frame)
+    _, s = sites(
+        "jit-x86_64",
+        """(module (type $f (sub (func (param i32)))) (table 1 funcref)
+      (func (param $a anyref)
+        local.get $a i32.const 5 i32.const 0 call_indirect (type $f) drop))""",
+    )
+    assert [(x[0], x[3], x[4]) for x in s] == [(0, 5, 0b11), (2, 2, 0b11)]
+
+
+@pytest.mark.usefixtures("gc_on")
+def test_a_function_cast_at_the_top_of_the_frame_keeps_its_slots_inside() -> None:
+    # $r 0, $x 1 (L = 2); ref.test of $r at height 1: FUNC_SUBTYPE's two slots 3-4 are in the frame
+    # (the core asserts every call's slots are below L + maxh; the review found slot 4 past it)
+    _, s = sites(
+        "jit-x86_64",
+        """(module (type $F (sub (func)))
+      (func (param $r funcref) (param $x anyref) (result i32)
+        (ref.test (ref $F) (local.get $r))))""",
+    )
+    assert [(x[0], x[3], x[4]) for x in s] == [(0, 5, 0b10)]

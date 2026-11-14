@@ -38,6 +38,7 @@ from waboros.frontend.validate import Invalid, validate
 from waboros.runtime import link
 from waboros.runtime.store import StoreState
 from waboros.targets import base
+from waboros.targets.jit.common.instance import GcRef
 from waboros.targets.pyc import runtime as _pyc
 
 _PARSE_ERRORS = (AssertionError, IndexError, ValueError, struct.error, UnicodeDecodeError)
@@ -102,10 +103,13 @@ def _from_raw(mod: base.ValidModule, ty: Any, r: Any) -> Value:
     if isref(ty):
         hierarchy = top(mod, nn(ty)[1])
         if hierarchy == EXTERN:  # a host value, or a GC value boxed by extern.convert_any
-            return OpaqueRef("extern") if r.__class__ is _pyc._Ext else cast(Value, r)
+            gcval = r.__class__ is _pyc._Ext or isinstance(r, GcRef)  # pyc's box, the JIT's handle
+            return OpaqueRef("extern") if gcval else cast(Value, r)
         if hierarchy == ANY and r is not None:
             if isinstance(r, ExternRef):  # a host value: the object itself (S0013 3b.1)
                 return HostRef(r.n)
+            if isinstance(r, GcRef):  # the JIT (S0013 3b)
+                return OpaqueRef(r.kind)
             return OpaqueRef("i31" if r.__class__ is int else r[0].kind)
         return None if r is None else FuncRef(r)
     if ty in (I32, I64):

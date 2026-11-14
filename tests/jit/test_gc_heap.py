@@ -19,11 +19,14 @@ from waboros.frontend.validate import validate  # pyright: ignore[reportUnknownV
 from waboros.runtime import link
 from waboros.runtime.store import StoreState
 from waboros.targets import base
+from waboros.targets.base import Trap, TrapCode
 from waboros.targets.jit.common import gc, walk
 from waboros.targets.jit.common.context import FIRST_VAR, GC_SERVICES, Layout
 from waboros.targets.jit.common.heap import POISON, GcHeap
-from waboros.targets.jit.common.instance import GcRef, _stacks  # pyright: ignore[reportPrivateUsage]
+from waboros.targets.jit.common.instance import GcRef, Instance, _stacks  # pyright: ignore[reportPrivateUsage]
 
+# externref and anyref as the boundary sees them (`reftypes`: hierarchy, nullable, heap type, ...)
+XR, AR = (EXTERN, True, EXTERN, None, 0), (ANY, True, ANY, None, 0)
 JITS = ["jit-x86_64", "jit-aarch64"]  # each where it runs (aarch64: natively or under QEMU)
 
 
@@ -189,7 +192,8 @@ NONFINAL = """(module (type $f (sub (func (result i32)))) (table 1 funcref)
   (func (export "go") (result i32) (call_indirect (type $f) (i32.const 0))))"""
 
 
-def test_a_non_final_call_indirect_type_needs_gc() -> None:
+def test_a_non_final_call_indirect_type_needs_gc(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("WABOROS_JIT_GC", raising=False)  # the 3b.2 switch lets x86-64 compile GC
     m = mod(NONFINAL)
     assert gc.uses_gc(m) and not gc.uses_gc(mod("(module (type $f (sub (func))))"))
     for name in ("jit-x86_64", "jit-aarch64"):  # neither claims gc yet (decision K)
@@ -203,19 +207,70 @@ def test_host_values_cross_as_tagged_words(name: str) -> None:
     inst = t.instantiate(t.compile(m), link.resolve(m, {}), store)
     o, st = object(), _stacks(store)
     assert inst.call(0, [o]) == [o] and inst.call(0, [None]) == [None]
-    w = st.to_raw(EXTERN, o)
-    assert w & 3 == 2 and st.externs[(w >> 2) - 1] is o and st.to_raw(EXTERN, o) == w
+    w = st.to_raw(XR, o)
+    assert w & 3 == 2 and st.externs[(w >> 2) - 1] is o and st.to_raw(XR, o) == w
     for v in (0, -1, (1 << 30) - 1, -(1 << 30)):  # an int is an i31 for an anyref
-        r = st.to_raw(ANY, v)
+        r = st.to_raw(AR, v)
         assert r & 1 and r < 1 << 32 and st.from_raw(ANY, r) == v
     for v in (1 << 30, -(1 << 30) - 1):
         with pytest.raises(ValueError, match="i31"):
-            st.to_raw(ANY, v)
-    assert st.from_raw(ANY, st.to_raw(ANY, o)) is o  # a host value internalized
+            st.to_raw(AR, v)
+    assert st.from_raw(ANY, st.to_raw(AR, o)) is o  # a host value internalized
     r = st.from_raw(EXTERN, 7)  # an i31 seen as an externref (extern.convert_any)
     assert isinstance(r, GcRef) and r.kind == "i31" and st.from_raw(EXTERN, 7) is r
-    assert st.to_raw(EXTERN, r) == 7 and st.to_raw(ANY, r) == 7
+    assert st.to_raw(XR, r) == 7 and st.to_raw(AR, r) == 7
     with pytest.raises(TypeError):
-        _stacks(StoreState()).to_raw(EXTERN, r)  # a handle of another store
+        _stacks(StoreState()).to_raw(XR, r)  # a handle of another store
     with pytest.raises(RuntimeError, match="not a reference"):
         st.from_raw(ANY, 64)  # an untagged word with no heap (or no object there)
+
+
+# ---- compiled GC code (S0013 step 3b.2: jit-x86_64 behind WABOROS_JIT_GC=1 until it claims gc)
+def gc_jit(monkeypatch: pytest.MonkeyPatch, bounds: str = "guard") -> Any:
+    native("jit-x86_64")
+    monkeypatch.setenv("WABOROS_JIT_GC", "1")
+    monkeypatch.setenv("WABOROS_JIT_BOUNDS", bounds)
+    return base.TARGETS["jit-x86_64"]()
+
+
+def test_gc_results_cross_to_the_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An anyref result is a `GcRef` or an int for the host, never a raw word (the JIT's `isref`
+    once knew only the pre-GC type codes), and comes back as the same object."""
+    t, store = gc_jit(monkeypatch), StoreState()
+    m = mod("""(module (type $t (struct (field i32)))
+      (func (export "s") (result anyref) (struct.new $t (i32.const 4)))
+      (func (export "i") (result i31ref) (ref.i31 (i32.const -3)))
+      (func (export "is") (param anyref) (result i32) (ref.test (ref $t) (local.get 0))))""")
+    inst = t.instantiate(t.compile(m), [], store)
+    s = inst.call(0, [])[0]
+    assert isinstance(s, GcRef) and s.kind == "struct" and inst.call(0, [])[0] is not s
+    assert inst.call(1, []) == [-3] and inst.call(2, [s]) == [1] and inst.call(2, [-3]) == [0]
+
+
+@pytest.mark.parametrize("bounds", ["guard", "explicit"])
+def test_heap_accesses_below_the_size_work_and_past_it_trap(
+    monkeypatch: pytest.MonkeyPatch, bounds: str
+) -> None:
+    """Compiled code reads and writes a word on every OS page below the heap's published size; a
+    corrupt reference past it, or far past it, traps (MEMORY_OUT_OF_BOUNDS) instead of crashing, in
+    both bounds modes (S0013 3b.1 review: no uncommitted page below the size)."""
+    t, store = gc_jit(monkeypatch, bounds), StoreState()
+    m = mod("""(module (type $t (struct (field (mut i32))))
+      (func (export "get") (param (ref null $t)) (result i32) (struct.get $t 0 (local.get 0)))
+      (func (export "set") (param (ref null $t)) (struct.set $t 0 (local.get 0) (i32.const 7)))
+      (func (export "new") (result anyref) (struct.new $t (i32.const 1))))""")
+    inst = t.instantiate(t.compile(m), [], store)
+    inst.call(2, [])  # the first object: the type area and the first chunk committed
+    raw = Instance.call  # raw words, past the host boundary's checks
+    end = _stacks(store).heap.mem.pages << 16
+    for w in range(gc.TYPES, end, mmap.PAGESIZE):  # the field at w + 8 on every page
+        raw(inst, 1, [w])
+        assert raw(inst, 0, [w]) == [7]
+    for w in (end - 8, end, 0xFFFFFFF8):
+        for f in (0, 1):
+            with pytest.raises(Trap) as e:
+                raw(inst, f, [w])
+            assert e.value.code is TrapCode.MEMORY_OUT_OF_BOUNDS, (hex(w), f)
+    with pytest.raises(Trap) as e:
+        raw(inst, 0, [0])
+    assert e.value.code is TrapCode.NULL_REFERENCE
