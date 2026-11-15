@@ -181,6 +181,37 @@ requirement that sljit must meet, checked on every ISA of the track before any b
    final address (breaks AOT and D35); (c) real `SHT_RELA` relocations, which D59 keeps only as a
    last resort.
 
+## sljit built for wasm32 per target (maintainer, 2026-11-15)
+Pinned sljit `39c508d` with the patch in `poc/sljit`, the full API exported (as `full_*.wasm` in
+`build.sh`), clang wasm32:
+
+| target | `-Os` | `-O2` | `-Os` + gzip -9 |
+|---|---|---|---|
+| X86_32 | 48.5 KB | 61.8 KB | 17.5 KB |
+| X86_64 | 43.7 KB | 59.3 KB | 16.3 KB |
+| ARM_64 | 36.8 KB | 59.5 KB | 14.4 KB |
+| PPC_32 | 40.5 KB | 56.1 KB | 13.0 KB |
+| MIPS_32 | 39.0 KB | 76.5 KB | 14.3 KB |
+| MIPS_64 | 41.1 KB | 81.6 KB | 15.4 KB |
+| RISCV_32 | 39.4 KB | 58.8 KB | 13.5 KB |
+| RISCV_64 | 44.4 KB | 65.3 KB | 15.4 KB |
+
+One target is 37-48 KB at `-Os`; the eight together 333 KB. One module holding several targets
+would share the generic part (`sljitLir.c`): estimated (not measured) 250-350 KB, about 100 KB
+gzipped, plus our core in C. sljit picks its target at build time and has no namespace, so such a
+module builds `sljitLir.c` once per `SLJIT_CONFIG_*` with prefixed symbols.
+
+Five targets do not build, all because sljit assumes the host is the target:
+* **ARM_V6, ARM_V7, ARM_THUMB2**: without hardware divide the code calls `__aeabi_uidivmod` /
+  `__aeabi_idivmod` and embeds the compiler process's address of them.
+* **PPC_64**: inline assembly in the backend.
+* **S390X, LoongArch64**: CPU features read with `getauxval` (`sys/auxv.h`) from the CPU it runs on.
+
+So two patches are needed beyond today's: helper calls through context words (as our libcalls),
+never an absolute address (the same class as position independence above); CPU features from the
+configuration (`isa_level`, `isa_features` of the artifact), not from the host, as the existing
+patch already does for x86, ARM64 and RISC-V.
+
 ## Verification
 
 * The spec suite under QEMU for each sljit target, `pyc` as the oracle (as PYC-PLATFORMS.md does
