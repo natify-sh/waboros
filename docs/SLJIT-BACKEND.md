@@ -164,6 +164,23 @@ pwart. **This is the claim to verify** (see "first step").
 * **Cache flush and W^X** on the target are the loader's job, as for our backends.
 * **Licence**: sljit is BSD-2-Clause, compatible with MIT (D40).
 
+## Two checks before the first sljit step (maintainer, 2026-11-15)
+This document predates D56 (precise roots) and D59 (ELF64 artifacts, no relocations); both add a
+requirement that sljit must meet, checked on every ISA of the track before any backend code:
+
+1. **Site records and stack maps (D56).** sljit builds the frame (`sljit_emit_enter`), not our
+   core. Every call needs its return-address offset, `ret_at` and `up`: sljit gives a label right
+   after each call and the frame size follows from `emit_enter`'s arguments, so it is probably
+   derivable; to be shown per architecture with the walk's check mode (`WABOROS_JIT_WALK_CHECK=1`).
+2. **Position independence (D59: `RELOCS` empty).** sljit emits code for the address it will run
+   at: some jumps and constants are absolute (`sljit_emit_const`, rewritable jumps,
+   `sljit_get_label_addr`), and a `br_table` through a table of label addresses is absolute too. A
+   micro-compiler generates code in its own memory and it runs elsewhere (AOT, cross-compilation,
+   D35). Options: (a) use only relative jumps and tables of offsets instead of addresses, and check
+   that sljit then emits position-independent code on each ISA (start here); (b) generate for the
+   final address (breaks AOT and D35); (c) real `SHT_RELA` relocations, which D59 keeps only as a
+   last resort.
+
 ## Verification
 
 * The spec suite under QEMU for each sljit target, `pyc` as the oracle (as PYC-PLATFORMS.md does
