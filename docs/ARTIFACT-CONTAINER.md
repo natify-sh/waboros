@@ -1,11 +1,13 @@
 ---
 title: The artifact container - our own format or ELF (as Wasmtime does)
 kind: reference
-status: draft
-updated: 2026-11-03
+status: outdated
+updated: 2026-11-15
 ---
 
 # The artifact container: our own format or an ELF container
+
+**Decided (2026-11-15): ELF64, option (b) — [DECISIONS.md](DECISIONS.md) D59; prototype `poc/artifact/elf64.py`.** The text below is the analysis that led to it.
 
 A question from the maintainer, for the orchestrator. It belongs to the phase-5 spec that fixes the
 artifact format (D36). **Nothing is decided here.** [ARTIFACT.md](ARTIFACT.md) part 2 describes our

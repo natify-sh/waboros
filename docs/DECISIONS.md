@@ -952,7 +952,8 @@ A small module the runtime itself runs as wasm (the first is S0013's collector) 
 package as its source and its committed `.wasm` side by side; the `.wasm` ships as package data.
 The source is in one of two languages, chosen in the step's plan before the code:
 * **WAT** (`.wat`), the default for a small module. A test assembles it with the development tools
-  (`tests/watcache.py`, `wasm-tools`).
+  (wasmtime-py's `wat2wasm`, directly or through `tests/watcache.py`; the same bytes on every OS,
+  S0013 step 5.2).
 * **C** (`.c`), when the module is too large or too intricate to keep in WAT (maintainer). A test
   rebuilds it with a pinned toolchain (the PyPI `ziglang` wheel at a fixed version and hash, as
   `poc/bench/corpus/build.sh` does, or a pinned wasi-sdk) and fixed flags that keep the output
@@ -1123,3 +1124,39 @@ bytes change (D35); they go in with the artifact-format spec, after S0013 step 8
 words 10-13 anyway), and ARTIFACT.md part 3 states the reservation and the size rule then, not
 before the code does. Cost: Wasmtime 50 enables threads by default, so a gap from its defaults stays
 until threads are done; toolchains emit threads only on request (`-pthread`, wasi-threads).
+
+### D59. The artifact container is ELF64
+Status: accepted (maintainer, 2026-11-15) · Date: 2026-11-15 · Supersedes: — · Evidence: ARTIFACT-CONTAINER.md (option (b)); the prototype `poc/artifact/elf64.py` (standard library only), read back by `readelf`, `objdump`/`llvm-objdump`, `llvm-readobj` and pyelftools 0.32 with no warning; Wasmtime's `.cwasm` is an ELF on every OS
+
+The artifact container of format v1 is ELF64: `ET_REL`, a private `EI_OSABI`, no program headers,
+the code in `.text` (file offset aligned to 4096, so a loader may map it and aarch64's `adrp` rule
+holds), each payload of ARTIFACT.md part 2 as a `.waboros.<name>` section aligned to 8 in a fixed
+order, and `.symtab` with one local `STT_FUNC` per function and the entry trampolines as globals
+(`__waboros_entry_sysv`, `_win64`, `_aapcs64`). `e_machine` replaces `arch`; ELF's ident and the
+OS/ABI replace the magic. Deterministic (fixed order, no timestamps, string tables in first-use
+order), so D35's identity holds for the files. The question of ARTIFACT-CONTAINER.md is closed:
+options (a), our own container, and (c), our own plus an ELF exporter, are dropped.
+
+Unchanged (ARTIFACT-CONTAINER.md, "What does not change"): our own loader, `mmap` and W^X, no OS
+loader and no file needed; thin and fat files (D18); the header fields; the context ABI (part 3);
+the ISA policy (part 1); a loader refuses what it does not know.
+
+The package keeps no dependency: its own writer and reader on `struct` (about 200-300 lines with
+every section). pyelftools, `readelf`, `llvm-readobj`, `llvm-objdump` and `eu-elflint` are test and
+CI tools only, as independent checks of the writer.
+
+Left to the artifact-format spec (ROADMAP "Next" (6)), each to decide there: the `EI_OSABI` value
+(64 or above, not Wasmtime's `0xC8`, not 97 or 255); whether `EI_ABIVERSION` or `.waboros.header`
+carries `format_version` (one source of truth); little-endian and ELF64 only (D48); the header split
+(`format_version`, `ctx_abi_version`, `isa_level`, `isa_features`, the S0006 flags, `compiler`,
+`module_sha256`, `config_sha256` in `.waboros.header`; D18's frozen part becomes the ELF header, the
+section headers, `.waboros.header` and `.waboros.wasm`); `CHECKSUM` as `.waboros.checksum` or
+dropped; `RELOCS` empty (`SHT_RELA` only if ever needed); `pyc`/`mpy` artifacts (`EM_NONE` in the
+same container or outside ELF); the file extension (D18's working `.w2a`); S0006 step 6 (the
+`BOUNDS_GUARD` flag and the fault map in `.waboros.traps`, the C loader's fault handler).
+
+Consequences: `objdump`, `readelf`, `nm`, `perf` and `gdb` read every artifact with function names;
+the C reference loader (D36) reads a fixed ELF64 subset (header, section headers, `.symtab`, its
+known sections by name, unknown ones skipped); hosts in other languages and the micro-compilers
+(JIT-AS-WASM.md) use a container every language can read; D35 tests gain "written twice and
+cross-compiled, byte-identical ELF". Order: after S0013 steps 5-8 and the D58 reservation.
