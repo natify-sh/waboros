@@ -282,7 +282,7 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29; done 2026-11-03) -> 
   artifact format below is fixed; criterion byte identity and portability to non-Python hosts.
 * **One LIR vocabulary** before porting to the micro-compilers (MICRO-COMPILERS.md): the operation
   names that are strings today in several places become one enumerated list, defined once,
-  together with fixing the artifact format in this phase; in C or Zig they become enums anyway, so
+  together with fixing the artifact format in this phase; in C (D60) they become enums anyway, so
   one list is ported instead of several naming schemes.
 * The contract of ARTIFACT.md (format v1, context ABI v1, baseline-ISA sequences, CPU feature
   detection) is **fixed here**, after two architectures have shaped it, together with artifact

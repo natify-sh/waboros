@@ -16,7 +16,7 @@ maintainer's answers to them. Nothing here is decided or measured. A decision (t
 [MICRO-COMPILERS.md](MICRO-COMPILERS.md) plans `arm64.wasm` as a port of `jit-aarch64` that lives
 **next to** the Python backend, and puts the replacement of the Python compilers off "until arm64 and
 riscv64 have shown what two implementations cost to keep in step". The proposal is the other end of
-that sentence: **port, then replace.** `jit-aarch64` is written again in C (or Zig), built to
+that sentence: **port, then replace.** `jit-aarch64` is written again in C (D60), built to
 `arm64.wasm`, compiled once ahead of time into an ordinary JIT artifact, and the Python `jit-aarch64`
 is removed once the port matches it. Then the same for `jit-x86_64`. Python keeps `pyc`, the runtime
 and the loader; every JIT compiler is an AOT artifact made from wasm.
@@ -102,8 +102,8 @@ fuzz (ROADMAP) also compares their accept/reject decisions.
 * **Machine code in the wheel**: reproducible (D35) and checked by the bootstrap; a release gains a
   build step per architecture and ISA level.
 * **Language of the port**: C (simplest; the same toolchain as sljit, so a later `sljit-<arch>.wasm`,
-  D48, builds the same way), Zig, or Rust; MICRO-COMPILERS.md lists the trade-offs. To be decided with
-  the Dn.
+  D48, builds the same way), Zig, or Rust; MICRO-COMPILERS.md lists the trade-offs. **Decided: C**
+  (D60).
 
 ## What to decide (at the Dn, after ROADMAP item 6)
 

@@ -110,6 +110,9 @@ Zig/C/Rust (without SIMD; with it core ~2 300 + one backend ~1 700-2 000, about 
 
 Language choice is about safety and ergonomics, not architecture: Zig (already in the stack via
 `zig cc`, tiny freestanding modules), Rust (`no_std`, watch determinism), C (simplest, least safe).
+**Decided: C** (D60, maintainer, 2026-11-15): it embeds anywhere; a native runtime embeds its own
+architecture's micro-compiler compiled ahead of time and takes the others as `.wasm` for
+cross-compilation.
 
 ## Bootstrap paths
 

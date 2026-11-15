@@ -1160,3 +1160,33 @@ the C reference loader (D36) reads a fixed ELF64 subset (header, section headers
 known sections by name, unknown ones skipped); hosts in other languages and the micro-compilers
 (JIT-AS-WASM.md) use a container every language can read; D35 tests gain "written twice and
 cross-compiled, byte-identical ELF". Order: after S0013 steps 5-8 and the D58 reservation.
+
+### D60. Micro-compilers and the native runtime in C; a native runtime embeds its own architecture's compiler, the others ship as wasm
+Status: accepted (maintainer, 2026-11-15) · Date: 2026-11-15 · Supersedes: — · Evidence: MICRO-COMPILERS.md ("Language choice"), JIT-AS-WASM.md ("Language of the port"), MICRO-COMPILERS-SHIPPING.md, D36, D48
+
+* **Language: C**, for the micro-compilers (the ports of the JIT compilers) and for the native
+  runtime and loader (D36). Not Zig, not Rust: C embeds anywhere (every host language has a C FFI,
+  every platform a C compiler) and is the language of the C reference loader and of sljit (D48).
+  The toolchain that builds it is a separate question (D54's pinned `ziglang` wheel as a C compiler
+  stays possible); the source is C.
+* **Shipping:** a native runtime built for architecture X embeds the micro-compiler for X compiled
+  ahead of time, so it compiles and runs wasm with no wasm engine of its own. It is embedded as
+  data: the ELF64 artifact's bytes (D59) carried inside the runtime binary (a byte array or
+  `.incbin`), not linked, and loaded by the runtime's own loader like any other artifact. Rejected:
+  linking the artifact into the binary with the system linker. It works (the maintainer checked
+  on the prototype, 2026-11-15: `ld.bfd`, `ld.gold`, `ld.lld` on x86-64 and `ld.lld` on aarch64
+  accept the private `EI_OSABI`, and a C call through `__waboros_entry_sysv` reaches the code), but
+  it would need per-artifact global symbol names (two artifacts collide on the trampoline names),
+  `SHF_ALLOC` metadata sections with symbols, and `.note.GNU-stack` in every artifact, for nothing
+  the embedded-bytes form lacks. The bytes sit in `.rodata` and the loader copies the code into
+  executable memory, so the block's alignment does not matter; to map code straight from the
+  binary's image one day, embed it 4096-aligned (`.balign 4096` before `.incbin`), since `.text`
+  inside the artifact is 4096-aligned only relative to the file's start.
+* The micro-compilers of the other architectures are shipped as `.wasm`, optional, for
+  cross-compilation (D35): the runtime compiles such a `.wasm` with its own embedded
+  compiler, then runs it to produce artifacts for that target. The Python package keeps its
+  shipping as MICRO-COMPILERS-SHIPPING.md describes; this decision fixes the language and the shape
+  of the native runtime, not the Python side.
+* Unchanged: the Python JIT stays the byte oracle of each port (MICRO-COMPILERS.md); whether a port
+  replaces its Python backend is still the JIT-AS-WASM decision taken after the artifact format
+  (ROADMAP "Next" (6)).
