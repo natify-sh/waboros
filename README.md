@@ -36,7 +36,7 @@ What passes (details: [`docs/FEATURES.md`](docs/FEATURES.md), [`docs/ROADMAP.md`
 * CoreMark and a corpus of real C libraries (Monocypher, SHA-256, BLAKE3, miniz) give the same results as
   `hashlib`, `zlib` and Wasmtime.
 
-Not there yet: the public API, the CLI and WASI (phase 6), GC,
+Not there yet: the public API, the CLI and WASI (phase 6), the JITs' GC collector (S0013 step 5; their heap only grows),
 threads, fuel and epochs, the `mpy` (MicroPython) target and a JIT for riscv64 (the other architectures
 stay on `pyc`, D48). Bounds checks use guard pages by default on Linux glibc (x86-64 and aarch64), Linux
 musl (x86-64), macOS (x86-64 and arm64), Windows (x64 and arm64) and Android (x86-64) (S0006), and
