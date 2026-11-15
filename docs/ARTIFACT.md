@@ -31,7 +31,7 @@ the CPU cannot run.
 |---|---|---|
 | x86-64 | **x86-64-v1**: SSE, SSE2 (every x86-64 CPU) | `x86-64-v2` (SSE3, SSSE3, SSE4.1, SSE4.2, POPCNT), `x86-64-v3` (AVX, AVX2, BMI1/2, LZCNT, FMA, MOVBE), single features by name |
 | aarch64 | **ARMv8.0-A** with FP and Advanced SIMD (NEON) | `lse` (v8.1 atomics), `fp16`, `dotprod`, `rcpc`, … by name |
-| riscv64 | planned (D48, the third JIT architecture, after `arm64.wasm`); defines its baseline here before its first release | RVV 1.0 as an optional level |
+| riscv64 | planned (D48, the third JIT architecture, after `aarch64.wasm`); defines its baseline here before its first release | RVV 1.0 as an optional level |
 | later | none planned: every other architecture runs `pyc` (D48) | |
 
 Rules:

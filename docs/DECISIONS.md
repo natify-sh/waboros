@@ -756,7 +756,7 @@ decide differently there.
 
 1. **Architectures.** A JIT target exists only for x86-64, aarch64 and riscv64: three of
    Cranelift's four 64-bit architectures (x86-64, aarch64, riscv64, s390x). x86-64 and aarch64 are
-   done; riscv64 is planned, the first micro-compiler after `arm64.wasm`
+   done; riscv64 is planned, the first micro-compiler after `aarch64.wasm`
    ([MICRO-COMPILERS.md](MICRO-COMPILERS.md)); ROADMAP phase 8.
    **s390x is excluded by the maintainer** and runs `pyc` (IBM mainframes only). Reasons, recorded, not a plan: the host
    is big-endian and wasm memory is little-endian, so every load and store would byte-swap (s390x
@@ -795,7 +795,7 @@ amendment of that track). Proposal, proof of concept and measurements:
 Consequences (for the hand-written JITs): there is no big-endian JIT host, so the backend interface (D39) never needs
 byte-reversed loads and stores and SIMD lanes stay in host order on every JIT target; the JIT CI stays
 on native runners (x86-64, arm64) plus QEMU for riscv64 when it comes. The micro-compilers are
-`x64.wasm`, `arm64.wasm` and `riscv64.wasm`.
+`x86_64.wasm`, `aarch64.wasm` and `riscv64.wasm`.
 
 ### D49. Relaxed SIMD: the deterministic profile of Wasm 3.0 for 16 operators, madd/nmadd native per target as Wasmtime; each target lowers all 20 itself
 Status: accepted (maintainer, 2026-11-04) · Date: 2026-11-04 · Supersedes: — · Evidence: [S0008](specs/S0008-relaxed-simd-wide-arithmetic.md) (Semantics: Wasmtime 50.0.1 measured 2026-11-04, its deterministic switch fuses madd/nmadd on every host and equals the 3.0 profile on the other 16 operators; without the switch 23 928 of 60 000 calls differ from the profile)

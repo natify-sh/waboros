@@ -22,8 +22,8 @@ micro-compiler per architecture next to its `.wasm`:
 
 ```
 waboros/compilers/
-  x64.wasm      x64.jit-x86_64-v1.<ext>
-  arm64.wasm    arm64.jit-aarch64-v1.<ext>
+  x86_64.wasm      x64.jit-x86_64-v1.<ext>
+  aarch64.wasm    arm64.jit-aarch64-v1.<ext>
   riscv64.wasm  riscv64.jit-riscv64-v1.<ext>
 ```
 
@@ -106,7 +106,7 @@ So the whole chain is wasm, from source to native compiler:
 
 ```
 clang.wasm + wasm-ld.wasm   (one file each, the same bytes on every host)
-  -> x64.wasm / arm64.wasm / riscv64.wasm   (wasm32-unknown-unknown, no WASI)
+  -> x86_64.wasm / aarch64.wasm / riscv64.wasm   (wasm32-unknown-unknown, no WASI)
      -> the micro-compiler compiles itself -> a native artifact
         -> compiles everything else
 ```

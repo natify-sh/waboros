@@ -16,7 +16,7 @@ done ("Rules for now" below).
 
 A **micro-compiler** is our JIT compiler, rewritten in a language that compiles to WebAssembly (Zig,
 C or Rust), shipped as **one small wasm module per target architecture** (`riscv64.wasm`,
-`x64.wasm`, ...). It takes wasm bytes and returns a native JIT artifact in our format (ARTIFACT.md,
+`x86_64.wasm`, ...). It takes wasm bytes and returns a native JIT artifact in our format (ARTIFACT.md,
 context ABI of [S0003](specs/S0003-jit-context-abi.md)). Wasm is the portable IR (D16), and the
 micro-compiler is a program written in that IR that translates the IR to native code, including
 itself.
@@ -57,7 +57,7 @@ source, which is why a shipped micro-compiler needs a reproducible build.
   micro-compiler is compared with, byte for byte, on every spec module and CoreMark. Any backend or
   core change lands in Python first, with tests; a byte difference is a micro-compiler bug by
   definition.
-* **They are also the short bootstrap path** on x86-64 and aarch64: our JIT compiles `x64.wasm`
+* **They are also the short bootstrap path** on x86-64 and aarch64: our JIT compiles `x86_64.wasm`
   straight to a native micro-compiler, no `pyc` step.
 * **Micro-compilers are the portable path**: architectures with no Python backend first; on x86-64
   and aarch64 they may later become the production path for speed and for other-language hosts,
@@ -131,14 +131,14 @@ anyone can run: [MICRO-COMPILERS-SHIPPING.md](MICRO-COMPILERS-SHIPPING.md) (main
 
 * Prerequisites: the backend interface frozen (**done**, D39), the artifact format and context ABI
   fixed with a version (**phase 5**, D36), the C reference loader in CI (phase 5).
-* **First: `arm64.wasm`, a port of the aarch64 backend** (maintainer, 2026-11-02). The Python
+* **First: `aarch64.wasm`, a port of the aarch64 backend** (maintainer, 2026-11-02). The Python
   `jit-aarch64` is a ready oracle: every spec module and CoreMark compared byte for byte, so the
   ported core, the backend and the toolchain are validated before anything new is written. aarch64
   is the smaller backend (~1.2k lines).
 * **Then the third architecture: `riscv64`**, written as a micro-compiler on the proven core instead
   of a third Python backend; checked by the spec suite under QEMU against `pyc` and Wasmtime (no
   byte oracle exists for it).
-* The micro-compilers are `x64.wasm`, `arm64.wasm` and `riscv64.wasm`; later candidates: none hand-written (D48); optionally, later, `sljit-<arch>.wasm` for the other architectures (D48 amendment, [SLJIT-BACKEND.md](SLJIT-BACKEND.md)). `s390x`, `armv7l`, `ppc64le`, `i686`/`x86` and the
+* The micro-compilers are `x86_64.wasm`, `aarch64.wasm` and `riscv64.wasm`; later candidates: none hand-written (D48); optionally, later, `sljit-<arch>.wasm` for the other architectures (D48 amendment, [SLJIT-BACKEND.md](SLJIT-BACKEND.md)). `s390x`, `armv7l`, `ppc64le`, `i686`/`x86` and the
   rest stay on `pyc`. *History, before D48:* they were listed as later
   candidates, and `i686` was judged costly (8 registers, i64 as register pairs, x87 vs SSE2, cdecl
   trampolines, 4 GB address space) and lowest priority.
