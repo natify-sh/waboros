@@ -1225,3 +1225,22 @@ Status: accepted (maintainer, 2026-11-15: S0013 "Step 5 decisions" D1-D4, the st
   the table stays flat under churn. `GcRef` handles stay until the store is dropped (phase 6).
 * Open until step 5.7: the work-list order (Cheney against depth-first, measured as S0013 Q2
   says) and the measurements in BENCHMARKS.md.
+
+### D62. Statically linked AOT artifacts and static builds: after threads or WASI; three rules in format v1 now
+Status: accepted (maintainer, 2026-11-16) · Date: 2026-11-16 · Supersedes: — · Evidence: STATIC-BUILDS.md; the ELF64 prototype checks of D59 and D60 (2026-11-15)
+
+User modules compiled ahead of time are linked into a native binary with the system linker (a
+**static build**: the C loader-runtime, C host functions with WASI, and the artifacts, one ordinary
+executable or library, as a wasm2c build is), for the platforms where executable memory cannot be
+had at run time (an iOS app, strict W^X, firmware). It is **not part of format v1**: it comes after
+threads (D58), or after WASI, as an amendment. No extra optimising compiler tier is planned: a
+static build uses the code the micro-compiler emits for JIT and AOT, so it brings cheap host calls
+and those platforms, not faster compute code (STATIC-BUILDS.md has the expectations and the
+measurements). D60's rejection of linking stays for the embedded micro-compiler only.
+
+So that the linked form is an amendment and not a version 2, format v1 keeps three rules: a loader
+ignores the `sh_flags` of `.waboros.*` sections and finds them by name (D59); a loader never
+depends on global symbol names and finds the entry trampolines through a `.waboros.*` payload
+(offsets, as `ENTRIES`), so names can take a per-artifact prefix later (`.symtab` is for tools and
+a future linker); unknown sections are skipped (D59), so `.note.GNU-stack` and a future descriptor
+section need no version change.
