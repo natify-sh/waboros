@@ -1,6 +1,6 @@
 # Codecov reports, it never blocks: the project and patch statuses are informational
-# (maintainer, 2026-11-10). Coverage runs on x86-64 only, so code reached only on other
-# architectures or with study knobs set shows as uncovered.
+# (maintainer, 2026-11-10). Coverage runs on x86-64 and on native arm64 (the two data files are
+# combined before the one upload); code reached only on other OSes or with study knobs set still shows as uncovered.
 coverage:
   status:
     project:

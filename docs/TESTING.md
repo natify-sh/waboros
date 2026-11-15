@@ -251,8 +251,8 @@ of guard mode; the child is the base interpreter, not the venv launcher, and the
 where `IsUserCetAvailableInEnvironment` says the machine has no user CET (with CET, a policy read back as off
 fails).
 
-Packaging workflows (D40): `.github/workflows/coverage.yml` runs `pytest --cov` on Python 3.13 and keeps
-`coverage.xml` as an artifact and to Codecov (OIDC; informational, `codecov.yml`: its statuses and upload errors never fail CI); `publish.yml` runs on a `v*` tag, builds the sdist and the wheel,
+Packaging workflows (D40): `.github/workflows/coverage.yml` runs `pytest --cov` on Python 3.13, on x86-64 and on native arm64, and keeps
+combines the two data files (`coverage combine`) into one `coverage.xml`, kept as an artifact and sent to Codecov (OIDC; informational, `codecov.yml`: its statuses and upload errors never fail CI); `publish.yml` runs on a `v*` tag, builds the sdist and the wheel,
 smoke-tests the wheel in a clean environment, and publishes to PyPI (trusted publishing) and as a GitHub
 release. `.github/dependabot.yml` updates the `uv` lock file and the pinned actions weekly.
 
