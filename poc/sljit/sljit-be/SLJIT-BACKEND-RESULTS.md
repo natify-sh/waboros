@@ -241,3 +241,63 @@ through libm (`nearbyint`); our SSE2 sequence through `sljit_emit_op_custom` wou
 * A sljit API for the return-address offset instead of internal fields.
 * aarch64: no walk check, no measurement (QEMU here; timings need an arm64 runner). The SIMD part
   there is NEON: our `aarch64/simd.py` through `sljit_emit_op_custom` (4-byte pieces).
+
+## Update 2026-11-16 (2): aarch64 under QEMU
+
+The same backend on aarch64: sljit cross-built for the host (`a64/libsljit2.so`,
+`a64/consts2.json`), aarch64 CPython 3.13.14 under QEMU 8.2 user mode, `-cpu cortex-a72`
+(ARMv8.0, no BTI: below), `qa64.sh`. Correctness only: QEMU timings mean nothing.
+
+What is per ISA, all small and inside `waboros_sljit.py` / `lib2.c`:
+
+* **The frame.** sljit's aarch64 prologue saves x29/x30 with `stp x29, x30, [sp, #-size]!` for
+  frames up to 512 bytes, so `ret_at` = 8 and `up` = the frame size; larger frames keep x30 at
+  `size - 8`. Locals start at `SLJIT_LOCALS_OFFSET`, which is also the entry's saved block
+  (`Trampolines.saved`).
+* **SIMD**: our NEON lowering (`aarch64/simd.py`) unchanged, through `sljit_emit_op_custom` one
+  4-byte word at a time, with sljit's registers for the context (x19) and the frame (x20). Its
+  scratch x9-x13 and x17 hold nothing of ours (sljit's own temporaries are x9/x10; R3-R6 are x3-x6).
+  Its load and store forms take only the offsets its own bounds check produces, so a constant
+  address from sljit's `_access` goes to the index register.
+* **A sljit assertion**: a constant (`sljit_emit_const`) right after a jump fails in
+  `sljit_generate_code` on aarch64. The prologue now emits the frame-size constant first.
+* **Guard mode (S0006 fault points)**: on aarch64 sljit splits an access the immediate form cannot
+  take (a constant address past the scaled `imm12`: an `add` before the `ldr`) and stores an
+  immediate through a temporary (`mov` before the `str`). The fault point's label was then on the
+  wrong instruction and a guard fault became a segfault (`memory_grow.wast`). Now, in guard mode
+  on aarch64, a constant address uses the `[base, index]` form and a stored immediate goes to a
+  register before the label. Lesson for every sljit ISA: a fault point needs "one instruction per
+  access", and that is a property of sljit's encoding per ISA, to be checked under guard mode.
+
+Correctness, both bounds modes, `WABOROS_JIT_WALK_CHECK=1` and `WABOROS_JIT_GC_POISON=1`:
+
+| directory | jit-aarch64 | jit-sljit on aarch64 |
+|---|---|---|
+| core | 20 598 | 20 549; the other 49 "unsupported: exceptions" |
+| gc | 797 | 797 |
+| simd | 25 481 | 25 481 |
+| relaxed-simd | 79 | 79 |
+| bulk-memory | 7 485 | 7 485 |
+| multi-memory | 912 | 912 |
+| wide-arithmetic | 109 | 109 |
+
+`tools/spec_diff.py` both ways, explicit and guard: 49 commands pass on jit-aarch64 and not on
+jit-sljit (all "unsupported: exceptions"), 0 in the other direction. x86-64 rechecked after these
+changes: the same table as above, unchanged.
+
+**Open on aarch64: BTI.** sljit emits no landing pads. Where the CPU has BTI the runtime maps code
+`PROT_BTI` (`execmem.py`), and an indirect call into sljit code is then an illegal instruction
+(seen under QEMU's default `max` CPU). Needed: `bti c` at every function entry, thunk and
+trampoline, and `bti j` at the targets of `br_table`. Probably possible with `sljit_emit_op_custom`
+(as our aarch64 backend emits them); not done here.
+
+Reproduce on aarch64:
+
+```sh
+S=<sljit checkout>/sljit_src; mkdir -p a64
+aarch64-linux-gnu-gcc -O2 -fPIC -shared -I$S -DSLJIT_CONFIG_AUTO=1 -w lib2.c -o a64/libsljit2.so
+aarch64-linux-gnu-gcc -I$S -DSLJIT_CONFIG_AUTO=1 -w consts2.c -o a64/consts2
+qemu-aarch64 -L /usr/aarch64-linux-gnu a64/consts2 > a64/consts2.json
+python3 <waboros>/tools/run_arm64.py -c 1                 # once: the arm64 site (pytest, wasmtime)
+WABOROS=<waboros> WABOROS_JIT_WALK_CHECK=1 ./qa64.sh -m tests.spec.run --engine jit-sljit --in-process core gc simd
+```

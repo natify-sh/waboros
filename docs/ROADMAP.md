@@ -287,8 +287,9 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29; done 2026-11-03) -> 
   oracle becomes behaviour (spec suite, `spec_diff`) instead of bytes, and part 3's per-architecture
   register table (bridge, exit-record frame register, `tail_switch`, entry block) must be sljit's,
   or name no registers that only the code and its own trampolines see. Deferred until the same
-  check on aarch64 (under QEMU first, given to an agent by the maintainer; timings on an arm64
-  runner); then D48, MICRO-COMPILERS.md and JIT-AS-WASM.md are amended.
+  check on aarch64: done under QEMU 2026-11-16 (parity with `jit-aarch64` in both bounds modes,
+  `poc/sljit/sljit-be/`); left: native arm64 timings, BTI landing pads, exceptions. Then D48,
+  MICRO-COMPILERS.md and JIT-AS-WASM.md are amended.
 * **One LIR vocabulary** before porting to the micro-compilers (MICRO-COMPILERS.md): the operation
   names that are strings today in several places become one enumerated list, defined once,
   together with fixing the artifact format in this phase; in C (D60) they become enums anyway, so

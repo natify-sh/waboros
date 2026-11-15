@@ -172,7 +172,14 @@ pwart. **This is the claim to verify** (see "first step").
 **Status (2026-11-16):** both done on x86-64 by the experiment in `poc/sljit/sljit-be/`
 (`SLJIT-BACKEND-RESULTS.md`, "Update 2026-11-16"): check 1 with site records from a label after each
 call and the frame size after `sljit_emit_enter` (read from sljit internals for now), under the walk
-check and poison; check 2 shown there on 2026-11-04. Both stay open for the other ISAs.
+check and poison; check 2 shown there on 2026-11-04. On aarch64 (QEMU, ARMv8.0, 2026-11-16, "Update
+2026-11-16 (2)") the same table at parity with `jit-aarch64` in both bounds modes, SIMD through our
+NEON lowering as custom words. Per-ISA findings: a fault point needs one instruction per access, and
+sljit splits some on aarch64 (`add` before `ldr`, `mov` before `str` of an immediate), so every new
+ISA is checked in guard mode; sljit emits no BTI landing pads, so `bti c`/`bti j` must come through
+`sljit_emit_op_custom` before a native arm64 run with BTI; a `sljit_emit_const` right after a jump
+asserts in `sljit_generate_code` on aarch64 (to report upstream); the frame helper is per ISA. Still
+open: native arm64 timings, BTI, exceptions; the other ISAs.
 This document predates D56 (precise roots) and D59 (ELF64 artifacts, no relocations); both add a
 requirement that sljit must meet, checked on every ISA of the track before any backend code:
 

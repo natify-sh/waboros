@@ -20,12 +20,28 @@ sljit_uw w2s_code_size(struct sljit_compiler *c) { return c->executable_size; }
 sljit_uw w2s_label_addr(struct sljit_label *l) { return sljit_get_label_addr(l); }
 sljit_uw w2s_const_addr(struct sljit_const *k) { return sljit_get_const_addr(k); }
 sljit_s32 w2s_error(struct sljit_compiler *c) { return sljit_get_compiler_error(c); }
-/* S0013 D56 (experiment): bytes from the stack pointer after sljit_emit_enter (= the stack pointer
-   at every call of a REG_ARG function: no stack arguments, the frame keeps rsp 16-aligned) to this
-   frame's own return address. x86-64 SysV: the pushes (sljit's saved_regs_size counts the return
-   address, hence - word) above the locals. Internal fields and macros of sljit: a sljit API
-   (`sljit_get_return_address_offset`) would replace this. */
-sljit_sw w2s_ret_at(struct sljit_compiler *c) {
-	return c->local_size + GET_SAVED_REGISTERS_SIZE(c->scratches, c->saveds - SLJIT_KEPT_SAVEDS_COUNT(c->options), 1)
-		- (sljit_sw)sizeof(sljit_sw);
+/* S0013 D56 (experiment): a REG_ARG function's frame as sljit_emit_enter laid it out, from sljit's
+   internal fields (a sljit API would replace this). The stack pointer after the prologue is the
+   stack pointer at every call (no stack arguments; the frame keeps sp 16-aligned).
+   w2s_ret_at: bytes from it to this frame's own return address (x86-64: the one `call` pushed;
+   aarch64: x30 as the prologue's `stp x29, x30` saved it); w2s_up: to the caller's stack pointer
+   at its call; w2s_locals_offset: where SLJIT_MEM1(SLJIT_SP) offset 0 is. */
+sljit_sw w2s_up(struct sljit_compiler *c) {
+#if (defined SLJIT_CONFIG_X86_64 && SLJIT_CONFIG_X86_64)
+	return c->local_size + GET_SAVED_REGISTERS_SIZE(c->scratches, c->saveds - SLJIT_KEPT_SAVEDS_COUNT(c->options), 1);
+#elif (defined SLJIT_CONFIG_ARM_64 && SLJIT_CONFIG_ARM_64)
+	return c->local_size;  /* the whole frame, rounded to 16 */
+#else
+#error "w2s_up: x86-64 and aarch64 only"
+#endif
 }
+sljit_sw w2s_ret_at(struct sljit_compiler *c) {
+#if (defined SLJIT_CONFIG_X86_64 && SLJIT_CONFIG_X86_64)
+	return w2s_up(c) - (sljit_sw)sizeof(sljit_sw);
+#else
+	/* frames up to 512 bytes: stp x29, x30, [sp, #-size]! puts x30 at sp + 8; larger ones store
+	   the pair at the top of the saved area, x30 at size - 8 */
+	return c->local_size <= 512 ? (sljit_sw)sizeof(sljit_sw) : c->local_size - (sljit_sw)sizeof(sljit_sw);
+#endif
+}
+sljit_sw w2s_locals_offset(void) { return SLJIT_LOCALS_OFFSET; }
