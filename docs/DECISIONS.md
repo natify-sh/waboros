@@ -2,7 +2,7 @@
 title: Decisions
 kind: log
 status: current
-updated: 2026-11-11
+updated: 2026-11-15
 ---
 
 # Decisions
@@ -1088,3 +1088,38 @@ Status: accepted (maintainer, 2026-11-10 and 2026-11-13: S0013 Q1, Q5, Q8, Q9, Q
 Rejected (S0013 "Alternatives considered"): references as 64-bit addresses into store chunks (no
 containment, no reuse of S0011's checks, a collector that could not be a wasm module); GC as
 backend methods (the semantics written twice); a frame-pointer chain for the roots (D56).
+
+### D58. Threads after the artifact format; what they need in the context ABI reserved before it
+Status: accepted (maintainer, 2026-11-15: the direction and option (a)) · Date: 2026-11-15 · Supersedes: — · Evidence: ROADMAP "Next" items (6) and (7); ARTIFACT.md part 3 (the libcall block, word layout, code 15 `HEAP_MISALIGNED`, `MEMORIES.shared`); D50
+
+Threads (shared memory, the atomic instructions, `memory.atomic.wait32/64`, `memory.atomic.notify`)
+come after the artifact format is fixed, as ROADMAP orders them. So that they arrive as an amendment
+of context ABI version 1 and not as version 2 (which would refuse every artifact written by then),
+the format fixes three things for them:
+
+* **The model: one store per thread**, as in Wasmtime. Each thread instantiates the module in its own
+  store and imports the shared memory; only the memory is shared. Everything per store today stays
+  as it is (the context, words 10 and 14, the GC heap, the value stack, `TRAP_CODE`, `HOST_ERROR`),
+  and CLAUDE.md's "one thread per store" holds as written; what changes is that several stores share
+  one memory. A store used by several threads at once (shared-everything threads) would make words
+  10 and 14 per thread: that is version 2, out of scope.
+* **The libcall block gets reserved space**: 10 words, the 6 used today and 4 zero, so `wait32`,
+  `wait64` and `notify` (operands in slots, as every libcall) go in without moving any word after the
+  block. Rejected: the number of libcall words recorded in the artifact (option (b)): every loader,
+  the C reference loader (D36) included, would lay out a variable block for four words' saving.
+* **A shared memory's size may change at any time** (another thread's `memory.grow`), not only during
+  a host call or libcall as D50 says for i64 memories: code never keeps it in a register; explicit
+  bounds read `size_bytes` at every access (an acquire load where the architecture needs one; an
+  aligned 64-bit load on x86-64 needs nothing more); the base never moves (the S0006 reservation);
+  guard mode is unchanged.
+
+Needs no reservation: the atomic operations and `atomic.fence` (code generation; aarch64
+`ldaxr`/`stlxr` loops at the ARMv8.0 baseline, LSE as an ISA variant, D42), the misaligned-atomic
+trap (code 15 exists), `MEMORIES.shared` (exists), a shared memory's `memory.grow` (libcall 0, with
+the size rule above).
+
+When: the four libcall words shift every context offset after the block, so every module's code
+bytes change (D35); they go in with the artifact-format spec, after S0013 step 8 (step 6 changes
+words 10-13 anyway), and ARTIFACT.md part 3 states the reservation and the size rule then, not
+before the code does. Cost: Wasmtime 50 enables threads by default, so a gap from its defaults stays
+until threads are done; toolchains emit threads only on request (`-pthread`, wasi-threads).
