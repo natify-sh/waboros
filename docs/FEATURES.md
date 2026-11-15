@@ -19,7 +19,7 @@ run yet. "W3C phase" is the proposal's stage in the WebAssembly Community Group 
 standardized), from the upstream data, not a waboros roadmap phase. Wasmtime's column is the upstream data. `pyc` is computed from `tests/spec/xfail/pyc.txt`
 and the command counts in `tests/spec/counts.json`; each cell shows `ok/total` commands. Proposal
 directories (`test/core/<dir>/`) count only on a target that claims the feature
-(`tests/spec/claims.py`); an unclaimed feature is "-". `jit-x86_64` and `jit-aarch64` are computed the same way from their `tests/spec/xfail/<target>.txt`; they claim the same directories as `pyc` (D25 parity) except `gc`, which only `pyc` claims until S0013 step 3b, and including `simd`, which `pyc` claims since S0005 step 5b, `jit-x86_64` since step 5d3 and `jit-aarch64` since step 5e2. Every registered target has a column (`tests/test_features.py`). `mpy` is not listed yet.
+(`tests/spec/claims.py`); an unclaimed feature is "-". `jit-x86_64` and `jit-aarch64` are computed the same way from their `tests/spec/xfail/<target>.txt`; they claim the same directories as `pyc` (D25 parity) except `gc`, which `pyc` claims since S0013 step 2 and `jit-x86_64` since step 3b (`jit-aarch64` from step 4), and including `simd`, which `pyc` claims since S0005 step 5b, `jit-x86_64` since step 5d3 and `jit-aarch64` since step 5e2. Every registered target has a column (`tests/test_features.py`). `mpy` is not listed yet.
 
 ## Proposals
 

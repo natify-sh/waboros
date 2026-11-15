@@ -129,7 +129,14 @@ implement the wasm semantics itself: `common/lower.py` writes them once over the
 `ll_*` methods of each backend. The group is the bounds checks, the bulk end checks with the order and
 widths of their operands, and the table element check. The low layer names the machine registers and
 fits immediates to the encodings, under the contract S0011 states. It sits inside the backend side of
-D39, is never serialized and is not part of D39's frozen interface. GC is to be written on it as well.
+D39, is never serialized and is not part of D39's frozen interface.
+
+**GC is lowered once, in the shared core (S0013 Q9, D57).** `common/gc.py` lowers every GC
+instruction (allocation, struct and array access, casts, i31, the bulk array operators) onto D39
+methods only: the heap is a hidden i32 memory, so a field access is a `load` or `store` and S0011's
+bounds checks and guard fault points apply unchanged; a backend only lists the opcodes in its
+`supported` set. The same file builds the stack maps of every call site (D56). aarch64 gets GC by
+claiming the opcodes (S0013 step 4); no GC semantics is written per architecture.
 
 **Why structured, not a CFG of basic blocks**: Python (and Lua 5.1) has no `goto`, so `pyc`/`mpy` need
 structure; a JIT lowers structure to labels trivially. **Why not SSA**: phi nodes buy GVN/LICM-class

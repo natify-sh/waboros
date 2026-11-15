@@ -803,3 +803,34 @@ What went wrong or surprised us while building the PoC, so it is not found again
     passed every test, as it must. Rule: before listing a mutation, say which observable result it
     changes; if none does while the other invariants hold, it is a defence (kept or dropped by
     decision), not a test target. Found: S0013 step 3a.2, 2026-11-11.
+106. **A test that builds native memory crashes where no JIT runs, before any skip.** The step-3b.1
+    heap tests built a `GcHeap` (a 4 GiB + 32 MiB reservation through ctypes `mmap`) and a store's
+    value stack directly, without a JIT target in sight, so nothing skipped them: on Pyodide the
+    64-bit size cannot reach `mmap` (a fatal error, not an exception), and the i686 and armv7l
+    cells failed too, while every native job was green. Rule: a test that reserves or maps memory
+    through the JIT's code (`GcHeap`, `_stacks`, an `Instance`) skips through `tests.jit.native`
+    first, as the instance tests already did. Found: S0013 step 3b.1 CI, 2026-11-13.
+107. **"Unchecked but memory-safe" needs the first write the unchecked value reaches.** The
+    step-3b plan left the type check of host values for reference parameters to phase 6, reasoning
+    that every word the host can produce is a valid object and every heap access is bounds-checked.
+    Both halves were true and the conclusion was wrong: a host int for a `(ref null $T)` became an
+    i31 word, which `struct.set` used as an object offset and wrote over the heap's own cursor and
+    limit (inside the bounds), and an object of another struct type read the next object's header
+    as a field. Bounds checks keep a write inside the heap, not inside the right object. Rule: before
+    calling an unchecked input harmless, follow it to the first write it can reach and ask what that
+    write corrupts inside the bounds; check types at the boundary as the oracle does. Found: S0013
+    step 3b.2 review, 2026-11-14.
+108. **A refactor that shares a sequence can drop the reservation its callers made.** `FUNC_SUBTYPE`
+    uses two value-stack slots; when its call was factored into one helper, the helper wrote both
+    and the cast path reserved only the first, so a cast at a function's deepest point wrote one
+    word past the frame (a canary at the value stack's end, explicit mode). No test saw it: the word
+    past the frame is free unless the stack is full. Rule: whoever writes a slot reserves it, in the
+    same function; the core asserts at every call site that the call's slots are inside the frame,
+    which catches any such slip at compile time. Found: S0013 step 3b.2 review, 2026-11-14.
+109. **The size of a lowering grows with the hierarchies and the decisions, not with the opcodes.**
+    S0013 budgeted step 3b by instruction groups; the casts alone cover three hierarchies with their
+    bottoms, abstract kinds, final and non-final concrete types and function types, and two decisions
+    added paths the spec's count did not have (`call_indirect` to a non-final type, the host
+    boundary's type check): 3b.2 came to about 375 core lines against 245. Rule: count a lowering's
+    size per case of its type matrix, and re-estimate when a decision adds a path, before the step
+    starts. Found: S0013 step 3b.2, 2026-11-13.

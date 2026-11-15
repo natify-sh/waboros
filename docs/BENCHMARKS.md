@@ -1506,3 +1506,44 @@ themselves). Scratch scripts, not in the tree.
 * **CoreMark** runs the same code bytes; the difference is within the spread.
 * **Section size:** CoreMark 108 sites in 1 736 bytes (5.1 % of its 34 KB of code); every compiled
   module now carries its table.
+
+## GC on `jit-x86_64` (S0013 step 3b, 2026-11-15)
+
+Step 3b makes `jit-x86_64` run GC on a store-lifetime heap that is **not collected yet** (the
+collector is step 5): every object stays until the store is dropped, so these loops measure
+allocation, access and casts, not collection. Wasmtime runs its default collector (DRC) on the
+same loops.
+
+Conditions: the dev VM (Intel Xeon @ 2.10 GHz, 4 vCPU), CPython 3.13.17, wasmtime-py 50.0.1, every
+process pinned with `taskset -c 2`, the machine otherwise idle.
+
+**CoreMark** (`tools/run_coremark_jit.py poc/in/core.wasm`, iterations/s, every run's self-check
+passed): the tree before step 3b (656816b) against step 3b (2d668f2 plus the 3b.4 tests), each from
+its own `git archive` copy, alternated, 5 pairs per bounds mode. The code is byte-identical (D35
+lists of both JITs, both modes, every module without GC), so no change is expected:
+
+| mode | before 3b: median (range) | after 3b: median (range) |
+|---|---|---|
+| guard | 15 770 (14 901–18 085) | 16 698 (15 829–17 598) |
+| explicit | 14 250 (13 970–15 348) | 14 542 (13 724–16 462) |
+
+The ranges overlap; this VM's CoreMark varies by ±10 % between runs of the same code.
+
+**GC loops** (`tools/bench_gc.py --rounds 5`: ns per iteration, the best of 5 rounds, the targets
+alternated round by round, a fresh instance per round; `pyc` runs 1/50 of the iterations; the
+three targets' results compared and equal):
+
+| loop | `jit-x86_64` (guard) | `pyc` | Wasmtime 50.0.1 |
+|---|---|---|---|
+| churn: `struct.new` of two i32 fields + `struct.get`, 10⁶ | 8.9 | 81.8 | 36.3 |
+| list: build 2·10⁵ nodes, then walk them (per node) | 11.8 | 403.0 | 66.6 |
+| casts: `ref.test` to a final type + `ref.cast` to a non-final type at depth 3, 10⁶ | 2.7 | 199.3 | 7.4 |
+| arrays: `array.fill` of 4 KiB of i8 + `array.copy` of 512 i64, 2·10⁴ | 602.0 | 2 550.4 | 58.8 |
+
+* The allocation loops are faster than Wasmtime's because nothing is reclaimed (no reference
+  counting, no collection); S0013's lowered-shape estimate (6.6 ns for the churn) is close. These are
+  not the numbers to compare after step 5, which adds the collections.
+* The array loop is 10× Wasmtime's: the backend's `memory_fill` and `memory_copy` (S0011 bulk
+  operators) copy 8 bytes per iteration where Wasmtime calls `memset`/`memcpy`. It is a bulk-memory
+  cost, the same for `memory.fill`/`memory.copy` of linear memory, not specific to GC; any change
+  needs its own measurement.

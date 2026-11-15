@@ -518,6 +518,23 @@ def test_array_operators_check_the_bound_of_the_right_operand(target: str) -> No
 
 
 @pytest.mark.parametrize("target", TARGETS)
+def test_an_index_at_or_past_the_length_traps(target: str) -> None:
+    """i == length and i = 2**32 - 1 trap ARRAY_OUT_OF_BOUNDS for get and set (the length check is
+    `ge_u`, the address formed after it; S0013 3b.4 mutants)."""
+    p = make(
+        target,
+        """(module (type $a (array (mut i64)))
+      (func (export "get") (param i32 i32) (result i64) (array.get $a (array.new_default $a (local.get 0)) (local.get 1)))
+      (func (export "set") (param i32 i32) (array.set $a (array.new_default $a (local.get 0)) (local.get 1) (i64.const 1))))""",
+    )
+    for n in (0, 1, 3):
+        for i in (n, n + 1, U32):
+            assert trap(p, "get", n, i) is TrapCode.ARRAY_OUT_OF_BOUNDS, (n, i)
+            assert trap(p, "set", n, i) is TrapCode.ARRAY_OUT_OF_BOUNDS, (n, i)
+    assert call(p, "get", 3, 2) == [0] and call(p, "set", 3, 2) == []
+
+
+@pytest.mark.parametrize("target", TARGETS)
 def test_trap_order_is_operands_null_bounds_access(target: str) -> None:
     p = make(
         target,
@@ -548,7 +565,7 @@ def test_trap_order_is_operands_null_bounds_access(target: str) -> None:
 @pytest.mark.parametrize(
     ("elem", "limit"),
     [("i8", 4294967251), ("i16", 2147483625), ("i32", 1073741812), ("f32", 1073741812),
-     ("i64", 536870905), ("f64", 536870905), ("v128", 268435452), ("anyref", 1073741812),
+     ("i64", 536870905), ("f64", 536870905), ("v128", 268435452), ("anyref", 1073741812), ("funcref", 1073741812),
      ("(ref null $a)", 1073741812)],
 )  # fmt: skip
 def test_allocation_too_large(target: str, elem: str, limit: int) -> None:

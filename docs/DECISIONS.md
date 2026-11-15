@@ -1038,3 +1038,53 @@ collector cannot rewrite a word it is not sure is a reference). Cost accepted: n
 profilers cannot unwind through JIT frames (ROADMAP.md, phase 6). The bridge's clearing of `sp` is
 not observable by any walk while every entry restores the record (LESSONS 105); it is kept as a
 defence.
+
+### D57. The JIT GC heap: a hidden i32 memory per store, u32 references; host values type-checked; context ABI v1 amended
+Status: accepted (maintainer, 2026-11-10 and 2026-11-13: S0013 Q1, Q5, Q8, Q9, Q10, Q11 and the step-3b plan) · Date: 2026-11-15 · Supersedes: — · Evidence: S0013 step 3b (Changes 3b.1-3b.4); spec `jit-x86_64` 64 229 pass, 0 expected failures, as `pyc`, guard and explicit, with the walk check and with poison; BENCHMARKS.md, "GC (S0013 step 3b)"
+
+* **The heap.** Each store has one GC heap, an i32 `Memory` (4 GiB + 32 MiB reserved, never moves)
+  bound into every instance that uses GC as the memory after its declared ones (two context words;
+  `memory.size`, `memory.grow` and the libcall immediates do not count it, and a module without a
+  memory of its own has it in memory 0's registers). Every heap access is an ordinary `load`,
+  `store` or `simd` on it, so S0011's bounds checks and guard fault points cover it unchanged (Q8
+  (a)). A reference of the any or extern hierarchy is a u32 word: 0 null, `(v << 1) | 1` an i31,
+  `(h << 2) | 2` a host value, otherwise an object's offset (a multiple of 8). The heap's header
+  holds the bump cursor and limit; type-info records (kind, final, depth, display, traced fields)
+  sit in a permanent area, one per canonical type and store; objects start with their record's
+  offset (ARTIFACT.md part 3). Until the collector (S0013 step 5) the heap only grows.
+* **Committed from its start** (S0013 3b.1 review, reversing the plan's decision D to commit its
+  regions apart): every byte below the size the contexts see is committed, so an explicit bounds
+  check that passes never reaches an uncommitted page. Cost: the type-info area's 64 MiB counts
+  against a commit limit (Windows' paging file, Linux in strict overcommit) once a store allocates
+  its first object; no RSS. Step 5's semispace B, above A's uncommitted tail, brings such a hole
+  back; Q8 accepted it there, and step 5's plan decides.
+* **Lowered once.** The GC instructions are lowered in the shared core (`jit/common/gc.py`) on D39
+  methods only (Q9 (a)); a backend only lists the opcodes in its `supported` set. Allocation is a
+  bump in code with a cold call to a service when full; casts compare the record (final) or the
+  display entry at the target's depth (non-final). Context ABI v1 is amended without a bump (Q5, as
+  D34, D50, D52, D56): the heap's two words, then after the tags the GC group (8 service words and
+  one RTT word per struct or array type the code allocates or casts to), only in a module that
+  uses GC; every other module's words and code are unchanged (D35 lists).
+* **Deviation from D25, until step 5**: the subtype test of a function type that is not final
+  (`call_indirect`, `return_call_indirect`, a cast to a concrete function type) is a Python
+  service, `FUNC_SUBTYPE`, a computation D25 does not let the JIT hand to Python. It ends at step 5,
+  when JIT code calls the collector module's `is_subtype` with type-info records for function
+  types (Q11, S0013 step 5's acceptance).
+* **Host values are type-checked** (S0013 3b.2 review, revising the plan's decision O, which had
+  left it to phase 6 as memory-safe: it was not, a wrong word corrupted the heap): a value the host
+  gives for a reference parameter, or returns from a host function, must match the type, as
+  Wasmtime checks, else `TypeError` before anything runs, on every target. `pyc` checks the same
+  types; one difference remains: a value of another store (a GC object, a function or an
+  exception) is a `TypeError` on the JIT but passes on `pyc`, whose Python objects belong to no
+  store.
+* **Handles kept until the store is dropped** (Q10, decision F of the step-3b plan): a GC object
+  given to the host is a `GcRef`, an entry of the store's handle table (index, word, one entry per
+  object); there is no release, generation count or free list before phase 6, so the table grows
+  with the distinct objects a store hands out. A deviation from Wasmtime's scoped roots, recorded
+  here as Q10 asked.
+* **Not collected yet**: until step 5 an unreachable object is never reclaimed (the heap grows up to
+  2 GiB − 32 MiB, then "GC heap out of memory", a host error).
+
+Rejected (S0013 "Alternatives considered"): references as 64-bit addresses into store chunks (no
+containment, no reuse of S0011's checks, a collector that could not be a wasm module); GC as
+backend methods (the semantics written twice); a frame-pointer chain for the roots (D56).

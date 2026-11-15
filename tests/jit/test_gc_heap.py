@@ -98,8 +98,10 @@ def test_display_of_depth_three() -> None:
 
 @pytest.mark.parametrize("poison", [False, True])
 def test_allocation_commits_and_grows(monkeypatch: pytest.MonkeyPatch, poison: bool) -> None:
-    if poison:
+    if poison:  # the parameter decides, whatever the environment says
         monkeypatch.setenv("WABOROS_JIT_GC_POISON", "1")
+    else:
+        monkeypatch.delenv("WABOROS_JIT_GC_POISON", raising=False)
     h = heap(StoreState())
     assert u32s(h, gc.CURSOR, 2) == [gc.OBJ, gc.OBJ] and h.mem.pages == 1  # nothing committed yet
     a = h.alloc(24)

@@ -24,16 +24,18 @@ around it, run from a checkout.
 
 What passes (details: [`docs/FEATURES.md`](docs/FEATURES.md), [`docs/ROADMAP.md`](docs/ROADMAP.md)):
 
-* The pinned WebAssembly spec suite has 65 462 commands. The directories our targets claim (the core,
-  SIMD, bulk memory, multiple memories, memory64, relaxed SIMD, wide arithmetic, exceptions) hold
-  64 664 of them, 1 232 of which are text-format checks skipped for every engine; of the remaining
-  63 432, `pyc`, `jit-x86_64` and `jit-aarch64` each pass 63 354, and the other 78 are expected
-  failures (listed in `tests/spec/xfail/`, mostly tests that use GC types). Not claimed yet: GC
-  (798 commands).
-* Claimed and complete on all three targets: fixed-width SIMD (25 990 commands), relaxed SIMD (79),
-  wide arithmetic (109), multiple memories, multi-value, tail calls, typed function references,
-  extended constants, mutable globals, sign extension, non-trapping float-to-int. Bulk memory, memory64, exceptions
-  (`exnref`, S0012) and reference types are partial (a few commands listed as expected failures).
+* The pinned WebAssembly spec suite has 65 462 commands. `pyc` and `jit-x86_64` claim every
+  directory of it (the core, SIMD, bulk memory, multiple memories, memory64, relaxed SIMD, wide
+  arithmetic, exceptions, GC): 1 233 are text-format checks skipped for every engine, and both pass
+  the other 64 229 with no expected failure. `jit-aarch64` claims all but GC (until S0013 step 4):
+  of its 63 432 commands it passes 63 375, and the other 57 are expected failures, tests that use GC
+  types (listed in `tests/spec/xfail/`).
+* Claimed and complete on `pyc` and `jit-x86_64`: everything above, GC included (798 commands; the
+  `jit-x86_64` heap is not collected before S0013 step 5). On all three targets: fixed-width SIMD
+  (25 990 commands), relaxed SIMD (79), wide arithmetic (109), multiple memories, multi-value, tail
+  calls, typed function references, extended constants, mutable globals, sign extension,
+  non-trapping float-to-int; on `jit-aarch64` bulk memory, memory64, exceptions (`exnref`, S0012)
+  and reference types are partial until it claims GC.
 * CoreMark and a corpus of real C libraries (Monocypher, SHA-256, BLAKE3, miniz) give the same results as
   `hashlib`, `zlib` and Wasmtime.
 
