@@ -29,6 +29,7 @@ against wasmtime, and encodings checked against `objdump` / `llvm-mc` in CI.
 | **MicroPython's native emitters** (`py/emitnative.c`, `py/asmthumb.c`, `py/asmxtensa.c`, `py/asmrv32.c`, …) | code generation for MCU architectures (Thumb, Xtensa, RISC-V 32); how viper types and calls work | the `mpy` target, viper code, future Thumb/Xtensa back ends |
 | **CPython's JIT** (`Tools/jit`) | how copy-and-patch is built: stencils, holes, relocations | if copy-and-patch is chosen (TARGETS.md) |
 | **wasm-to-asm** (calebsander, TypeScript) | a small readable wasm → x86-64 compiler: the bottom of the operand stack kept in registers, a calling convention without caller-saved registers (it has no traps: not a sandbox) | register allocation ideas |
+| **Walrus** (Samsung, C++) | a WebAssembly runtime whose JIT is built on sljit, the precedent for the D48 sljit track: how wasm operators map onto sljit's LIR, SIMD through sljit (it covers v128, maintainer), i64 on 32-bit targets (register pairs), traps and calls through sljit, which architectures it actually runs on | the sljit backend (SLJIT-BACKEND.md, D48) |
 | **pywasm** | a complete pure-Python interpreter (Wasm 2.0, SIMD, WASI p1) and its spec runner | the test harness, a second oracle, WASI p1 |
 
 ## Primary sources (normative)

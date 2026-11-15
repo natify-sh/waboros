@@ -35,6 +35,10 @@ the micro-compiler → wasm32 → runs on pyc / our JIT → compiles wasm (and i
 Not pwart, and not my prototype translator: those two are measurement points only (below). The
 code quality we want comes from **our core**; sljit only encodes instructions.
 
+**Precedent** (maintainer, 2026-11-15): Samsung's Walrus, a WebAssembly runtime whose JIT is built on
+sljit and covers SIMD among the rest (REFERENCES.md); read it before the first sljit step, for
+the operator mapping, v128 and i64 on 32-bit targets.
+
 ## What sljit is
 
 * A C library (zherczeg/sljit; the JIT behind PCRE2) with its own small abstract machine: about 60
@@ -149,7 +153,9 @@ pwart. **This is the claim to verify** (see "first step").
 * **f32/f64**: sljit has float registers and ops; NaN bit patterns must be checked per target
   against `pyc` (D46).
 * **SIMD**: sljit's SIMD API is small and not on every architecture; v128 goes to the frame and
-  lanes are done in scalar code (or a libcall), correct and slow. Acceptable for the tail.
+  lanes are done in scalar code (or a libcall), correct and slow. Acceptable for the tail. Walrus does
+  v128 through sljit: how it does so, and on which architectures, decides how much of this fallback
+  is needed.
 * **Big-endian** (s390x, ppc32/64 BE, mips BE): loads and stores need byte reversal (sljit has
   `SLJIT_REV*` ops). D48's "no big-endian JIT host" holds for the hand-written JITs, not this track.
 * **Determinism**: the wasm build has no `cpuid` and fixed configuration, so its output depends
