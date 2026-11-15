@@ -143,6 +143,9 @@ pwart. **This is the claim to verify** (see "first step").
   register pairs (add/sub with carry, `mul` by parts, shifts by parts, libcalls for div/rem and
   float conversions). This is an amendment to D39 and the main cost of the 32-bit tail; 64-bit
   long-tail targets (ppc64le, loongarch64, mips64, s390x) do not need it.
+* **Which 32-bit Arm cores** (maintainer, 2026-11-15): sljit's 32-bit Arm backends are ARM (v6/v7)
+  and Thumb-2 (`sljitNativeARM_T2_32.c`), so the track covers Cortex-M3 and up (RP2350, Cortex-M33)
+  but not ARMv6-M (Cortex-M0/M0+, RP2040), which has only Thumb-1; RP2040 stays on `mpy`.
 * **f32/f64**: sljit has float registers and ops; NaN bit patterns must be checked per target
   against `pyc` (D46).
 * **SIMD**: sljit's SIMD API is small and not on every architecture; v128 goes to the frame and
@@ -166,7 +169,7 @@ pwart. **This is the claim to verify** (see "first step").
 
 ## Where it fits
 
-* After the micro-compilers exist (`x64.wasm`, `arm64.wasm`, then `riscv64.wasm`): the sljit
+* After the micro-compilers exist (`x86_64.wasm`, `aarch64.wasm`, then `riscv64.wasm`): the sljit
   backend is one more micro-compiler, `sljit-<arch>.wasm`, built from the same C sources with a
   different backend. Before that, nothing.
 * It does not touch the frozen API/ABI, the artifact format or the Python backends.
