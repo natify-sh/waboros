@@ -61,6 +61,18 @@ legacy `try`, and no clang 19+ release tarball was reachable. All targets agree 
 Sources are fetched with pinned sha256 (not vendored); licences in
 `poc/bench/corpus/licenses/`.
 
+GC program (2026-11-15, S0013 step 4b): `poc/bench/corpus/gc_kotlin.kt` (ours, no licence file needed;
+trees, a list, a `HashMap`, a `StringBuilder`; one exported `run` returns a checksum, expected value in
+`tools/run_corpus.py` as plain Python) built by `poc/bench/corpus/build_gc.sh`: Kotlin 2.4.21 (Maven Central
+`kotlin-compiler-embeddable` run as `K2JSCompiler -Xwasm -Xwasm-target=wasm-wasi`, in two steps: klib, then
+`-Xinclude`), then binaryen 133 `wasm-opt -O3 --closed-world` (taken from the pinned Dart SDK 3.14.0 zip).
+42 472 bytes, one import (`random_get`, stubbed in the tool), runs on `pyc`, `jit-x86_64`, `jit-aarch64`
+and Wasmtime. The `.wasm` contains Kotlin's standard library (Apache-2.0, `licenses/README.md`). A module
+from `dart compile wasm` was rejected: it needs a JS host (string constants as `externref` imports,
+`wasm:js-string` builtins, `JSTag`). Binaryen's `-all` emits exact reference types, which Wasmtime refuses,
+so `build_gc.sh` lists the features. It is the real-program input of the collector's Cheney-order
+comparison (S0013 step 5).
+
 ## 2. Why scalar code is 1.5-3.9x behind Wasmtime (investigation, no code change)
 
 The same method as the SIMD slowdown investigation (BENCHMARKS, LESSONS 44): hot-loop disassembly of
