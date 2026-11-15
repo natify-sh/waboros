@@ -36,8 +36,9 @@ Not pwart, and not my prototype translator: those two are measurement points onl
 code quality we want comes from **our core**; sljit only encodes instructions.
 
 **Precedent** (maintainer, 2026-11-15): Samsung's Walrus, a WebAssembly runtime whose JIT is built on
-sljit and covers SIMD among the rest (REFERENCES.md); read it before the first sljit step, for
-the operator mapping, v128 and i64 on 32-bit targets.
+sljit (REFERENCES.md): a reference for the operator mapping on five ISAs and for i64 on 32-bit
+targets. Its calls go through C++ helpers, its GC is conservative (bdwgc) and its code is absolute,
+so it says nothing about D56 or D59.
 
 ## What sljit is
 
@@ -153,9 +154,12 @@ pwart. **This is the claim to verify** (see "first step").
 * **f32/f64**: sljit has float registers and ops; NaN bit patterns must be checked per target
   against `pyc` (D46).
 * **SIMD**: sljit's SIMD API is small and not on every architecture; v128 goes to the frame and
-  lanes are done in scalar code (or a libcall), correct and slow. Acceptable for the tail. Walrus does
-  v128 through sljit: how it does so, and on which architectures, decides how much of this fallback
-  is needed.
+  lanes are done in scalar code (or a libcall), correct and slow. Acceptable for the tail. Walrus has full
+  v128 (and relaxed SIMD), but not through sljit's SIMD API: it encodes the arithmetic by hand per
+  ISA through `sljit_emit_op_custom` (about 1.5-2.5 kloc per ISA) and uses sljit only for moves and
+  lanes; it has no scalar fallback and builds only for x86, x64, ARM, AArch64 and riscv64. So the
+  scalar fallback is needed on every sljit target of ours unless we write such encoders (see the
+  findings below).
 * **Big-endian** (s390x, ppc32/64 BE, mips BE): loads and stores need byte reversal (sljit has
   `SLJIT_REV*` ops). D48's "no big-endian JIT host" holds for the hand-written JITs, not this track.
 * **Determinism**: the wasm build has no `cpuid` and fixed configuration, so its output depends
@@ -211,6 +215,56 @@ So two patches are needed beyond today's: helper calls through context words (as
 never an absolute address (the same class as position independence above); CPU features from the
 configuration (`isa_level`, `isa_features` of the artifact), not from the host, as the existing
 patch already does for x86, ARM64 and RISC-V.
+
+## Findings from the sljit and Walrus sources (2026-11-15)
+Read: sljit `23d64b71b8f5` (2026-11-07), Walrus `eb9f2fa304c2` (2026-11-13), which pins sljit
+`3907e69005ba` unpatched and `#include`s `sljitLir.c` with `SLJIT_CONFIG_STATIC`. Nothing built or
+run; line references were in the research report, the conclusions are here.
+
+* **Supported architectures** also include Alpha (new at sljit HEAD).
+* **SIMD:** sljit's SIMD API is moves, lanes, splats, extends and AND/OR/XOR/shuffle, almost no
+  arithmetic; on x86 it needs SSE4.1 (above the x86-64 baseline, so a declared ISA level), and there
+  is none on MIPS, PPC and Alpha. Our track uses scalar v128 everywhere; sljit's SIMD loads, stores
+  and splats can come later as an optimisation.
+* **Atomics:** `sljit_emit_atomic_load`/`_store` pairs (an LL/SC or CAS retry loop the caller
+  builds every read-modify-write from) and `SLJIT_MEMORY_BARRIER`. 8/16/32/64 bits on x86, arm64
+  and Thumb-2, only 32/64 on RISC-V, MIPS, PPC and s390x (8/16 by masking inside the aligned word,
+  as Walrus does); no 64-bit atomics on 32-bit targets (per-ISA `op_custom`, or a lock helper on
+  mips32/ppc32); the ordering is undocumented and relaxed on the weak-memory ISAs, so every atomic
+  op is wrapped in barriers; on x86-32 the barrier needs SSE2 detection, which the wasm host's
+  zeroed `cpuid` disables. Estimate about 300 lines. wait/notify are host calls.
+* **Traps and bounds:** explicit checks first (as Walrus); a label before each access gives its pc,
+  enough for a fault map and guard-page mode later.
+* **Frames (D56):** no unwind or CFI information. `ret_at` and `up` follow per ISA from the frame
+  `sljit_emit_enter` builds and the public `compiler->local_size` (x86-64: after the pushes and
+  the locals; arm64: SP+8 and SP+`local_size`; Thumb-2: the highest slot of the push; riscv64:
+  SP+F-8 and SP+F; ppc64 and s390x not checked); about 20 lines per ISA, reproducing sljit
+  internals, so tied to a pinned revision and checked with `WABOROS_JIT_WALK_CHECK`. Never emit
+  `SLJIT_DIV` on cores without hardware divide (sljit's own soft-divide pushes around a helper).
+* **Position independence (D59):** sljit takes the relative form of a jump when the distance fits
+  and falls back to absolute forms otherwise (and on x86-64 and arm64 also when the nominal address
+  is below 4 GiB); `sljit_emit_const`, rewritable jumps and calls to an immediate address are always
+  absolute, and on MIPS32 every `SLJIT_CALL`. The mechanism: `SLJIT_GENERATE_CODE_BUFFER` with an
+  `executable_offset` giving a high nominal address; direct calls as relative calls to labels in one
+  compiler per module; helpers through `sljit_emit_icall` on a context word; a check after
+  generation that refuses any absolute jump form; `br_table` as int32 offsets from a base label in
+  a read-only buffer (a compare tree as the fallback). About 150 lines. MIPS branches reach only
+  128 KiB: a patch for a relative long branch, or a function-size limit.
+* **Host equals target:** x86 (`cpuid`), LoongArch and s390x (`getauxval`), MIPS (`cfc1`) and PPC64
+  (inline asm) query the host; `__ARM_FEATURE_ATOMICS`, the IDIV macros, `__riscv_*`, `_CALL_ELF`
+  and `__ARCH__` are read at compile time and must be set for the wasm build (ppc64le needs
+  `-D_CALL_ELF=2`, else ELFv1 indirect calls). One `SLJIT_FIXED_CPU_FEATURES` patch (constants from
+  the configuration, as RISC-V already works) is about 80 lines; ARM's `__aeabi_*divmod` need dummy
+  symbols and a backend that never emits `SLJIT_DIV` without IDIV.
+* **Every libcall is native code** (i64 div/rem, float-i64 conversions, popcnt, i64 atomics): our
+  runtime has no C helpers, so they are emitted once per module with sljit as relative-call stubs
+  (about 400 lines). i64 on 32-bit targets in register pairs is about 1.5 kloc (Walrus's size).
+* **Tail calls** map onto `SLJIT_CALL_RETURN`, which every backend implements.
+* **One module for all ISAs:** sljit has no symbol prefix, but `SLJIT_CONFIG_STATIC` makes the API
+  `static`, so one translation unit per ISA (`SLJIT_CONFIG_<X>` + `STATIC` + `#include
+  sljitLir.c` + our D39 layer, compiled per configuration since register numbers are macros),
+  exported as a table of functions with fixed-width types. Size about the sum of the per-target
+  modules plus 10-20 KB of D39 layer per ISA; only our core is shared.
 
 ## How the micro-compiler is built (maintainer, 2026-11-15)
 * **Statically linked by default:** one C build of our core plus sljit, one `.wasm`. sljit's API is
