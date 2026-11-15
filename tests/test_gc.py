@@ -2,7 +2,7 @@
 # pyright: reportUnknownVariableType=false, reportUnknownArgumentType=false, reportUnknownMemberType=false
 """Wasm GC on the targets (S0013): values, casts across modules, conversions, allocating constant
 expressions, the array operators, trap order and the allocation limits. The expected values were
-checked against Wasmtime 50.0.1. The JITs join at step 3b."""
+checked against Wasmtime 50.0.1. The JITs run them since steps 3b (x86-64) and 4 (aarch64)."""
 
 import sys
 from typing import Any
@@ -18,7 +18,7 @@ from waboros.runtime.store import StoreState
 from waboros.targets.base import Trap, TrapCode
 from waboros.targets.pyc import translate
 
-TARGETS = ["pyc", "jit-x86_64"]
+TARGETS = ["pyc", "jit-x86_64", "jit-aarch64"]
 
 
 @pytest.fixture(autouse=True)

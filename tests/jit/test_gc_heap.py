@@ -197,8 +197,8 @@ NONFINAL = """(module (type $f (sub (func (result i32)))) (table 1 funcref)
 def test_a_non_final_call_indirect_type_needs_gc() -> None:
     m = mod(NONFINAL)
     assert gc.uses_gc(m) and not gc.uses_gc(mod("(module (type $f (sub (func))))"))
-    assert base.TARGETS["jit-x86_64"]().supports(m) is None  # claims gc (S0013 step 3b.3)
-    assert base.TARGETS["jit-aarch64"]().supports(m) == "GC types"  # until step 4 (decision K)
+    for name in JITS:  # both claim gc (S0013 steps 3b.3 and 4)
+        assert base.TARGETS[name]().supports(m) is None
 
 
 @pytest.mark.parametrize("name", JITS)
@@ -228,9 +228,9 @@ def test_host_values_cross_as_tagged_words(name: str) -> None:
 
 # ---- compiled GC code (S0013 step 3b)
 def gc_jit(monkeypatch: pytest.MonkeyPatch, bounds: str = "guard") -> Any:
-    native("jit-x86_64")
+    native(native_jit())  # this machine's JIT (aarch64 natively or under QEMU)
     monkeypatch.setenv("WABOROS_JIT_BOUNDS", bounds)
-    return base.TARGETS["jit-x86_64"]()
+    return base.TARGETS[native_jit()]()
 
 
 def test_gc_results_cross_to_the_host(monkeypatch: pytest.MonkeyPatch) -> None:

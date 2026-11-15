@@ -219,14 +219,12 @@ _REC_SWAPPED = "(rec (type $b (func (result i32))) (type $a (func (result i32)))
         ),
     ],
 )
-@pytest.mark.parametrize("target", ("pyc", "jit-x86_64"))
+@pytest.mark.parametrize("target", ("pyc", "jit-x86_64", "jit-aarch64"))
 def test_call_indirect_checks_rec_groups_and_finality(
     target: str, types: str, ti: str, idx: int, expected: Any
 ) -> None:
     if target_base.TARGETS[target]().probe() is not None:
         pytest.skip(target)
-    if target != "pyc" and "(sub (func" in types:  # refused ("GC types") until the JIT claims gc
-        pytest.skip("a non-final call_indirect type needs the JIT's GC group (S0013 3b.2)")
     store = StoreState()
     a = build(wat2wasm(_A), target=target, store=store)
     text = _CALL.format(types=types, ti=ti, idx=idx)

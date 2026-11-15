@@ -33,7 +33,7 @@ from waboros.targets.jit.aarch64.encoder import (
     bitmask,
     invert,
 )
-from waboros.targets.jit.common import lower
+from waboros.targets.jit.common import gc, lower
 from waboros.targets.jit.common.backend import SWAP, AddK, Dst, Imm, Operand, Reg, Slot
 from waboros.targets.jit.common.compiler import EXN, SUPPORTED, WIDEOPS
 from waboros.targets.jit.common.context import (
@@ -77,7 +77,7 @@ class Frame:
 class Backend:
     pool = POOL
     tos = 0
-    supported = SUPPORTED | v128.SUPPORTED | frozenset(WIDEOPS) | EXN
+    supported = SUPPORTED | v128.SUPPORTED | frozenset(WIDEOPS) | EXN | gc.OPS  # GC: S0013
 
     def __init__(self, *, guard: bool = False) -> None:
         self.a = Asm()

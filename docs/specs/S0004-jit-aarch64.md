@@ -483,3 +483,8 @@ Resolved by the maintainer on 2026-11-01 (see Changes); none open.
   clears its `sp` after; the entry keeps the enclosing record and its frame on the native stack
   during its call and puts the record back (the entry frame 96 → 128 bytes, the block at `[sp + 96, sp + 128)`). Module code is unchanged.
 * 2026-11-11 (S0013 steps 3a.3-3a.4, D56): the runtime walks a store's frames from the exit record by the per-site numbers of the `STACKMAPS` section and the trampolines' points (the entry's return point and its saved block, `tail_switch`'s 16-byte restore frame: the saved context, then the real return address); `WABOROS_JIT_WALK_CHECK=1` checks the walk at every host call. A compiled module without its site table is refused at instantiation (`ValueError`). No change of code or context words beyond step 3a.2's.
+* 2026-11-15 (S0013 step 4, D57): `jit-aarch64` claims `gc`. Its `supported` set gains the GC
+  opcodes (`gc.OPS`); the lowering is the shared core's (`common/gc.py`, D39 methods only), and
+  the first run under QEMU found no backend gap: no new method, no ABI or artifact change, module
+  code of every module without GC unchanged (D35 lists). Spec under QEMU, guard and explicit with
+  the walk check, and with poison: 64 229 pass, no expected failure, as `pyc`.
