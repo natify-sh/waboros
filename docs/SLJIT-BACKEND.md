@@ -169,6 +169,10 @@ pwart. **This is the claim to verify** (see "first step").
 * **Licence**: sljit is BSD-2-Clause, compatible with MIT (D40).
 
 ## Two checks before the first sljit step (maintainer, 2026-11-15)
+**Status (2026-11-16):** both done on x86-64 by the experiment in `poc/sljit/sljit-be/`
+(`SLJIT-BACKEND-RESULTS.md`, "Update 2026-11-16"): check 1 with site records from a label after each
+call and the frame size after `sljit_emit_enter` (read from sljit internals for now), under the walk
+check and poison; check 2 shown there on 2026-11-04. Both stay open for the other ISAs.
 This document predates D56 (precise roots) and D59 (ELF64 artifacts, no relocations); both add a
 requirement that sljit must meet, checked on every ISA of the track before any backend code:
 

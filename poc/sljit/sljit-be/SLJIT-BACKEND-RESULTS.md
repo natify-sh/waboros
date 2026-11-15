@@ -2,7 +2,7 @@
 title: sljit backend under our core - the "first step" of SLJIT-BACKEND.md, done and measured
 kind: reference
 status: draft
-updated: 2026-11-04
+updated: 2026-11-16
 ---
 
 # sljit backend under our core: measured
@@ -146,4 +146,98 @@ export PYTHONPATH=$PWD/site:<waboros>/src:<waboros>      # site/sitecustomize.py
 python -m tests.spec.run --engine jit-sljit core           # from the waboros checkout
 WABOROS_TOOLS=<waboros>/tools python cm.py core.wasm --target jit-sljit
 ./bench.sh                                                 # the alternated CoreMark rounds
+WABOROS_JIT_WALK_CHECK=1 WABOROS_JIT_GC_POISON=1 python -m tests.spec.run --engine jit-sljit core gc simd relaxed-simd
+python simdb.py <waboros>/tools/run_simd_bench.py --targets jit-x86_64,jit-sljit,wasmtime --rounds 7
 ```
+
+## Update 2026-11-16: safepoints (D56) and SIMD, on the S0013 branch `gc` at `e3bb361`
+
+The backend was brought up to the current D39 interface and given the two things it lacked: site
+records for the GC's frame walk (D56) and SIMD. x86-64, native sljit at `39c508d1` through ctypes,
+our unchanged core and runtime, nothing in the repository changed (the target is still registered
+from outside, `site/sitecustomize.py`).
+
+What changed in `waboros_sljit.py` and `lib2.c`:
+
+* **Site records.** A sljit label right after every call gives its return address. `ret_at` (from
+  the stack pointer at the call to this frame's own return address) is sljit's frame size after
+  `sljit_emit_enter`: `w2s_ret_at` in `lib2.c` reads it from sljit's internal fields (`local_size`,
+  the saved registers, `GET_SAVED_REGISTERS_SIZE`), `up` = `ret_at` + 8. Reading internals is the
+  experiment's shortcut; a sljit API (a return-address offset per function) should replace it,
+  per architecture. The bridge writes the store's exit record (the caller's stack pointer at its
+  call, the return address, the frame register) and clears its `sp` after the host returns; the
+  entry keeps the enclosing record and its frame at `[sp, sp + 32)` during its call
+  (`Trampolines.saved` = 0) and puts it back. sljit's argument checks forbid a stack-relative access
+  past the locals, so the bridge reads the return address through `sljit_get_local_base`.
+* **A tail call into another context** is an ordinary call in this backend (no `tail_switch`): a
+  real frame the core has no map for. It is recorded as an extra site (shift 0, no map: the
+  arguments were already moved to our frame base) and merged into `STACKMAPS` after the core.
+* **SIMD.** waboros's own x86-64 SSE2 lowering (`x86_64/simd.py`) runs into a side buffer with
+  sljit's physical registers (the frame, the context; its `rcx`/`rdx` mapped to sljit's scratch R1/R2,
+  since sljit's R3 is `rcx` and pinnable), and its bytes go in through `sljit_emit_op_custom` (in
+  pieces of at most 15 bytes, sljit's argument check on x86). Bounds checks and fault points stay
+  sljit code: the side buffer is flushed before them. xmm0-xmm5 are scratch inside one operation,
+  as in `simd.py`.
+* The D39 arguments added since 2026-11-04 (`a64`, `lo`, S0009) are accepted and refused when set;
+  `Frame.error` (S0012) is the status target of every call; `supported` adds `gc.OPS` and
+  `simd.SUPPORTED`; the claims add `gc`, `simd`, `relaxedSimd`.
+
+Physical registers on x86-64 SysV (`sljit_get_register_index`): R0 rax, R1 rsi, R2 rdi, R3 rcx,
+R4 r8, R5 r11, R6 r10; S0 rbx (context), S1 r15 (value-stack frame), S2 r14 (memory 0 base), S3 r13,
+S4 rbp, S5 r12. Our x86-64 backend has the context in r15, the frame in r12, memory 0 in r13/r14.
+
+### Correctness
+
+Every directory both targets claim, both bounds modes, with `WABOROS_JIT_WALK_CHECK=1` and
+`WABOROS_JIT_GC_POISON=1` on `jit-sljit` (the walk checked at every host call against the
+runtime's own record of its entries):
+
+| directory | jit-x86_64 | jit-sljit (walk check + poison) |
+|---|---|---|
+| core | 20 598 | 20 549; the other 49 refused: "unsupported: exceptions" (`ref_null.wast` 34, `instance.wast` 15, modules with `exnref`) |
+| gc | 797 (1 skip) | 797 (1 skip), v128 arrays included |
+| simd | 25 481 (509 skip) | 25 481 (509 skip) |
+| relaxed-simd | 79 | 79 |
+| bulk-memory | 7 485 | 7 485 |
+| multi-memory | 912 | 912 |
+| wide-arithmetic | 109 | 109 |
+
+`tools/spec_diff.py` both ways, explicit and guard: 49 commands pass on jit-x86_64 and not on
+jit-sljit, all "unsupported: exceptions"; 0 in the other direction. The heap is not collected on
+this branch yet (step 5.3), so objects do not move; what D56 asks of a backend (every frame found
+by its return address, the roots of its maps) is what the check mode verifies.
+
+### Speed
+
+CoreMark (`bench.sh`, 3 alternated rounds, one core, it/s; median):
+
+| mode | jit-x86_64 | jit-sljit |
+|---|---|---|
+| explicit | 16 145 | 16 159 (100 %) |
+| guard | 18 051 | 18 492 (102 %) |
+
+Compile time (CoreMark): jit-sljit about 40 ms, jit-x86_64 42-52 ms.
+
+SIMD benchmark (`tools/run_simd_bench.py` through `simdb.py`, 7 alternated rounds, one core, µs per
+iteration, median; checksums equal on all three):
+
+| kernel | x86-64 scalar | x86-64 simd | sljit scalar | sljit simd | wasmtime scalar | wasmtime simd |
+|---|---|---|---|---|---|---|
+| addsat | 3.62 | 0.31 | 3.54 | 0.32 | 2.77 | 0.18 |
+| dot | 2.56 | 0.94 | 2.55 | 0.95 | 0.70 | 0.16 |
+| scan | 1.86 | 0.56 | 1.93 | 0.59 | 1.78 | 0.15 |
+| matmul | 3.01 | 2.07 | 3.16 | 2.07 | 1.30 | 0.37 |
+| swizzle | 3.41 | 6.05 | 3.29 | 6.00 | 2.66 | 0.15 |
+| nearest | 1.11 | 0.45 | 1.71 | 0.43 | 0.47 | 0.13 |
+
+SIMD is at parity, as expected (the same lowering). Scalar `nearest` is slower: this backend rounds
+through libm (`nearbyint`); our SSE2 sequence through `sljit_emit_op_custom` would remove it.
+
+### Still open
+
+* Exceptions (`landing`, `exn_match`, `exn_field`, `exn_load`, `throw`, `throw_ref`).
+* memory64 / table64 (`a64`).
+* A constant-stack tail call across contexts (`tail_switch`).
+* A sljit API for the return-address offset instead of internal fields.
+* aarch64: no walk check, no measurement (QEMU here; timings need an arm64 runner). The SIMD part
+  there is NEON: our `aarch64/simd.py` through `sljit_emit_op_custom` (4-byte pieces).

@@ -14,8 +14,25 @@ registers across calls). Guard mode (S0006) reuses the x86-64 fault handler: a f
 sljit label right before the one instruction that touches memory.
 
 x86-64 only as written (relies on 32-bit sljit ops zero-extending, as x86-64 and aarch64 do; a
-riscv64 port would add MOV_U32 after them). Not covered: tail calls, tables and bulk memory,
-SIMD, f32/f64 min/max/nearest.
+riscv64 port would add MOV_U32 after them).
+
+2026-11-16 (S0013 branch `gc` at e3bb361): safepoints (D56) and SIMD.
+  * Site records: a sljit label right after every call is its return address; `ret_at` (from the
+    stack pointer at the call to this frame's own return address) is sljit's frame size after
+    `sljit_emit_enter`, read by `w2s_ret_at` in lib2.c from sljit's internal fields (a small
+    sljit API should replace it); `up` = ret_at + 8. The bridge writes the store's exit record
+    {caller's sp at its call, return address, frame} and clears its sp after the host returns; the
+    entry keeps the enclosing record and its frame at [sp, sp + 32) during its call
+    (Trampolines.saved = 0) and puts the record back. A tail call into another context is made as
+    an ordinary call here: a real frame the core has no map for, recorded as an extra site
+    (shift 0, no map: the arguments were moved to our frame base) and merged into STACKMAPS.
+  * SIMD: waboros's own x86-64 SSE2 lowering (x86_64/simd.py) run into a side buffer with
+    sljit's physical registers and inserted with `sljit_emit_op_custom`; bounds checks and fault
+    points stay sljit code (the side buffer is flushed before them).
+  * The D39 arguments added since 2026-11-04 (`a64`, `lo`, S0009) are accepted and refused when
+    set; `Frame.error` (S0012) is the status target of every call.
+Not covered: exceptions (landing, exn_*, throw, throw_ref), memory64/table64, a constant-stack
+tail call across contexts (no tail_switch), f32/f64 nearest/ceil/floor/trunc inline (libm).
 """
 
 import ctypes
@@ -29,8 +46,12 @@ from waboros.targets import base
 from waboros.targets.base import TrapCode
 from waboros.targets.jit.common import guard as _guard
 from waboros.targets.jit.common.backend import NEGATE, SWAP, AddK, Dst, Imm, Operand, Reg, Slot
+from waboros.targets.jit.common import gc as _gc
+from waboros.targets.jit.x86_64 import encoder as _enc
+from waboros.targets.jit.x86_64 import simd as _v128
 from waboros.targets.jit.common.compiler import SUPPORTED, TABLES, WIDEOPS, compile_module
 from waboros.targets.jit.common.context import (
+    EXIT_RECORD,
     HOST_BRIDGE,
     HOST_ERROR,
     INTERRUPT,
@@ -77,6 +98,9 @@ for _n, _r, _a in [
     ("w2s_label_addr", UW, [P]),
     ("w2s_const_addr", UW, [P]),
     ("w2s_error", I32, [P]),
+    ("w2s_ret_at", SW, [P]),
+    ("sljit_get_register_index", I32, [I32, I32]),
+    ("sljit_emit_op_custom", I32, [P, P, ctypes.c_uint32]),
     ("sljit_emit_op_addr", P, [P, I32, I32, SW]),
     ("sljit_emit_return_to", I32, [P, I32, SW]),
 ]:
@@ -160,6 +184,7 @@ class Frame:
     def __init__(self, pins: tuple[int, ...]) -> None:
         self.rpins = [r for r in pins if r not in SPOOL]
         self.unwind = Label()
+        self.error = self.unwind  # a call's non-zero status (S0012: a landing pad inside try_table)
         self.traps: dict[int, Label] = {}
         self.vconst = 0
 
@@ -234,7 +259,7 @@ class Backend(Emitter):
     pool = POOL
     tos = R0
     # no tail calls, no tables/bulk memory, no f32/f64 min max nearest (see the module docstring)
-    supported = SUPPORTED | set(WIDEOPS)  # the core's scalar set and wide arithmetic (no SIMD)
+    supported = SUPPORTED | set(WIDEOPS) | _gc.OPS | _v128.SUPPORTED  # + SIMD by custom x86-64 bytes (no EXN)
 
     def __init__(self, *, guard: bool = False) -> None:
         super().__init__()
@@ -245,6 +270,9 @@ class Backend(Emitter):
         self._faults: list[tuple[int, Label]] = []
         self._oob: Label | None = None
         self.f: Frame | None = None
+        self.sites: list[tuple[int, int, int]] = []  # (mark, ret_at, up); marks -> offsets in finish
+        self._ret_at = 0
+        self.extra: list[tuple[int, int, int]] = []  # calls the core has no map for (below)
 
     # ------------------------------------------------------------ labels, frames, traps
     def here(self) -> int:
@@ -257,6 +285,7 @@ class Backend(Emitter):
         ns = sum(r in SPOOL for r in pins)
         assert all(r in SPOOL for r in pins[:ns]), pins
         lib.sljit_emit_enter(c, REG_ENTER, g("ARGS0(32)"), 7 | (3 << 8), 3 + ns, 8 * NLOCAL)
+        self._ret_at = lib.w2s_ret_at(c)
         for i, r in enumerate(f.rpins):
             self.op1(g("MOV"), (MEM1(SP), 8 * i), (r, 0))
         lib.sljit_get_local_base(c, R1, 0, 0)
@@ -305,6 +334,8 @@ class Backend(Emitter):
         for k, v in self.consts:
             lib.sljit_set_const(lib.w2s_const_addr(k), g("MOV"), v, 0)
         self.offset = [lib.w2s_label_addr(m) - code for m in self.marks]
+        self.sites[:] = [(self.offset[m], ra, up) for m, ra, up in self.sites]
+        self.extra[:] = [(self.offset[m], ra, up) for m, ra, up in self.extra]
         self.faults = [(lib.w2s_label_addr(p) - code, lib.w2s_label_addr(s.lab) - code)
                        for p, s in self._faults]  # fmt: skip
         data = ctypes.string_at(code, size)
@@ -841,25 +872,103 @@ class Backend(Emitter):
         self.op1(g("MOV"), _o(dst, True), (R0, 0))
         self.op1(g("MOV"), _o(Slot(dst.k + 1), True), (R1, 0))
 
-    def simd(self, *a: Any) -> None:
-        raise NotImplementedError
+    # SIMD (experiment): waboros's own x86-64 SSE2 lowering (x86_64/simd.py) run into a side buffer
+    # with sljit's physical registers (frame, context; rcx/rdx -> sljit's scratch R1/R2), its bytes
+    # inserted by sljit_emit_op_custom. Bounds checks and fault points stay sljit code: the side
+    # buffer is flushed before them. xmm0-xmm5 are scratch inside one operation, as in simd.py.
+    def _phys(self, r: int) -> int:
+        return lib.sljit_get_register_index(0, r)  # SLJIT_GP_REGISTER
 
-    def move_v128(self, *a: Any) -> None:
-        raise NotImplementedError
+    def _flush(self, a: Any) -> None:
+        code = a.finish()
+        for i in range(0, len(code), 15):  # sljit's argument check: 1..15 bytes per custom op
+            chunk = ctypes.create_string_buffer(code[i : i + 15], len(code[i : i + 15]))
+            lib.sljit_emit_op_custom(self.c, chunk, len(code[i : i + 15]))
+        a.buf, a._labels, a._fixups = bytearray(), [], []
+
+    def _custom(self, run: Any) -> None:
+        a = _enc.Asm()
+        ph = self._phys
+        me = self
+
+        def bounds(f: Frame, addr: Any, offset: int, size: int, mem: int, a64: bool, lo: int) -> Any:
+            me._flush(a)
+            if isinstance(addr, Reg):
+                addr = Reg(me._unphys[addr.id])
+            elif isinstance(addr, AddK):
+                addr = AddK(me._unphys[addr.id], addr.k)
+            op, disp = me._access(f, addr, offset, size, mem)
+            base, idx = op & 0x7F, (op >> 8) & 0x7F
+            return _enc.Mem(ph(base), disp, ph(idx) if idx else None, 1)
+
+        def fault_point() -> None:
+            me._flush(a)
+            me._fault_point()
+
+        def move(dst: Reg, src: Any, wide: bool) -> None:  # dst: rcx/rdx as patched (physical)
+            if isinstance(src, Imm):
+                a.mov_imm(dst.id, src.value & (M64 if wide else M32), w=wide)
+            elif isinstance(src, Reg):
+                a.mov(dst.id, src.id, w=wide)
+            else:
+                a.mov(dst.id, _enc.Mem(ph(FRM), 8 * src.k), w=wide)
+
+        class PX:
+            pass
+
+        px = PX()
+        px.a, px._bounds, px._fault_point, px.move = a, bounds, fault_point, move
+        saved = {n: getattr(_v128, n) for n in ("R12", "R15", "RCX", "RDX")}
+        _v128.R12, _v128.R15, _v128.RCX, _v128.RDX = ph(FRM), ph(CTX), ph(R1), ph(R2)
+        try:
+            run(px, a)
+        finally:
+            for n, v in saved.items():
+                setattr(_v128, n, v)
+        self._flush(a)
+
+    def _mapped(self, o: Any) -> Any:
+        if isinstance(o, Reg):
+            p = self._phys(o.id)
+            self._unphys[p] = o.id
+            return Reg(p)
+        if isinstance(o, AddK):
+            p = self._phys(o.id)
+            self._unphys[p] = o.id
+            return AddK(p, o.k)
+        return o
+
+    def simd(self, f: Frame, op: int, dst: Any, args: tuple[Any, ...], imm: tuple[int, ...],
+             *, a64: bool = False, lo: int = 0) -> None:  # fmt: skip
+        if a64:
+            from waboros.targets.base import Unsupported
+
+            raise Unsupported("jit-sljit", "memory64")
+        self._unphys: dict[int, int] = {}
+        d, xs = self._mapped(dst), tuple(self._mapped(x) for x in args)
+        self._custom(lambda px, a: _v128.emit(px, f, op, d, xs, imm, False, 0))
+
+    def move_v128(self, dst: Slot, src: Any) -> None:
+        self._custom(lambda px, a: _v128.move(a, dst, src))
 
     # ------------------------------------------------------------ calls
+    def _site(self) -> None:
+        """The call just emitted is a safepoint (D56): a label at its return address."""
+        self.sites.append((self.mark(), self._ret_at, self._ret_at + 8))
+
     def _status(self, f: Frame) -> None:
-        self.cmpj(g("NOT_EQUAL") | B32, (R0, 0), (IMM, 0), f.unwind)
+        self.cmpj(g("NOT_EQUAL") | B32, (R0, 0), (IMM, 0), f.error)
 
     def call_direct(self, f: Frame, label: Label, shift_slots: int) -> None:
         if shift_slots:
             self.op2(g("ADD"), (FRM, 0), (FRM, 0), (IMM, 8 * shift_slots))
         self.link(lib.sljit_emit_call(self.c, g("CALL_REG_ARG"), g("ARGS0(32)")), label)
+        self._site()
         if shift_slots:
             self.op2(g("SUB"), (FRM, 0), (FRM, 0), (IMM, 8 * shift_slots))
         self._status(f)
 
-    def _call_record(self, f: Frame, shift_slots: int) -> None:
+    def _call_record(self, f: Frame, shift_slots: int, extra: bool = False) -> None:
         """Call the record in R1 on its own context (saved in the native frame)."""
         if shift_slots:
             self.op2(g("ADD"), (FRM, 0), (FRM, 0), (IMM, 8 * shift_slots))
@@ -867,6 +976,11 @@ class Backend(Emitter):
         self.op1(g("MOV"), (CTX, 0), (MEM1(R1), 16))
         self.op1(g("MOV"), (MB, 0), (MEM1(CTX), 8 * MEM0))
         lib.sljit_emit_icall(self.c, g("CALL_REG_ARG"), g("ARGS0(32)"), MEM1(R1), 0)
+        if extra:  # a tail call across contexts made as a call: a real frame the core did not map;
+            # its arguments were moved to our frame base, so nothing of ours is live (shift 0, no map)
+            self.extra.append((self.mark(), self._ret_at, self._ret_at + 8))
+        else:
+            self._site()
         self.op1(g("MOV"), (CTX, 0), (MEM1(SP), CTXSAVE))
         self.op1(g("MOV"), (MB, 0), (MEM1(CTX), 8 * MEM0))
         if shift_slots:
@@ -903,6 +1017,7 @@ class Backend(Emitter):
         self.op1(g("MOV"), (R0, 0), (IMM, word))
         self.op2(g("ADD"), (R1, 0), (FRM, 0), (IMM, 8 * slot))
         lib.sljit_emit_icall(self.c, g("CALL_REG_ARG"), g("ARGS2(32, W, W)"), MEM1(CTX), 8 * HOST_BRIDGE)
+        self._site()
         self.op1(g("MOV"), (MB, 0), (MEM1(CTX), 8 * MEM0))
         self._status(f)
 
@@ -930,7 +1045,7 @@ class Backend(Emitter):
         self.cmpj(g("NOT_EQUAL"), (MEM1(R1), 16), (CTX, 0), other)
         lib.sljit_emit_icall(self.c, g("CALL_REG_ARG") | CALL_RETURN, g("ARGS0(32)"), MEM1(R1), 0)
         self.bind(other)
-        self._call_record(f, 0)
+        self._call_record(f, 0, extra=True)
         self.ret_ok(f)
 
     def tail_indirect(self, f: Frame, table: int, sig: int, index: Operand, src: int, n: int) -> None:
@@ -949,13 +1064,34 @@ class Backend(Emitter):
     def host_thunk(self, word: int) -> int:
         at = self.mark()
         lib.sljit_emit_enter(self.c, REG_ENTER, g("ARGS0(32)"), 3, 3, 0)
+        self._ret_at = lib.w2s_ret_at(self.c)
         self.op1(g("MOV"), (R0, 0), (IMM, word))
         self.op1(g("MOV"), (R1, 0), (FRM, 0))
         lib.sljit_emit_icall(self.c, g("CALL_REG_ARG"), g("ARGS2(32, W, W)"), MEM1(CTX), 8 * HOST_BRIDGE)
+        self._site()
         self.op1(g("MOV"), (MB, 0), (MEM1(CTX), 8 * MEM0))
         lib.sljit_emit_return(self.c, g("MOV32"), R0, 0)
         return at
 
+
+def _no_a64(name: str) -> None:
+    """The D39 methods gained `a64` (and `lo`) with memory64 (S0009, after this backend was written):
+    accepted here, refused when set (this backend claims no memory64)."""
+    orig = getattr(Backend, name)
+
+    def wrapped(self: Any, *args: Any, a64: Any = False, lo: int = 0, **kw: Any) -> Any:
+        if any(a64) if isinstance(a64, tuple) else a64:
+            from waboros.targets.base import Unsupported
+
+            raise Unsupported("jit-sljit", "memory64 / table64")
+        return orig(self, *args, **kw)
+
+    setattr(Backend, name, wrapped)
+
+
+for _n in ("load", "store", "table_get", "table_set", "table_fill", "table_copy", "memory_fill",
+           "memory_copy", "call_indirect", "tail_indirect"):
+    _no_a64(_n)
 
 _LIBM = ctypes.CDLL("libm.so.6")
 _LIBC = ctypes.CDLL(None)
@@ -968,10 +1104,20 @@ def assemble() -> tuple[bytes, list[int]]:
     offs = []
     # int32_t entry(uint64_t *ctx, uint64_t *frame, const void *code): S0, S1, S2 = the arguments
     offs.append(e.mark())
-    lib.sljit_emit_enter(c, 0, g("ARGS3(32, P, P, P)"), 3, 3, 0)
+    lib.sljit_emit_enter(c, 0, g("ARGS3(32, P, P, P)"), 3, 3, 32)
+    e.op1(g("MOV"), (R2, 0), (MEM1(CTX), 8 * EXIT_RECORD))
+    for i in range(3):  # the enclosing host call's exit record {sp, pc, frame}, then our frame (D56)
+        e.op1(g("MOV"), (R1, 0), (MEM1(R2), 8 * i))
+        e.op1(g("MOV"), (MEM1(SP), 8 * i), (R1, 0))
+    e.op1(g("MOV"), (MEM1(SP), 24), (FRM, 0))
     e.op1(g("MOV"), (R2, 0), (S2, 0))
     e.op1(g("MOV"), (MB, 0), (MEM1(CTX), 8 * MEM0))
     lib.sljit_emit_icall(c, g("CALL_REG_ARG"), g("ARGS0(32)"), R2, 0)
+    entry_ret = e.mark()
+    e.op1(g("MOV"), (R2, 0), (MEM1(CTX), 8 * EXIT_RECORD))
+    for i in range(3):  # R0 (the status) untouched
+        e.op1(g("MOV"), (R1, 0), (MEM1(SP), 8 * i))
+        e.op1(g("MOV"), (MEM1(R2), 8 * i), (R1, 0))
     done = Label()
     e.cmpj(g("EQUAL") | B32, (R0, 0), (IMM, 0), done)
     e.op1(g("MOV_U32"), (R1, 0), (R0, 0))
@@ -981,14 +1127,23 @@ def assemble() -> tuple[bytes, list[int]]:
     # bridge: R0 = context word of the host function, R1 = its slots
     offs.append(e.mark())
     lib.sljit_emit_enter(c, REG_ENTER, g("ARGS2(32, W_R, W_R)"), 7, 4, 8 * 6)
+    bra = lib.w2s_ret_at(c)  # the caller's return address is at sp + bra
     for i, r in enumerate((R3, R4, R5, R6)):
         e.op1(g("MOV"), (MEM1(SP), 8 * i), (r, 0))
+    e.op1(g("MOV"), (R2, 0), (MEM1(CTX), 8 * EXIT_RECORD))  # {caller's sp at its call, pc, frame}
+    lib.sljit_get_local_base(c, S3, 0, bra)  # sljit forbids sp-relative access past the locals
+    e.op1(g("MOV"), (MEM1(R2), 8), (MEM1(S3), 0))
+    e.op2(g("ADD"), (S3, 0), (S3, 0), (IMM, 8))
+    e.op1(g("MOV"), (MEM1(R2), 0), (S3, 0))
+    e.op1(g("MOV"), (MEM1(R2), 16), (FRM, 0))
     e.op1(g("MOV"), (R2, 0), (MEM1(CTX), 8 * HOST_ERROR))
     e.op1(g("MOV"), (MEM1(SP), 32), (R2, 0))
     e.op1(g("MOV"), (MEM1(CTX), 8 * HOST_ERROR), (IMM, STATUS_HOST_ERROR))
     e.op1(g("MOV"), (S3, 0), (MEM2(CTX, R0), 3))
     e.op1(g("MOV"), (R0, 0), (CTX, 0))
     lib.sljit_emit_icall(c, g("CALL"), g("ARGS2V(P, P)"), S3, 0)
+    e.op1(g("MOV"), (R1, 0), (MEM1(CTX), 8 * EXIT_RECORD))  # no wasm frame waits in a host call
+    e.op1(g("MOV"), (MEM1(R1), 0), (IMM, 0))
     e.op1(g("MOV_U32"), (R0, 0), (MEM1(CTX), 8 * HOST_ERROR))
     e.op1(g("MOV"), (R1, 0), (MEM1(SP), 32))
     e.op1(g("MOV"), (MEM1(CTX), 8 * HOST_ERROR), (R1, 0))
@@ -1009,7 +1164,9 @@ def assemble() -> tuple[bytes, list[int]]:
     data = ctypes.string_at(code, size)
     offsets = [lib.w2s_label_addr(m) - code for m in e.marks]
     e.free(code)
-    return data, offsets
+    # the walk's table: the entry's return point; `restore`: no tail_switch here, so an address no
+    # call returns to (the tail-switch stub's start)
+    return data, [*(offsets[k] for k in offs), offsets[entry_ret], offsets[offs[3]]]
 
 
 _TRAMP = None
@@ -1029,12 +1186,16 @@ class JitSljitTarget(JitX86_64Target):
         if _TRAMP is None:
             from waboros.targets.jit.common.instance import load_trampolines
 
-            _TRAMP = load_trampolines(*assemble())
+            _TRAMP = load_trampolines(*assemble(), saved=0)
         return _TRAMP
 
     def compile(self, module: Any) -> object:
         b = self.guard_backend() if _guard.wanted(self) else self.backend()
         c = compile_module(module, b, self.name)
+        if b.extra:
+            sites = [(r, *v) for r, v in _gc.decode(c.stackmaps).items()]
+            sites += [(r, 0, ra, up, 0, 0) for r, ra, up in b.extra]
+            c.stackmaps = _gc.encode(sorted(sites))
         c.funcs = [(b.offset[p], n) for p, n in c.funcs]
         c.thunks = {i: b.offset[k] for i, k in c.thunks.items()}
         if b.guard:
