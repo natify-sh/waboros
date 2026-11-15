@@ -212,6 +212,27 @@ never an absolute address (the same class as position independence above); CPU f
 configuration (`isa_level`, `isa_features` of the artifact), not from the host, as the existing
 patch already does for x86, ARM64 and RISC-V.
 
+## How the micro-compiler is built (maintainer, 2026-11-15)
+* **Statically linked by default:** one C build of our core plus sljit, one `.wasm`. sljit's API is
+  small and called for every emitted instruction (`sljit_emit_op2`, `sljit_emit_jump`, ...): in one
+  build with LTO those calls inline and the unused API is dropped (faster compiles, smaller module).
+  The core and sljit share pointers (`struct sljit_compiler *`, the code buffer), so separate modules
+  would need one imported memory and one allocator anyway: static linking with a hand-made ABI in
+  between. The same sources build natively for the encoder tests against `llvm-mc` (D60: plain
+  `cc core.c sljitLir.c`); AOT and determinism (D35, D54) are the same, one `.wasm` tied by a test.
+* **Separate modules joined with `wasm-merge` only for one case:** one micro-compiler for several
+  ISAs. sljit picks its target at build time and has no namespace, so a static build would need one
+  `sljitLir.c` per target with prefixed symbols (a generated header of
+  `#define sljit_emit_op2 x86_64_sljit_emit_op2 ...`); separate `sljit-x86_64.wasm` and
+  `sljit-aarch64.wasm` have their own namespaces and merge without renaming, and `wasm-opt` can
+  inline across the old boundary afterwards.
+* **The boundary in the code is `sljitLir.h` either way**: the core is written against it, so the
+  choice is a build decision, taken when a second ISA first goes into the same module.
+* **sljit is not forked**: our changes (helper calls through context words, position-independent
+  code, CPU features from the configuration) stay a small set of patches over a pinned upstream, as
+  `poc/sljit/sljit-wasm-host.patch` already is, so sljit updates from upstream with the patches on
+  top.
+
 ## Verification
 
 * The spec suite under QEMU for each sljit target, `pyc` as the oracle (as PYC-PLATFORMS.md does
