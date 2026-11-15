@@ -2,7 +2,7 @@
 title: Lessons
 kind: log
 status: current
-updated: 2026-11-11
+updated: 2026-11-15
 ---
 
 # Lessons
@@ -834,3 +834,13 @@ What went wrong or surprised us while building the PoC, so it is not found again
     boundary's type check): 3b.2 came to about 375 core lines against 245. Rule: count a lowering's
     size per case of its type matrix, and re-estimate when a decision adds a path, before the step
     starts. Found: S0013 step 3b.2, 2026-11-13.
+110. **A slot above a host call's arguments is the next frame's, even when nothing calls wasm yet.**
+    The inline `array.new_default` kept the array's size in a scratch slot above `ALLOC`'s argument
+    and read it again when the allocation retried. No test could see it: no service entered wasm, so
+    the slot kept its value. A host call may enter wasm again, and the nested frame starts right
+    above the call's slots; step 5's collector runs in exactly such an entry, and one nested call from
+    `ALLOC` gave the array 16 bytes instead of 400 on both JITs. The frame check of LESSONS 108 looks
+    at the call's own slots, not at what lives above them. Rule: the arguments of a host call are the
+    topmost slots anything reads after it; the core asserts it at every call site (`site`, the
+    highest scratch slot taken before the call), and a test makes a nested entry from the services.
+    Found: S0013 interim review before step 5, 2026-11-15.

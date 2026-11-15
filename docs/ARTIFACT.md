@@ -210,6 +210,11 @@ exception). Its C return value is ignored (D34). Compiled code calls it through 
 (`ctx[HOST_BRIDGE]`), which saves the pool registers the host convention lets a callee clobber,
 presets `ctx[HOST_ERROR]` to 13, returns the word as the call's status and puts back the word's
 previous value (an enclosing host call's preset): a host function that does not finish fails the call.
+A host function may enter wasm again; the nested entry's frame starts at `slots + max(n, m)`, right
+above the call's slots, so no value-stack slot above them survives the call. Compiled code keeps
+nothing it reads after a host call there (S0013 B1; the core asserts it at every call site; an
+amendment of version 1 without a bump, as no artifact file has been written, S0013 Q5). The
+exception refill (`EXN_REFILL`) does not set the frame base and must not enter wasm.
 
 **Exceptions** (S0012, D52; an amendment of version 1 without a bump, as D34). An exception travels
 as status `14` returned through frames, as a trap does; inside a `try_table` a call site's non-zero

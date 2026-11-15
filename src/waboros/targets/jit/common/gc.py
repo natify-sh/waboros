@@ -212,6 +212,7 @@ def take(fn: Any, n: int) -> list[Any]:
 
 def scratch(fn: Any, h: int, k: int) -> Slot:
     fn.maxh = max(fn.maxh, h + k + 1)
+    fn.hi = max(fn.hi, h + k + 1)  # for the check in `site` (B1)
     return Slot(fn.L + h + k)
 
 
@@ -226,11 +227,12 @@ def cold(fn: Any) -> None:
     """The cold code of the function, after its body: allocation slow paths (each a safepoint
     reporting to the `error` label it had), then the trap labels."""
     b, f = fn.b, fn.f
-    for label, retry, size, arg, pc, error, keep, top in fn.gccold:
+    for label, retry, size, arg, pc, error, keep, top, hi in fn.gccold:
         b.bind(label)
         b.move(arg, size, True)
         f.error, outer = error, f.error
         b.call_host(f, fn.m.layout.service(ALLOC), arg.k)
+        fn.hi = hi  # the scratch slots taken before the allocation (B1)
         fn.site(pc, 0, keep, top)
         f.error = outer
         b.jump(retry)
@@ -246,9 +248,13 @@ def _mem(fn: Any) -> int:
 
 def alloc(fn: Any, pc: int, ti: int, size: Any, h: int) -> None:
     """A new object of type `ti` and `size` bytes (an `Imm` or a `Slot`), its header written, its
-    offset in `tos`. The operand stack is in slots (a safepoint): slots [0, h) are the frame's."""
+    offset in `tos`. The operand stack is in slots (a safepoint): slots [0, h) are the frame's.
+    ALLOC's argument is the topmost scratch slot: a nested entry's frame starts above it, and the
+    retry reads `rtt` and `size` again (B1, ARTIFACT.md "Host functions")."""
     b, f, hw = fn.b, fn.f, _mem(fn)
-    rtt, new, arg = scratch(fn, h, 0), scratch(fn, h, 1), scratch(fn, h, 2)
+    rtt, new = scratch(fn, h, 0), scratch(fn, h, 1)
+    assert isinstance(size, Imm) or size.k >= fn.L + h + 2  # a scratch slot below `arg` (B1)
+    arg = scratch(fn, h, 2 if isinstance(size, Imm) else size.k - fn.L - h + 1)
     b.ctx_load(fn.TOS, fn.m.layout.rtt(fn.m.rtts[ti]), False)
     b.move(rtt, fn.TOS, True)
     retry, slow = b.new_label(), b.new_label()
@@ -261,7 +267,7 @@ def alloc(fn: Any, pc: int, ti: int, size: Any, h: int) -> None:
     b.store(f, 4, Imm(0), CURSOR, new, hw, a64=False, lo=0)
     b.binop("sub", fn.TOS, new, size, True)
     b.store(f, 8, fn.TOS, 0, rtt, hw, a64=False, lo=0)  # {rtt, collector bits 0}
-    fn.gccold.append((slow, retry, size, arg, pc, f.error, h + 3, h))
+    fn.gccold.append((slow, retry, size, arg, pc, f.error, arg.k - fn.L + 1, h, fn.hi))
 
 
 def _field(fn: Any, st: Any, x: Any, off: int, sign: bool) -> None:
@@ -501,12 +507,13 @@ def array(fn: Any, pc: int, ins: Any) -> None:
     if o in (0xFB06, 0xFB07) and (o == 0xFB07 or es == 1):  # new_default, new of bytes: inline
         n, v = at[h - 1], (Imm(0) if o == 0xFB07 else at[h - 2])
         b.cmp_branch("gt_u", n, Imm(limit(st)), trap(fn, TrapCode.ALLOCATION_TOO_LARGE), True)
-        size, obj, d = scratch(fn, h, 3), scratch(fn, h, 4), scratch(fn, h, 5)
+        size = scratch(fn, h, 2)  # below ALLOC's argument: read again after the call (B1)
         b.binop("shl", tos, n, Imm(log), True)
         b.binop("add", tos, tos, Imm(ARRAY_DATA + 7), True)
         b.binop("and", tos, tos, Imm(-8 & (1 << 64) - 1), True)
         b.move(size, tos, True)
         alloc(fn, pc, ins[1], size, h)
+        obj, d = scratch(fn, h, 3), scratch(fn, h, 4)
         b.store(f, 4, tos, ARRAY_LEN, n, _mem(fn), a64=False, lo=0)
         b.move(obj, tos, True)
         b.binop("add", tos, tos, Imm(ARRAY_DATA), False)

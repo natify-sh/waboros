@@ -326,6 +326,7 @@ class _Func:
         self.st: list[Entry] = []
         self.ctl: list[_Ctl] = []
         self.maxh = 0
+        self.hi = 0  # the highest scratch slot (gc.scratch) taken since the last call site, + 1
         self.dead = False
         self.dead_depth = 0
         self.tos_taken = False  # an operand of the current instruction is in `tos` (LESSONS 32)
@@ -349,6 +350,9 @@ class _Func:
         validator's mask at instruction `pc` covers the `top` operand slots before it popped."""
         # a call's slots are in the frame: the value-stack check covers L + maxh (S0013 3b.2 review)
         assert keep <= self.maxh, (pc, keep, self.maxh)
+        # no scratch value above the call's slots: a nested entry's frame starts at L + keep (B1)
+        assert self.hi <= keep, (pc, self.hi, keep)
+        self.hi = 0
         bits = 0
         if self.rm is not None:
             ops = gc.slot_bits(self.rm[pc], self.vm[pc])
@@ -826,6 +830,7 @@ class _Func:
         for pc, ins in enumerate(self.insns):
             op = ins[0]
             self.tos_taken = False
+            self.hi = 0
             if self.dead:  # skip to the end (or else) of the block that became unreachable
                 if op in (0x02, 0x03, 0x04, 0x1F):
                     self.dead_depth += 1
