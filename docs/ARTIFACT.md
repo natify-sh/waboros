@@ -193,8 +193,12 @@ at 16 the handle-report overflow flag (u32), 20-2047 reserved, [2 KiB, 4 KiB) th
 sets the flag instead) and [4 KiB, 64 KiB) `ROOTS`, the buffer of 7 680 u64 root words the module
 forwards in place (the module traps on a malformed heap, but without a map of object starts it
 cannot tell an aligned interior offset from an object start: S0013 Changes, 5.2); type-info
-records in [64 KiB, 64 MiB); objects from 64 MiB (semispace A, to 2 GiB + 32 MiB). Code allocates
-by `cursor + size` against the limit (in 64 bits) and calls `ALLOC` when it does not fit. A
+records in [64 KiB, 64 MiB); objects from 64 MiB in two adjacent semispaces `[64 MiB, 64 MiB +
+C/2)` and `[64 MiB + C/2, 64 MiB + C)`, both committed (`size_bytes` is `64 MiB + C`), whose
+boundary moves when the heap grows, with `64 MiB + C <= 2³² − 128 KiB` (D61). Code allocates by
+`cursor + size` against the limit (in 64 bits) and calls `ALLOC` when it does not fit; the cursor
+and the limit lie in the active space, and a collection (in `ALLOC` or an array service) moves
+them into the other half. A
 **reference word** of the any or extern hierarchy is 0 (null), `(v << 1) | 1` for an i31, `(h << 2)
 | 2` for a host value (*h* its 1-based handle in the store; at most 2³⁰ − 1, so a word fits 4
 bytes), or an object's offset (a multiple of 8). An `externref` element or value is such a word.

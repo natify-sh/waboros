@@ -1041,7 +1041,7 @@ not observable by any walk while every entry restores the record (LESSONS 105); 
 defence.
 
 ### D57. The JIT GC heap: a hidden i32 memory per store, u32 references; host values type-checked; context ABI v1 amended
-Status: accepted (maintainer, 2026-11-10 and 2026-11-13: S0013 Q1, Q5, Q8, Q9, Q10, Q11 and the step-3b plan) · Date: 2026-11-15 · Supersedes: — · Evidence: S0013 step 3b (Changes 3b.1-3b.4); spec `jit-x86_64` 64 229 pass, 0 expected failures, as `pyc`, guard and explicit, with the walk check and with poison; BENCHMARKS.md, "GC (S0013 step 3b)"
+Status: accepted (maintainer, 2026-11-10 and 2026-11-13: S0013 Q1, Q5, Q8, Q9, Q10, Q11 and the step-3b plan) · Date: 2026-11-15 · Supersedes: — · Superseded in part by: D61 · Evidence: S0013 step 3b (Changes 3b.1-3b.4); spec `jit-x86_64` 64 229 pass, 0 expected failures, as `pyc`, guard and explicit, with the walk check and with poison; BENCHMARKS.md, "GC (S0013 step 3b)"
 
 * **The heap.** Each store has one GC heap, an i32 `Memory` (4 GiB + 32 MiB reserved, never moves)
   bound into every instance that uses GC as the memory after its declared ones (two context words;
@@ -1052,13 +1052,15 @@ Status: accepted (maintainer, 2026-11-10 and 2026-11-13: S0013 Q1, Q5, Q8, Q9, Q
   `(h << 2) | 2` a host value, otherwise an object's offset (a multiple of 8). The heap's header
   holds the bump cursor and limit; type-info records (kind, final, depth, display, traced fields)
   sit in a permanent area, one per canonical type and store; objects start with their record's
-  offset (ARTIFACT.md part 3). Until the collector (S0013 step 5) the heap only grows.
+  offset (ARTIFACT.md part 3). Until the collector (S0013 step 5) the heap only grows; superseded
+  by D61: since step 5.3 it is collected.
 * **Committed from its start** (S0013 3b.1 review, reversing the plan's decision D to commit its
   regions apart): every byte below the size the contexts see is committed, so an explicit bounds
   check that passes never reaches an uncommitted page. Cost: the type-info area's 64 MiB counts
   against a commit limit (Windows' paging file, Linux in strict overcommit) once a store allocates
   its first object; no RSS. Step 5's semispace B, above A's uncommitted tail, brings such a hole
-  back; Q8 accepted it there, and step 5's plan decides.
+  back; Q8 accepted it there, and step 5's plan decides. Closed by D3 of S0013's "Step 5
+  decisions" (D61): the two halves are adjacent and both committed, so there is no hole.
 * **Lowered once.** The GC instructions are lowered in the shared core (`jit/common/gc.py`) on D39
   methods only (Q9 (a)); a backend only lists the opcodes in its `supported` set. Allocation is a
   bump in code with a cold call to a service when full; casts compare the record (final) or the
@@ -1084,7 +1086,8 @@ Status: accepted (maintainer, 2026-11-10 and 2026-11-13: S0013 Q1, Q5, Q8, Q9, Q
   with the distinct objects a store hands out. A deviation from Wasmtime's scoped roots, recorded
   here as Q10 asked.
 * **Not collected yet**: until step 5 an unreachable object is never reclaimed (the heap grows up to
-  2 GiB − 32 MiB, then "GC heap out of memory", a host error).
+  2 GiB − 32 MiB, then "GC heap out of memory", a host error). Superseded by D61: collected since
+  step 5.3, with a live limit of 2 GiB − 32 MiB − 64 KiB.
 
 Rejected (S0013 "Alternatives considered"): references as 64-bit addresses into store chunks (no
 containment, no reuse of S0011's checks, a collector that could not be a wasm module); GC as
@@ -1190,3 +1193,35 @@ Status: accepted (maintainer, 2026-11-15) · Date: 2026-11-15 · Supersedes: —
 * Unchanged: the Python JIT stays the byte oracle of each port (MICRO-COMPILERS.md); whether a port
   replaces its Python backend is still the JIT-AS-WASM decision taken after the artifact format
   (ROADMAP "Next" (6)).
+
+### D61. The JIT GC heap collects: a copying collector in wasm, Wasmtime's semispaces
+Status: accepted (maintainer, 2026-11-15: S0013 "Step 5 decisions" D1-D4, the step-5.3 design note); written in S0013 step 5.3, closed in step 5.7 · Date: 2026-11-15 · Supersedes: S0013's fixed semispaces A and B · Evidence: S0013 Changes 5.3; spec `gc` and `exceptions` with `WABOROS_JIT_GC_STRESS=1 WABOROS_JIT_GC_POISON=1 WABOROS_JIT_GC_VERIFY=1` on both JITs (0 fail); `tests/jit/test_gc_collect.py`; the Kotlin program runs 100 times in one store at 32 MiB of object space, where it ran out of heap at the 19th run before
+
+* **The collector** is `runtime/gc/collector.wasm` (Cheney, S0013 step 5.2), compiled by the
+  store's JIT once per process and run as a **nested JIT entry** from the allocating service, its
+  frame above the service's slots (ARTIFACT.md "Host functions", B1). Python gathers the roots
+  (`jit/common/collect.py`: frames by the walk, reference globals, any- and extern-hierarchy tables,
+  passive element segments, GC handles, the exception arena's payloads until step 6) and writes
+  the forwarded words back. The collector's instance is kept out of `store.instances`, so
+  `store.interrupt()` never cuts a collection in half.
+* **Semispaces as Wasmtime's**: two adjacent halves `[OBJ, OBJ + C/2)` and `[OBJ + C/2, OBJ + C)`,
+  both committed, their boundary moving with growth; growing while the upper half is active
+  collects first. **Growth**: the first allocation commits 2 MiB; after a collection that leaves
+  more than half of a semispace live, `C` becomes `max(2C, 4·(live + request))`; never shrinks.
+  **Live limit**: `S_max` = 2 GiB − 32 MiB − 64 KiB (the heap's end stays below 2³², the
+  collector's bounds being u32); beyond it "GC heap out of memory", Wasmtime's text.
+* **Every allocation that may run out of room collects** (the inline slow path and the array
+  services), and services read reference operands and segment items after it.
+* **Deviations from Wasmtime**: instantiation and constant expressions never collect (they grow;
+  observable only as an earlier "GC heap out of memory"); an allocation with less than 4 KiB of
+  value stack left traps `STACK_OVERFLOW` before collecting; a collector trap, a failed
+  verification or an exception (KeyboardInterrupt) inside a collection loses the store
+  (`RuntimeError`): the heap may be half moved, so nothing runs on it. A lost store refuses every
+  entry, instantiation and host access to globals and tables, and a host function that returns
+  normally on a lost store (one that caught the error) fails its call, so wasm already running
+  does not resume.
+* **Host values of `externref`** that a collection did not meet are freed, unless the collector's
+  report overflowed (a live handle at or above 16 384); freed numbers are reused lowest first, so
+  the table stays flat under churn. `GcRef` handles stay until the store is dropped (phase 6).
+* Open until step 5.7: the work-list order (Cheney against depth-first, measured as S0013 Q2
+  says) and the measurements in BENCHMARKS.md.

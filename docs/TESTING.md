@@ -2,7 +2,7 @@
 title: Testing
 kind: reference
 status: current
-updated: 2026-11-05
+updated: 2026-11-15
 ---
 
 # Testing
@@ -78,6 +78,20 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   instances then use the same host callbacks as without the switch. Hand-assembled instances
   (`tests/jit/test_abi*.py`, no stack-map table) are never checked. CI runs one spec run per
   architecture with it (below); `tests/jit/test_walk.py` sets it itself.
+* **The GC switches** (both JITs, S0013 step 5.3, D61; read when a store's heap is created, so a
+  test sets them with `monkeypatch.setenv` before instantiating): `WABOROS_JIT_GC_STRESS=1` makes
+  every allocation that may collect (in wasm code and the array services; never instantiation)
+  collect, so every object moves at every allocation; `WABOROS_JIT_GC_POISON=1` fills newly
+  committed object space, the from-space after each collection and the free part of the new
+  active space with 0xA5, so a stale reference or an unwritten field reads garbage;
+  `WABOROS_JIT_GC_VERIFY=1` checks the new space after each collection with `gcverify.check` (every
+  root and reference field null, an i31, a live host handle or an object start) and compares
+  `gcverify.digest` of the graph before and after; a failure loses the store (`RuntimeError`).
+  They are used together: `WABOROS_JIT_GC_STRESS=1 WABOROS_JIT_GC_POISON=1 WABOROS_JIT_GC_VERIFY=1
+  uv run python -m tests.spec.run --engine jit-x86_64 gc exceptions` (also with
+  `WABOROS_JIT_BOUNDS=explicit`, and on `jit-aarch64` under QEMU) must give 0 fail. The walk
+  check's "nothing moves before the collector" no longer holds under stress: a missing mark now
+  shows up as a stale or poisoned reference.
 
 ## Differential testing
 
@@ -198,7 +212,8 @@ on other hosts, but fails under
 `WABOROS_JIT_REQUIRE=1` when `auto` does not give guard pages), so a regression in the
 verified-row check cannot silently turn guard pages off (that `jit-x86_64` guard run, the
 explicit `jit-aarch64` run under QEMU and the guard run of the `arm64` job also set
-`WABOROS_JIT_WALK_CHECK=1`);
+`WABOROS_JIT_WALK_CHECK=1`; the `jit` job also runs `gc exceptions` on `jit-x86_64` with the three
+GC switches, explicit bounds, S0013 5.3);
 then both ISA gates and the D35 lists of both targets in both bounds modes, named on both hosts);
 `spec` (the spec run on `wasmtime`, `pyc` (also with `WABOROS_PYC_FBITS=1`), `jit-x86_64` in the default mode and with
 `WABOROS_JIT_BOUNDS=explicit`, then `auto` under `no_exec.py`); `arm64`

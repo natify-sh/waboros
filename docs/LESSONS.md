@@ -860,3 +860,28 @@ What went wrong or surprised us while building the PoC, so it is not found again
     untrusted value with a bound that cannot wrap (`off > size - 4` once `size >= 8` is checked), or
     do the sum in 64 bits; audit every i32 add on an untrusted value. Found: S0013 step 5.2 review,
     2026-11-15.
+113. **A service's argument list is a copy, so "read it after the allocation" from it still reads
+    before.** The host callback handed every service `vals[:nparams]`, a Python list made before
+    the service ran. B2's rule (read the `array.new` value after allocating) written against that
+    list would read the value from before the collection moved its object: the slot is a root and
+    is rewritten, the copy is not. Rule: a service that may collect gets the live slots
+    (`_host(..., live=True)`) and reads every reference operand from them after the allocation; a
+    scratch mutant that reads into a local first fails `test_gc_collect.py`. Found: S0013 step 5.3,
+    2026-11-15.
+114. **A scratch copy for an identity check must be made in a new, empty directory.** Step 5.3's
+    `git archive HEAD | tar -x` into a scratch directory left over from an earlier session kept that
+    session's files (a `.cache/spec` symlink among them), while the working-tree copy made by
+    another route lacked the symlink, so `tools/jit_dump.py` found 5 979 modules in one copy and 2
+    in the other: 5 981 differing lines, none from the change. Rule: make both copies the same way,
+    from `git archive` into fresh directories, overlay the changed files on the second, link the
+    spec cache into both, and check that the module counts are equal before reading the diff
+    (LESSONS 98). Found: S0013 step 5.3, 2026-11-15.
+115. **"Refuse a lost store" must cover the code already running, not only new calls.** Step 5.3
+    refused every later entry once a collection failed, but a host import that called wasm, met the
+    collector's trap and caught the error returned normally, and its wasm caller went on reading a
+    half-moved heap (the review returned 11 from it). The same review found a window where the
+    collector instance was in `store.instances` while it was being made, so another thread's
+    `store.interrupt()` set its interrupt word for good and every later collection trapped. Rule: a
+    state that forbids running is checked where control returns into wasm too (the host bridge,
+    after the host function), and a word that must stay clear is cleared before each use, not only
+    kept out of reach. Found: S0013 step 5.3 review, 2026-11-15.

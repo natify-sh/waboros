@@ -106,13 +106,13 @@ def test_allocation_commits_and_grows(monkeypatch: pytest.MonkeyPatch, poison: b
     assert u32s(h, gc.CURSOR, 2) == [gc.OBJ, gc.OBJ] and h.mem.pages == 1  # nothing committed yet
     a = h.alloc(24)
     assert a == gc.OBJ and u32s(h, gc.CURSOR, 2) == [gc.OBJ + 24, gc.OBJ + (1 << 20)]
-    assert h.mem.pages << 16 == gc.OBJ + (1 << 20)  # the size explicit checks compare with
+    assert h.mem.pages << 16 == gc.OBJ + (2 << 20)  # both halves: the size explicit checks see
     assert ctypes.string_at(h.base + a, 8) == bytes([POISON if poison else 0]) * 8
-    big = h.alloc(3 << 20)  # past the first chunk: the limit moves
+    big = h.alloc(3 << 20)  # past the first half, no collection without a service: it grows
     assert big == gc.OBJ + 24 and u32s(h, gc.LIMIT, 1)[0] >= big + (3 << 20)
-    ctypes.c_uint32.from_address(h.base + gc.CURSOR).value = gc.A_END - 8
+    assert h.end == gc.OBJ + h.cap // 2 and h.mem.pages << 16 == gc.OBJ + h.cap
     with pytest.raises(MemoryError, match="GC heap out of memory"):
-        h.alloc(16)
+        h.alloc(gc.CAP_MAX // 2)  # the heap's end stays below 2**32
 
 
 def test_object_words_for_the_walk_check() -> None:
@@ -151,7 +151,7 @@ def test_records_across_many_pages() -> None:
         assert u32s(h, offs[i], 6)[3:6] == [40, offs[i], 12]  # 40 traced fields, the first at 12
     h.alloc(8)
     end = h.mem.pages << 16
-    assert end == gc.OBJ + (1 << 20)
+    assert end == gc.OBJ + (2 << 20)  # both halves
     for at in range(
         0, end, mmap.PAGESIZE
     ):  # every page below the size is readable (a fault: crash)
@@ -187,7 +187,7 @@ def test_an_instance_with_the_heap(name: str) -> None:
         assert all(inst.ctx[c.layout.service(j)] for j in range(GC_SERVICES))
         assert inst.call(0, []) == [7]
     h.alloc(8)
-    assert all(inst.ctx[FIRST_VAR + 1] == gc.OBJ + (1 << 20) for inst in insts)  # size published
+    assert all(inst.ctx[FIRST_VAR + 1] == gc.OBJ + (2 << 20) for inst in insts)  # size published
 
 
 NONFINAL = """(module (type $f (sub (func (result i32)))) (table 1 funcref)

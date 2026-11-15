@@ -75,10 +75,8 @@ class Heap:
         dead2 = h.new_struct(m, 0, [2, dead, 0])
         self.at = {"a": a, "b": b, "e": e, "arr": arr, "dead2": dead2}
         self.roots = [arr, a, a, I31, host(5), 0, s, b]  # a twice
-        lim = h.limit
-        h.grow(8)
-        self.spaces = [gc.OBJ, h.cursor, lim, h.limit]
-        self.view = memoryview((ctypes.c_char * h.limit).from_address(h.base)).cast("B")
+        self.spaces = [gc.OBJ, h.cursor, h.end, gc.OBJ + h.cap]  # to-space: the upper half
+        self.view = memoryview((ctypes.c_char * (gc.OBJ + h.cap)).from_address(h.base)).cast("B")
 
 
 Result = tuple[int, list[int], bytes, bytes, int] | str

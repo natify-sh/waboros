@@ -7,6 +7,7 @@ An `Instance` runs code assembled elsewhere (hand-built in the ABI tests); a `Ji
 compiled module (common/compiler.py)."""
 
 import ctypes
+import heapq
 import mmap
 import os
 import sys
@@ -33,6 +34,7 @@ from waboros.frontend.types import (
 )
 from waboros.frontend.types import isref as types_isref
 from waboros.frontend.types import key as types_key
+from waboros.frontend.validate import _root  # pyright: ignore[reportPrivateUsage, reportUnknownVariableType]
 from waboros.runtime.link import LinkError
 from waboros.runtime.store import StoreState
 from waboros.targets.base import Extern, HostError, HostFunc, Raw, Trap, TrapCode
@@ -226,8 +228,9 @@ class _StoreStacks:
         # reference values at the boundary (S0002: opaque objects, None = null): an externref is
         # a handle (index + 1) of the object kept here for the store's lifetime; a funcref is a
         # record address, seen by the host as a `FuncRef` (one object per address)
-        self.externs: list[object] = []
+        self.externs: list[object] = []  # None: freed after a collection (D61)
         self.extern_ids: dict[int, int] = {}
+        self.free_externs: list[int] = []  # a heap: freed handle numbers, reused lowest first
         self.funcrefs: dict[int, FuncRef] = {}
         # GC (S0013 3b): the store's heap (heap.GcHeap, with the first instance that uses GC) and
         # the handle table: the word of each GcRef given to the host, kept until the store is
@@ -235,6 +238,7 @@ class _StoreStacks:
         self.heap: Any = None
         self.gc_handles: list[int] = []
         self.gcrefs: dict[int, GcRef] = {}
+        self.lost: str | None = None  # a collection did not complete: every call refused (D61)
         # exceptions (S0012): {pending exnref, arena cursor, arena limit}, which context words
         # 10, 12 and 13 point to; code bumps objects {tag, payload words} from the arena's last
         # chunk. Chunks never move and are kept until the store is dropped (Q3); the first comes
@@ -304,10 +308,15 @@ class _StoreStacks:
         """The word of host value `v`: `(h << 2) | 2`, h its 1-based handle in the store."""
         n = self.extern_ids.get(id(v))
         if n is None:
-            if len(self.externs) >= (1 << 30) - 1:  # a host word fits a 4-byte reference field
-                raise MemoryError("too many host references in one store")
-            self.externs.append(v)
-            n = self.extern_ids[id(v)] = len(self.externs)
+            if self.free_externs:
+                n = heapq.heappop(self.free_externs)
+                self.externs[n - 1] = v
+            else:
+                if len(self.externs) >= (1 << 30) - 1:  # a host word fits a 4-byte reference field
+                    raise MemoryError("too many host references in one store")
+                self.externs.append(v)
+                n = len(self.externs)
+            self.extern_ids[id(v)] = n
         return n << 2 | 2
 
     def _fits(self, w: int, ht: int, mod: Any) -> bool:
@@ -616,6 +625,7 @@ class Table:
         except (MemoryError, OverflowError):
             raise MemoryError(f"out of memory (failed to allocate {8 * size} bytes)") from None
         self.users: list[tuple[ctypes.Array[ctypes.c_uint64], int]] = []
+        self.refs = False  # any- or extern-hierarchy elements: roots (its creator sets it)
 
     def bind(self, ctx: "ctypes.Array[ctypes.c_uint64]", word: int) -> None:
         ctx[word], ctx[word + 1] = ctypes.addressof(self.buf), self.size
@@ -625,6 +635,8 @@ class Table:
         """table.grow: the old size, or -1 at the table's address width (S0009). Another thread
         than the store's raises RuntimeError before anything changes."""
         st = cast(StoreState | None, self.store)
+        if st is not None:
+            refuse_lost(st)
         took = st.claim() if st is not None else False
         try:
             return self._grow(delta, init)
@@ -649,9 +661,20 @@ class Table:
 
     def write(self, at: int, values: Sequence[int]) -> None:
         """Elements `at`... (table.init, segments): all or nothing."""
+        if self.store is not None:
+            refuse_lost(self.store)
         if at + len(values) > self.size:
             raise Trap(TrapCode.TABLE_OUT_OF_BOUNDS, "out of bounds table access")
         self.buf[at : at + len(values)] = list(values)
+
+
+def refuse_lost(store: object) -> None:
+    """Nothing runs on a store whose collection did not complete (D61): the heap may be half
+    moved. Entries, host calls returning into wasm, instantiation, host access to globals and
+    tables raise its error."""
+    lost = _stacks(cast(StoreState, store)).lost
+    if lost:
+        raise RuntimeError(lost)
 
 
 def _no_service(args: Sequence[Raw]) -> list[Raw]:
@@ -829,19 +852,22 @@ class Instance:
         t.exn = (tag, tuple(v if k is None else st.from_raw(k[0], v) for k, v in vals))
         return t
 
-    def _host(self, f: HostFunc, nparams: int, masks: Sequence[int]) -> Callable[[int, int], int]:
+    def _host(
+        self, f: HostFunc, nparams: int, masks: Sequence[int], live: bool = False
+    ) -> Callable[[int, int], int]:  # fmt: skip
         """The status of a host call is context word HOST_ERROR, which the bridge presets to 13
         (D34): the callback writes the results, then the status, as its last action. An
         asynchronous exception (KeyboardInterrupt) escaping the callback leaves the preset: the
         call fails (`_error`), never "succeeds" with unwritten results. The C return value is
         ignored (ctypes leaves it undefined when an exception escapes). A host exception waits in
-        the store."""
+        the store. `live`: `f` gets the slots themselves (a GC service reads them after a
+        collection rewrote them, S0013 B2), not a copy."""
         store, n = self.store, max(nparams, len(masks))
 
         def serve(slots: int) -> int:
             try:
                 vals = (ctypes.c_uint64 * n).from_address(slots)
-                res = f(vals[:nparams])
+                res = f(cast(Sequence[Raw], vals) if live else vals[:nparams])
                 for i, (r, m) in enumerate(zip(res, masks, strict=True)):
                     vals[i] = r & m
                 return 0
@@ -863,6 +889,9 @@ class Instance:
                 why = st.guard and not status and guard.broken()  # back into guard code
                 if why:
                     store.pending = RuntimeError(f"{guard.LOST} ({why})")
+                    status = STATUS_HOST_ERROR
+                if not status and st.lost:  # a host caught it: wasm must not resume (D61)
+                    store.pending = RuntimeError(st.lost)
                     status = STATUS_HOST_ERROR
             except BaseException as e:  # after serve() too (guard.broken()): the call fails
                 store.pending = store.pending or e
@@ -960,6 +989,7 @@ class JitInstance(Instance):
     ) -> None:
         if c.stackmaps is None:  # every frame of a store must be walkable (S0013 Q5)
             raise ValueError("compiled module has no stack-map table (STACKMAPS); recompile it")
+        refuse_lost(store)
         mod = self.module = c.module
         self.hier: dict[int, tuple[list[RefType | None], list[RefType | None]]] = {}  # per export
         types = mod["types"]
@@ -971,6 +1001,9 @@ class JitInstance(Instance):
         tables: list[Table] = []
         self.gaddr: list[int] = []
         self.cells: list[GlobalCell] = []  # keeps the owners of imported globals alive
+        # roots of a collection from registration on, even if instantiation fails later (B6)
+        self.tables: list[Table] = []
+        self.elems: list[list[int]] = []
         self.tags: list[Tag] = []
         for im, ext in zip(mod["imports"], imports, strict=True):
             _check_store(store, im[0], ext.value)
@@ -1053,6 +1086,7 @@ class JitInstance(Instance):
         for (mn, mx), init in zip(mod["tables"], mod["tinit"], strict=True):
             at = mod["taddr"][len(tables)] == I64
             tables.append(Table(mn, mx, 0 if init is None else self._const(init), store, a64=at))
+            tables[-1].refs = _root(mod, mod["ttypes"][len(tables) - 1])
         for i, t in enumerate(tables):
             t.bind(ctx, lay.table(i))
         self.tables = tables
@@ -1077,7 +1111,7 @@ class JitInstance(Instance):
         gcs += [(ARRAY_NEW_ELEM, self._array_elem, 4, 1), (ARRAY_FILL, self._array_fill, 6, 0)]
         gcs += [(ARRAY_INIT_DATA, self._init_data, 6, 0), (ARRAY_INIT_ELEM, self._init_elem, 6, 0)]
         for j, fn, nargs, nres in gcs if lay.gcsvc else ():  # the GC group (S0013)
-            cb = HOST(self._host(fn, nargs, [M64] * nres))
+            cb = HOST(self._host(fn, nargs, [M64] * nres, live=True))
             self.callbacks.append(cb)
             ctx[lay.service(j)] = ctypes.cast(cb, ctypes.c_void_p).value or 0
         segs: list[tuple[int, Any, Any, Any]] = mod["elem_info"]
@@ -1142,15 +1176,18 @@ class JitInstance(Instance):
         return vals[id(e)]
 
     # the GC group's services (S0013): arguments as the compiler put them in the slots
+    # The services that allocate may collect (D1): they read reference operands from their slots
+    # and segment items after allocating (B2, B3), never before.
     def _alloc(self, a: Sequence[Raw]) -> list[Raw]:
         """ALLOC: room for a[0] bytes past the cursor; the code bumps it when it retries."""
-        heap = _stacks(self.store).heap
-        if heap.cursor + a[0] > heap.limit:
-            heap.grow(a[0])
+        _stacks(self.store).heap.room(a[0], self)
         return []
 
     def _array_new(self, a: Sequence[Raw]) -> list[Raw]:  # (value low, high, n) + type
-        return [_stacks(self.store).heap.new_array(self.module, a[3], a[2], a[0] | a[1] << 64)]
+        heap, n, ti = _stacks(self.store).heap, a[2], a[3]
+        r = heap.new_array(self.module, ti, n, vals=(), inst=self)
+        heap.fill(r + gc.ARRAY_DATA, self._es(ti), a[0] | a[1] << 64, n)  # the value, rewritten
+        return [r]
 
     def _array_data(self, a: Sequence[Raw]) -> list[Raw]:
         """(offset, n) + type, segment: the segment's bounds first (Wasmtime, LESSONS 102)."""
@@ -1158,7 +1195,7 @@ class JitInstance(Instance):
         heap, data, es = _stacks(self.store).heap, self.datas[seg], self._es(ti)
         if o + n * es > len(data):
             raise Trap(TrapCode.MEMORY_OUT_OF_BOUNDS, "out of bounds memory access")
-        r = heap.new_array(self.module, ti, n)
+        r = heap.new_array(self.module, ti, n, vals=(), inst=self)
         ctypes.memmove(heap.base + r + gc.ARRAY_DATA, data[o : o + n * es], n * es)
         return [r]
 
@@ -1166,8 +1203,11 @@ class JitInstance(Instance):
         o, n, ti, seg = a  # (offset, n) + type, segment
         if o + n > len(self.elems[seg]):
             raise Trap(TrapCode.TABLE_OUT_OF_BOUNDS, "out of bounds table access")
-        heap = _stacks(self.store).heap
-        return [heap.new_array(self.module, ti, n, vals=self.elems[seg][o : o + n])]
+        heap, es = _stacks(self.store).heap, self._es(ti)
+        r = heap.new_array(self.module, ti, n, vals=(), inst=self)
+        for k, v in enumerate(self.elems[seg][o : o + n]):  # after the allocation (B3)
+            heap.put(r + gc.ARRAY_DATA + k * es, es, v)
+        return [r]
 
     def _range(self, r: int, i: int, n: int, ti: int) -> tuple[Any, int]:
         """(heap, element size) after array `r`'s null and range checks, in that order."""
@@ -1240,6 +1280,7 @@ class JitInstance(Instance):
         return []
 
     def call(self, func_index: int, args: Sequence[Raw]) -> list[Raw]:
+        refuse_lost(self.store)
         if func_index < self.nimports:
             # an exported import: the host function itself (refs: objects); `me` as in Instance.call
             me, depth = threading.get_ident(), self.store.depth
@@ -1301,6 +1342,7 @@ class JitInstance(Instance):
         return ctypes.c_uint64.from_address(self.gaddr[g]).value
 
     def global_get(self, global_index: int) -> Raw:
+        refuse_lost(self.store)
         r = self._read_global(global_index)
         t = self.gtypes[global_index]
         k = reftypes(self.module, [t])[0]

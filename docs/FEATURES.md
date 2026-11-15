@@ -2,7 +2,7 @@
 title: Features
 kind: reference
 status: current
-updated: 2026-11-05
+updated: 2026-11-15
 ---
 
 # Features
@@ -91,7 +91,7 @@ directories (`test/core/<dir>/`) count only on a target that claims the feature
 * threads (`wasm_threads`, `Config.shared_memory`): `SharedMemory`; `pyc` atomics under the GIL, care for free-threaded builds.
 * exceptions (`wasm_exceptions`): done and claimed on all three targets (S0012, D52): `pyc` runs `try_table` as a `try`/`except` of one private class, the JITs propagate a status through frames with landing pads, objects bumped from a store arena in code. `exceptions/`: 108 of 110 commands pass on `pyc` and 2 are skipped; the same on the JITs since they claim GC (S0013 steps 3b and 4; before, 5 `cast.wast` commands were expected failures there); the 3 `tag.wast` rec groups pass since S0013 step 1a. The legacy proposal (`exceptions`) is not run.
 * typed function references (`wasm_function_references`): `call_ref`, non-null types.
-* GC (`wasm_gc`, `Config.gc_support`): done and claimed on `pyc` (S0013 step 2: a struct is a Python list, an array a list or a bytearray, an i31 an int, a runtime type per canonical type key; all 798 `gc/` commands, 797 pass and 1 skipped) and `jit-x86_64` (step 3b: a store's heap as a hidden i32 memory, u32 references, the lowering written once in the JIT core; the same 797 pass, 1 skipped; no collector before step 5, the heap only grows) and `jit-aarch64` (step 4: the same lowering, only its opcode set; the same 797 pass, 1 skipped, under QEMU).
+* GC (`wasm_gc`, `Config.gc_support`): done and claimed on `pyc` (S0013 step 2: a struct is a Python list, an array a list or a bytearray, an i31 an int, a runtime type per canonical type key; all 798 `gc/` commands, 797 pass and 1 skipped) and `jit-x86_64` (step 3b: a store's heap as a hidden i32 memory, u32 references, the lowering written once in the JIT core; the same 797 pass, 1 skipped; since step 5.3 the heap is collected by a copying collector, D61) and `jit-aarch64` (step 4: the same lowering, only its opcode set; the same 797 pass, 1 skipped, under QEMU).
 * wide arithmetic (`wasm_wide_arithmetic`): done and claimed on `pyc` (big ints; S0008 step 1), `jit-x86_64` and `jit-aarch64` (step 3: one backend method, `wide`; `add`/`adc`, `sub`/`sbb`, one-operand `mul`/`imul` on x86-64, `adds`/`adc`, `subs`/`sbc`, `mul` + `umulh`/`smulh` on aarch64).
 * stack switching (`wasm_stack_switching`): after everything else.
 * component model: out of scope; fused core modules only (D7).

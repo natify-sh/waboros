@@ -2,7 +2,7 @@
 title: Wasm proposals - what Wasmtime enables by default, what needs a flag, and where waboros stands
 kind: reference
 status: draft
-updated: 2026-11-05
+updated: 2026-11-15
 ---
 
 # Wasm proposals: Wasmtime's defaults and flags, and waboros
@@ -39,7 +39,7 @@ retried with `-W <proposal>=y`, and each default was confirmed by `-W <proposal>
 | **memory64** | 5 | yes | **default** | yes on all three: `pyc` (S0009 step 1), `jit-x86_64` and `jit-aarch64` (steps 2a, 2b, 3); 8 719 spec commands: 8 660 pass and 59 skipped on `pyc`; both JITs pass the same 8 660 since they claim GC (S0013 steps 3b and 4) | phase 5 (S0009) |
 | **relaxed SIMD** | 5 | yes | **default** | yes on all three targets (79 commands; S0008 steps 1-2; madd/nmadd fused on `jit-aarch64`, D49) | phase 5 (S0008) |
 | **exceptions** (`exnref`) | 5 | yes | **default** | `pyc` (S0012 step 2), `jit-x86_64` (step 3) and `jit-aarch64` (step 4, under QEMU), the JITs in guard and explicit mode: 110 spec commands: 108 pass and 2 skipped on `pyc`; both JITs pass the same 108 since they claim GC (S0013 steps 3b and 4; `cast.wast` needs `ref.test`/`ref.cast`; the 3 `tag.wast` rec groups pass since step 1a) | phase 5 (S0012) |
-| **GC** | 5 | yes | **default** | yes on all three: `pyc` (S0013 step 2), `jit-x86_64` (step 3b) and `jit-aarch64` (step 4, under QEMU), the JITs in guard and explicit mode: all 798 `gc/` commands, 797 pass and 1 skipped, and no expected failure in any claimed directory; the JITs' heap is not collected before step 5 | phase 5, last (S0013) |
+| **GC** | 5 | yes | **default** | yes on all three: `pyc` (S0013 step 2), `jit-x86_64` (step 3b) and `jit-aarch64` (step 4, under QEMU), the JITs in guard and explicit mode: all 798 `gc/` commands, 797 pass and 1 skipped, and no expected failure in any claimed directory; the JITs' heap is collected by a copying collector since step 5.3 (D61) | phase 5, last (S0013) |
 | **threads** (shared memory, atomics, wait/notify) | 4 | no | **default** (`-W threads=n` refuses it) | no | late (ROADMAP item 8) |
 | **wide arithmetic** (`i64.add128`, `i64.mul_wide_*`) | 4 | no | **default** (`=n` refuses it; the website still says flag) | yes on all three targets (109 commands; S0008 steps 1 and 3) | ROADMAP "Order of the wasm features" item 8, after GC (added 2026-11-03) |
 | branch hinting | 5 | no | accepted by default (a custom section; `=n` still accepts the module) | accepted (an unknown custom section is skipped) | optional: use the hints for block layout |

@@ -124,7 +124,7 @@ def valid(st: Any, w: int) -> bool:
     `(v << 1) | 1`, a host value `(h << 2) | 2` with a live handle h, or an object of the heap."""
     if w == 0:
         return True
-    if w & 3 == 2:
-        return 1 <= w >> 2 <= len(st.externs)
+    if w & 3 == 2:  # a live handle (D61 frees the ones no collection met)
+        return 1 <= w >> 2 <= len(st.externs) and st.externs[(w >> 2) - 1] is not None
     # an i31 or an object only where GC code ran: a store without a heap keeps 3a's check
     return st.heap is not None and w < 1 << 32 and (w & 1 == 1 or st.heap.is_object(w))
