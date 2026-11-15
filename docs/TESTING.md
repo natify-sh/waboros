@@ -138,6 +138,10 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   closed (2026-11-05: every divergence was a `pyc` defect outside the exception code, now fixed; a
   3-minute run found none). Later runs: triage them before the GC spec and phase 5 close
   (ROADMAP.md, "Next").
+* `src/waboros/targets/jit/common/gcverify.py` (S0013 step 5.1) is a test-only verifier of a JIT GC
+  heap image (form check, relocation-independent digest), tested by `tests/test_gcverify.py`; the
+  collector (step 5.3) will call it after each collection under `WABOROS_JIT_GC_VERIFY=1`, which does
+  not exist yet.
 
 ## Programs and benchmarks
 
