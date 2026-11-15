@@ -280,6 +280,15 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29; done 2026-11-03) -> 
 * **The JIT compilers as AOT-compiled wasm modules** ([JIT-AS-WASM.md](JIT-AS-WASM.md), draft,
   maintainer 2026-11-05): port, then replace the Python backends; a decision point (Dn) once the
   artifact format below is fixed; criterion byte identity and portability to non-Python hosts.
+* **Hand-written or sljit micro-compilers: decide before ARTIFACT.md part 3 is frozen**
+  (maintainer, 2026-11-16). The x86-64 experiment `poc/sljit/sljit-be/` (our core over sljit, D56
+  site records and SIMD through `sljit_emit_op_custom`) passes every directory `jit-x86_64` claims
+  except exceptions, at CoreMark parity. If the micro-compilers are our core in C over sljit, the
+  oracle becomes behaviour (spec suite, `spec_diff`) instead of bytes, and part 3's per-architecture
+  register table (bridge, exit-record frame register, `tail_switch`, entry block) must be sljit's,
+  or name no registers that only the code and its own trampolines see. Deferred until the same
+  check on aarch64 (under QEMU first, given to an agent by the maintainer; timings on an arm64
+  runner); then D48, MICRO-COMPILERS.md and JIT-AS-WASM.md are amended.
 * **One LIR vocabulary** before porting to the micro-compilers (MICRO-COMPILERS.md): the operation
   names that are strings today in several places become one enumerated list, defined once,
   together with fixing the artifact format in this phase; in C (D60) they become enums anyway, so
