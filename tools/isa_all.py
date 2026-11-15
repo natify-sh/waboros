@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """ISA gate (D24, S0002 step 5): compile every cached spec module and CoreMark (all directories,
-claimed or not, e.g. simd/) with WABOROS_JIT_DUMP set, then run
+claimed or not, e.g. simd/) and the runtime's collector module (S0013 step 5.2) with
+WABOROS_JIT_DUMP set, then run
 tools/isa_check.py on every non-empty blob (data area excluded).
 
     python3 tools/isa_all.py [--target jit-x86_64|jit-aarch64] [--level v1|v2] [--dump DIR]
@@ -20,12 +21,22 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+COLLECTOR = """import sys
+from waboros.frontend.binary import parse
+from waboros.frontend.validate import validate
+from waboros.targets import base
+m = parse(open("src/waboros/runtime/gc/collector.wasm", "rb").read())
+validate(m)
+base.TARGETS[sys.argv[1]]().compile(m)"""
 
 
 def dump(out: Path, target: str) -> None:
     env = {**os.environ, "WABOROS_JIT_DUMP": str(out), "PYTHONPATH": str(ROOT)}
     cmd = [sys.executable, str(ROOT / "tools/jit_dump.py"), "--target", target, str(out / "list")]
     subprocess.run(cmd, cwd=ROOT, env=env, check=True)
+    # the runtime's collector module (S0013 step 5.2), outside the D35 lists of jit_dump
+    env["PYTHONPATH"] += os.pathsep + str(ROOT / "src")
+    subprocess.run([sys.executable, "-c", COLLECTOR, target], cwd=ROOT, env=env, check=True)
 
 
 def main() -> int:

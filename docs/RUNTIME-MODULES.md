@@ -2,7 +2,7 @@
 title: Runtime modules in wasm (D54) - which parts of the runtime should be one, and in what order
 kind: reference
 status: draft
-updated: 2026-11-10
+updated: 2026-11-15
 ---
 
 # Runtime modules in wasm: candidates and order
@@ -36,7 +36,19 @@ A part of the runtime is a good wasm module when it is:
    allocate and initialise an object by its type-info record), so there is one allocator. Evaluating
    the constant expressions stays in Python until item 3.
 3. The module's exports, fixed in step 5's plan, are the minimal set a foreign loader may call:
-   `collect`, `is_subtype`, `alloc`.
+   `collect`, `is_subtype`, `alloc`. **Changed by S0013's "Step 5 decisions"**: `collect` became
+   three phases, `begin`, `roots(n)` and `finish` (M3, roots in bounded batches); `alloc` waits for
+   the C loader (D7), so Python's `GcHeap` stays the runtime's allocator until then.
+
+**Built (S0013 step 5.2).** `src/waboros/runtime/gc/collector.wat` and the committed
+`collector.wasm` beside it, package data loaded as `importlib.resources.files("waboros.runtime") /
+"gc/collector.wasm"` (`runtime/gc/` has no `__init__.py`, so no package named `gc` exists). The D54
+tie is `tests/test_collector_module.py`: wasmtime-py's `wat2wasm` of the source equals the committed
+bytes; our decoder finds the one import `gc.heap`, the exports `begin`, `roots`, `finish`, no data,
+no `memory.grow` and only MVP opcodes plus `memory.copy`; and the module collects heap images to the
+same bytes on Wasmtime and on our JITs. Its exports and the header-page regions it uses (`ROOTS`,
+the handle report) are in S0013 Changes (5.2) and ARTIFACT.md part 3. `is_subtype` joins in step 5.6;
+the runtime starts using the module in step 5.3.
 
 ### Built already, moved for the C loader (with ROADMAP "Next" item 6, not before)
 

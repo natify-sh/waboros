@@ -186,7 +186,13 @@ the phase-3 meaning of each word and the register roles are in [S0003](specs/S00
 Offsets of the variable part follow from the counts in the artifact, in exactly this order.
 
 **The GC heap** (S0013 step 3b; the collector and its regions B come with step 5). Offsets in the
-heap: 0-7 zero (null is 0), the allocation cursor (u32) at 8 and its limit (u32) at 12; type-info
+heap: 0-7 zero (null is 0), the allocation cursor (u32) at 8 and its limit (u32) at 12; the rest
+of the header page belongs to the collector module (S0013 step 5.2, `runtime/gc/collector.wat`):
+at 16 the handle-report overflow flag (u32), 20-2047 reserved, [2 KiB, 4 KiB) the handle report (bit
+*h* set for each host word `(h << 2) | 2` a collection found reachable, *h* < 16 384; a larger *h*
+sets the flag instead) and [4 KiB, 64 KiB) `ROOTS`, the buffer of 7 680 u64 root words the module
+forwards in place (the module traps on a malformed heap, but without a map of object starts it
+cannot tell an aligned interior offset from an object start: S0013 Changes, 5.2); type-info
 records in [64 KiB, 64 MiB); objects from 64 MiB (semispace A, to 2 GiB + 32 MiB). Code allocates
 by `cursor + size` against the limit (in 64 bits) and calls `ALLOC` when it does not fit. A
 **reference word** of the any or extern hierarchy is 0 (null), `(v << 1) | 1` for an i31, `(h << 2)

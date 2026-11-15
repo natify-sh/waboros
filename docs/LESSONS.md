@@ -844,3 +844,19 @@ What went wrong or surprised us while building the PoC, so it is not found again
     topmost slots anything reads after it; the core asserts it at every call site (`site`, the
     highest scratch slot taken before the call), and a test makes a nested entry from the services.
     Found: S0013 interim review before step 5, 2026-11-15.
+111. **A collector test sees an early end of the scan only if the last object copied has a reference.**
+    The first heap image of the collector module's test ended with an empty struct, so a scan that
+    stopped one object early still produced a correct heap: the skipped object had nothing to forward.
+    A scratch mutant (the scan loop ending 24 bytes short) passed every test on both engines. Rule: in
+    a test of a copying collector, the object copied last holds a reference to an object copied
+    before it (a cycle reachable only through a late field), so the verifier sees a stale word when
+    the scan stops short; check each mutant of the plan's list against the test before trusting it.
+    Found: S0013 step 5.2, 2026-11-15.
+112. **A bounds check written as a sum wraps in 32 bits.** The collector module checked a traced
+    field's offset with `off + 4 > size` in i32: a record with offset `0xFFFFFFFC` makes the sum 0,
+    the check passes, and the scan writes 4 bytes below the object, outside to-space (reproduced on
+    Wasmtime and jit-x86_64 by the independent review). Wasm's own bounds check does not help: the
+    write stays inside the memory, only outside the region the module owns. Rule: compare an
+    untrusted value with a bound that cannot wrap (`off > size - 4` once `size >= 8` is checked), or
+    do the sum in 64 bits; audit every i32 add on an untrusted value. Found: S0013 step 5.2 review,
+    2026-11-15.
