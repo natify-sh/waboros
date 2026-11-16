@@ -42,8 +42,6 @@ from waboros.targets.jit.common import gc, guard, simd, walk
 from waboros.targets.jit.common.compiler import I64, M32, M64, NARROW, Compiled
 from waboros.targets.jit.common.context import (
     ALLOC,
-    ARENA_CURSOR,
-    ARENA_LIMIT,
     ARRAY_FILL,
     ARRAY_INIT_DATA,
     ARRAY_INIT_ELEM,
@@ -54,7 +52,6 @@ from waboros.targets.jit.common.context import (
     ELEM_DROP,
     EXCEPTION,
     EXIT_RECORD,
-    EXN_REFILL,
     GC_RESERVED,
     HOST_BRIDGE,
     HOST_ERROR,
@@ -152,7 +149,6 @@ def reftypes(mod: Any, ts: Sequence[Any]) -> list[RefType | None]:
     return out
 
 
-ARENA_WORDS = 8192  # exception objects are bump-allocated in chunks of 64 KiB (S0012 Q3)
 _TAG_IDS = iter(range(1, 1 << 63))  # tag identities of the process (S0012), never 0
 _TAG_LOCK = threading.Lock()
 
@@ -240,24 +236,14 @@ class _StoreStacks:
         self.gc_handles: list[int] = []
         self.gcrefs: dict[int, GcRef | ExnRef] = {}  # word -> its handle (exnrefs too, step 6)
         self.lost: str | None = None  # a collection did not complete: every call refused (D61)
-        # exceptions (S0012): {pending exnref, arena cursor, arena limit}, which context words
-        # 10, 12 and 13 point to. The pending word holds 0 or the u32 heap offset of the last
-        # exception thrown, a root (S0013 step 6, D7); the arena is unused since then (6.3
-        # removes it).
-        self.exn = (ctypes.c_uint64 * 3)()
-        self.chunks: list[ctypes.Array[ctypes.c_uint64]] = []
-        self.new_chunk(ARENA_WORDS)
+        # exceptions (S0012): the pending word, which context word 10 points to: 0 or the u32
+        # heap offset of the last exception thrown, a root (S0013 step 6, D7)
+        self.exn = (ctypes.c_uint64 * 1)()
         self.tags: dict[int, Tag] = {}  # every tag of the store by identity
-        self.refill: Any = None  # context word EXN_REFILL (a ctypes callback)
         # the exit record {sp, pc, frame} of the innermost host call (S0013 3a), word EXIT_RECORD
         self.exit = (ctypes.c_uint64 * 3)()
         self.walk_ranges: Any = None  # walk.py: the store's code ranges, built at the first walk
         self.walk_vsp: list[int] = []  # check mode: the frames of the nested entries (walk.check)
-
-    def new_chunk(self, words: int) -> None:
-        c = (ctypes.c_uint64 * words)()
-        self.chunks.append(c)
-        self.exn[1], self.exn[2] = ctypes.addressof(c), ctypes.addressof(c) + 8 * words
 
     def to_raw(self, k: RefType, v: object) -> int:
         """A host value for reference type `k` (`reftypes`) -> its word, or `TypeError` before
@@ -393,25 +379,6 @@ def _checked(
             st.walk_vsp.pop()
 
     return checked
-
-
-def _refill_service(store: StoreState, st: _StoreStacks, tramp: Trampolines | None) -> Any:
-    """Context word EXN_REFILL (S0012): slots[0] = the words a throw needs; a new arena chunk of
-    at least that many. Status 0 written last (D34); 13 with the error pending if it fails.
-    With `tramp`, checked (walk.py)."""
-
-    def refill(ctx: int, slots: int) -> int:
-        status = STATUS_HOST_ERROR
-        try:
-            st.new_chunk(max(ARENA_WORDS, ctypes.c_uint64.from_address(slots).value))
-            status = 0
-        except BaseException as e:
-            store.pending = e
-        finally:
-            ctypes.c_uint64.from_address(ctx + 8 * HOST_ERROR).value = status  # last
-        return 0
-
-    return HOST(_checked(store, tramp, refill, 1) if tramp else refill)
 
 
 _thread = threading.local()
@@ -727,11 +694,8 @@ class Instance:
         self.ctx[TAIL_SWITCH] = tramp.tail_switch
         st = _stacks(store)  # call_indirect may enter this context without `call`: limits now
         self.ctx[NSTACK_LIMIT], self.ctx[VSTACK_LIMIT] = st.nlimit, st.vtop
-        if st.refill is None:
-            st.refill = _refill_service(store, st, tramp if self.walk else None)
-        exn = ctypes.addressof(st.exn)  # S0012: in every context (throw_ref needs no tag)
-        self.ctx[EXCEPTION], self.ctx[ARENA_CURSOR], self.ctx[ARENA_LIMIT] = exn, exn + 8, exn + 16
-        self.ctx[EXN_REFILL] = ctypes.cast(st.refill, ctypes.c_void_p).value or 0
+        # S0012: in every context (throw_ref needs no tag); words 11-13 reserved, zero
+        self.ctx[EXCEPTION] = ctypes.addressof(st.exn)
         self.ctx[EXIT_RECORD] = ctypes.addressof(st.exit)  # every entry reads it (S0013 3a)
         self.code: ExecMem = load(code)
         self.entry = ENTRY(tramp.entry)

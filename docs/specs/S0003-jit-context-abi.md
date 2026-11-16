@@ -41,8 +41,7 @@ it is not a new format. The runtime side is [S0002](S0002-target-interface.md).
 | 8 | `HOST_BRIDGE` | address of the host-call bridge for the host's convention |
 | 9 | `TAIL_SWITCH` | address of the cross-context tail-call trampoline (step 3e, D30) |
 | 10 | `EXCEPTION` | address of the store's pending-exception word (S0012; from S0013 step 6.2 it holds a heap offset and is a root) |
-| 11 | `EXN_REFILL` | the exception arena's refill service, called through the bridge (S0012); unused since S0013 step 6.2 |
-| 12, 13 | `ARENA_CURSOR`, `ARENA_LIMIT` | addresses of the store's arena cursor and limit (S0012); unused since S0013 step 6.2 |
+| 11-13 | reserved | zero (S0013 step 6.3; the exception arena's refill service, cursor and limit until then, S0012) |
 | 14 | `EXIT_RECORD` | address of the store's exit record `{sp, pc, frame}`: written by the bridge, saved and restored by every entry (S0013) |
 | 15 | reserved | zero |
 | 16 … | memory *i*: `base`, `size_bytes` | memory 0 also in r13/r14; any other read here at each access |
@@ -411,3 +410,9 @@ uv run pytest tests/jit -k "entry or trap or reentry or host or interrupt or sta
   words 11-13 any more (step 6.3 makes them reserved and zero). The landing pads are lowered in the
   shared core, so the backends' `exn_match`, `exn_field`, `exn_load` and `throw` are no longer
   called (ARTIFACT.md part 3).
+* 2026-11-16 (S0013 step 6.3, D63, an amendment of v1 without a bump, S0013 Q5): the arena is
+  removed. Words 11-13 (`EXN_REFILL`, `ARENA_CURSOR`, `ARENA_LIMIT`) are reserved and zero in every
+  context; no word moves. The backends' `exn_match`, `exn_field`, `exn_load` and `throw` are
+  deleted (D39 interface), and so is the refill service, the only host call that did not set the
+  frame base. Module code is byte-identical (D35, both architectures and bounds modes). A test
+  checks that no compiled `exceptions/` module names or addresses words 11-13.

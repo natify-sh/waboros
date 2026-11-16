@@ -18,7 +18,7 @@ from typing import Any
 
 from waboros.frontend.validate import _root  # pyright: ignore[reportPrivateUsage, reportUnknownVariableType]
 from waboros.targets.base import Extern, Trap, TrapCode
-from waboros.targets.jit.common import gc, gcverify, guard, simd, walk
+from waboros.targets.jit.common import gc, gcverify, guard, walk
 from waboros.targets.jit.common import instance as inst_
 from waboros.targets.jit.common.context import INTERRUPT, NSTACK_LIMIT, VSTACK_LIMIT
 
@@ -103,19 +103,6 @@ def _gather(inst: Any, st: Any, coll: Any) -> tuple[list[tuple[int, int]], list[
     # the pending word: 0 or the last exception thrown (S0013 step 6, D7: a defence; nothing
     # reads it after a collection while the invariants hold)
     runs.append((ctypes.addressof(st.exn), 1))
-    for c in st.chunks:  # the exception arena: empty since S0013 step 6.2 (6.3 removes it)
-        a = ctypes.addressof(c)
-        end = st.exn[1] if c is st.chunks[-1] else a + 8 * len(c)
-        while a < end:
-            tag = st.tags.get(ctypes.c_uint64.from_address(a).value)
-            if tag is None:  # the unused rest of a chunk is zero
-                break
-            k = 1
-            for p in tag.params:
-                if _root(tag.module, p):
-                    runs.append((a + 8 * k, 1))
-                k += 1 + (p == simd.V128)
-            a += 8 * k
     return runs, back
 
 

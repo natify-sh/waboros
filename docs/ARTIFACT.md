@@ -168,8 +168,7 @@ the phase-3 meaning of each word and the register roles are in [S0003](specs/S00
 | 8 | `HOST_BRIDGE` | host → code | address of the host-call bridge for the host's calling convention |
 | 9 | `TAIL_SWITCH` | host → code | address of the cross-context tail-call trampoline (below; D30) |
 | 10 | `EXCEPTION` | host → code | address of the store's pending-exception word: the exnref of the exception in flight, valid only while status 14 propagates (S0012); from S0013 step 6.2 it holds 0 or the zero-extended u32 heap offset of the last exception thrown, and the word is a root of every collection |
-| 11 | `EXN_REFILL` | host → code | the exception arena's refill service (a host function, signature below; S0012); no code calls it since S0013 step 6.2 (6.3 makes the word reserved) |
-| 12, 13 | `ARENA_CURSOR`, `ARENA_LIMIT` | host → code | addresses of the store's arena cursor (next free byte) and limit (end of the current chunk) (S0012); no code reads them since S0013 step 6.2 (6.3 makes the words reserved) |
+| 11-13 | reserved | | zero (S0013 step 6.3; the exception arena's refill service, cursor and limit until then, S0012; an amendment of v1 without a bump, Q5) |
 | 14 | `EXIT_RECORD` | host → code | address of the store's exit record `{sp, pc, frame}` of the innermost host call: the bridge writes it before the host runs (the calling frame's stack pointer at its call, the return address, the frame register) and clears `sp` after; every entry keeps the enclosing record and its frame on the native stack during its call and puts the record back (S0013; an amendment of v1 without a bump, Q5) |
 | 15 | reserved | | zero |
 | 16 … | per memory *i*: `base`, `size_bytes` (2 words) | host ↔ code | imported memories first; an i32 memory's base never moves (4 GiB + 32 MiB reserved, committed on grow; S0006); an i64 memory's base and `size_bytes` may both change during any host call or libcall (a `memory.grow` that moves it; D50, S0009: an amendment of v1 without a bump), so code keeps neither across a call: code that keeps a memory in registers (x86-64: memory 0 in r13/r14; aarch64: x26/x25) reloads them after every host call, any other memory is read here at each access |
@@ -245,9 +244,7 @@ previous value (an enclosing host call's preset): a host function that does not 
 A host function may enter wasm again; the nested entry's frame starts at `slots + max(n, m)`, right
 above the call's slots, so no value-stack slot above them survives the call. Compiled code keeps
 nothing it reads after a host call there (S0013 B1; the core asserts it at every call site; an
-amendment of version 1 without a bump, as no artifact file has been written, S0013 Q5). The
-exception refill (`EXN_REFILL`) does not set the frame base and must not enter wasm; no code calls
-it since S0013 step 6.2.
+amendment of version 1 without a bump, as no artifact file has been written, S0013 Q5).
 
 **Exceptions** (S0012, D52; an amendment of version 1 without a bump, as D34). An exception travels
 as status `14` returned through frames, as a trap does; inside a `try_table` a call site's non-zero
@@ -261,7 +258,8 @@ word (word 10's target) and returns 14. A failed allocation ("GC heap out of mem
 13, which no pad catches. A landing pad reads the identity and the payload through the heap
 memory's words with checked loads and compares the identity in 64 bits. Until step 6.2 objects
 were 8-byte words `{tag identity, payload words…}` in a store arena that `throw` bumped through
-words 12 and 13, calling `EXN_REFILL` for a new chunk (S0012). At an entry, status 14 is the
+words 12 and 13, calling the refill service of word 11 for a new chunk (S0012); step 6.3 removed
+the arena. At an entry, status 14 is the
 host's `Trap(UNCAUGHT_EXCEPTION)` with the tag and the values, read from the object before any
 wasm or collection runs; a host function never returns 14 (a re-raised `UNCAUGHT_EXCEPTION` trap is status 13).
 

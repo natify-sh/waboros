@@ -86,8 +86,8 @@ Wasmtime.
 | word | name | direction | meaning |
 |---|---|---|---|
 | 10 | `EXCEPTION` | host → code | the address of the store's pending-exception word. The word holds the exnref of the exception in flight, valid only while status 14 propagates. One word per store, so an exception crosses contexts (a call through a function record, D32) |
-| 11 | `EXN_REFILL` | host → code | the arena refill service: a host function with the libcall signature (`int32_t f(ctx, slots)`), called through the bridge only when a throw finds the arena's chunk full (step 3, D52) |
-| 12, 13 | `ARENA_CURSOR`, `ARENA_LIMIT` | host → code | addresses of the store's arena cursor and limit (step 3, D52) |
+| 11 | `EXN_REFILL` | host → code | the arena refill service: a host function with the libcall signature (`int32_t f(ctx, slots)`), called through the bridge only when a throw finds the arena's chunk full (step 3, D52); reserved and zero since S0013 step 6.3 |
+| 12, 13 | `ARENA_CURSOR`, `ARENA_LIMIT` | host → code | addresses of the store's arena cursor and limit (step 3, D52); reserved and zero since S0013 step 6.3 |
 | … (after the function records) | per tag *t*: 1 word | host → code | the tag's identity: a non-zero value unique in the process, imported tags first. An imported tag has its exporter's value. |
 
 * The tag words are appended after the last group, so no existing offset moves.
@@ -108,6 +108,8 @@ Wasmtime.
   Trap stubs and the interrupt poll keep `f.unwind`: they cannot be caught.
 * `landing(f, pad: L, outer: L)`: bind `pad`, then branch to `outer` unless the status is 14.
   `outer` is the enclosing landing pad or `f.unwind`. The status register is preserved.
+* The next four methods were deleted in S0013 step 6.3 (D63): `throw` and the clauses are lowered
+  in the shared core since step 6.2.
 * `exn_load(dst: Slot)`: the exnref in flight, read through context word 10.
 * `exn_match(word: int, miss: L)`: branch to `miss` unless the pending object's tag word equals
   context word `word`. It preserves the status register and leaves no flags live.
@@ -494,3 +496,8 @@ in a comment (REFERENCES.md).
   dropped) ends: unreachable exceptions are reclaimed, as with (c). Q2's amendment of v1 stands,
   extended under S0013 Q5. `ExnRef` is a handle into the store's GC handle table. `pyc` is
   unchanged.
+* 2026-11-16: S0013 step 6.3 (D63) removed the arena: its chunks, the refill service and the
+  writes of context words 11-13, which are reserved and zero in every context (an amendment of v1
+  without a bump, S0013 Q5). The backends' `exn_match`, `exn_field`, `exn_load` and `throw` are
+  deleted, so this spec's D39 amendment is `Frame.error`, `landing` and `throw_ref`. Module code
+  is byte-identical to step 6.2. `pyc` is unchanged.

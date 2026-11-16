@@ -1274,7 +1274,7 @@ a future linker); unknown sections are skipped (D59), so `.note.GNU-stack` and a
 section need no version change.
 
 ### D63. JIT exceptions in the GC heap: a throw allocates, pads read through the heap, `exnref` a u32 reference
-Status: accepted (maintainer, 2026-11-16: the step-6 plan's D1 (b), D2-D5 (a), D6 (b), D7 (a) and the three additions from Wasmtime) · Date: 2026-11-16 · Supersedes: D52 in part (the arena, words 11-13, the object and `exnref` encoding, the D39 methods `exn_match`, `exn_field`, `exn_load` and `throw`) · Evidence: S0013 Changes 6.1 and 6.2; spec `gc` and `exceptions` with `WABOROS_JIT_GC_STRESS=1 WABOROS_JIT_GC_POISON=1 WABOROS_JIT_GC_VERIFY=1` on both JITs, both bounds modes (905 pass, 0 fail); `tests/jit/test_exceptions.py`; the throw cost follows in step 6.5 (BENCHMARKS.md)
+Status: accepted (maintainer, 2026-11-16: the step-6 plan's D1 (b), D2-D5 (a), D6 (b), D7 (a) and the three additions from Wasmtime) · Date: 2026-11-16 · Supersedes: D52 in part (the arena, words 11-13, the object and `exnref` encoding, the D39 methods `exn_match`, `exn_field`, `exn_load` and `throw`) · Evidence: S0013 Changes 6.1, 6.2 and 6.3; spec `gc` and `exceptions` with `WABOROS_JIT_GC_STRESS=1 WABOROS_JIT_GC_POISON=1 WABOROS_JIT_GC_VERIFY=1` on both JITs, both bounds modes (905 pass, 0 fail); `tests/jit/test_exceptions.py`; the throw cost follows in step 6.5 (BENCHMARKS.md)
 
 S0013 Q7 (b), as Wasmtime: an exception object is an object of the store's GC heap, and an
 `exnref` is its u32 offset, a reference like any other (S0013 step 6, `docs/plans/S0013-6-plan.md`).
@@ -1302,8 +1302,8 @@ Status 14 propagation (D52) is unchanged.
   The identity is compared in 64 bits, so a forged or stale identity matches no tag and is never a
   wrong pad. The status register, used as `tos` at the pad, is made 14 again before the jump to
   the enclosing pad. D39 amendment: `exn_match`, `exn_field`, `exn_load` and `throw` leave the
-  interface (no code calls them from step 6.2; step 6.3 deletes them); `landing` and `throw_ref`
-  stay. `throw_ref` of null traps `NULL_REFERENCE` before anything is stored, as Wasmtime.
+  interface (no code calls them from step 6.2; step 6.3 deleted them from both backends and the
+  protocol); `landing` and `throw_ref` stay. `throw_ref` of null traps `NULL_REFERENCE` before anything is stored, as Wasmtime.
 * **`exnref` everywhere** is a reference the collector finds: `validate._root` covers the exn
   hierarchy, so exnref slots are in the stack maps, exnref globals and tables are roots, and
   struct fields and array elements of `exnref` are 4 bytes and traced. The validator decides
@@ -1319,8 +1319,11 @@ Status 14 propagation (D52) is unchanged.
   `TypeError`. An uncaught exception's payload is read from the object at the entry, before any
   wasm or collection runs, and its references become handles.
 * **ABI**: context ABI v1 amended without a bump under S0013 Q5's approval (no artifact file
-  exists): word 10's target holds a u32 offset; words 11-13 are no longer read (step 6.3 makes
-  them reserved and zero, with a test that no code names them).
+  exists): word 10's target holds a u32 offset; words 11-13 are reserved and zero since step 6.3,
+  which removed the arena, its chunks and its refill service (module code byte-identical, D35).
+  A test (t11, `tests/jit/test_exceptions.py`) checks the words are zero in every context and that
+  no compiled `exceptions/` module names them in a backend call or addresses them off the context
+  register, on both architectures.
 
 ### D64. One compiler per Store; nothing shared between Stores; part 3's register table is per compiler
 Status: accepted (maintainer, 2026-11-16) · Date: 2026-11-16 · Supersedes: the advice of the first sljit package (freeze part 3's per-architecture table to sljit's registers, or decide hand-written against sljit before freezing part 3) · Evidence: SLJIT-BACKEND.md (sljit keeps the context in rbx and the frame in r15 on x86-64, `jit-x86_64` in r15 and r12)

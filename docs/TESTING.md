@@ -64,9 +64,9 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   progress is visible and regressions fail.
 * **The walk check** (`WABOROS_JIT_WALK_CHECK=1`, both JITs, S0013 step 3a): every JIT instance
   created while it is set serves each of its host calls and libcalls only after walking the store's
-  whole native stack (`jit/common/walk.py`); the exception arena's refill service is checked too
-  when the store's first instance (the one that creates it) was created with the switch (no code
-  calls it since S0013 step 6.2: a `throw` allocates through `ALLOC`, checked as every service). The exit
+  whole native stack (`jit/common/walk.py`); a `throw` allocates through `ALLOC`, checked as every
+  service (S0013 step 6.2; the exception arena's refill service, removed in step 6.3, was checked
+  only when the store's first instance had the switch). The exit
   record must be written, every return address must be a recorded call site, every stack word read
   must lie between the store's native limit and the thread's stack top, the walk must cross exactly
   the active entries and end each segment at the frame the runtime gave that entry, and every slot
@@ -116,7 +116,10 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   `WABOROS_JIT_GC_STRESS=1`, where every throw collects.
   `test_gc_collect.py`, `test_gc_roots.py`, `test_walk.py` and `test_stackmaps.py` hold exception
   payloads, exnref locals, globals and tables across collections and the throw's ALLOC site in
-  place of the arena; the full list t1-t12 and the mutations are step 6.4.
+  place of the arena; t11 (`test_no_module_uses_the_reserved_words`, step 6.3) checks that context
+  words 11-13 are zero in every context and that no compiled `exceptions/` module, cross-compiled
+  for both architectures, names or addresses them (a mutant reading word 12 fails it); the rest
+  of t1-t12 and the mutations are step 6.4.
   `tests/jit/test_gc_memory.py` (native only, the GC switches cleared, about 5 s on CPython 3.11 and
   3.13; it runs in every `pytest` of the CI matrix and in the native arm64 `tests/jit` job, no
   marker) is the memory test: after a warm-up the heap's capacity and committed pages do not move under 576 MB of dropped structs and

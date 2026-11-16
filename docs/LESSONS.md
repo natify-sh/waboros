@@ -938,3 +938,11 @@ What went wrong or surprised us while building the PoC, so it is not found again
     everything that can set it, or the pass is redone when it changes; when a value class gains a
     new property (here: it moves), recheck every argument of the form "such a value is always
     null or declared". Found: S0013 step 6.2 review, 2026-11-16.
+121. **A `git archive` copy runs the checkout's package through the editable install.** The
+    venv's `waboros` is installed in editable mode, so `python -m pytest` started inside a copy
+    imports `tests` from the copy (the current directory) but `waboros` from the checkout. The
+    mutant copy of step 6.3 (a `throw_ref` that reads context word 12) passed t11 that way;
+    with `PYTHONPATH=<copy>/src:<copy>` it failed, as it must. LESSONS 52 and 98 are the same
+    trap through a tool's own `sys.path`; this one needs no tool at all. Rule: in any copy, set
+    `PYTHONPATH` to the copy's `src` and print `waboros.__file__` in the same command before
+    trusting a pass. Found: S0013 step 6.3, 2026-11-16.

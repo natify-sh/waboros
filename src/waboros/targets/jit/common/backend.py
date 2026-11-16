@@ -59,10 +59,10 @@ class Backend(Protocol[L, F]):
     pool: tuple[int, ...]
     tos: int
     supported: frozenset[int]  # the opcodes this backend compiles (S0004)
-    # D39 amendment (S0013 3a): every method that emits a call (call_*, call_host, host_thunk,
-    # and throw through its refill call) appends (ret, ret_at, up), in code order: the offset
-    # of the return address; the bytes from the stack pointer at the call (before a pushing
-    # `call`) to this frame's own return address, and to the caller's stack pointer at its call
+    # D39 amendment (S0013 3a): every method that emits a call (call_*, call_host, host_thunk)
+    # appends (ret, ret_at, up), in code order: the offset of the return address; the bytes from
+    # the stack pointer at the call (before a pushing `call`) to this frame's own return address,
+    # and to the caller's stack pointer at its call
     sites: list[tuple[int, int, int]]
 
     # frames, traps, labels. A function whose conditional branches do not all reach their
@@ -196,13 +196,7 @@ class Backend(Protocol[L, F]):
     # exceptions (S0012, the D39 amendment; aarch64 in step 4). The frame's `error` label is where
     # every call_* / call_host method sends a non-zero status: `unwind` outside a try_table (the
     # core sets it, today's bytes), the innermost landing pad inside one. Trap stubs and the
-    # interrupt poll keep `unwind`. At a pad only the status register and pins are live; these
-    # methods keep the status register and leave no flags live.
+    # interrupt poll keep `unwind`. At a pad only the status register and pins are live. `throw`
+    # and the clauses are lowered in the core (gc.throw, gc.catch; S0013 step 6, D63).
     def landing(self, f: F, pad: L, outer: L) -> None: ...  # bind pad; to outer unless status 14
-    def exn_match(self, word: int, miss: L) -> None: ...  # to miss unless tag == context word
-    def exn_field(self, dst: Slot, k: int) -> None: ...  # payload word k of the pending object
-    def exn_load(self, dst: Slot) -> None: ...  # the pending exnref
-    # a new object {tag word, slots base..base+n} from the store's arena (slot base+n carries the
-    # size to the refill service when the chunk is full), pending, status 14, to `error`
-    def throw(self, f: F, word: int, base: int, n: int) -> None: ...
-    def throw_ref(self, f: F, x: Operand) -> None: ...  # null: NULL_REFERENCE; else as `throw`
+    def throw_ref(self, f: F, x: Operand) -> None: ...  # null: NULL_REFERENCE; else pending, 14

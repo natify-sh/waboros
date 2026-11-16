@@ -12,10 +12,10 @@ from dataclasses import dataclass, field
 SAVED_SP, TRAP_CODE, INTERRUPT, FUEL, EPOCH_DEADLINE = 0, 1, 2, 3, 4
 VSTACK_LIMIT, NSTACK_LIMIT, HOST_ERROR, HOST_BRIDGE = 5, 6, 7, 8
 TAIL_SWITCH = 9  # address of the cross-context tail-call trampoline (D30)
-# exceptions (S0012): addresses of the store's pending-exception word and of its arena cursor and
-# limit (one arena per store: every context of the store allocates from it), and the service that
-# gives the arena a new chunk, called through the bridge only when the current one is full
-EXCEPTION, EXN_REFILL, ARENA_CURSOR, ARENA_LIMIT = 10, 11, 12, 13
+# exceptions (S0012): the address of the store's pending-exception word (0 or the u32 heap offset
+# of the exception in flight, S0013 step 6). Words 11-13 are reserved, zero (S0013 step 6: the
+# arena's refill service, cursor and limit until then)
+EXCEPTION = 10
 # the address of the store's exit record {sp, pc, frame}: written by the bridge at every host
 # call, sp cleared after it, saved and restored by every entry (S0013 3a)
 EXIT_RECORD = 14

@@ -37,10 +37,7 @@ from waboros.targets.jit.common import gc, lower
 from waboros.targets.jit.common.backend import SWAP, AddK, Dst, Imm, Operand, Reg, Slot
 from waboros.targets.jit.common.compiler import EXN, SUPPORTED, WIDEOPS
 from waboros.targets.jit.common.context import (
-    ARENA_CURSOR,
-    ARENA_LIMIT,
     EXCEPTION,
-    EXN_REFILL,
     HOST_BRIDGE,
     INTERRUPT,
     NSTACK_LIMIT,
@@ -1024,66 +1021,13 @@ class Backend:
 
     # ---------------------------------------------------------------- exceptions (S0012)
     # As x86-64 (D52): at a landing pad the status is in w0 and only pins are live (every
-    # exception arrives at a call site); these use x9-x12 (x16/x17 through _word/_add_k for
-    # offsets no immediate takes) and keep w0. Only `landing`/`exn_match`/`throw` write the
-    # flags, each right before its b.cond (LESSONS 1). Pads are reached by direct branches only:
-    # no BTI pad.
+    # exception arrives at a call site); `landing` keeps w0 and writes the flags right before its
+    # b.cond (LESSONS 1). `throw` and the clauses are lowered in the core (D63). Pads are reached
+    # by direct branches only: no BTI pad.
     def landing(self, f: Frame, pad: Label, outer: Label) -> None:
         self.a.bind(pad)
         self.a.addsub_imm("subs", ZR, 0, STATUS_EXCEPTION, False)
         self._bcc("ne", outer)
-
-    def _exn(self) -> None:
-        """x9 = the pending object: {tag identity, payload words...}."""
-        self.a.ld(9, CTX, 8 * EXCEPTION)
-        self.a.ld(9, 9)
-
-    def exn_load(self, dst: Slot) -> None:
-        self._exn()
-        self._word(False, 9, FRAME, 8 * dst.k)
-
-    def exn_match(self, word: int, miss: Label) -> None:
-        self._exn()
-        self.a.ld(9, 9)
-        self._word(True, 10, CTX, 8 * word)
-        self.a.cmp(9, 10)
-        self._bcc("ne", miss)
-
-    def exn_field(self, dst: Slot, k: int) -> None:
-        self._exn()
-        self._word(True, 10, 9, 8 + 8 * k)
-        self._word(False, 10, FRAME, 8 * dst.k)
-
-    def throw(self, f: Frame, word: int, base: int, n: int) -> None:
-        """A new object {tag identity (context word `word`), slots base..base+n} bumped from the
-        store's arena chunk, made the pending exception: status 14 to `f.error`, no Python. A full
-        chunk: the refill service through the bridge (slot base+n = the words needed), then
-        again. Writes x0, x1, x9-x12, x16, x17."""
-        a = self.a
-        again, refill = a.label(), a.label()
-        a.bind(again)
-        a.ld(9, CTX, 8 * ARENA_CURSOR)  # the cursor's address
-        a.ld(10, 9)  # the object
-        self._add_k(11, 10, 8 * (1 + n))
-        a.ld(12, CTX, 8 * ARENA_LIMIT)
-        a.ld(12, 12)
-        a.cmp(11, 12)
-        self._bcc("hi", refill)
-        a.st(11, 9)
-        self._word(True, 12, CTX, 8 * word)
-        a.st(12, 10)
-        for k in range(n):  # word for word: a v128 is its two slots, low half first
-            self._word(True, 12, FRAME, 8 * (base + k))
-            self._word(False, 12, 10, 8 + 8 * k)
-        a.ld(9, CTX, 8 * EXCEPTION)
-        a.st(10, 9)
-        a.mov_imm(0, STATUS_EXCEPTION, wide=False)
-        a.b(f.error)
-        a.bind(refill)  # after a b: no fall-through path runs this
-        a.mov_imm(9, 1 + n)
-        self._word(False, 9, FRAME, 8 * (base + n))
-        self.call_host(f, EXN_REFILL, base + n)
-        a.b(again)
 
     def throw_ref(self, f: Frame, x: Operand) -> None:
         """Null traps (NULL_REFERENCE, not catchable); else the object becomes the one in flight.

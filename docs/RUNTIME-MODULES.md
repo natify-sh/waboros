@@ -100,7 +100,7 @@ simplest and keeps what matters, the order of the traps.
 * `memory.grow`, `table.grow` (OS allocation); the memory64 move on grow (D50).
 * The guard-page fault handler (a signal context, where no wasm runs; it is generated machine code).
 * The bridge, the entry trampolines, `tail_switch` (the native ABI).
-* `EXN_REFILL` (goes away with exceptions in the GC heap, S0013 step 6).
+* `EXN_REFILL` (gone with exceptions in the GC heap, S0013 step 6.3).
 * Everything already inline: `memory.copy`/`fill`, exception dispatch, wide arithmetic, relaxed SIMD.
 * `atomic.wait`/`notify` (futex), stack switching (native stacks), host calls.
 * The `pyc` runtime (Python by definition).

@@ -1,4 +1,4 @@
-# pyright: reportUnknownVariableType=false, reportUnknownArgumentType=false, reportUnknownMemberType=false
+# pyright: reportUnknownVariableType=false, reportUnknownArgumentType=false, reportUnknownMemberType=false, reportUnknownLambdaType=false
 """Exception handling on the native JIT (S0012 steps 3-4; aarch64 under QEMU, tools/run_arm64.py):
 the cases of tests/test_exceptions_pyc.py, and what only the status path and the exception objects
 in the GC heap (S0013 step 6) can get wrong (pins across unwinding, v128 payloads, clause order,
@@ -577,3 +577,44 @@ def test_a_pad_read_out_of_the_heap_traps(monkeypatch: pytest.MonkeyPatch, bound
     del st.gcrefs[st.gc_handles[e.index]]
     st.gc_handles[e.index], st.gcrefs[old] = old, e
     assert i.inst.call(k, [e]) == [5]
+
+
+@pytest.mark.parametrize("target", ["jit-x86_64", "jit-aarch64"])  # compiled only, never run
+def test_no_module_uses_the_reserved_words(monkeypatch: pytest.MonkeyPatch, target: str) -> None:
+    """t11 (S0013 step 6.3): words 11-13 (the arena until then) are zero in every context, and no
+    compiled `exceptions/` module names them in a backend call or addresses them off the context
+    register (as test_gc_subtype.py checks GC group word 7)."""
+    from tests.spec.fetch import CACHE_DIR
+    from waboros.targets.jit.aarch64 import abi, backend, encoder
+    from waboros.targets.jit.x86_64 import encoder as x86
+
+    monkeypatch.setenv("WABOROS_JIT_GC_STRESS", "1")  # the second throw collects
+    store, words, seen, C = StoreState(), list[int](), set[int](), abi.CTX
+    assert build(THROWS, store=store)("go") == build(THROWS, store=store)("go") == [7]
+    st: Any = store.target_state
+    for c in [cast(Any, x).ctx for x in store.instances] + [st.heap.collector[0].ctx]:
+        assert c[11] == c[12] == c[13] == 0
+
+    def spy(owner: Any, name: str, word: Any) -> None:
+        real = getattr(owner, name)
+        monkeypatch.setattr(owner, name, lambda *a: words.extend(word(*a)) or real(*a))
+
+    t: Any = base.TARGETS[target]()
+    for name in ("call_host", "call_record", "tail_record"):  # a word the bridge or a call reads
+        spy(t.backend().__class__, name, lambda s, f, w, *a: [w])
+    spy(x86.Mem, "__post_init__", lambda m: [m.disp // 8] if m.base == x86.R15 else [])
+    spy(encoder.Asm, "_ldst", lambda s, t, b, o, *a: [o // 8] if b == C else [])
+    spy(encoder.Asm, "pair", lambda s, ld, t, u, b, o=0, *a: [o // 8, o // 8 + 1][: 2 * (b == C)])
+    spy(backend.Backend, "_add_k", lambda s, d, n, k: [k // 8] if n == C else [])
+    files = sorted((CACHE_DIR / "json" / "exceptions").rglob("*.wasm"))
+    for w in [wat(THROWS), wat(CATCHES), wat(CLEANUP)] + [f.read_bytes() for f in files]:
+        try:
+            m: Any = parse(w)
+            validate(m)
+        except Exception:  # the spec's malformed and invalid modules
+            continue
+        words.clear()
+        t.compile(m)
+        assert not {11, 12, 13} & set(words)
+        seen |= set(words)
+    assert {8, 10} <= seen  # the spies see the bridge and the pending word
