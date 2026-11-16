@@ -10,6 +10,7 @@ import os
 import struct
 import sys
 import threading
+from pathlib import Path
 from types import FrameType
 from typing import Any, cast
 
@@ -18,7 +19,7 @@ import pytest
 from tests.jit import native, native_jit
 from tests.jit.test_compiler import Inst, pins, wat
 from tests.jit.test_compiler import build as _build
-from tests.jit.test_tables import provider
+from tests.jit.test_tables import call, provider
 from waboros.frontend.binary import parse
 from waboros.frontend.types import key
 from waboros.frontend.validate import validate
@@ -26,7 +27,7 @@ from waboros.runtime.store import StoreState
 from waboros.targets import base
 from waboros.targets.base import Trap, TrapCode
 from waboros.targets.jit.common import gc
-from waboros.targets.jit.common.instance import ExnRef, Tag
+from waboros.targets.jit.common.instance import ExnRef, GcRef, Tag
 
 __all__ = ["pins"]  # the fixture, used by name
 JIT = native_jit()
@@ -581,40 +582,328 @@ def test_a_pad_read_out_of_the_heap_traps(monkeypatch: pytest.MonkeyPatch, bound
 
 @pytest.mark.parametrize("target", ["jit-x86_64", "jit-aarch64"])  # compiled only, never run
 def test_no_module_uses_the_reserved_words(monkeypatch: pytest.MonkeyPatch, target: str) -> None:
-    """t11 (S0013 step 6.3): words 11-13 (the arena until then) are zero in every context, and no
-    compiled `exceptions/` module names them in a backend call or addresses them off the context
-    register (as test_gc_subtype.py checks GC group word 7)."""
+    """t11 (S0013 steps 6.3-6.4): words 11-13 (the arena until then) are zero in every context,
+    and no code names them: in a backend call, off the context register, or off a register the
+    context was copied or added into (x86-64 `mov`/`lea`/`add`, aarch64 `mov`/`add`). Spied
+    while compiling the spec's `exceptions/` and `gc/` modules, CoreMark and the collector in
+    both bounds modes, and while assembling the trampolines and the fault handlers (the process
+    built its own before the spies). As test_gc_subtype.py checks GC group word 7."""
     from tests.spec.fetch import CACHE_DIR
-    from waboros.targets.jit.aarch64 import abi, backend, encoder
+    from waboros.targets.jit.aarch64 import abi, encoder
+    from waboros.targets.jit.x86_64 import abi as xabi
     from waboros.targets.jit.x86_64 import encoder as x86
 
     monkeypatch.setenv("WABOROS_JIT_GC_STRESS", "1")  # the second throw collects
-    store, words, seen, C = StoreState(), list[int](), set[int](), abi.CTX
+    store = StoreState()
     assert build(THROWS, store=store)("go") == build(THROWS, store=store)("go") == [7]
     st: Any = store.target_state
     for c in [cast(Any, x).ctx for x in store.instances] + [st.heap.collector[0].ctx]:
         assert c[11] == c[12] == c[13] == 0
 
-    def spy(owner: Any, name: str, word: Any) -> None:
+    x, M, A = target == "jit-x86_64", x86.Mem, encoder.Asm
+    C: Any = x86.R15 if x else abi.CTX
+    words, seen, alias = list[int](), set[int](), dict[Any, int]()  # register -> context + k
+
+    def spy(owner: Any, name: str, see: Any) -> None:
         real = getattr(owner, name)
-        monkeypatch.setattr(owner, name, lambda *a: words.extend(word(*a)) or real(*a))
+        monkeypatch.setattr(owner, name, lambda *a, **k: see(*a, **k) or real(*a, **k))
+
+    def at(r: Any, d: int, n: int = 1) -> None:  # n words at [r + d]
+        o = 0 if r == C else alias.get(r)
+        words.extend(() if o is None else range((o + d) // 8, (o + d) // 8 + n))
+
+    def put(d: Any, r: Any = None, k: int = 0) -> None:  # d = r + k, or d = anything (no r)
+        o = 0 if r == C else alias.get(r)
+        if o is not None and k:
+            at(r, k)  # an address computed
+        if d != C:
+            alias.pop(d, None) if o is None else alias.update({d: o + k})
+
+    def imm(s: Any, op: str, d: Any, n: Any, k: int, w: bool = True) -> None:
+        put(d, n if op in ("add", "sub") else None, k if op == "add" else -k)
+
+    def pair(s: Any, ld: bool, r: int, u: int, b: int, o: int = 0, mode: str = "off") -> None:
+        at(b, o, 2 * (mode == "off"))
+        _ = ld and (put(r), put(u))
 
     t: Any = base.TARGETS[target]()
     for name in ("call_host", "call_record", "tail_record"):  # a word the bridge or a call reads
-        spy(t.backend().__class__, name, lambda s, f, w, *a: [w])
-    spy(x86.Mem, "__post_init__", lambda m: [m.disp // 8] if m.base == x86.R15 else [])
-    spy(encoder.Asm, "_ldst", lambda s, t, b, o, *a: [o // 8] if b == C else [])
-    spy(encoder.Asm, "pair", lambda s, ld, t, u, b, o=0, *a: [o // 8, o // 8 + 1][: 2 * (b == C)])
-    spy(backend.Backend, "_add_k", lambda s, d, n, k: [k // 8] if n == C else [])
-    files = sorted((CACHE_DIR / "json" / "exceptions").rglob("*.wasm"))
-    for w in [wat(THROWS), wat(CATCHES), wat(CLEANUP)] + [f.read_bytes() for f in files]:
-        try:
-            m: Any = parse(w)
-            validate(m)
-        except Exception:  # the spec's malformed and invalid modules
-            continue
+        spy(t.backend().__class__, name, lambda s, f, w, *a: words.append(w))
+    if x:
+        spy(M, "__post_init__", lambda m: at(m.base, m.disp))
+        spy(
+            x86.Asm,
+            "mov",
+            lambda s, d, r, w=0: isinstance(d, M) or put(d, (r, None)[isinstance(r, M)]),
+        )
+        spy(
+            x86.Asm, "lea", lambda s, d, m, w=1: put(d, (m.base, None)[m.index is not None], m.disp)
+        )
+        spy(x86.Asm, "alu_imm", lambda s, op, d, v, w=0: isinstance(d, M) or imm(s, op, d, d, v))
+        spy(x86.Asm, "alu", lambda s, op, d, r, w=0: isinstance(d, M) or op == "cmp" or put(d))
+        spy(x86.Asm, "mov_imm", lambda s, d, v, w=0: isinstance(d, M) or put(d))
+        spy(x86.Asm, "pop", lambda s, r: put(r))
+    else:
+        spy(A, "mov", lambda s, d, n, wide=True: put(d, n))
+        spy(A, "addsub_imm", imm)
+        spy(A, "mov_imm", lambda s, d, *a, **k: put(d))
+        spy(A, "_ldst", lambda s, r, b, o, n, ld, *a: at(b, o) or ld and put(r))
+        spy(A, "_ldst_idx", lambda s, r, b, i, n, ld, *a: ld and put(r))
+        spy(A, "pair", pair)
+    if x:  # the spies see an address computed off a copy of the context
+        a = x86.Asm()
+        a.mov(x86.RCX, C, w=True)
+        a.alu_imm("add", x86.RCX, 8, w=True)
+        a.mov(x86.RCX, M(x86.RCX, 88), w=True)
+    else:
+        e = A()
+        e.addsub_imm("add", 11, C, 96)
+        e.ld(10, 11)
+    assert 12 in words
+    ROOT = Path(__file__).resolve().parents[2]
+    files = [
+        f for d in ("exceptions", "gc") for f in sorted((CACHE_DIR / "json" / d).rglob("*.wasm"))
+    ]
+    files += [ROOT / "poc/in/core.wasm", ROOT / "src/waboros/runtime/gc/collector.wasm"]
+    wasm = [wat(THROWS), wat(CATCHES), wat(CLEANUP)] + [f.read_bytes() for f in files]
+    n = 0
+    for bounds in ("guard", "explicit"):
+        monkeypatch.setenv("WABOROS_JIT_BOUNDS", bounds)
+        for w in wasm:
+            try:
+                m: Any = parse(w)
+                validate(m)
+            except Exception:  # the spec's malformed and invalid modules
+                continue
+            words.clear()
+            alias.clear()
+            t.compile(m)
+            n += 1
+            assert not {11, 12, 13} & set(words)
+            seen |= set(words)
+    assert n > 250 and {8, 10} <= seen  # the spies see the bridge and the pending word
+    builds: list[Any] = [abi.assemble]
+    if x:
+        builds = [lambda: xabi.assemble(False), lambda: xabi.assemble(True)]
+    for h in [{}, {"darwin": True}, {"windows": True}] + [{"bionic": True}] * x:
+        builds.append(lambda h=h: t.fault_handler(1, 2, 3, 4, **h))
+    seen.clear()
+    for make in builds:
         words.clear()
-        t.compile(m)
+        alias.clear()
+        make()
         assert not {11, 12, 13} & set(words)
         seen |= set(words)
-    assert {8, 10} <= seen  # the spies see the bridge and the pending word
+    assert {7, 14} <= seen  # the bridge's HOST_ERROR, the entry's EXIT_RECORD
+
+
+# ------------------------------------------------------------------ S0013 step 6.4: t1-t10
+def switched(mp: pytest.MonkeyPatch) -> None:
+    """Every allocation collects, the from-space is poisoned, every collection verified."""
+    for s in SWITCHES:
+        mp.setenv(s, "1")
+
+
+T1 = """(module (type $s (struct (field i32)))
+  (tag $t (param i32 f32 i64 f64 v128 anyref funcref exnref externref)) (tag $e)
+  (func $f) (elem declare func $f)
+  (func (export "go") (param externref) (result exnref anyref funcref exnref)
+    (local $in exnref) (local $s anyref)
+    (local.set $in (block $h (result exnref) (try_table (catch_all_ref $h) (throw $e)) unreachable))
+    (local.set $s (struct.new $s (i32.const 7)))
+    (block $c (result exnref)
+      (try_table (catch_all_ref $c)
+        (throw $t (i32.const -2) (f32.const 1.5) (i64.const 0x0102030405060708) (f64.const 2.5)
+          (v128.const i64x2 10 11) (local.get $s) (ref.func $f) (local.get $in) (local.get 0)))
+      unreachable)
+    (local.get $s) (ref.func $f) (local.get $in)))"""
+
+
+def test_the_object_and_its_record(monkeypatch: pytest.MonkeyPatch) -> None:
+    """t1: each value at its `exn_layout` offset (natural alignment), the identity at 8, the
+    header the tag type's record: kind 1, final, depth 0, 88 bytes, the anyref, exnref and
+    externref traced (not the funcref)."""
+    switched(monkeypatch)
+    store, host = StoreState(), object()
+    i = build(T1, store=store)
+    st, jit = cast(Any, store.target_state), cast(Any, i.inst)
+    e, s, f, inner = call(i, "go", host)
+    ti = i.mod["tags"][0]
+    assert gc.exn_layout(i.mod, i.mod["types"][ti][0]) == ([16, 20, 24, 32, 48, 64, 72, 80, 84], 88)
+    r = st.heap.records["exn " + key(i.mod, ti)]
+    obj = ctypes.string_at(st.heap.base + st.gc_handles[e.index], 88)
+    assert struct.unpack_from("<IIQifQd", obj) == (r, 0, jit.ctx[jit.layout.tag(0)], -2, 1.5,
+                                                   0x0102030405060708, 2.5)  # fmt: skip
+    *v, ext = struct.unpack_from("<QQI4xQII", obj, 48)
+    assert v == [10, 11, st.gc_handles[s.index], f.addr, st.gc_handles[inner.index]]
+    assert ext & 3 == 2 and st.externs[(ext >> 2) - 1] is host
+    rec = struct.unpack_from("<8I", ctypes.string_at(st.heap.base + r, 32))
+    assert rec == (gc.KIND_STRUCT | 1 << 8, 0, 88, 3, r, 64, 80, 84)
+
+
+T2 = """(module (type $s (struct (field i32)))
+  (tag $t (param anyref externref exnref)) (tag $e (param i32))
+  (func $thr (param anyref externref exnref) (throw $t (local.get 0) (local.get 1) (local.get 2)))
+  (func $c (param anyref externref exnref) (call $thr (local.get 0) (local.get 1) (local.get 2)))
+  (func $b (param anyref externref exnref) (call $c (local.get 0) (local.get 1) (local.get 2)))
+  (func (export "go") (param $x externref) (param $deep i32) (result i32 externref)
+    (local $s (ref null $s)) (local $in exnref) (local $k i32) (local $pa anyref) (local $pe exnref)
+    (local.set $k (i32.const 1000))  ;; an i32 local: pinned in a register across the throws
+    (local.set $in (block $h (result exnref)
+      (try_table (catch_all_ref $h) (throw $e (i32.const 31))) unreachable))
+    (local.set $s (struct.new $s (i32.const 7)))
+    (block $c (result anyref externref exnref)
+      (try_table (catch $t $c)
+        (if (local.get $deep) (then (call $b (local.get $s) (local.get $x) (local.get $in)))
+          (else (call $thr (local.get $s) (local.get $x) (local.get $in)))))
+      unreachable)
+    (local.set $pe) (local.set $x) (local.set $pa)
+    (drop (struct.new $s (i32.const 0)))
+    (block $r (result i32) (try_table (catch $e $r) (throw_ref (local.get $pe))) unreachable)
+    (i32.add (local.get $k))
+    (i32.add (i32.mul (i32.const 100)
+      (ref.eq (ref.cast (ref null eq) (local.get $pa)) (local.get $s))))
+    (i32.add (i32.mul (i32.const 10000) (struct.get $s 0 (ref.cast (ref $s) (local.get $pa)))))
+    (local.get $x)))"""
+
+
+@pytest.mark.parametrize("deep", [0, 1])
+def test_a_throw_that_collects_keeps_its_payload(
+    pins: None, monkeypatch: pytest.MonkeyPatch, deep: int
+) -> None:
+    """t2: the payload (a struct, a host value, an exnref) is read from its slots after the throw's
+    allocation collected, caught one frame up or three; every throw collects (the fast path
+    checks the limit), and the struct is the same object (`ref.eq`) after more collections."""
+    switched(monkeypatch)
+    store, host = StoreState(), object()
+    i = build(T2, store=store)
+    heap = cast(Any, store.target_state).heap
+    n = heap.collections
+    assert call(i, "go", host, deep) == [71131, host]
+    assert heap.collections - n >= 3  # two throws and two structs; the first grows the heap
+
+
+def test_t6_across_instances_under_the_switches(monkeypatch: pytest.MonkeyPatch) -> None:
+    """t6: the imported-tag aliases, every throw collecting."""
+    switched(monkeypatch)
+    test_across_instances_and_imported_tag_aliases(None)
+
+
+T7 = """(module (type $s (struct (field i32)))
+  (import "h" "f" (func $f)) (tag $t (param i32 i32 f64 v128 anyref))
+  (func (export "outer") (call $f))
+  (func (export "inner") (throw $t (i32.const -5) (i32.const 7) (f64.const 2.5)
+    (v128.const i64x2 1 2) (struct.new $s (i32.const 99))))
+  (func (export "alloc") (drop (struct.new $s (i32.const 0))))
+  (func (export "read") (param anyref) (result i32)
+    (struct.get $s 0 (ref.cast (ref $s) (local.get 0)))))"""
+
+
+def test_an_uncaught_payload_outlives_collections(monkeypatch: pytest.MonkeyPatch) -> None:
+    """t7: an inner entry's `Trap.exn` has every value at its offset, and its anyref is a handle
+    that still reads its field after the host ran wasm that collected."""
+    switched(monkeypatch)
+    store, box, seen = StoreState(), dict[str, Any](), list[Any]()
+
+    def host(_: Any) -> list[int]:
+        with pytest.raises(Trap) as t:
+            box["i"]("inner")
+        heap = cast(Any, store.target_state).heap
+        n = heap.collections
+        box["i"]("alloc")
+        box["i"]("alloc")
+        seen.extend([t.value, heap.collections - n, call(box["i"], "read", t.value.exn[1][4])])
+        return []
+
+    box["i"] = i = build(T7, {"h": {"f": host}}, store)
+    assert i("outer") == []
+    t, collected, field = seen
+    f64 = struct.unpack("<Q", struct.pack("<d", 2.5))[0]
+    assert t.code is TrapCode.UNCAUGHT_EXCEPTION and t.exn[1][:4] == (
+        2**32 - 5,
+        7,
+        f64,
+        1 | 2 << 64,
+    )
+    assert isinstance(t.exn[1][4], GcRef) and collected >= 2 and field == [99]
+
+
+T8 = """(module (type $s (struct (field i32))) (tag $t (param i32 anyref))
+  (func (export "make") (param i32) (result exnref)
+    (block $h (result exnref)
+      (try_table (catch_all_ref $h) (throw $t (local.get 0) (struct.new $s (local.get 0))))
+      unreachable))
+  (func (export "alloc") (drop (struct.new $s (i32.const 0))))
+  (func (export "rethrow") (param exnref) (result i32)
+    (block $h (result i32 anyref) (try_table (catch $t $h) (throw_ref (local.get 0))) unreachable)
+    (struct.get $s 0 (ref.cast (ref $s))) (i32.add)))"""
+
+
+def test_an_exnref_kept_by_the_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """t8: an `ExnRef` the host keeps across collections is rethrown with its tag and payload;
+    a forged handle or one of another store is a `TypeError`."""
+    switched(monkeypatch)
+    store = StoreState()
+    i = build(T8, store=store)
+    heap = cast(Any, store.target_state).heap
+    [e] = call(i, "make", 21)
+    n = heap.collections
+    for _ in range(3):
+        i("alloc")
+    assert heap.collections >= n + 3 and call(i, "rethrow", e) == [42]
+    other = call(build(T8), "make", 1)[0]
+    for bad in (ExnRef(e.index, e.store), other):
+        with pytest.raises(TypeError):
+            call(i, "rethrow", bad)
+    assert call(i, "rethrow", e) == [42]
+
+
+T9 = """(module (tag $t (param i32 i32)) (tag $x (param i32)) (tag $y)
+  (func $thr (throw $t (i32.const -1) (i32.const 5)))
+  (func $g  ;; every clause of both pads misses: on to the caller's pad
+    (block $a (result i32)
+      (try_table (catch $x $a) (block $b (try_table (catch $y $b) (call $thr)))) unreachable)
+    (drop))
+  (func (export "same") (result i64)  ;; the inner pad misses, the enclosing one catches
+    (block $c (result i32 i32)
+      (try_table (catch $t $c)
+        (block $m (result i32) (try_table (catch $x $m) (call $thr)) unreachable) (drop))
+      unreachable)
+    (drop) (i64.extend_i32_u))
+  (func (export "caller") (result i32)  ;; the payload's slot is the result, copied in 64 bits
+    (block $c (result i32 i32) (try_table (catch $t $c) (call $g)) unreachable)
+    (drop)))"""
+
+
+def test_a_miss_passes_the_exception_on(pins: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    """t9: a pad whose clauses all miss passes status 14 to the enclosing pad of its function, and
+    from the last one to the caller's; an i32 payload is zero-extended in its slot (the second
+    i32 beside it is not read with it), as a result and through `i64.extend_i32_u`. Built twice:
+    a missed tag's identity, left in the status register by a wrong pad, could be 14 by chance
+    in one of them (the full-heap test is t9's third case)."""
+    switched(monkeypatch)
+    for _ in range(2):
+        i = build(T9)
+        assert i("same") == i("caller") == [0xFFFFFFFF]
+
+
+T10 = """(module (type $s (struct (field i32))) (type $f (sub (func (param anyref))))
+  (tag $t (type $f))
+  (func (export "go") (result i32)
+    (block $h (result anyref)
+      (try_table (catch $t $h) (throw $t (struct.new $s (i32.const 3)))) unreachable)
+    (struct.get $s 0 (ref.cast (ref $s)))))"""
+
+
+def test_a_tag_type_with_a_function_record_throws(monkeypatch: pytest.MonkeyPatch) -> None:
+    """t10: the tag's type is a non-final function type, which has its own kind-3 record (S0013
+    5.6): its exception objects have the `exn` record, so a collection over them does not trap
+    (a kind-3 header would lose the store). Another module of the store writes the kind-3
+    record first."""
+    switched(monkeypatch)
+    store = StoreState()
+    build("(module (type (sub (func (param anyref)))) (type (struct)))", store=store)
+    i = build(T10, store=store)
+    st = cast(Any, store.target_state)
+    assert [i("go") for _ in range(3)] == [[3]] * 3
+    assert st.heap.collections >= 5 and not st.lost  # the first allocation grows the heap

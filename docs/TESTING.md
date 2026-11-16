@@ -116,18 +116,31 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   `WABOROS_JIT_GC_STRESS=1`, where every throw collects.
   `test_gc_collect.py`, `test_gc_roots.py`, `test_walk.py` and `test_stackmaps.py` hold exception
   payloads, exnref locals, globals and tables across collections and the throw's ALLOC site in
-  place of the arena; t11 (`test_no_module_uses_the_reserved_words`, step 6.3) checks that context
-  words 11-13 are zero in every context and that no compiled `exceptions/` module, cross-compiled
-  for both architectures, names them as a call word or as a displacement off the context register (a mutant reading
-  word 12 that way fails it; an address computed into another register, the trampolines and
-  Python-side reads are not seen: the 6.3 review's gap, closed in step 6.4); the rest of t1-t12
-  and the mutations are step 6.4.
+  place of the arena. Step 6.4 adds the plan's t-list (`docs/plans/S0013-6-plan.md`, section 6),
+  each test setting the three switches itself: the object's bytes and its record (t1), a throw
+  whose allocation collects, caught one and three frames up with pins live (t2), an exnref in
+  every place it can be kept, rethrown after collections (t3, `test_gc_roots.py`), an exnref
+  array of 1 000 exceptions with `array.new_fixed`, `array.copy` and `array.fill` (t4), the
+  imported-tag aliases (t6), an uncaught payload read by the host after collections (t7), an
+  `ExnRef` kept by the host and forged ones (t8), pads that miss to the enclosing and the
+  caller's pad with an i32 payload zero-extended (t9), a tag type that also has a kind-3 record
+  (t10). t11 (`test_no_module_uses_the_reserved_words`, steps 6.3-6.4) checks that context words
+  11-13 are zero in every context and that no code names them, cross-compiled for both
+  architectures in both bounds modes: the spec's `exceptions/` and `gc/` modules, CoreMark and the
+  collector, and the trampolines and fault handlers assembled again under the spies. It sees a
+  word as a backend call's word, as a displacement off the context register, or off a register
+  the context was copied or added into (x86-64 `mov`/`lea`/`add`, aarch64 `mov`/`add`); a context
+  address loaded from memory, and Python-side reads, are not seen. The 6.3 review's mutants (an
+  aarch64 `add` into another register, an x86-64 copy of r15, a bridge read of word 11) fail it.
   `tests/jit/test_gc_memory.py` (native only, the GC switches cleared, about 5 s on CPython 3.11 and
   3.13; it runs in every `pytest` of the CI matrix and in the native arm64 `tests/jit` job, no
   marker) is the memory test: after a warm-up the heap's capacity and committed pages do not move under 576 MB of dropped structs and
-  cycles, a live set over half the lowered cap raises "GC heap out of memory", and the peak RSS
-  of a subprocess grows by under 8 MiB (Linux). The step's mutation list (S0013 Changes 5.5) is a
-  scratch script, not in the tree: each mutant a `git archive` copy, a process group killed on timeout.
+  cycles, a live set over half the lowered cap raises "GC heap out of memory", the peak RSS
+  of a subprocess grows by under 8 MiB (Linux), and 10 M thrown and dropped exceptions leave the
+  committed pages and the capacity where 1 M left them (t12 of S0013 step 6, 0.1 s). The mutation
+  lists (S0013 Changes 5.5 and 6.4) are scratch scripts, not in the tree: each mutant a
+  `git archive` copy run with `PYTHONPATH` set to it (LESSONS 121), a process group killed on
+  timeout.
 
 ## Differential testing
 

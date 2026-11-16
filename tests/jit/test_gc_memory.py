@@ -114,3 +114,23 @@ def test_the_peak_rss_is_flat() -> None:
     assert out.returncode == 0, out.stderr
     warm, end = map(int, out.stdout.split())
     assert end - warm < 8 << 10, (warm, end)  # KiB: less than 8 MiB for 576 MB of garbage
+
+
+THROWS = """(module (tag $t (param i32))
+  (func (export "throws") (param $n i32)  ;; $n exceptions thrown, caught and dropped
+    (loop $l
+      (block $h (result i32) (try_table (catch $t $h) (throw $t (local.get $n))) unreachable)
+      (drop) (br_if $l (local.tee $n (i32.sub (local.get $n) (i32.const 1)))))))"""
+
+
+def test_thrown_exceptions_leave_the_heap_flat() -> None:
+    """t12 (S0013 step 6): 10 M exceptions thrown, caught and dropped (24-byte objects, 240 MB of
+    garbage) after a warm-up of 1 M: the committed pages and the capacity do not move."""
+    native(JIT)
+    store = StoreState()
+    i = build(wat(THROWS), store=store)
+    h = _stacks(store).heap
+    i("throws", 1_000_000)
+    level, n = (h.cap, h.mem.pages), h.collections
+    i("throws", 10_000_000)
+    assert (h.cap, h.mem.pages) == level and h.collections - n >= 100

@@ -946,3 +946,19 @@ What went wrong or surprised us while building the PoC, so it is not found again
     trap through a tool's own `sys.path`; this one needs no tool at all. Rule: in any copy, set
     `PYTHONPATH` to the copy's `src` and print `waboros.__file__` in the same command before
     trusting a pass. Found: S0013 step 6.3, 2026-11-16.
+122. **A second root and an even number of flips can hide a missing root.** Step 6.4's mutant
+    "exnref tables are not roots" passed the test that kept an exception only in a table across
+    two collections. The pending word (a root, D7) still named that exception at the first
+    collection, which therefore copied it; the second collection did not, but the semispaces had
+    flipped twice, and the live set, copied in the same order, put the object back at its old
+    offset, so the stale table word read a valid object. Rule: in a test of one root class, first
+    make every other root (the pending word, a handle, a frame) name something else, and collect
+    an odd number of times, so a stale word points into the poisoned half. Found: S0013 step 6.4,
+    2026-11-16.
+123. **A 32-bit read hides a dirty upper half.** The mutant "an i32 payload is loaded as 8 bytes"
+    left the next field in the slot's upper half, and t9's `i64.extend_i32_u` of it still gave
+    the right value: the JIT reads an i32 slot with a 32-bit load, which zero-extends. Only a
+    path that copies the slot in 64 bits sees it (a function result, which reaches the host as
+    the whole word). Rule: to test that a value is zero-extended in its slot (LESSONS 5), observe
+    it through a 64-bit copy, not through an operator that reads it as an i32. Found: S0013
+    step 6.4, 2026-11-16.

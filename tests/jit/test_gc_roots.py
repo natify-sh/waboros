@@ -223,3 +223,117 @@ def test_the_to_space_follows_the_end_not_lo(monkeypatch: pytest.MonkeyPatch) ->
     call(i, "chain", 2)  # collects from [lo, cursor) of the grown heap
     assert h.collections > n
     assert call(i, "sum") == [(want[0] + 3) & 0xFFFFFFFF]
+
+
+EXPORTS_EXN = '(module (global (export "g") (mut exnref) (ref.null exn)))'
+PLACES = """(module (type $s (struct (field (mut exnref))))
+  (import "e" "g" (global $ig (mut exnref)))
+  (tag $t (param i32)) (tag $w (param exnref))
+  (global $g (mut exnref) (ref.null exn)) (table $tb 1 exnref)
+  (func $mk (param i32) (result exnref)
+    (block $h (result exnref) (try_table (catch_all_ref $h) (throw $t (local.get 0))) unreachable))
+  (func $churn (result i32)  ;; three collections; the pending word no longer the kept one
+    (drop (call $mk (i32.const 0)))
+    (drop (struct.new $s (ref.null exn))) (drop (struct.new $s (ref.null exn))) (i32.const 0))
+  (func $get (param exnref i32) (result i32)  ;; rethrown and caught: the payload
+    (block $h (result i32) (try_table (catch $t $h) (throw_ref (local.get 0))) unreachable)
+    (i32.add (local.get 1)))
+  (func $param (param exnref) (result i32)
+    (drop (call $churn)) (call $get (local.get 0) (i32.const 0)))
+  (func (export "local") (result i32) (local $e exnref)
+    (local.set $e (call $mk (i32.const 1))) (drop (call $churn))
+    (call $get (local.get $e) (i32.const 0)))
+  (func (export "param") (result i32) (call $param (call $mk (i32.const 2))))
+  (func (export "operand") (result i32) (call $get (call $mk (i32.const 3)) (call $churn)))
+  (func (export "global") (result i32)
+    (global.set $g (call $mk (i32.const 4))) (drop (call $churn))
+    (call $get (global.get $g) (i32.const 0)))
+  (func (export "imported") (result i32)
+    (global.set $ig (call $mk (i32.const 5))) (drop (call $churn))
+    (call $get (global.get $ig) (i32.const 0)))
+  (func (export "table") (result i32)
+    (table.set $tb (i32.const 0) (call $mk (i32.const 6))) (drop (call $churn))
+    (call $get (table.get $tb (i32.const 0)) (i32.const 0)))
+  (func (export "field") (result i32) (local $x (ref null $s))
+    (local.set $x (struct.new $s (call $mk (i32.const 7)))) (drop (call $churn))
+    (call $get (struct.get $s 0 (local.get $x)) (i32.const 0)))
+  (func (export "payload") (result i32) (local $o exnref)  ;; the inner one only in the outer's
+    (block $h (result exnref exnref)
+      (try_table (catch_ref $w $h) (throw $w (call $mk (i32.const 8)))) unreachable)
+    (local.set $o) (drop) (drop (call $churn))
+    (block $h2 (result exnref) (try_table (catch $w $h2) (throw_ref (local.get $o))) unreachable)
+    (call $get (i32.const 0))))"""
+
+
+def test_an_exnref_in_every_place(monkeypatch: pytest.MonkeyPatch) -> None:
+    """t3 (S0013 step 6): an exnref is a root or a traced field wherever it is kept (a local, a
+    parameter, an operand below a call, a defined and an imported global, a table, a struct field,
+    another exception's payload), and is rethrown with its payload after collections. The
+    first collection is a throw's, so the pending word (a root) then names another object, and
+    three collections leave a stale word in the poisoned half (after two, the object can be back
+    at its old offset)."""
+    store = setup(monkeypatch)
+    e = build(wat(EXPORTS_EXN), store=store)
+    i = build(wat(PLACES), imports={"e": prov(e)}, store=store)
+    heap = _stacks(store).heap
+    names = "local param operand global imported table field payload".split()
+    for k, name in enumerate(names, 1):
+        n = heap.collections
+        assert i(name) == [k] and heap.collections >= n + 3, name
+
+
+ARRAY = """(module (type $s (struct (field i32))) (type $a (array (mut exnref)))
+  (tag $t (param anyref)) (global $arr (mut (ref null $a)) (ref.null $a))
+  (func $mk (param i32) (result exnref)
+    (block $h (result exnref)
+      (try_table (catch_all_ref $h) (throw $t (struct.new $s (local.get 0)))) unreachable))
+  (func $val (param exnref) (result i32)
+    (block $h (result anyref) (try_table (catch $t $h) (throw_ref (local.get 0))) unreachable)
+    (struct.get $s 0 (ref.cast (ref $s))))
+  (func $at (param (ref $a) i32) (result i32)
+    (call $val (array.get $a (local.get 0) (local.get 1))))
+  (func (export "fill") (param $n i32) (local $i i32) (local $x (ref $a))
+    (local.set $x (array.new $a (ref.null exn) (local.get $n)))
+    (loop $l (array.set $a (local.get $x) (local.get $i) (call $mk (local.get $i)))
+      (br_if $l (i32.lt_u (local.tee $i (i32.add (local.get $i) (i32.const 1))) (local.get $n))))
+    (global.set $arr (local.get $x)))
+  (func (export "churn") (param $n i32)
+    (loop $l (drop (call $mk (local.get $n)))
+      (br_if $l (local.tee $n (i32.sub (local.get $n) (i32.const 1))))))
+  (func (export "sum") (result i32) (local $i i32) (local $s i32) (local $x (ref $a))
+    (local.set $x (ref.as_non_null (global.get $arr)))
+    (loop $l
+      (local.set $s (i32.add (local.get $s) (call $at (local.get $x) (local.get $i))))
+      (br_if $l (i32.lt_u (local.tee $i (i32.add (local.get $i) (i32.const 1)))
+                          (array.len (local.get $x)))))
+    (local.get $s))
+  (func (export "ops") (result i32) (local $x (ref $a)) (local $y (ref $a))
+    (local.set $x (array.new_fixed $a 3 (call $mk (i32.const 1)) (call $mk (i32.const 2))
+                                        (call $mk (i32.const 3))))
+    (local.set $y (array.new $a (ref.null exn) (i32.const 5)))
+    (array.copy $a $a (local.get $y) (i32.const 1) (local.get $x) (i32.const 0) (i32.const 3))
+    (array.fill $a (local.get $y) (i32.const 4) (call $mk (i32.const 40)) (i32.const 1))
+    (drop (call $mk (i32.const 0)))
+    (i32.add (i32.add (call $at (local.get $y) (i32.const 1))
+                      (i32.mul (i32.const 10) (call $at (local.get $y) (i32.const 2))))
+             (i32.add (i32.mul (i32.const 100) (call $at (local.get $y) (i32.const 3)))
+                      (i32.mul (i32.const 1000) (call $at (local.get $y) (i32.const 4)))))))"""
+
+
+def test_an_exnref_array(monkeypatch: pytest.MonkeyPatch) -> None:
+    """t4 (S0013 "For step 6"): `(array (mut exnref))` of 1 000 caught exceptions, each with a
+    struct payload, kept while 10 more are thrown and collected; each element is then rethrown
+    and its payload read. Also `array.new_fixed`, `array.copy` and `array.fill` of exnrefs. The
+    array is filled without stress (1 000 collections of a growing live set take too long under
+    QEMU); every later allocation collects."""
+    store = setup(monkeypatch)
+    i = build(wat(ARRAY), store=store)
+    heap = _stacks(store).heap
+    heap.stress = False
+    i("fill", 1000)
+    heap.stress = True
+    heap.u32(gc.LIMIT, heap.cursor)  # the next allocation takes the slow path
+    n = heap.collections
+    i("churn", 10)
+    assert heap.collections >= n + 10
+    assert i("sum") == [999 * 1000 // 2] and i("ops") == [40321]
