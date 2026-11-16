@@ -2,7 +2,7 @@
 title: Benchmarks
 kind: log
 status: current
-updated: 2026-11-11
+updated: 2026-11-16
 ---
 
 # Benchmarks
@@ -1664,3 +1664,116 @@ expected:
 | explicit | 14 853 (14 334-16 948) | 15 007 (14 796-15 615) |
 
 The ranges overlap, as in 3b.
+
+## Exceptions in the GC heap (S0013 step 6, 2026-11-16)
+
+Step 6 moves exception objects from the store's arena (D52: 16 bytes bumped per throw, never
+freed) into the GC heap (D63: 24 bytes for an `i32` payload, collected). This section measures
+the throw, the collection's share, the memory and the instantiation. S0012's throw-cost section
+stays as history.
+
+Conditions: the dev VM (Intel Xeon @ 2.10 GHz, 4 vCPU, Linux 6.18), CPython 3.13.17, wasmtime-py
+50.0.1, every process pinned with `taskset -c 2`, `WABOROS_JIT_GC_STRESS`, `_POISON` and `_VERIFY`
+unset, `jit-x86_64`. Other agents may have been running (the VM is noisy, S0013 step 5).
+* **arena**: the last commit before the throw moved to the heap, 7ee63ce (step 6.1: the heap
+  exists for exception modules, the throw still bumps the arena), as a `git archive` copy in a
+  fresh directory, run with `PYTHONPATH=<copy>/src:<copy>`. The venv's `waboros` is an editable
+  install of the checkout (LESSONS 121), so every run printed `waboros.__file__` first and the
+  driver checked it was the copy's.
+* **heap**: the working tree at 02c3673 plus this step (`tools/bench_throw.py --median` only).
+* **Wasmtime**: wasmtime-py 50.0.1, run by the same tool.
+* The same `tools/bench_throw.py` (the working tree's) drove all three; the module, the
+  alternation and the check that the results agree are the tool's.
+
+**Throw cost.** `tools/bench_throw.py --rounds 1 --median --targets T --frames 1,10,100` (one
+`i32` payload thrown D frames up and caught in a wasm loop; ns per throw-and-catch; 20 000
+iterations, 5 000 at D = 100), one process per call. 5 rounds, the order of the three builds
+rotated each round, in each bounds mode. Median (min-max) over the 5 rounds, ns:
+
+| bounds | D | arena | heap | Wasmtime |
+|---|---|---|---|---|
+| guard | 1 | 15 (12-16) | 14 (13-16) | 242 (160-286) |
+| guard | 10 | 24 (22-28) | 25 (24-29) | 435 (396-746) |
+| guard | 100 | 234 (222-289) | 232 (223-234) | 2 888 (2 566-5 063) |
+| explicit | 1 | 11 (10-16) | 19 (16-34) | 174 (168-308) |
+| explicit | 10 | 22 (21-27) | 26 (25-40) | 439 (418-779) |
+| explicit | 100 | 221 (215-241) | 239 (229-331) | 2 919 (2 681-4 935) |
+
+* In guard mode the arena and the heap are the same within the spread at every D. In explicit mode
+  the heap is 4-8 ns slower at D = 1 and 10 (the ranges overlap at D = 10, not at D = 1) and 8 %
+  slower at D = 100 with a wider spread. One round per process, five processes: this is the size
+  of the evidence, and nothing here shows more than a few ns.
+* A throw caught one frame up costs 14-19 ns on the heap, 9-17 times less than Wasmtime's
+  174-242 ns. The D = 100 numbers are call depth (as in S0012), not unwinding. They are lower than
+  S0012's (991 ns) on another day and with `taskset`; the cause was not looked for.
+* Each timed run allocates 20 000 objects of 24 bytes (480 kB), under one semispace, so the rows
+  above do not include a collection's cost; the collecting rows follow.
+
+**A payload that must be collected** (scratch driver, not in the tree): `loop(n)` allocates a
+struct `(struct (field i32))` per iteration and throws it as the payload of a `(tag (param anyref))`
+one frame up; the catch reads the field and adds it up. `nothrow` is the same loop without the
+throw (the struct is allocated and read: the allocation's own cost). A global holds an array of
+`anyref` with 1 or 10 000 live structs, so each collection has them to copy. 300 000 warm-up
+iterations of each loop first (the collector module is compiled once per process, 5-9 ms, S0013
+step 5), then 200 000 timed iterations of each; one process per call, 5 rounds with the two
+builds alternated; median (min-max) ns per iteration, the collections in the timed run (equal in
+all five rounds) and the heap's capacity at the end:
+
+| bounds | live structs | build | throw | collections | nothrow | collections | heap size at the end |
+|---|---|---|---|---|---|---|---|
+| guard | 1 | arena | 9 (8-12) | 0 | 5 (4-8) | 0 | 33 MiB |
+| guard | 1 | heap | 10 (9-18) | 7 | 4 (4-7) | 3 | 2 MiB |
+| guard | 10 000 | arena | 10 (9-18) | 0 | 5 (4-8) | 0 | 33 MiB |
+| guard | 10 000 | heap | 20 (19-24) | 10 | 7 (7-9) | 3 | 2 MiB |
+| explicit | 1 | arena | 11 (9-14) | 0 | 5 (5-8) | 0 | 33 MiB |
+| explicit | 1 | heap | 12 (10-16) | 7 | 4 (4-6) | 3 | 2 MiB |
+| explicit | 10 000 | arena | 10 (9-12) | 0 | 4 (4-5) | 0 | 33 MiB |
+| explicit | 10 000 | heap | 25 (23-42) | 10 | 9 (8-17) | 3 | 2 MiB |
+
+* **The arena's payloads were never freed.** Its exception chunks are roots (the arena scan in
+  `collect.py` until step 6), so every struct thrown stayed alive: the heap grew to 33 MiB during
+  the warm-up and the timed run did not collect at all. That is why the arena's throw is cheap
+  here: it avoided the collections by keeping every payload, at the price of memory. With the
+  heap the exception and its payload are garbage after the catch: the heap stays at 2 MiB, and the
+  200 000 throws (40 bytes each with the struct) collect 7 times, once per 26 000-29 000 iterations.
+* **The collection's share.** With 1 live struct the heap's throw is within the spread of the
+  arena's (10 against 9 in guard mode, 12 against 11 in explicit mode). With 10 000 live structs
+  (each collection copies an array of 10 000 references and 10 000 structs, 25-45 ns per live
+  object, S0013 step 5: 0.25-0.45 ms) it is 10 ns (guard) and 14 ns (explicit) above the same loop
+  with 1 live struct: 10 collections, so (20 - 10) ns × 200 000 / 10 = 0.2 ms and
+  (25 - 12) ns × 200 000 / 10 = 0.26 ms for one. The collection is a cost of the live set, not of
+  the throw: the exception adds 24 bytes to the struct's 16 per iteration, so the throwing loop
+  collects more often than `nothrow` (7 collections against 3 with 1 live struct).
+  The spread of single runs (up to 2×) does not allow a finer split.
+
+**Memory.** 10 M exceptions thrown, caught and dropped in one process (`i32` payload, the module
+of t12; scratch driver, `ru_maxrss` before and after, guard mode, two runs of each build, equal):
+
+| build | peak RSS growth | state at the end |
+|---|---|---|
+| arena | 153.0 MiB | 2 pages of heap; the arena's 16 bytes × 10⁷ = 152.6 MiB |
+| heap | 2.1 MiB | 1 056 pages committed, capacity 2 MiB, 228 collections |
+
+The arena's growth is linear and the heap's is flat: the same 10⁷ throws leave the committed
+pages where 10⁶ left them (with 10⁶ throws the growth was 15.2 MiB for the arena and 2.1 MiB for
+the heap). The object is 24 bytes against the arena's 16, and is collected.
+
+**Instantiation.** A module with a tag and one function that throws and catches, compiled once,
+then instantiated 1 000 times in new `StoreState`s, kept alive (scratch driver; mean µs per
+instance, 5 runs alternated, median (min-max); `ru_maxrss` after the 1 000):
+
+| build | µs per instance | RSS after 1 000 instances |
+|---|---|---|
+| arena | 385 (346-396) | 138 992-139 248 KiB |
+| heap | 271 (241-395) | 73 876-74 008 KiB |
+
+* **No new cost.** The plan expected the heap's reservation and header page to be the new cost.
+  They are not: from step 6.1 an exception module already had its heap (128 KiB committed, no
+  object space, `cap` 0), and the arena build also allocated its first 64 KiB chunk per store.
+  Removing the arena saves about 65 KiB of RSS per store ((138 992 - 73 888) KiB / 1 000), the
+  size of the chunk, and about 100 µs of the instantiation (the heap's range overlaps the
+  arena's in its slowest run; the other four are 241-375).
+
+**CoreMark** was not re-run. Its code does not change in this step (plan section 5; S0013 Changes
+6.3 for the identity check), which is the evidence for code without exceptions (S0012's rule). `jit-aarch64` throw cost is not
+measured: QEMU is not a benchmark and there is no arm64 hardware here.

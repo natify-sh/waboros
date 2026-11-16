@@ -369,29 +369,34 @@ def test_deepest_recursion_collects(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 # One test per check of the collection (S0013 5.3 review): each fails when the check is removed
-TABLES = """(module (type $p (struct (field i32))) (tag $t)
+TABLES = """(module (type $p (struct (field i32))) (tag $t (param i32))
   (table $f 1 funcref) (table $a 8000 anyref) (table $x 1 exnref) (elem declare func $one)
   (func $one (result i32) (i32.const 1))
   (func (export "setup") (local $i i32) (local $e exnref)
     (table.set $f (i32.const 0) (ref.func $one))
     (loop $l (table.set $a (local.get $i) (struct.new $p (local.get $i)))
       (br_if $l (i32.lt_u (local.tee $i (i32.add (local.get $i) (i32.const 1))) (i32.const 8000))))
-    (local.set $e (block $h (result exnref) (try_table (catch_all_ref $h) (throw $t)) unreachable))
-    (table.set $x (i32.const 0) (local.get $e)))
+    (local.set $e (block $h (result exnref)
+      (try_table (catch_all_ref $h) (throw $t (i32.const 77))) unreachable))
+    (table.set $x (i32.const 0) (local.get $e))
+    (block $h2 (try_table (catch_all $h2) (throw $t (i32.const 5)))))  ;; the pending word: another
   (func (export "check") (result i32) (local $i i32) (local $s i32)
     (drop (struct.new $p (i32.const -1)))  ;; collects under stress
     (loop $l (local.set $s (i32.add (local.get $s)
         (struct.get $p 0 (ref.cast (ref $p) (table.get $a (local.get $i))))))
       (br_if $l (i32.lt_u (local.tee $i (i32.add (local.get $i) (i32.const 1))) (i32.const 8000))))
     (i32.add (i32.add (local.get $s) (call_indirect $f (result i32) (i32.const 0)))
-      (ref.is_null (table.get $x (i32.const 0))))))"""
+      (block $c (result i32)  ;; the table's exception, read after the one collection
+        (try_table (catch $t $c) (throw_ref (table.get $x (i32.const 0)))) unreachable))))"""
 
 
 def test_tables_are_roots_in_batches_and_funcref_tables_are_not(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """8 000 table roots cross ROOTS' 7 680-word bound; funcref words (addresses above 2**32) sent
-    as roots would make the collector trap. An exnref table is a root (S0013 step 6)."""
+    as roots would make the collector trap. An exnref table is a root (S0013 step 6): the exception
+    is kept only there (the pending word names another one, LESSONS 122) and read after one
+    collection, an odd number of flips."""
     i, st = make(monkeypatch, "poison", "verify")
     t = build(wat(TABLES), store=store_of(i))
     fn(t, "setup")
@@ -410,7 +415,7 @@ def test_tables_are_roots_in_batches_and_funcref_tables_are_not(
         return real(self, f, args)
 
     monkeypatch.setattr(inst_.Instance, "call", spy)
-    assert fn(t, "check") == [8000 * 7999 // 2 + 1]
+    assert fn(t, "check") == [8000 * 7999 // 2 + 1 + 77]
     assert len(sent) == 2 and sent[0] == collect.NROOTS and 8000 < sum(sent) < 2 * collect.NROOTS
 
 

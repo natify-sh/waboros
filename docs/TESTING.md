@@ -114,6 +114,9 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   slot), and a pad read past the heap through a forged handle (`MEMORY_OUT_OF_BOUNDS`, both bounds
   modes). `test_a_throw_runs_no_python` and the full-heap test skip under
   `WABOROS_JIT_GC_STRESS=1`, where every throw collects.
+  `test_gc_collect.py`'s table test (`TABLES`) keeps an exception only in an exnref table, with the
+  pending word naming another one, and reads it after one collection (S0013 6.5: before, it
+  passed with exnref tables not roots, LESSONS 122).
   `test_gc_collect.py`, `test_gc_roots.py`, `test_walk.py` and `test_stackmaps.py` hold exception
   payloads, exnref locals, globals and tables across collections and the throw's ALLOC site in
   place of the arena. Step 6.4 adds the plan's t-list (`docs/plans/S0013-6-plan.md`, section 6),
