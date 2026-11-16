@@ -301,3 +301,102 @@ qemu-aarch64 -L /usr/aarch64-linux-gnu a64/consts2 > a64/consts2.json
 python3 <waboros>/tools/run_arm64.py -c 1                 # once: the arm64 site (pytest, wasmtime)
 WABOROS=<waboros> WABOROS_JIT_WALK_CHECK=1 ./qa64.sh -m tests.spec.run --engine jit-sljit --in-process core gc simd
 ```
+
+## Update 2026-11-16 (3): every D39 method, no process address in the code (`gc` at `bf55c98`)
+
+Base: branch `gc` at `bf55c98`: S0013 step 6 done (D63, exceptions in the GC heap), step 7 at
+7.2 (D65, liveness maps); D64 (one compiler per Store). sljit `39c508d1`.
+
+What changed in `waboros_sljit.py`:
+
+* **Caught up with the interface.**
+  * `func_type` (S0013 5.6).
+  * The 7-field site tuple of the D65 stack maps. The extra sites are gone (see tail calls).
+* **Exceptions.** Since D63 the core lowers `throw` and the catch clauses on the heap. The backend
+  needs only `landing` (a status compare) and `throw_ref` (null check, the pending word, status
+  14), and claims `EXN`.
+* **memory64 / table64.** Every method takes `a64` and `lo`.
+  * An i64 index is checked as `common/lower.py`'s `_i64`, always explicitly: `idx > L - k` when
+    `k <= lo`, otherwise a carry out of `idx + k`, then `idx + k > L`.
+  * The bulk end checks trap on a carry out of 64 bits.
+  * An unsigned constant above 2**31 is compared through a register, so sljit cannot turn it into
+    a compare with a negated immediate.
+* **A constant-stack tail call across contexts.** This is the `tail_switch` trampoline of D30,
+  with the 16-byte restore frame `{context, real return address}` that the walk knows.
+  * It is the one trampoline written as bytes per ISA (about 15 instructions with our encoders),
+    because it must read its own return address.
+  * The caller reaches it by a sljit tail call (`SLJIT_CALL_RETURN`, record in R0). The return
+    address is then where a call puts it: `[sp]` on x86-64, x30 on aarch64.
+  * The old fallback (an ordinary call recorded as an extra site) is removed.
+* **No process address in the code** (SLJIT-BACKEND.md, check 3).
+  * `nearest`, `ceil`, `floor` and `trunc` are written on sljit's API, as the hand-written
+    x86-64 backend's SSE2 sequence (D24), the same code on every ISA.
+  * `sqrt` is one instruction per ISA as custom bytes (`sqrtsd`/`sqrtss`, `fsqrt`): sljit has no
+    square root.
+  * `memory.fill`, `memory.copy` and `table.copy` are inline 8-byte loops as in both hand-written
+    backends, with memmove's direction.
+  * The libm/libc handles and `_ccall` are gone. The native frame went from 12 to 9 words.
+  * Check: the same module compiled in two processes gives identical bytes:
+    * CoreMark: 34 833 bytes, sha256 `e8cb95e9…` both times;
+    * `f64.0.wasm`: identical now, while the previous backend gave two different hashes (libm
+      addresses under ASLR).
+
+Correctness on all of the following:
+* every directory `jit-x86_64` / `jit-aarch64` claims, now including `exceptions` and `memory64`;
+* explicit and guard mode;
+* `WABOROS_JIT_WALK_CHECK=1` and `WABOROS_JIT_GC_POISON=1`;
+* x86-64 natively and aarch64 under QEMU (`-cpu cortex-a72`).
+
+| directory | jit-x86_64 | jit-sljit x86-64 | jit-aarch64 | jit-sljit aarch64 |
+|---|---|---|---|---|
+| core | 20 598 | 20 598 | 20 598 | 20 598 |
+| exceptions | 108 | 108 | 108 | 108 |
+| memory64 | 8 659 | 8 659 | 8 659 | 8 659 |
+| gc | 797 | 797 | 797 | 797 |
+| simd | 25 481 | 25 481 | 25 481 | 25 481 |
+| relaxed-simd | 79 | 79 | 79 | 79 |
+| bulk-memory | 7 485 | 7 485 | 7 485 | 7 485 |
+| multi-memory | 912 | 912 | 912 | 912 |
+| wide-arithmetic | 109 | 109 | 109 | 109 |
+| all | 64 228 | 64 228 | 64 228 | 64 228 |
+
+* `tools/spec_diff.py` gives 0 commands in each direction, for every pair, in both modes.
+* The one failing command is the same for all four: `memory64/table64.wast:13`, "unknown import
+  spectest.table64" (this spec cache's `spectest`).
+
+The repository's JIT tests (`tests/jit`), with jit-sljit made the first native JIT target
+(`W2S_FIRST=1` in `site/sitecustomize.py`), on x86-64: 580 pass, 9 fail.
+* `test_tail.py`, `test_walk.py`, `test_exceptions.py` and `test_gc_roots.py` also pass on aarch64
+  under QEMU (84 pass).
+* Eight of the nine failures are harness, not backend:
+  * the target is unknown in a subprocess or in a per-target table (`KeyError: 'jit-sljit'`), or
+    is cross-compiled from another ISA;
+  * `objdump` matching of fault points that assumes the hand-written backend's registers.
+* The harness failures include both cases of `test_two_copies_of_waboros_chain_in_either_order`
+  (a subprocess without `jit-sljit`).
+* One failure is a real difference: `test_trap_deep_in_recursion_and_stack_overflow`. See the
+  frame size below.
+
+Speed on x86-64 (`taskset -c 1`, 2 vCPU container, three alternated rounds, it/s):
+
+| CoreMark | jit-x86_64 | jit-sljit | ratio (median) |
+|---|---|---|---|
+| explicit | 15 462 / 15 720 / 15 202 | 15 289 / 15 340 / 15 334 | 99 % |
+| guard | 17 063 / 16 752 / 16 783 | 17 210 / 16 925 / 16 979 | 101 % |
+
+SIMD benchmark (µs per iteration, median of 5): SIMD columns at parity, as before. Scalar `nearest`
+is now 1.43 against 1.34. It was 1.71 against 1.11 through libm, on a different run.
+
+Still open:
+
+* **The native frame is fixed per function.**
+  * It is 96 bytes per frame of a simple recursive function, against 32 for `jit-x86_64`. Under
+    the default 512 KiB budget the maximum recursion depth is about 5 400 against 16 400, so
+    `test_guard.py`'s 10 000-deep call overflows.
+  * The 9 words are reserved for every function: R pins, the context saved around a call through
+    a record, and scratch for `wide` and `_copy`.
+  * sljit takes the local size at `sljit_emit_enter`, before the body is known. A per-function size
+    needs a hint from the core: a D39 addition to `func_begin` saying whether the function calls
+    through a record, uses `wide` or copies. The core cannot rewind a sljit function to retry.
+* **BTI pads on aarch64**, as in update (2).
+* **A sljit API for `ret_at`** (still read from sljit's internal fields).

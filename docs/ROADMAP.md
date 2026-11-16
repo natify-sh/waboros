@@ -281,13 +281,18 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29; done 2026-11-03) -> 
   maintainer 2026-11-05): port, then replace the Python backends; a decision point (Dn) once the
   artifact format below is fixed; criterion byte identity and portability to non-Python hosts.
 * **Hand-written or sljit micro-compilers** (maintainer, 2026-11-16). The x86-64 experiment `poc/sljit/sljit-be/` (our core over sljit, D56
-  site records and SIMD through `sljit_emit_op_custom`) passes every directory `jit-x86_64` claims
-  except exceptions, at CoreMark parity. If the micro-compilers are our core in C over sljit, the
+  site records and SIMD through `sljit_emit_op_custom`) passes every directory `jit-x86_64` claims, exceptions and memory64 included (third update,
+  2026-11-16: 64 228 commands on `jit-x86_64`, `jit-sljit` x86-64, `jit-aarch64` and `jit-sljit`
+  aarch64 under QEMU, `spec_diff` 0 both ways), at CoreMark parity (99-101 %), with no process
+  address in the code. If the micro-compilers are our core in C over sljit, the
   oracle becomes behaviour (spec suite, `spec_diff`) instead of bytes. The choice no longer blocks
   freezing part 3: a Store uses one compiler and each compiler has its own register table (D64).
   Deferred until the same
   check on aarch64: done under QEMU 2026-11-16 (parity with `jit-aarch64` in both bounds modes,
-  `poc/sljit/sljit-be/`); left: native arm64 timings, BTI landing pads, exceptions. Then D48,
+  `poc/sljit/sljit-be/`); left: native arm64 timings, BTI landing pads, and the per-function frame size (sljit fixes the
+  local size at `sljit_emit_enter`: 96 bytes per frame against 32, so the depth under the default
+  budget is about 5 400 against 16 400; a D39 hint to `func_begin` from one scan of the body is the
+  proposed fix, to be decided with the C core). Then D48,
   MICRO-COMPILERS.md and JIT-AS-WASM.md are amended.
 * **One LIR vocabulary** before porting to the micro-compilers (MICRO-COMPILERS.md): the operation
   names that are strings today in several places become one enumerated list, defined once,

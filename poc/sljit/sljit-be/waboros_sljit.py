@@ -13,8 +13,8 @@ Memory 0's size is read from the context at every explicit check (sljit keeps at
 registers across calls). Guard mode (S0006) reuses the x86-64 fault handler: a fault point is a
 sljit label right before the one instruction that touches memory.
 
-x86-64 only as written (relies on 32-bit sljit ops zero-extending, as x86-64 and aarch64 do; a
-riscv64 port would add MOV_U32 after them).
+x86-64 and aarch64 (relies on 32-bit sljit ops zero-extending, as both do; a riscv64 port would
+add MOV_U32 after them).
 
 2026-11-16 (S0013 branch `gc` at e3bb361): safepoints (D56) and SIMD.
   * Site records: a sljit label right after every call is its return address; `ret_at` (from the
@@ -23,9 +23,7 @@ riscv64 port would add MOV_U32 after them).
     sljit API should replace it); `up` = ret_at + 8. The bridge writes the store's exit record
     {caller's sp at its call, return address, frame} and clears its sp after the host returns; the
     entry keeps the enclosing record and its frame at [sp, sp + 32) during its call
-    (Trampolines.saved = 0) and puts the record back. A tail call into another context is made as
-    an ordinary call here: a real frame the core has no map for, recorded as an extra site
-    (shift 0, no map: the arguments were moved to our frame base) and merged into STACKMAPS.
+    (Trampolines.saved = 0) and puts the record back.
   * SIMD: waboros's own x86-64 SSE2 lowering (x86_64/simd.py) run into a side buffer with
     sljit's physical registers and inserted with `sljit_emit_op_custom`; bounds checks and fault
     points stay sljit code (the side buffer is flushed before them).
@@ -39,9 +37,19 @@ take only the offsets its own bounds give), the frame-size constant before the f
 prologue (sljit asserts on a constant right after a jump), and in guard mode a constant address
 and a stored immediate go to registers first, so that the fault point's label is on the one
 instruction that faults (sljit would otherwise put an `add` or a `mov` before it).
-Not covered: exceptions (landing, exn_*, throw, throw_ref), memory64/table64, a constant-stack
-tail call across contexts (no tail_switch), f32/f64 nearest/ceil/floor/trunc inline (libm), BTI
-landing pads on aarch64 (sljit emits none; the runtime maps code PROT_BTI where the CPU has BTI).
+2026-11-16 (branch `gc` at bf55c98: S0013 step 6 done, step 7 in progress): every D39 method.
+  * Exceptions: since D63 the core lowers `throw` and the clauses on the heap; the backend has
+    `landing` and `throw_ref` only (and claims EXN).
+  * memory64 / table64 (S0009): `a64` and `lo` taken by every method; an i64 index is checked as
+    common/lower.py's `_i64` (no guard for it), the bulk end checks carry out of 64 bits.
+  * A constant-stack tail call across contexts: the `tail_switch` trampoline of D30 (16-byte
+    restore frame, the walk's `restore`), the one piece written as bytes per ISA (it reads its
+    own return address); the caller reaches it by a sljit tail call with the record in R0.
+  * No process address in the code: nearest/ceil/floor/trunc on sljit's API (the hand-written
+    x86-64 SSE2 sequence, D24), sqrt one custom instruction per ISA, memory.fill/copy and
+    table.copy as inline 8-byte loops. The native frame shrank from 12 to 9 words.
+Not covered: BTI landing pads on aarch64 (sljit emits none; the runtime maps code PROT_BTI where
+the CPU has BTI), a sljit API for `ret_at` (read from sljit's internal fields).
 """
 
 import ctypes
@@ -61,15 +69,18 @@ from waboros.targets.jit.aarch64 import encoder as _enc_a64
 from waboros.targets.jit.aarch64 import simd as _v128_a64
 from waboros.targets.jit.x86_64 import encoder as _enc
 from waboros.targets.jit.x86_64 import simd as _v128
-from waboros.targets.jit.common.compiler import SUPPORTED, TABLES, WIDEOPS, compile_module
+from waboros.targets.jit.common.compiler import EXN, SUPPORTED, TABLES, WIDEOPS, compile_module
 from waboros.targets.jit.common.context import (
+    EXCEPTION,
     EXIT_RECORD,
     HOST_BRIDGE,
     HOST_ERROR,
     INTERRUPT,
     NSTACK_LIMIT,
+    STATUS_EXCEPTION,
     STATUS_HOST_ERROR,
     STATUS_INTERRUPT,
+    TAIL_SWITCH,
     TRAP_CODE,
     VSTACK_LIMIT,
     Layout,
@@ -143,7 +154,7 @@ MEM0 = Layout().memory(0)  # context word of memory 0's base
 M32, M64 = 0xFFFFFFFF, (1 << 64) - 1
 CALL_RETURN = 0x20000  # SLJIT_CALL_RETURN
 REG_ENTER = g("ENTER_REG_ARG") | 3  # SLJIT_ENTER_KEEP(3): S0..S2 shared
-NLOCAL = 12  # native frame words: R pins (4), saved context (1), saves around C calls (7)
+NLOCAL = 9  # native frame words: R pins (4), saved context (1), scratch (4: `wide`, `_copy`)
 CTXSAVE, CSAVE = 8 * 4, 8 * 5
 
 
@@ -275,8 +286,7 @@ def _w(op: str, wide: bool) -> int:
 class Backend(Emitter):
     pool = POOL
     tos = R0
-    # no tail calls, no tables/bulk memory, no f32/f64 min max nearest (see the module docstring)
-    supported = SUPPORTED | set(WIDEOPS) | _gc.OPS | _v128.SUPPORTED  # + SIMD by custom bytes per ISA (no EXN)
+    supported = SUPPORTED | set(WIDEOPS) | _gc.OPS | _v128.SUPPORTED | EXN  # SIMD by custom bytes per ISA
 
     def __init__(self, *, guard: bool = False) -> None:
         super().__init__()
@@ -289,7 +299,6 @@ class Backend(Emitter):
         self.f: Frame | None = None
         self.sites: list[tuple[int, int, int]] = []  # (mark, ret_at, up); marks -> offsets in finish
         self._ret_at = self._up = 0
-        self.extra: list[tuple[int, int, int]] = []  # calls the core has no map for (below)
 
     # ------------------------------------------------------------ labels, frames, traps
     def here(self) -> int:
@@ -354,7 +363,6 @@ class Backend(Emitter):
             lib.sljit_set_const(lib.w2s_const_addr(k), g("MOV"), v, 0)
         self.offset = [lib.w2s_label_addr(m) - code for m in self.marks]
         self.sites[:] = [(self.offset[m], ra, up) for m, ra, up in self.sites]
-        self.extra[:] = [(self.offset[m], ra, up) for m, ra, up in self.extra]
         self.faults = [(lib.w2s_label_addr(p) - code, lib.w2s_label_addr(s.lab) - code)
                        for p, s in self._faults]  # fmt: skip
         data = ctypes.string_at(code, size)
@@ -561,21 +569,64 @@ class Backend(Emitter):
             self.op2(_w("AND" if op == "abs" else "XOR", wide), (dst.id, 0), (R1, 0),
                      (IMM, s64(v) if wide else s32(v)))  # fmt: skip
             return
-        # ceil floor trunc sqrt: the C library, around which every live R register is saved
         self._fld(FR0, x, wide)
-        name = ("nearbyint" if op == "nearest" else op) + ("" if wide else "f")
-        addr = ctypes.cast(getattr(_LIBM, name), ctypes.c_void_p).value
-        self._ccall(addr, g("ARGS1(F64, F64)") if wide else g("ARGS1(F32, F32)"), dst.id)
-        self._fst(dst.id, FR0, wide)
+        if op == "sqrt":  # sljit has no square root: one instruction per ISA, as custom bytes
+            fr = lib.sljit_get_register_index(1, FR0)  # SLJIT_FLOAT_REGISTER
+            if ARCH == "x86_64":
+                a = _enc.Asm()
+                a.sse("sqrt", fr, fr, wide)
+            else:
+                a = _enc_a64.Asm()
+                a.fp1("sqrt", fr, fr, wide)
+            self._flush(a)
+            self._fst(dst.id, FR0, wide)
+            return
+        self._round(op, dst.id, wide)
 
-    def _ccall(self, addr: int, args: int, dst: int) -> None:
-        live = [r for r in (R0, R3, R4, R5, R6) if r != dst]
-        for i, r in enumerate(live):
-            self.op1(g("MOV"), (MEM1(SP), CSAVE + 8 * i), (r, 0))
-        self.op1(g("MOV"), (MEM1(SP), CSAVE + 40), (IMM, s64(addr)))  # never a PC-relative call
-        lib.sljit_emit_icall(self.c, g("CALL"), args, MEM1(SP), CSAVE + 40)
-        for i, r in enumerate(live):
-            self.op1(g("MOV"), (r, 0), (MEM1(SP), CSAVE + 8 * i))
+    def _round(self, op: str, d: int, w: bool) -> None:
+        """ceil/floor/trunc/nearest of FR0 on sljit's API, the hand-written x86-64 backend's SSE2
+        sequence (D24) on every ISA: |x| >= 2**52 (2**23 for f32), inf and NaN are integral
+        already: x + 0.0 (quiets a NaN). Otherwise trunc converts to an integer and back;
+        nearest adds and subtracts 2**52 on |x| (rounds to even: the default rounding mode);
+        the sign of x is put back (so -0.5 -> -0.0); floor/ceil step trunc by 1 toward
+        -inf/+inf. R1 = the bits of x, R2 the result; d (tos or a pool register) is written last."""
+        fl = 0 if w else B32
+        sign = 1 << (63 if w else 31)
+        big_bits = 0x4330000000000000 if w else 0x4B000000
+        self._fst(R1, FR0, w)
+        self.op2(_w("AND", w), (R2, 0), (R1, 0), (IMM, s64(sign - 1) if w else s32(sign - 1)))
+        big, done = Label(), Label()
+        if w:
+            self.op1(g("MOV"), (d, 0), (IMM, s64(big_bits)))
+            self.cmpj(g("GREATER_EQUAL"), (R2, 0), (d, 0), big)  # unsigned: NaN, inf above too
+        else:
+            self.cmpj(g("GREATER_EQUAL") | B32, (R2, 0), (IMM, big_bits), big)
+        if op == "nearest":
+            lib.sljit_emit_fcopy(self.c, g("COPY_TO_F64") | fl, FR1, R2)
+            self.op1(g("MOV"), (R2, 0), (IMM, s64(big_bits)))  # 2**52 (2**23); R1 keeps x's bits
+            lib.sljit_emit_fcopy(self.c, g("COPY_TO_F64") | fl, FR2, R2)
+            lib.sljit_emit_fop2(self.c, g("ADD_F64") | fl, FR1, 0, FR1, 0, FR2, 0)
+            lib.sljit_emit_fop2(self.c, g("SUB_F64") | fl, FR1, 0, FR1, 0, FR2, 0)
+        else:
+            lib.sljit_emit_fop1(self.c, g("CONV_SW_FROM_F64") | fl, R2, 0, FR0, 0)
+            lib.sljit_emit_fop1(self.c, g("CONV_F64_FROM_SW") | fl, FR1, 0, R2, 0)
+        self._fst(R2, FR1, w)
+        self.op2(_w("AND", w), (R1, 0), (R1, 0), (IMM, s64(sign) if w else s32(sign)))
+        self.op2(_w("OR", w), (R2, 0), (R2, 0), (R1, 0))
+        if op in ("floor", "ceil"):
+            lib.sljit_emit_fcopy(self.c, g("COPY_TO_F64") | fl, FR1, R2)
+            self._fcmpj("ORDERED_LESS_EQUAL" if op == "floor" else "ORDERED_GREATER_EQUAL",
+                        FR1, FR0, w, done)  # fmt: skip
+            self._fconst(FR2, 1.0, w)
+            lib.sljit_emit_fop2(self.c, g("SUB_F64" if op == "floor" else "ADD_F64") | fl, FR1, 0, FR1, 0, FR2, 0)
+            self._fst(R2, FR1, w)
+        self.jump(done)
+        self.bind(big)
+        self._fconst(FR1, 0.0, w)
+        lib.sljit_emit_fop2(self.c, g("ADD_F64") | fl, FR0, 0, FR0, 0, FR1, 0)
+        self._fst(R2, FR0, w)
+        self.bind(done)
+        self.op1(g("MOV" if w else "MOV_U32"), (d, 0), (R2, 0))
 
     def fcmp_set(self, cond: str, dst: Reg, x: Operand, y: Operand, wide: bool) -> None:
         self._fld(FR0, x, wide)
@@ -675,26 +726,57 @@ class Backend(Emitter):
         self.op1(g("MOV"), (dst.id, 0), (MEM1(CTX), 8 * mem + 8))
         self.op2(g("MLSHR"), (dst.id, 0), (dst.id, 0), (IMM, 16))
 
-    def _access(self, f: Frame, addr: Operand | AddK, offset: int, size: int, mem: int) -> tuple[int, int]:
+    def _access(
+        self, f: Frame, addr: Operand | AddK, offset: int, size: int, mem: int, a64: bool = False,
+        lo: int = 0,
+    ) -> tuple[int, int]:  # fmt: skip
         """The memory operand of an access; bounds checked (explicit) or a fault point armed
-        (guard). R1 holds the index; R2 is free afterwards."""
+        (guard). R1 holds the index; R2 is free afterwards. An i64 memory (S0009, `a64`): the
+        index is 64-bit and always checked explicitly, as common/lower.py's `_i64`."""
         limit = (MEM1(CTX), 8 * mem + 8)
-        guarded = self.guard and (
+        oob = self._stub(f, TrapCode.MEMORY_OUT_OF_BOUNDS)
+        if a64 and not isinstance(addr, Imm):
+            self.op1(g("MOV"), (R1, 0), _o(addr, True))
+            if offset + size > M64:  # no index is in bounds (dead code follows, well-formed)
+                self.jump(oob)
+                offset = 0
+            k = offset + size
+            if k <= lo:  # the size L >= lo >= k: L - k cannot wrap; idx > L - k traps
+                self.op1(g("MOV"), (R2, 0), limit)
+                self.op2(g("SUB"), (R2, 0), (R2, 0), (IMM, s64(k)))
+                self.cmpj(g("GREATER"), (R1, 0), (R2, 0), oob)
+            else:  # idx + k carrying out of 64 bits traps, then idx + k > L
+                self.op1(g("MOV"), (R2, 0), (IMM, s64(k)))  # a register: an immediate add may
+                self.op2(g("ADD") | g("SET_CARRY"), (R2, 0), (R1, 0), (R2, 0))  # become a sub
+                self.link(lib.sljit_emit_jump(self.c, g("CARRY")), oob)
+                self.cmpj(g("GREATER"), (R2, 0), limit, oob)
+            if offset:
+                self.op1(g("MOV"), (R2, 0), (IMM, s64(offset)))
+                self.op2(g("ADD"), (R1, 0), (R1, 0), (R2, 0))
+            return self._base(R1, mem)
+        guarded = self.guard and not a64 and (
             (addr.value & M32) + offset + size <= (1 << 32) + GUARD if isinstance(addr, Imm)
             else offset + size <= GUARD
         )  # fmt: skip
-        oob = self._stub(f, TrapCode.MEMORY_OUT_OF_BOUNDS)
         if isinstance(addr, Imm):
-            ea = (addr.value & M32) + offset
+            ea = (addr.value & (M64 if a64 else M32)) + offset
+            if ea + size > M64:  # ends past 2**64: no memory holds it
+                self.jump(oob)
+                ea = 0
             if not guarded:
-                self.cmpj(g("LESS"), limit, (IMM, ea + size), oob)
+                end = ea + size
+                if end < 1 << 31:
+                    self.cmpj(g("LESS"), limit, (IMM, end), oob)
+                else:  # unsigned: through a register (sljit may turn a negative immediate around)
+                    self.op1(g("MOV"), (R2, 0), (IMM, s64(end)))
+                    self.cmpj(g("LESS"), limit, (R2, 0), oob)
             if mem == MEM0 and ea < 1 << 31 and not (guarded and ARCH != "x86_64"):
                 res = (MEM1(MB), ea)
             elif mem == MEM0:  # aarch64, guard: [base, index] is one instruction, so the fault point's
-                self.op1(g("MOV"), (R1, 0), (IMM, ea))  # label is on the faulting one (an offset
+                self.op1(g("MOV"), (R1, 0), (IMM, s64(ea)))  # label is on the faulting one (an offset
                 res = MEM2(MB, R1), 0  # the immediate form cannot take becomes an `add` before it)
             else:
-                self.op1(g("MOV"), (R1, 0), (IMM, ea))
+                self.op1(g("MOV"), (R1, 0), (IMM, s64(ea)))
                 res = self._base(R1, mem)
         else:
             if isinstance(addr, AddK):
@@ -724,9 +806,9 @@ class Backend(Emitter):
 
     def load(
         self, f: Frame, size: int, signed: bool, wide: bool, dst: Reg, addr: Operand | AddK,
-        offset: int, mem: int,
+        offset: int, mem: int, *, a64: bool = False, lo: int = 0,
     ) -> None:  # fmt: skip
-        m = self._access(f, addr, offset, size, mem)
+        m = self._access(f, addr, offset, size, mem, a64, lo)
         if size == 8:
             op = "MOV"
         elif size == 4:
@@ -740,9 +822,10 @@ class Backend(Emitter):
             self.op1(g("MOV_U32"), (dst.id, 0), (dst.id, 0))
 
     def store(
-        self, f: Frame, size: int, addr: Operand | AddK, offset: int, src: Operand, mem: int
+        self, f: Frame, size: int, addr: Operand | AddK, offset: int, src: Operand, mem: int, *,
+        a64: bool = False, lo: int = 0,
     ) -> None:  # fmt: skip
-        m = self._access(f, addr, offset, size, mem)
+        m = self._access(f, addr, offset, size, mem, a64, lo)
         s = _o(src, True)
         if isinstance(src, Slot) or (isinstance(src, Imm) and (ARCH != "x86_64" or not -(1 << 31) <= s[1] < 1 << 31)):
             self.op1(g("MOV"), (R2, 0), s)  # one instruction touches memory (fault point)
@@ -770,6 +853,13 @@ class Backend(Emitter):
     def ctx_addr(self, dst: Reg, word: int) -> None:
         self.op2(g("ADD"), (dst.id, 0), (CTX, 0), (IMM, 8 * word))
 
+    def func_type(self, dst: Reg, rec: Operand) -> None:
+        """dst = the canonical type id of the function record `rec` (its word 1; S0013 5.6)."""
+        if not isinstance(rec, Reg):
+            self.op1(g("MOV"), (dst.id, 0), _o(rec, True))
+            rec = dst
+        self.op1(g("MOV"), (dst.id, 0), (MEM1(rec.id), 8))
+
     def _fminmax(self, op: str, d: int, x: Operand, y: Operand, w: bool) -> None:
         """wasm min/max: NaN if either is NaN (x + y: a quiet NaN); equal operands differ at
         most in the sign bit (or: min, and: max); otherwise the smaller/larger one."""
@@ -795,60 +885,136 @@ class Backend(Emitter):
         self.bind(done)
 
     # ------------------------------------------------------------ tables and bulk memory
-    def _element(self, f: Frame, word: int, index: Operand) -> tuple[int, int]:
+    def _index(self, r: int, index: Operand, a64: bool) -> None:
+        """r = a table index: 64-bit for a table64, else zero-extended (copied even from a register)."""
+        if isinstance(index, Imm):
+            self.op1(g("MOV"), (r, 0), (IMM, s64(index.value & (M64 if a64 else M32))))
+        else:
+            self.op1(g("MOV" if a64 else "MOV_U32"), (r, 0), _o(index, True))
+
+    def _element(self, f: Frame, word: int, index: Operand, a64: bool = False) -> tuple[int, int]:
         """Bounds-check index (R1) against the table's size; the element via R2 = base."""
-        self.op1(g("MOV_U32"), (R1, 0), _o(index, True) if not isinstance(index, Imm) else (IMM, index.value & M32))
+        self._index(R1, index, a64)
         self.cmpj(g("GREATER_EQUAL"), (R1, 0), (MEM1(CTX), 8 * word + 8), self._stub(f, TrapCode.TABLE_OUT_OF_BOUNDS))
         self.op1(g("MOV"), (R2, 0), (MEM1(CTX), 8 * word))
         return MEM2(R2, R1), 3
 
-    def table_get(self, f: Frame, dst: Reg, word: int, index: Operand) -> None:
-        self.op1(g("MOV"), (dst.id, 0), self._element(f, word, index))
+    def table_get(self, f: Frame, dst: Reg, word: int, index: Operand, *, a64: bool = False) -> None:
+        self.op1(g("MOV"), (dst.id, 0), self._element(f, word, index, a64))
 
-    def table_set(self, f: Frame, word: int, index: Operand, value: Operand) -> None:
-        self.op1(g("MOV"), self._element(f, word, index), _o(value, True))
+    def table_set(
+        self, f: Frame, word: int, index: Operand, value: Operand, *, a64: bool = False
+    ) -> None:  # fmt: skip
+        self.op1(g("MOV"), self._element(f, word, index, a64), _o(value, True))
 
-    def _three(self, x: Operand, y: Operand, z: Operand, wy: bool) -> None:
-        """R0 = x, R2 = y, R1 = z (i32 zero-extended; y 64-bit if `wy`); R0, which may hold an
-        operand, last."""
+    def _three(self, x: Operand, y: Operand, z: Operand, wx: bool, wy: bool, wz: bool) -> None:
+        """R0 = x, R2 = y, R1 = z, each 64-bit if its flag says so, else zero-extended; R0, which
+        may hold an operand, last."""
         self.move(Reg(R2), y, wy)
-        self.move(Reg(R1), z, False)
-        self.move(Reg(R0), x, False)
-        if isinstance(x, Reg) and x.id == R0:
+        self.move(Reg(R1), z, wz)
+        self.move(Reg(R0), x, wx)
+        if isinstance(x, Reg) and x.id == R0 and not wx:
             self.op1(g("MOV_U32"), (R0, 0), (R0, 0))
 
-    def _end_check(self, f: Frame, r: int, limit: tuple[int, int], code: int) -> None:
-        """r + R1 (both < 2**32) must not exceed `limit`."""
-        self.op2(g("ADD"), (r, 0), (r, 0), (R1, 0))
-        self.cmpj(g("GREATER"), (r, 0), limit, self._stub(f, code))
+    def _end_check(self, f: Frame, r: int, limit: tuple[int, int], code: int, wide: bool = False) -> None:
+        """r + R1 must not exceed `limit`. Not wide, both are below 2**32 and the sum cannot
+        wrap; wide (S0009), a carry out of 64 bits is out of bounds."""
+        stub = self._stub(f, code)
+        if wide:
+            self.op2(g("ADD") | g("SET_CARRY"), (r, 0), (r, 0), (R1, 0))
+            self.link(lib.sljit_emit_jump(self.c, g("CARRY")), stub)
+        else:
+            self.op2(g("ADD"), (r, 0), (r, 0), (R1, 0))
+        self.cmpj(g("GREATER"), (r, 0), limit, stub)
         self.op2(g("SUB"), (r, 0), (r, 0), (R1, 0))
 
-    def _cmem(self, fn: str, args: int, a0: int, a1: int, a2: int) -> None:
-        """A C memory function on R0, R1, R2 given in any registers (moved through the frame)."""
-        for i, r in enumerate((a0, a1, a2)):
-            self.op1(g("MOV"), (MEM1(SP), CTXSAVE + 8 + 8 * i), (r, 0))  # temporaries below CSAVE
-        for i, r in enumerate((R0, R1, R2)):
-            self.op1(g("MOV"), (r, 0), (MEM1(SP), CTXSAVE + 8 + 8 * i))
-        self._ccall(ctypes.cast(getattr(_LIBC, fn), ctypes.c_void_p).value, g(args), -1)
+    def _fill(self) -> None:
+        """R1 bytes at [R0] = the byte of R2: 8 at a time, then single bytes (as the hand-written
+        backends; no C library, no process address in the code)."""
+        self.op2(g("AND"), (R2, 0), (R2, 0), (IMM, 0xFF))
+        self.op2(g("MUL"), (R2, 0), (R2, 0), (IMM, 0x0101010101010101))
+        f8, f1, done = Label(), Label(), Label()
+        self.bind(f8)
+        self.cmpj(g("LESS"), (R1, 0), (IMM, 8), f1)
+        self.op1(g("MOV"), (MEM1(R0), 0), (R2, 0))
+        self.op2(g("ADD"), (R0, 0), (R0, 0), (IMM, 8))
+        self.op2(g("SUB"), (R1, 0), (R1, 0), (IMM, 8))
+        self.jump(f8)
+        self.bind(f1)
+        self.cmpj(g("EQUAL"), (R1, 0), (IMM, 0), done)
+        self.op1(g("MOV_U8"), (MEM1(R0), 0), (R2, 0))
+        self.op2(g("ADD"), (R0, 0), (R0, 0), (IMM, 1))
+        self.op2(g("SUB"), (R1, 0), (R1, 0), (IMM, 1))
+        self.jump(f1)
+        self.bind(done)
 
-    def memory_fill(self, f: Frame, d: Operand, v: Operand, n: Operand, mem: int) -> None:
-        self._three(d, v, n, False)
-        self._end_check(f, R0, (MEM1(CTX), 8 * mem + 8), TrapCode.MEMORY_OUT_OF_BOUNDS)
+    def _copy(self, unit: int) -> None:
+        """R1 bytes from [R2] to [R0] as memmove does: backwards when the destination is above
+        the source; 8 bytes at a time, then single bytes (`unit` 1). R3 is the temporary, saved in
+        the native frame (it may hold a pinned local)."""
+        t = R3
+        self.op1(g("MOV"), (MEM1(SP), CSAVE), (t, 0))
+        fwd, f1, b8, b1, done = (Label() for _ in range(5))
+        self.cmpj(g("LESS_EQUAL"), (R0, 0), (R2, 0), fwd)
+        self.bind(b8)
+        self.cmpj(g("LESS"), (R1, 0), (IMM, 8), b1 if unit == 1 else done)
+        self.op2(g("SUB"), (R1, 0), (R1, 0), (IMM, 8))
+        self.op1(g("MOV"), (t, 0), (MEM2(R2, R1), 0))
+        self.op1(g("MOV"), (MEM2(R0, R1), 0), (t, 0))
+        self.jump(b8)
+        if unit == 1:
+            self.bind(b1)
+            self.cmpj(g("EQUAL"), (R1, 0), (IMM, 0), done)
+            self.op2(g("SUB"), (R1, 0), (R1, 0), (IMM, 1))
+            self.op1(g("MOV_U8"), (t, 0), (MEM2(R2, R1), 0))
+            self.op1(g("MOV_U8"), (MEM2(R0, R1), 0), (t, 0))
+            self.jump(b1)
+        self.bind(fwd)
+        self.cmpj(g("LESS"), (R1, 0), (IMM, 8), f1 if unit == 1 else done)
+        self.op1(g("MOV"), (t, 0), (MEM1(R2), 0))
+        self.op1(g("MOV"), (MEM1(R0), 0), (t, 0))
+        self.op2(g("ADD"), (R0, 0), (R0, 0), (IMM, 8))
+        self.op2(g("ADD"), (R2, 0), (R2, 0), (IMM, 8))
+        self.op2(g("SUB"), (R1, 0), (R1, 0), (IMM, 8))
+        self.jump(fwd)
+        if unit == 1:
+            self.bind(f1)
+            self.cmpj(g("EQUAL"), (R1, 0), (IMM, 0), done)
+            self.op1(g("MOV_U8"), (t, 0), (MEM1(R2), 0))
+            self.op1(g("MOV_U8"), (MEM1(R0), 0), (t, 0))
+            self.op2(g("ADD"), (R0, 0), (R0, 0), (IMM, 1))
+            self.op2(g("ADD"), (R2, 0), (R2, 0), (IMM, 1))
+            self.op2(g("SUB"), (R1, 0), (R1, 0), (IMM, 1))
+            self.jump(f1)
+        self.bind(done)
+        self.op1(g("MOV"), (t, 0), (MEM1(SP), CSAVE))
+
+    def memory_fill(
+        self, f: Frame, d: Operand, v: Operand, n: Operand, mem: int, *, a64: bool = False
+    ) -> None:  # fmt: skip
+        self._three(d, v, n, a64, False, a64)
+        self._end_check(f, R0, (MEM1(CTX), 8 * mem + 8), TrapCode.MEMORY_OUT_OF_BOUNDS, a64)
         self.op2(g("ADD"), (R0, 0), (R0, 0), (MEM1(CTX), 8 * mem))
-        self._cmem("memset", "ARGS3V(P, 32, W)", R0, R2, R1)
+        self._fill()
 
-    def memory_copy(self, f: Frame, d: Operand, s: Operand, n: Operand, dmem: int, smem: int) -> None:
+    def memory_copy(
+        self, f: Frame, d: Operand, s: Operand, n: Operand, dmem: int, smem: int, *,
+        a64: tuple[bool, bool] = (False, False),
+    ) -> None:  # fmt: skip
         oob = TrapCode.MEMORY_OUT_OF_BOUNDS
-        self._three(d, s, n, False)
-        self._end_check(f, R0, (MEM1(CTX), 8 * dmem + 8), oob)
-        self._end_check(f, R2, (MEM1(CTX), 8 * smem + 8), oob)
+        ad, as_ = a64
+        self._three(d, s, n, ad, as_, ad and as_)
+        self._end_check(f, R0, (MEM1(CTX), 8 * dmem + 8), oob, ad)
+        self._end_check(f, R2, (MEM1(CTX), 8 * smem + 8), oob, as_)
         self.op2(g("ADD"), (R0, 0), (R0, 0), (MEM1(CTX), 8 * dmem))
         self.op2(g("ADD"), (R2, 0), (R2, 0), (MEM1(CTX), 8 * smem))
-        self._cmem("memmove", "ARGS3V(P, P, W)", R0, R2, R1)
+        self._copy(1)
 
-    def table_fill(self, f: Frame, word: int, i: Operand, v: Operand, n: Operand) -> None:
-        self._three(i, v, n, True)
-        self._end_check(f, R0, (MEM1(CTX), 8 * word + 8), TrapCode.TABLE_OUT_OF_BOUNDS)
+    def table_fill(
+        self, f: Frame, word: int, i: Operand, v: Operand, n: Operand, *, a64: bool = False
+    ) -> None:  # fmt: skip
+        self._three(i, v, n, a64, True, a64)
+        self._end_check(f, R0, (MEM1(CTX), 8 * word + 8), TrapCode.TABLE_OUT_OF_BOUNDS, a64)
         self.op2(g("MSHL"), (R0, 0), (R0, 0), (IMM, 3))
         self.op2(g("ADD"), (R0, 0), (R0, 0), (MEM1(CTX), 8 * word))
         loop, done = Label(), Label()
@@ -860,16 +1026,20 @@ class Backend(Emitter):
         self.jump(loop)
         self.bind(done)
 
-    def table_copy(self, f: Frame, dst: int, src: int, d: Operand, s: Operand, n: Operand) -> None:
+    def table_copy(
+        self, f: Frame, dst: int, src: int, d: Operand, s: Operand, n: Operand, *,
+        a64: tuple[bool, bool] = (False, False),
+    ) -> None:  # fmt: skip
         oob = TrapCode.TABLE_OUT_OF_BOUNDS
-        self._three(d, s, n, False)
-        self._end_check(f, R0, (MEM1(CTX), 8 * dst + 8), oob)
-        self._end_check(f, R2, (MEM1(CTX), 8 * src + 8), oob)
+        ad, as_ = a64
+        self._three(d, s, n, ad, as_, ad and as_)
+        self._end_check(f, R0, (MEM1(CTX), 8 * dst + 8), oob, ad)
+        self._end_check(f, R2, (MEM1(CTX), 8 * src + 8), oob, as_)
         for r, word in ((R0, dst), (R2, src), (R1, None)):
             self.op2(g("MSHL"), (r, 0), (r, 0), (IMM, 3))
             if word is not None:
                 self.op2(g("ADD"), (r, 0), (r, 0), (MEM1(CTX), 8 * word))
-        self._cmem("memmove", "ARGS3V(P, P, W)", R0, R2, R1)
+        self._copy(8)
 
     def wide(self, op: str, dst: Slot, args: tuple[Operand, ...]) -> None:
         """S0008. The operands are first copied to the native frame (they may sit in tos, in the
@@ -922,7 +1092,7 @@ class Backend(Emitter):
                 addr = Reg(me._unphys[addr.id])
             elif isinstance(addr, AddK):
                 addr = AddK(me._unphys[addr.id], addr.k)
-            op, disp = me._access(f, addr, offset, size, mem)
+            op, disp = me._access(f, addr, offset, size, mem, a64, lo)
             base, idx = op & 0x7F, (op >> 8) & 0x7F
             return _enc.Mem(ph(base), disp, ph(idx) if idx else None, 1)
 
@@ -967,7 +1137,7 @@ class Backend(Emitter):
                 addr = Reg(me._unphys[addr.id])
             elif isinstance(addr, AddK):
                 addr = AddK(me._unphys[addr.id], addr.k)
-            op, disp = me._access(f, addr, offset, size, mem)
+            op, disp = me._access(f, addr, offset, size, mem, a64, lo)
             base, idx = op & 0x7F, (op >> 8) & 0x7F
             if not idx and disp:  # simd.py's forms take [base, #imm] only in the ranges its own bounds
                 me.op1(g("MOV"), (R1, 0), (IMM, disp))  # give: a constant address goes to the index
@@ -1024,16 +1194,12 @@ class Backend(Emitter):
 
     def simd(self, f: Frame, op: int, dst: Any, args: tuple[Any, ...], imm: tuple[int, ...],
              *, a64: bool = False, lo: int = 0) -> None:  # fmt: skip
-        if a64:
-            from waboros.targets.base import Unsupported
-
-            raise Unsupported("jit-sljit", "memory64")
         self._unphys: dict[int, int] = {}
         d, xs = self._mapped(dst), tuple(self._mapped(x) for x in args)
         if ARCH == "x86_64":
-            self._custom(lambda px, a: _v128.emit(px, f, op, d, xs, imm, False, 0))
+            self._custom(lambda px, a: _v128.emit(px, f, op, d, xs, imm, a64, lo))
         else:
-            self._custom_a64(lambda px, a: _v128_a64.emit(px, f, op, d, xs, imm, False, 0))
+            self._custom_a64(lambda px, a: _v128_a64.emit(px, f, op, d, xs, imm, a64, lo))
 
     def move_v128(self, dst: Slot, src: Any) -> None:
         if ARCH == "x86_64":
@@ -1058,7 +1224,7 @@ class Backend(Emitter):
             self.op2(g("SUB"), (FRM, 0), (FRM, 0), (IMM, 8 * shift_slots))
         self._status(f)
 
-    def _call_record(self, f: Frame, shift_slots: int, extra: bool = False) -> None:
+    def _call_record(self, f: Frame, shift_slots: int) -> None:
         """Call the record in R1 on its own context (saved in the native frame)."""
         if shift_slots:
             self.op2(g("ADD"), (FRM, 0), (FRM, 0), (IMM, 8 * shift_slots))
@@ -1066,11 +1232,7 @@ class Backend(Emitter):
         self.op1(g("MOV"), (CTX, 0), (MEM1(R1), 16))
         self.op1(g("MOV"), (MB, 0), (MEM1(CTX), 8 * MEM0))
         lib.sljit_emit_icall(self.c, g("CALL_REG_ARG"), g("ARGS0(32)"), MEM1(R1), 0)
-        if extra:  # a tail call across contexts made as a call: a real frame the core did not map;
-            # its arguments were moved to our frame base, so nothing of ours is live (shift 0, no map)
-            self.extra.append((self.mark(), self._ret_at, self._up))
-        else:
-            self._site()
+        self._site()
         self.op1(g("MOV"), (CTX, 0), (MEM1(SP), CTXSAVE))
         self.op1(g("MOV"), (MB, 0), (MEM1(CTX), 8 * MEM0))
         if shift_slots:
@@ -1081,8 +1243,8 @@ class Backend(Emitter):
         self.op2(g("ADD"), (R1, 0), (CTX, 0), (IMM, 8 * word))
         self._call_record(f, shift_slots)
 
-    def _table_record(self, f: Frame, table: int, sig: int, index: Operand) -> None:
-        self.op1(g("MOV_U32"), (R2, 0), _o(index, True) if not isinstance(index, Imm) else (IMM, index.value & M32))
+    def _table_record(self, f: Frame, table: int, sig: int, index: Operand, a64: bool = False) -> None:
+        self._index(R2, index, a64)
         self.cmpj(g("GREATER_EQUAL"), (R2, 0), (MEM1(CTX), 8 * table + 8), self._stub(f, TrapCode.TABLE_OUT_OF_BOUNDS))
         self.op1(g("MOV"), (R1, 0), (MEM1(CTX), 8 * table))
         self.op1(g("MOV"), (R1, 0), (MEM2(R1, R2), 3))
@@ -1090,14 +1252,31 @@ class Backend(Emitter):
         self.op1(g("MOV"), (R2, 0), (MEM1(CTX), 8 * sig))
         self.cmpj(g("NOT_EQUAL"), (R2, 0), (MEM1(R1), 8), self._stub(f, TrapCode.BAD_SIGNATURE))
 
-    def call_indirect(self, f: Frame, table: int, sig: int, index: Operand, shift_slots: int) -> None:
-        self._table_record(f, table, sig, index)
+    def call_indirect(
+        self, f: Frame, table: int, sig: int, index: Operand, shift_slots: int, *, a64: bool = False
+    ) -> None:  # fmt: skip
+        self._table_record(f, table, sig, index, a64)
         self._call_record(f, shift_slots)
 
     def call_ref(self, f: Frame, ref: Operand, shift_slots: int) -> None:
         self.move(Reg(R1), ref, True)
         self.cmpj(g("EQUAL"), (R1, 0), (IMM, 0), self._stub(f, TrapCode.NULL_REFERENCE))
         self._call_record(f, shift_slots)
+
+    # exceptions (S0012; since S0013 step 6, D63, `throw` and the clauses are lowered in the core
+    # on the heap: only the pad and throw_ref are the backend's)
+    def landing(self, f: Frame, pad: Label, outer: Label) -> None:
+        self.bind(pad)
+        self.cmpj(g("NOT_EQUAL") | B32, (R0, 0), (IMM, STATUS_EXCEPTION), outer)
+
+    def throw_ref(self, f: Frame, x: Operand) -> None:
+        """Null traps (NULL_REFERENCE, not catchable); else the object becomes the one in flight."""
+        self.move(Reg(R1), x, True)  # x may be in R0
+        self.cmpj(g("EQUAL"), (R1, 0), (IMM, 0), self._stub(f, TrapCode.NULL_REFERENCE))
+        self.op1(g("MOV"), (R2, 0), (MEM1(CTX), 8 * EXCEPTION))
+        self.op1(g("MOV"), (MEM1(R2), 0), (R1, 0))
+        self.op1(g("MOV32"), (R0, 0), (IMM, STATUS_EXCEPTION))
+        self.jump(f.error)
 
     def null_check(self, f: Frame, x: Operand, code: int) -> None:
         self.move(Reg(R1), x, True)
@@ -1127,19 +1306,22 @@ class Backend(Emitter):
         self.link(lib.sljit_emit_call(self.c, g("CALL_REG_ARG") | CALL_RETURN, g("ARGS0(32)")), label)
 
     def _tail_record(self, f: Frame, src: int, n: int) -> None:
-        """The record in R1: on our context a real tail call; on another one (rare: a call
-        across instances) an ordinary call whose results land at our frame base, then return
-        (correct, but that chain's native stack grows, unlike the x86-64 tail_switch)."""
+        """The record in R1: on our context a tail call straight to its code; on another one a
+        tail call into the tail_switch trampoline (D30, `tail_switch` below) with the record in
+        R0, our frame torn down as for any tail call, so the caller's return address is where
+        the trampoline looks for it. Both stacks stay constant along a chain across contexts."""
         other = Label()
         self._tail(f, src, n)
         self.cmpj(g("NOT_EQUAL"), (MEM1(R1), 16), (CTX, 0), other)
         lib.sljit_emit_icall(self.c, g("CALL_REG_ARG") | CALL_RETURN, g("ARGS0(32)"), MEM1(R1), 0)
         self.bind(other)
-        self._call_record(f, 0, extra=True)
-        self.ret_ok(f)
+        self.op1(g("MOV"), (R0, 0), (R1, 0))
+        lib.sljit_emit_icall(self.c, g("CALL_REG_ARG") | CALL_RETURN, g("ARGS1(32, W)"), MEM1(CTX), 8 * TAIL_SWITCH)
 
-    def tail_indirect(self, f: Frame, table: int, sig: int, index: Operand, src: int, n: int) -> None:
-        self._table_record(f, table, sig, index)
+    def tail_indirect(
+        self, f: Frame, table: int, sig: int, index: Operand, src: int, n: int, *, a64: bool = False
+    ) -> None:  # fmt: skip
+        self._table_record(f, table, sig, index, a64)
         self._tail_record(f, src, n)
 
     def tail_ref(self, f: Frame, ref: Operand, src: int, n: int) -> None:
@@ -1164,27 +1346,6 @@ class Backend(Emitter):
         return at
 
 
-def _no_a64(name: str) -> None:
-    """The D39 methods gained `a64` (and `lo`) with memory64 (S0009, after this backend was written):
-    accepted here, refused when set (this backend claims no memory64)."""
-    orig = getattr(Backend, name)
-
-    def wrapped(self: Any, *args: Any, a64: Any = False, lo: int = 0, **kw: Any) -> Any:
-        if any(a64) if isinstance(a64, tuple) else a64:
-            from waboros.targets.base import Unsupported
-
-            raise Unsupported("jit-sljit", "memory64 / table64")
-        return orig(self, *args, **kw)
-
-    setattr(Backend, name, wrapped)
-
-
-for _n in ("load", "store", "table_get", "table_set", "table_fill", "table_copy", "memory_fill",
-           "memory_copy", "call_indirect", "tail_indirect"):
-    _no_a64(_n)
-
-_LIBM = ctypes.CDLL("libm.so.6")
-_LIBC = ctypes.CDLL(None)
 
 
 def assemble() -> tuple[bytes, list[int]]:
@@ -1246,17 +1407,71 @@ def assemble() -> tuple[bytes, list[int]]:
     lib.sljit_get_local_base(c, R1, 0, 0)
     e.op1(g("MOV"), (MEM1(FRM), 0), (R1, 0))
     lib.sljit_emit_return(c, g("MOV32"), IMM, 0)
-    # tail switch: never reached
-    offs.append(e.mark())
-    lib.sljit_emit_enter(c, REG_ENTER, g("ARGS0(32)"), 2, 3, 0)
-    lib.sljit_emit_return(c, g("MOV32"), IMM, int(TrapCode.UNREACHABLE))
     code, size = e.generate()
     data = ctypes.string_at(code, size)
     offsets = [lib.w2s_label_addr(m) - code for m in e.marks]
     e.free(code)
-    # the walk's table: the entry's return point; `restore`: no tail_switch here, so an address no
-    # call returns to (the tail-switch stub's start)
-    return data, [*(offsets[k] for k in offs), offsets[entry_ret], offsets[offs[3]]]
+    data += bytes(-len(data) % 16)
+    blob, restore = tail_switch()
+    # the walk's table (S0013 3a): the entry's return point and tail_switch's `restore`
+    return data + blob, [*(offsets[k] for k in offs), len(data), offsets[entry_ret], len(data) + restore]
+
+
+def tail_switch() -> tuple[bytes, int]:
+    """The cross-context tail-call trampoline (D30, ARTIFACT.md part 3 "Tail calls"), the one
+    piece of this backend not written on sljit's API: it must read its own return address. It
+    is entered by a sljit tail call (frame torn down, R0 = the record, the caller's return
+    address where a call put it: [sp] on x86-64, the link register on aarch64). The first
+    switch of a chain leaves the 16-byte restore frame {context, real return address} and calls
+    the target, whose return address is `restore`; a later switch whose return address is
+    already `restore` only changes the context and memory 0's base and jumps. Only R0-R2 (the
+    record, scratch) are touched: R3-R6 and S3-S5 are the caller's caller's again. Returns the
+    bytes and the offset of `restore`."""
+    ph = lambda r: lib.sljit_get_register_index(0, r)  # noqa: E731
+    rec, t, ctx, mb = ph(R0), ph(R1), ph(CTX), ph(MB)
+    if ARCH == "x86_64":
+        Mem = _enc.Mem
+        a = _enc.Asm()
+        restore, hop = a.label(), a.label()
+        a.endbr64()
+        a.lea_label(t, restore)
+        a.alu("cmp", t, Mem(_enc.RSP), w=True)
+        a.jcc("e", hop)
+        a.push(ctx)  # rsp = 0 mod 16: the callee sees 8 mod 16, as after any call
+        a.mov(ctx, Mem(rec, 16), w=True)
+        a.mov(mb, Mem(ctx, 8 * MEM0), w=True)
+        a.call(Mem(rec))
+        a.bind(restore)  # the status stays in R0
+        a.pop(ctx)
+        a.mov(mb, Mem(ctx, 8 * MEM0), w=True)
+        a.ret()
+        a.bind(hop)
+        a.mov(ctx, Mem(rec, 16), w=True)
+        a.mov(mb, Mem(ctx, 8 * MEM0), w=True)
+        a.jmp(Mem(rec))
+    else:
+        A = _enc_a64
+        a = A.Asm()
+        restore, hop = a.label(), a.label()
+        a.adr(t, restore)
+        a.cmp(A.LR, t)
+        a.bcc("eq", hop)
+        a.pair(False, ctx, A.LR, A.SP, -16, "pre")
+        a.ld(ctx, rec, 16)
+        a.ld(mb, ctx, 8 * MEM0)
+        a.ld(t, rec)
+        a.blr(t)
+        a.bind(restore)  # the status stays in R0
+        a.pair(True, ctx, A.LR, A.SP, 16, "post")
+        a.ld(mb, ctx, 8 * MEM0)
+        a.ret()
+        a.bind(hop)
+        a.ld(ctx, rec, 16)
+        a.ld(mb, ctx, 8 * MEM0)
+        a.ld(t, rec)
+        a.br(t)
+    at = a._labels[restore.id]  # both encoders keep a label's offset here
+    return a.finish(), at
 
 
 _TRAMP = None
@@ -1282,10 +1497,6 @@ class JitSljitTarget(JitAarch64Target if ARCH in ("aarch64", "arm64") else JitX8
     def compile(self, module: Any) -> object:
         b = self.guard_backend() if _guard.wanted(self) else self.backend()
         c = compile_module(module, b, self.name)
-        if b.extra:
-            sites = [(r, *v) for r, v in _gc.decode(c.stackmaps).items()]
-            sites += [(r, 0, ra, up, 0, 0) for r, ra, up in b.extra]
-            c.stackmaps = _gc.encode(sorted(sites))
         c.funcs = [(b.offset[p], n) for p, n in c.funcs]
         c.thunks = {i: b.offset[k] for i, k in c.thunks.items()}
         if b.guard:

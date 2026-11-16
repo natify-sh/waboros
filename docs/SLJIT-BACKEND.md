@@ -208,7 +208,11 @@ requirement that sljit must meet, checked on every ISA of the track before any b
    rounding sequences of `x86_64/` and `aarch64/` through `sljit_emit_op_custom`); (b) through the
    context (`ctx[libcall]`, an address the runtime puts there). The orchestrator's proposal: (a)
    for rounding and `sqrt` (no call, the same bytes as our backends), (b) for `memory.fill` and
-   `memory.copy` (already libcalls in the context ABI).
+   `memory.copy` (already libcalls in the context ABI). **Done in the third update (2026-11-16),
+   on x86-64 and aarch64:** rounding through the SSE2 sequence of D24 on every ISA, `sqrt` one
+   custom instruction per ISA, fill and copy as inline 8-byte loops (neither (a) nor (b) for bulk
+   memory: no call at all); the same module compiled in two processes gives identical bytes
+   (`poc/sljit/sljit-be/SLJIT-BACKEND-RESULTS.md`, "Update 2026-11-16 (3)").
 
 ## sljit built for wasm32 per target (maintainer, 2026-11-15)
 Pinned sljit `39c508d` with the patch in `poc/sljit`, the full API exported (as `full_*.wasm` in
