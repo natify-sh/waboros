@@ -122,7 +122,8 @@ Wasmtime.
 
 The catch semantics live once, in `common/compiler.py`: the order of the clauses, the branch with
 the payload (and with the exnref for the `_ref` forms), and the fall-through to `outer`. The
-backends implement the five encodings above, about 40-70 lines each. This is per backend, as
+backends implemented the five encodings above, about 40-70 lines each; since S0013 step 6.3 only
+`landing` and `throw_ref` remain, the rest lowered in the shared core (D63). This is per backend, as
 ROADMAP "Next" item 4 says. It does not use the S0011 low layer and does not wait for S0011
 step 4 (Q5).
 

@@ -118,8 +118,10 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   payloads, exnref locals, globals and tables across collections and the throw's ALLOC site in
   place of the arena; t11 (`test_no_module_uses_the_reserved_words`, step 6.3) checks that context
   words 11-13 are zero in every context and that no compiled `exceptions/` module, cross-compiled
-  for both architectures, names or addresses them (a mutant reading word 12 fails it); the rest
-  of t1-t12 and the mutations are step 6.4.
+  for both architectures, names them as a call word or as a displacement off the context register (a mutant reading
+  word 12 that way fails it; an address computed into another register, the trampolines and
+  Python-side reads are not seen: the 6.3 review's gap, closed in step 6.4); the rest of t1-t12
+  and the mutations are step 6.4.
   `tests/jit/test_gc_memory.py` (native only, the GC switches cleared, about 5 s on CPython 3.11 and
   3.13; it runs in every `pytest` of the CI matrix and in the native arm64 `tests/jit` job, no
   marker) is the memory test: after a warm-up the heap's capacity and committed pages do not move under 576 MB of dropped structs and
