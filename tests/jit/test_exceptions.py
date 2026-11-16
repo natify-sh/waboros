@@ -681,7 +681,9 @@ def test_no_module_uses_the_reserved_words(monkeypatch: pytest.MonkeyPatch, targ
             n += 1
             assert not {11, 12, 13} & set(words)
             seen |= set(words)
-    assert n > 250 and {8, 10} <= seen  # the spies see the bridge and the pending word
+    # without the fetched spec suite (the wheel harness), the local modules, CoreMark and the
+    # collector still run: 5 modules in each of the two bounds modes
+    assert n > (250 if files[:-2] else 9) and {8, 10} <= seen  # the bridge and the pending word
     builds: list[Any] = [abi.assemble]
     if x:
         builds = [lambda: xabi.assemble(False), lambda: xabi.assemble(True)]

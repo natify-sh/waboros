@@ -962,3 +962,10 @@ What went wrong or surprised us while building the PoC, so it is not found again
     the whole word). Rule: to test that a value is zero-extended in its slot (LESSONS 5), observe
     it through a 64-bit copy, not through an operator that reads it as an i32. Found: S0013
     step 6.4, 2026-11-16.
+124. **Run a new test the way CI runs it, without the spec cache.** The widened t11 asserted that
+    more than 250 modules compiled; locally the fetched spec suite is always there, but every CI
+    job that runs pytest (`ci` test and `jit`, `platforms` wheel harness) runs it before or
+    without `tests/spec/fetch.py`, so the test failed on every platform at once. Rule: a test that
+    reads `.cache/spec` either skips without it or scales its floor to what it found, and is run
+    once locally with the cache moved away before it is committed. Found: S0013 step 6.4 CI,
+    2026-11-16.
