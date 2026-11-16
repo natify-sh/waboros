@@ -119,8 +119,10 @@ stored once. Every call site has a record, a module without any reference type t
 site: CoreMark 108 sites, 1 736 bytes, no map). The two-bitmap form (S0013 step 7.1) also
 amended version 1 without a bump; instantiation decodes the table with checks and refuses
 (`ValueError`) one that does not parse exactly, has a map index past the pool or a `live` bit
-outside `refs`, so a table in step 3a's one-bitmap form with a map is refused, and one without a
-map, the same bytes in both forms, still runs. The trampolines' own points (the entry's return point and its saved block, `tail_switch`'s
+outside `refs`, so a table in step 3a's one-bitmap form with a map is refused in the shapes tested, not by
+contract: the table has no version field, and a 3a table can be built that parses (the 7.2 review);
+versioning is the artifact format's (`format_version`, an open question of its spec). One without
+a map, the same bytes in both forms, still runs. The trampolines' own points (the entry's return point and its saved block, `tail_switch`'s
 `restore` frame) are part 3's, not this section's.
 
 Strings are UTF-8 with a u32 length prefix. A loader refuses an artifact whose `magic`,

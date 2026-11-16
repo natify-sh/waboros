@@ -1378,7 +1378,9 @@ bitmap of reference slots cannot tell it which unmarked slots to null:
 * **Version 1 amended without a bump** (plan D2 (a), as `STACKMAPS` itself, D56, S0013 Q5): no
   artifact file exists. Instantiation decodes the table once, with checks that raise
   `ValueError` (exact length, map index within the pool, no empty map, no bit past `nslots`,
-  `live ⊆ refs`), so a step-3a table with a map is refused and one without a map runs.
+  `live ⊆ refs`), so a step-3a table with a map is refused in the shapes tested (not guaranteed: the table has no
+  version field and a parsing 3a table exists, 7.2 review; versioning is left to the artifact
+  format's `format_version`) and one without a map runs.
 * **Check mode nulls** (plan D7 (a)): `WABOROS_JIT_WALK_CHECK=1` writes 0 into the dead slots at
   every host call and libcall, then validates every `refs` slot, so the whole-suite walk-check
   runs exercise every dead set, modules that never collect included.
