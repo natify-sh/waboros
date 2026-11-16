@@ -971,3 +971,15 @@ What went wrong or surprised us while building the PoC, so it is not found again
     a copy of `tests/` with neither `src/` nor `poc/` beside it: package data is read through
     `importlib.resources`, PoC files only if they exist. Found: S0013 step 6.4 CI,
     2026-11-16.
+125. **An instruction that ends a path in wasm can still jump somewhere in the code.** The step-7
+    plan's liveness table gave `throw_ref` (and `throw`) the empty set, as `return`; inside a
+    `try_table` both jump to the landing pad, whose clauses branch to labels that may read a
+    reference local, so the local is live before them. The table would still have given the
+    right set, by accident: the validator lists `throw_ref` among its safepoints (the JIT never
+    lowers it as a call), and every site joins the pads' sets. The pass now gives both the pads'
+    set explicitly; while the validator lists them, a mutant that gives them the empty set
+    passes every test (checked: a defence in the sense of 105; `t7`'s `throw_ref` case pins the
+    set). Rule: for each instruction a
+    backward analysis treats as a terminator, list where the generated code goes next (pads,
+    outer pads, cold paths), not only where the wasm text says the path ends. Found: S0013 step
+    7.2, 2026-11-16.

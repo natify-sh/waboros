@@ -96,7 +96,7 @@ def test_record_call_and_host_thunk(target: str) -> None:
       (func (param $a externref) local.get $a call $h))""",
     )
     (shift, ret_at, up, n, bits, live), thunk = s
-    assert (shift, n, bits, live) == (1, 1, 0b1, 0b1)
+    assert (shift, n, bits, live) == (1, 1, 0b1, 0)  # $a is not read after the call (7.2)
     assert ret_at == 24 and up == 32  # no pins: x86 pad + r15 and pad; aarch64 record + x28
     assert thunk == (0, 8, 16, 0, 0, 0)
 

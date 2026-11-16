@@ -112,8 +112,9 @@ the k-th map of the pool); then `u32 nmaps` and per map `u32 nslots`, `ceil(nslo
 words of `refs`, bit i set when value-stack slot i of the frame (locals first, a v128 two slots)
 holds a reference of the any, extern or exn hierarchy (exn from S0013 step 6.2) at that site, and
 as many words of `live`, a subset of `refs` (S0013 step 7, D65). A walk forwards the `live` slots
-and writes null into the slots of `refs` that `live` does not mark; until the liveness pass (step
-7.2) `live` equals `refs`. A map is never empty and equal maps (`nslots`, `refs`, `live`) are
+and writes null into the slots of `refs` that `live` does not mark; `live` holds the reference
+locals live at the site, from the shared core's liveness pass (S0013 step 7.2), and the operand
+bits of `refs` (`WABOROS_JIT_NOLIVE` gives `live = refs`, the step-7.1 tables). A map is never empty and equal maps (`nslots`, `refs`, `live`) are
 stored once. Every call site has a record, a module without any reference type too (16 bytes per
 site: CoreMark 108 sites, 1 736 bytes, no map). The two-bitmap form (S0013 step 7.1) also
 amended version 1 without a bump; instantiation decodes the table with checks and refuses

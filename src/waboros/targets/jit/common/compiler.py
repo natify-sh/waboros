@@ -16,6 +16,8 @@ moves its results straight into slots 0..m (S0007).
 
 Test-only switch: `WABOROS_JIT_NOPIN=all` or `=<function indices>` compiles those functions without
 pinned locals (bisecting a pinning bug; D25 rules out mixing targets per function).
+`WABOROS_JIT_NOLIVE=all` or `=<function indices>` gives those functions' stack maps `live = refs`
+(no liveness, the maps of steps 3a-7.1; bisecting a liveness bug, D65); no code byte changes.
 """
 
 import os
@@ -26,7 +28,7 @@ from typing import Any
 
 from waboros.frontend.validate import _root  # pyright: ignore[reportPrivateUsage, reportUnknownVariableType]
 from waboros.targets.base import TrapCode, Unsupported, ValidModule
-from waboros.targets.jit.common import gc, simd
+from waboros.targets.jit.common import gc, liveness, simd
 from waboros.targets.jit.common.backend import NEGATE, AddK, Backend, Imm, Operand, Reg, Slot
 from waboros.targets.jit.common.context import (
     DATA_DROP,
@@ -281,18 +283,20 @@ def compile_module(mod: ValidModule, b: Backend[Any, Any], target: str) -> Compi
     m.rtts = {t: k for k, t in enumerate(rtts)}
     m.exn = {t: k for k, t in enumerate(thrown, len(rtts))}
     nopin = os.environ.get("WABOROS_JIT_NOPIN", "")
+    nolive = os.environ.get("WABOROS_JIT_NOLIVE", "")
     funcs: list[tuple[int, int]] = []
     s0 = len(b.sites)
     maps: list[tuple[int, int, int, int]] = []  # (shift, nslots, refs, live) of b.sites[s0:]
     for k, ((locs, _), insns) in enumerate(zip(mod["codes"], mod["insns"], strict=True)):
         fidx = len(fimps) + k
         pin = not (nopin == "all" or str(fidx) in nopin.split(","))
+        live = not (nolive == "all" or str(fidx) in nolive.split(","))
         pos = b.here()
         funcs.append((pos, simd.width(m.types[m.ftypes[fidx]][1])))
-        fn = _Func(m, fidx, locs, insns, pin)
+        fn = _Func(m, fidx, locs, insns, pin, live)
         if not fn.run(False):  # a branch does not reach
             b.rewind(pos)
-            fn = _Func(m, fidx, locs, insns, pin)
+            fn = _Func(m, fidx, locs, insns, pin, live)
             if not fn.run(True):  # never inside an assert (-O)
                 raise Unsupported(target, "function too large for this architecture's branches")
         maps += fn.sites
@@ -316,7 +320,9 @@ def compile_module(mod: ValidModule, b: Backend[Any, Any], target: str) -> Compi
 
 
 class _Func:
-    def __init__(self, m: _Mod, fidx: int, locs: list[Any], insns: list[Any], pin: bool) -> None:
+    def __init__(
+        self, m: _Mod, fidx: int, locs: list[Any], insns: list[Any], pin: bool, live: bool
+    ) -> None:
         self.m, self.b, self.insns = m, m.b, insns
         ps, self.results = m.types[m.ftypes[fidx]]
         self.nparams = len(ps)
@@ -340,15 +346,20 @@ class _Func:
         self.gccold: list[Any] = []  # S0013: allocation slow paths and trap labels, cold
         self.gctraps: dict[int, Any] = {}
         # stack maps (S0013 3a): (shift, nslots, refs, live) per call site, in code order; with
-        # the validator's masks on, every reference local is marked at every site (liveness: 7.2)
+        # the validator's masks on, `refs` marks every reference local and `live` those live at
+        # the site (step 7.2, common/liveness.py; `live = refs` without the pass)
         self.sites: list[tuple[int, int, int, int]] = []
         self.rm: dict[int, int] | None = None
+        self.live: dict[int, int] | None = None
         mod, k = m.mod, fidx - m.nimp
         if mod is not None and mod["refmasks"]:
             self.rm, self.vm = mod["refmasks"][k], mod["v128masks"][k]
-            self.lmask = sum(1 << self.slot[j] for j, t in enumerate(self.ltypes) if _root(mod, t))
+            bit = {j: 1 << self.slot[j] for j, t in enumerate(self.ltypes) if _root(mod, t)}
+            self.lmask = sum(bit.values())
             # I1: a reference is never in a pool register (choose_pins takes i32/i64 only)
             assert not any(self.lmask >> self.slot[j] & 1 for j in self.pins)
+            if live and self.lmask and self.rm:  # a reference local and a site (D65)
+                self.live = liveness.live(insns, bit, self.rm)[0]
 
     def site(self, pc: int, shift: int, keep: int, top: int) -> None:
         """The map of the call the backend just recorded: slots [0, L + keep) of this frame; the
@@ -358,12 +369,17 @@ class _Func:
         # no scratch value above the call's slots: a nested entry's frame starts at L + keep (B1)
         assert self.hi <= keep, (pc, self.hi, keep)
         self.hi = 0
-        bits = 0
+        # I5: no entry reads a local's slot after the site, so the slot is read only by a later
+        # wasm local.get, which the liveness pass sees (the cold ALLOC sites: in gc.alloc)
+        assert all(e[0] == SLOT for e in self.st), (pc, self.st)
+        bits = live = 0
         if self.rm is not None:
             ops = gc.slot_bits(self.rm[pc], self.vm[pc])
             assert ops >> top == 0, (pc, ops, top)  # the core's stack and the validator's agree
-            bits = (self.lmask | ops << self.L) & ((1 << (self.L + keep)) - 1)
-        self.sites.append((shift, self.L + keep, bits, bits))  # live = refs until step 7.2
+            cut = (1 << (self.L + keep)) - 1
+            bits = (self.lmask | ops << self.L) & cut
+            live = bits if self.live is None else (self.live[pc] | ops << self.L) & cut
+        self.sites.append((shift, self.L + keep, bits, live))
 
     def choose_pins(self) -> dict[int, int]:
         """Integer locals by uses weighted by loop depth (as w2jit2), as many as the pool holds."""

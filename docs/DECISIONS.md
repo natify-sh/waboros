@@ -1365,7 +1365,7 @@ fixed (inline sequences through `sljit_emit_op_custom`, or calls through context
 sljit micro-compiler emits AOT artifacts (SLJIT-BACKEND.md, check 3).
 
 ### D65. JIT liveness maps and the nulling walk
-Status: accepted (maintainer, 2026-11-16: S0013 step 7 plan, D1, D2, D7; the plan's D3-D6 and D8 are added with step 7.2) · Date: 2026-11-16 · Supersedes: S0013's "per function, the bitmap of its reference-typed local slots" (never built) · Evidence: S0013 Changes 7.1; `tests/jit/test_stackmaps.py`, `tests/jit/test_walk.py`; the whole spec suite with `WABOROS_JIT_WALK_CHECK=1` on both JITs, both bounds modes
+Status: accepted (maintainer, 2026-11-16: S0013 step 7 plan, D1-D8; D1, D2, D7 built in step 7.1, D3-D6 and D8 in step 7.2) · Date: 2026-11-16 · Supersedes: S0013's "per function, the bitmap of its reference-typed local slots" (never built); narrows S0013 Q3 "Operands" (D3 below) · Evidence: S0013 Changes 7.1 and 7.2; `tests/jit/test_stackmaps.py`, `tests/jit/test_walk.py`, `tests/jit/test_liveness.py`; the whole spec suite with `WABOROS_JIT_WALK_CHECK=1` on both JITs, both bounds modes, and with the GC switches as well (7.2)
 
 S0013 Q3 has the walk null the reference slots a site does not mark live, so a dead slot never
 keeps an offset into the old space. The walk cannot find a site's function, so a per-function
@@ -1382,8 +1382,33 @@ bitmap of reference slots cannot tell it which unmarked slots to null:
 * **Check mode nulls** (plan D7 (a)): `WABOROS_JIT_WALK_CHECK=1` writes 0 into the dead slots at
   every host call and libcall, then validates every `refs` slot, so the whole-suite walk-check
   runs exercise every dead set, modules that never collect included.
+* **Operands keep the validator's mask** (plan D3 (b)), **a deviation from S0013 Q3**, whose
+  "Operands" rule makes an operand below a call dead when its only consumer is `drop`: that needs
+  a stack simulation the core does not have. The cost is retention of a reference below a call
+  until its `drop` runs. Revisited only with a measurement that the retention hurts (maintainer).
+* **The pass** (plan D4 (a)): `jit/common/liveness.py`, called from the core's `_Func` beside
+  `choose_pins`, only for a function with a reference local and a site; it runs again on a
+  far-mode retry. Its result is `live` for the locals' slots; `refs` is unchanged.
+* **Loops** (plan D5 (a)): every loop's head set starts empty and the whole backward pass repeats
+  until no head set changes (the sets only grow); no CFG. The spec suite never needs a second
+  pass; the Kotlin corpus program needs at most 3 (S0013 Changes 7.2).
+* **Exception edges** (plan D6 (a)): every site in the body of a `try_table` joins the label sets
+  of the clauses of every enclosing `try_table` (a pad that misses jumps to the enclosing one),
+  services and `is_subtype` calls too, which cannot throw (retention only); `throw` and
+  `throw_ref` take the same set.
+* **Invariant I5** (S0013): after a site a reference local's slot is read only by a later wasm
+  `local.get`; asserted in the core where a site is recorded (every operand-stack entry is a slot)
+  and where an allocation's cold site is queued.
+* **A bisect switch** (plan D8 (a)): `WABOROS_JIT_NOLIVE=all|<function indices>` gives those
+  functions `live = refs` (the step-7.1 maps); no code byte changes.
 
 Rejected: a second pool index per site (20-byte records, every module's table changes, CoreMark's
 included); a per-function table of reference slots with a function lookup per frame (a new
-section, a second search, operands never nullable). Wasmtime's maps list only live slots and it
-never nulls (Cranelift reuses spill slots), which a fixed slot per local cannot copy.
+section, a second search, operands never nullable); the `drop`-consumer rule for operands now
+(plan D3 (a): about +50 lines in the validator shared with `pyc`, or a stack-effect table in the
+core); the pass in the validator (a forward walk, then a backward one anyway, run for `pyc` too);
+per-loop iteration or a worklist over basic blocks (more code, a CFG the core does not build; the
+fallback if a module shows a pathological pass count); only call and throw sites joining only up
+to the first `catch_all` (a second list of "which sites throw" to keep in step with the
+lowering). Wasmtime's maps list only live slots and it never nulls (Cranelift reuses spill slots),
+which a fixed slot per local cannot copy.

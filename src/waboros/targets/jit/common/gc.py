@@ -294,6 +294,7 @@ def cold(fn: Any) -> None:
     """The cold code of the function, after its body: allocation slow paths (each a safepoint
     reporting to the `error` label it had), then the trap labels."""
     b, f = fn.b, fn.f
+    del fn.st[:]  # the body is done: I5 was checked when `alloc` queued each site
     for label, retry, size, arg, pc, error, keep, top, hi in fn.gccold:
         b.bind(label)
         b.move(arg, size, True)
@@ -320,6 +321,7 @@ def alloc(fn: Any, pc: int, word: int, size: Any, h: int) -> None:
     frame starts above it, and the retry reads `rtt` and `size` again (B1, ARTIFACT.md "Host
     functions")."""
     b, f, hw = fn.b, fn.f, _mem(fn)
+    assert all(e[0] == core.SLOT for e in fn.st), (pc, fn.st)  # I5, as `site` checks
     rtt, new = scratch(fn, h, 0), scratch(fn, h, 1)
     assert isinstance(size, Imm) or size.k >= fn.L + h + 2  # a scratch slot below `arg` (B1)
     arg = scratch(fn, h, 2 if isinstance(size, Imm) else size.k - fn.L - h + 1)

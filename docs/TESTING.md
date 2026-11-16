@@ -71,9 +71,9 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   must lie between the store's native limit and the thread's stack top, the walk must cross exactly
   the active entries and end each segment at the frame the runtime gave that entry; the walk then
   writes null into the dead reference slots of every frame (the map's `refs` slots that its `live`
-  map does not mark, as a collection does; S0013 step 7, D65; none until the liveness pass of step
-  7.2, so `tests/jit/test_walk.py` tests it with a forged table, through check mode and through a
-  collection), and every slot of `refs` must hold a reference word: 0, a host value `(h << 2) | 2` with a live handle,
+  map does not mark, as a collection does; S0013 step 7, D65: since step 7.2 a whole-suite run nulls
+  every dead set of the suite at every host call; `tests/jit/test_walk.py` also tests it with a
+  forged table, through check mode and through a collection), and every slot of `refs` must hold a reference word: 0, a host value `(h << 2) | 2` with a live handle,
   and, only in a store with a GC heap, an i31 below 2³² or the offset of a heap object (allocated,
   8-aligned, its header a type-info record; S0013 step 3b; an exception object too, as exnref
   slots are marked from step 6.2). That last test cannot see a wrongly
@@ -109,6 +109,19 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   3a's form, and that a step-3a table with a map and forged tables (a `live` bit outside `refs`, a
   bit past `nslots`, an empty map, a map index past the pool, trailing or missing bytes) raise
   `ValueError`; `tests/jit/test_walk.py` refuses the step-3a table at instantiation.
+  `tests/jit/test_liveness.py` (S0013 7.2, D65; the plan's t1-t14, compile only, both JITs) checks
+  the exact `live` set of every site of small functions, one per edge kind: straight code, `tee`,
+  `br_if`/`br_on_null`/`br_on_non_null` (label and fall-through), `br_table`, nested loops (and the
+  pass count of `common/liveness.py`: 3 for that case), `return`/`unreachable`/`return_call` with
+  dead code after them, `try_table` clauses (each kind, a loop label, a `throw`), nested
+  `try_table`s, `if`/`else`, slots behind v128s, the sites inside `br_on_cast`,
+  `return_call_indirect` and `struct.new`, a parameter and an `exnref` local; the gate and
+  `WABOROS_JIT_NOLIVE`; and on the spec cache (skipped without it) `live` equal to `refs` above the
+  locals. The spec suite alone does not exercise the loop fixpoint: no spec function with a
+  reference local and a call site has a loop (every run takes one pass). **`WABOROS_JIT_NOLIVE=all`**
+  or `=<function indices>` (test only, read at compile time, shaped like `WABOROS_JIT_NOPIN`) gives
+  those functions `live = refs`, the maps of step 7.1, without changing a code byte: the switch to
+  bisect a liveness bug per function (D65).
   `tests/jit/test_exceptions.py` (S0013 6.1) checks which exception modules get the heap (a
   `throw` or a `catch` clause: 128 KiB committed, no object space; only `throw_ref` and `catch_all`:
   none) and a thrown tag type's exception record (kind 1, its offsets and size, its key apart from
