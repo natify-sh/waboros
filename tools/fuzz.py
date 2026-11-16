@@ -21,10 +21,14 @@ GC, threads or memory64; exceptions only in the cross-target mode) with a 20 s a
 smith modules get the process OOM-killed. Termination is ensured by smith (--ensure-termination).
 Needs wasm-tools (the dev group; WASM_TOOLS overrides the lookup).
 
-    python tools/fuzz.py --targets pyc,jit,wasmtime [--minutes M] [--seed S] [--gen] [--out D]
+    python tools/fuzz.py --targets pyc,jit,wasmtime [--minutes M] [--seed S] [--gen] [--refs]
+                         [--out D]
 
 is the cross-target mode (TESTING.md): pyc, jit-x86_64 (guard, explicit) and Wasmtime for M minutes;
-a divergence is saved as `div_<seed>.wasm` + `.txt` in DIR and the exit status stays 0."""
+a divergence is saved as `div_<seed>.wasm` + `.txt` in DIR and the exit status stays 0. `--refs`
+also turns on smith's reference types and GC (exceptions are always on here; S0013 step 7, D65); a
+nullable reference parameter is passed null, an export with a non-nullable one is not called; the
+process's data is limited to DATA_LIMIT (a GiB array then fails on one side: triage it as such)."""
 
 import argparse
 import ctypes
@@ -32,6 +36,7 @@ import gc
 import hashlib
 import os
 import random
+import resource
 import shutil
 import signal
 import subprocess
@@ -47,6 +52,7 @@ sys.path.insert(0, str(ROOT / "poc" / "pyc-bropt"))
 
 import bropt  # noqa: E402  # type: ignore[import-not-found]
 
+from waboros.frontend import types  # noqa: E402
 from waboros.frontend.binary import parse  # noqa: E402
 from waboros.frontend.validate import validate  # noqa: E402
 from waboros.runtime import link  # noqa: E402
@@ -58,6 +64,7 @@ from waboros.targets.pyc import (  # noqa: E402
 )
 
 ALARM = 20  # seconds per module
+DATA_LIMIT = 8 << 30  # --refs: private writable memory; an allocation fails, not the OOM killer
 _bin = Path(sys.executable).parent
 WT = os.environ.get("WASM_TOOLS") or shutil.which(
     "wasm-tools", path=f"{_bin}{os.pathsep}{os.environ.get('PATH', '')}"
@@ -486,7 +493,7 @@ class _Side:
         self.name, self.eng, self.inst, self.mems = name, eng, inst, mems
         self.mod = mod  # None for Wasmtime, which types its own values
 
-    def call(self, ty: tuple[list[int], list[int]], name: str, args: list[int]) -> tuple[Any, ...]:
+    def call(self, ty: tuple[list[int], list[int]], name: str, args: list[Any]) -> tuple[Any, ...]:
         from tests.spec.engine import EngineError, Trap
 
         try:
@@ -555,11 +562,14 @@ def _open(name: str, wasm: bytes, mod: Any) -> _Side | str:
     return _Side(name, eng, None if wt else mod, inst, [n for n, k, _ in mod["exports"] if k == 2])
 
 
-def _args(rnd: random.Random, ps: list[int]) -> list[int] | None:
-    out: list[int] = []
+def _args(rnd: random.Random, ps: list[int]) -> list[int | None] | None:
+    out: list[int | None] = []
     for t in ps:
         if t not in _BITS:
-            return None  # a reference type: not driven from here
+            if not types.isref(t) or not types.nn(t)[0]:
+                return None  # a non-nullable reference: not driven from here
+            out.append(None)
+            continue
         w = _BITS[t]
         out.append(rnd.choice(EDGE) & (1 << w) - 1 if t in (0x7F, 0x7E) and rnd.random() < 0.4
                    else rnd.getrandbits(w))  # fmt: skip
@@ -605,12 +615,14 @@ def compare(wasm: bytes, rnd: random.Random, gen: bool, skips: dict[str, int]) -
     return None
 
 
-def cross(minutes: float, seed0: int, gen: bool, out: Path) -> int:
+def cross(minutes: float, seed0: int, gen: bool, out: Path, refs: bool = False) -> int:
     if not WT:
         sys.exit("wasm-tools not found (uv sync, or set WASM_TOOLS)")
     sys.path.insert(0, str(ROOT))
     out.mkdir(parents=True, exist_ok=True)
     signal.signal(signal.SIGALRM, _alarm)
+    if refs:  # smith's GC arrays reach 2^32 elements: pyc's lists would take the machine's memory
+        resource.setrlimit(resource.RLIMIT_DATA, (DATA_LIMIT, resource.RLIM_INFINITY))
     end = time.monotonic() + minutes * 60
     n = ok = div = timeouts = 0
     skips: dict[str, int] = {}
@@ -628,6 +640,7 @@ def cross(minutes: float, seed0: int, gen: bool, out: Path) -> int:
                 "--max-memories": rnd.choice([1, 1, 3]), "--max-memory64-bytes": 1048576,
                 "--wide-arithmetic-enabled": rnd.random() < 0.2, "--canonicalize-nans": True,
                 "--exceptions-enabled": True,
+                "--reference-types-enabled": refs, "--gc-enabled": refs,
             }.items():  # fmt: skip
                 if k in fl:
                     fl[fl.index(k) + 1] = str(v).lower()
@@ -655,8 +668,9 @@ def cross(minutes: float, seed0: int, gen: bool, out: Path) -> int:
             (out / f"div_{s}.wasm").write_bytes(r.stdout)
             (out / f"div_{s}.txt").write_text(f"seed {s} mode {'gen' if gen else 'smith'}\n{d}\n")
             print("DIVERGENCE seed", s, d.splitlines()[0][:200], flush=True)
+        if refs or n % 200 == 0:
+            gc.collect()  # the JIT's address-space reservations; with --refs GC arrays of GiBs
         if n % 200 == 0:
-            gc.collect()  # the JIT's address-space reservations
             print(f"  ... {n} modules, {div} divergences", flush=True)
     print(
         f"cross-target {'gen' if gen else 'smith'} seeds {seed0}..{seed - 1}: generated {n}, "
@@ -673,11 +687,12 @@ if __name__ == "__main__":
         ap.add_argument("--seed", type=int, default=0)
         ap.add_argument("--gen", action="store_true")
         ap.add_argument("--fbits", action="store_true")
+        ap.add_argument("--refs", action="store_true")
         ap.add_argument("--out", type=Path, default=Path("fuzz-out"))
         a = ap.parse_args()
         if set(a.targets.split(",")) != {"pyc", "jit", "wasmtime"}:
             sys.exit("--targets: only pyc,jit,wasmtime is implemented")
-        sys.exit(cross(a.minutes, a.seed, a.gen, a.out))
+        sys.exit(cross(a.minutes, a.seed, a.gen, a.out, a.refs))
     args = [a for a in sys.argv[1:] if a not in ("--fbits", "--gen")]
     if len(args) != 2:
         sys.exit(__doc__)

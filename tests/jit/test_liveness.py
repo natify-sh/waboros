@@ -72,6 +72,12 @@ CASES: dict[str, tuple[str, str, list[tuple[int, int]]]] = {
     "t7 throw_ref": ("", "(param $a externref) (param $x exnref) block $h call $k"
                      " try_table (catch_all $h) local.get $x throw_ref end end local.get $a drop",
                      [(3, 3)]),
+    # 7.1+7.2 review: a loop in the body keeps H; a site before the try_table gets the handler's
+    # reads through the inner site (H joined into the set, not only recorded)
+    "t7 loop in body": ("", "(param $a externref) block $h try_table (catch_all $h) loop call $k"
+                        " end end return end local.get $a drop", [(1, 1)]),
+    "t7 before": ("", "(param $a externref) block $h call $k try_table (catch_all $h) call $k end"
+                  " return end local.get $a drop", [(1, 1), (1, 1)]),
     "t8 enclosing": ("(tag $e)", "(param $a externref) block $h try_table (catch_all $h)"
                      " block $h2 try_table (catch $e $h2) call $k end end end return end"
                      " local.get $a drop", [(1, 1)]),
@@ -79,6 +85,9 @@ CASES: dict[str, tuple[str, str, list[tuple[int, int]]]] = {
     "t9 if": ("", f"{E4} call $k local.get $c if local.get $a drop else local.get $b drop end"
               " call $k local.get $c if local.get $a drop ref.null extern local.set $x end"
               " local.get $x drop", [(11, 11), (11, 9)]),
+    # the then-arm continues after the end (where $r is read), not at the else-arm's start
+    "t9 then-arm": ("", "(param $c i32) (param $r externref) local.get $c if call $k else"
+                    " ref.null extern local.set $r end local.get $r drop", [(2, 2)]),
     # t10: slots $v 0-1, $a 2, $w 3-4, $b 5
     "t10 v128": ("", "(param $v v128) (param $a externref) (local $w v128) (local $b externref)"
                  " call $k local.get $a drop call $k local.get $b drop", [(36, 36), (36, 32)]),
@@ -116,6 +125,31 @@ def test_t5_pass_count() -> None:
     out, passes = liveness.live(mod["insns"][1], {0: 1, 1: 2}, mod["refmasks"][1])
     assert sorted(out.values()) == [1, 3]
     assert passes == 3 <= 2 + 2  # the inner head grows in the second pass; loop depth 2
+
+
+@pytest.mark.parametrize(
+    ("head", "params", "throw", "want"),
+    [
+        ("(tag $e)", "(param $a externref)", "throw $e", 1),
+        ("", "(param $a externref) (param $x exnref)", "local.get $x throw_ref", 3),
+    ],
+)
+def test_a_throw_that_is_not_a_site_gives_the_pads_set(
+    head: str, params: str, throw: str, want: int
+) -> None:
+    """LESSONS 125: the validator lists `throw` and `throw_ref` as safepoints, and every site
+    joins the pads' set, so the set a throw gives is not seen through the compiler (the mutant
+    `s = 0` there is equivalent). Without the throw in `sites`, the site before the `try_table`
+    keeps `$a`, which only the catch_all's label reads."""
+    body = f"{params} block $h call $k try_table (catch_all $h) {throw} end end local.get $a drop"
+    mod: Any = parse(wat2wasm(f"(module {head} {K} (func {body}))"))
+    validate(mod)
+    insns, rm = mod["insns"][1], mod["refmasks"][1]
+    pc = next(i for i, x in enumerate(insns) if x[0] in (0x08, 0x0A))
+    call = next(i for i, x in enumerate(insns) if x[0] == 0x10)
+    assert pc in rm  # the validator's rule this test steps around
+    out, _ = liveness.live(insns, {0: 1, 1: 2}, {p: m for p, m in rm.items() if p != pc})
+    assert out[call] == want
 
 
 @pytest.mark.parametrize("target", TARGETS)

@@ -1365,7 +1365,7 @@ fixed (inline sequences through `sljit_emit_op_custom`, or calls through context
 sljit micro-compiler emits AOT artifacts (SLJIT-BACKEND.md, check 3).
 
 ### D65. JIT liveness maps and the nulling walk
-Status: accepted (maintainer, 2026-11-16: S0013 step 7 plan, D1-D8; D1, D2, D7 built in step 7.1, D3-D6 and D8 in step 7.2) · Date: 2026-11-16 · Supersedes: S0013's "per function, the bitmap of its reference-typed local slots" (never built); narrows S0013 Q3 "Operands" (D3 below) · Evidence: S0013 Changes 7.1 and 7.2; `tests/jit/test_stackmaps.py`, `tests/jit/test_walk.py`, `tests/jit/test_liveness.py`; the whole spec suite with `WABOROS_JIT_WALK_CHECK=1` on both JITs, both bounds modes, and with the GC switches as well (7.2)
+Status: accepted (maintainer, 2026-11-16: S0013 step 7 plan, D1-D9; D1, D2, D7 built in step 7.1, D3-D6 and D8 in step 7.2, D9 in step 7.3) · Date: 2026-11-16 · Supersedes: S0013's "per function, the bitmap of its reference-typed local slots" (never built); narrows S0013 Q3 "Operands" (D3 below) · Evidence: S0013 Changes 7.1, 7.2 and 7.3 (the mutation table); `tests/jit/test_stackmaps.py`, `tests/jit/test_walk.py`, `tests/jit/test_liveness.py`, `tests/jit/test_gc_roots.py` (7.3); the whole spec suite with `WABOROS_JIT_WALK_CHECK=1` on both JITs, both bounds modes, and with the GC switches as well (7.2)
 
 S0013 Q3 has the walk null the reference slots a site does not mark live, so a dead slot never
 keeps an offset into the old space. The walk cannot find a site's function, so a per-function
@@ -1374,7 +1374,10 @@ bitmap of reference slots cannot tell it which unmarked slots to null:
   site (the full map of steps 3a-6), and `live ⊆ refs`. The 16-byte site record is unchanged;
   reference-free modules keep byte-identical tables (no map). A collection forwards `live` and
   writes 0 into `refs ∖ live` while gathering the roots (the world is stopped; only slots
-  `[0, nslots)` of a frame, never a callee's parameters, B1).
+  `[0, nslots)` of a frame, never a callee's parameters, B1). Before it forwards or nulls a
+  frame's slots the gatherer checks that `[base, base + 8·nslots)` lies inside the value stack and
+  raises otherwise, as check mode does (step 7.3, a defence against a forged table: a forged shift
+  alone is already refused by the walk's entry-base check).
 * **Version 1 amended without a bump** (plan D2 (a), as `STACKMAPS` itself, D56, S0013 Q5): no
   artifact file exists. Instantiation decodes the table once, with checks that raise
   `ValueError` (exact length, map index within the pool, no empty map, no bit past `nslots`,
@@ -1403,6 +1406,10 @@ bitmap of reference slots cannot tell it which unmarked slots to null:
   and where an allocation's cold site is queued.
 * **A bisect switch** (plan D8 (a)): `WABOROS_JIT_NOLIVE=all|<function indices>` gives those
   functions `live = refs` (the step-7.1 maps); no code byte changes.
+* **Fuzzing references** (plan D9 (a), widened by the maintainer): `tools/fuzz.py --refs` turns
+  on smith's reference types and GC in the cross-target mode (exceptions are on there already);
+  what the runner cannot drive (an export with a non-nullable reference parameter) is skipped and
+  said so in TESTING.md.
 
 Rejected: a second pool index per site (20-byte records, every module's table changes, CoreMark's
 included); a per-function table of reference slots with a function lookup per frame (a new

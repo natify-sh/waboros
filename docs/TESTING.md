@@ -122,6 +122,21 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   or `=<function indices>` (test only, read at compile time, shaped like `WABOROS_JIT_NOPIN`) gives
   those functions `live = refs`, the maps of step 7.1, without changing a code byte: the switch to
   bisect a liveness bug per function (D65).
+  The behaviour of the live sets (S0013 7.3, the plan's t16-t26) is in `tests/jit/test_gc_roots.py`,
+  under stress, poison and verify on the machine's JIT (both bounds modes on x86-64; QEMU for
+  aarch64): per edge kind (a loop's back edge, a `catch` and a `throw` to a handler, an enclosing
+  `try_table`'s handler, `br_if`, `br_table`, `if`/`else`, the then-arm continuing after the end, a
+  loop in a `try_table` body, a site before a `try_table`, slots behind v128s) a struct kept in one
+  local and read only on that path survives one collection between the write and the read; a
+  mutant that drops the edge nulls the slot and the read traps. t16 reads a frame's slots from a host
+  function through `walk.walk`: after a collection the dead local is 0 and the live one in the next
+  slot holds its moved struct; in check mode the dead `externref` slot is 0 at a host call. t24 and
+  t25 show the feature: a 16 MiB array and a host value held only by dead locals are not kept by
+  the next collection (with `WABOROS_JIT_NOLIVE=all` they are). t26 is the shape that "no nulling,
+  full maps at allocations" breaks (a dead slot left stale, marked again at the next allocation).
+  `tests/jit/test_walk.py` forges a map whose `nslots` reaches past the value stack: the collection's
+  gatherer raises before it writes (a forged shift alone is refused earlier, by the walk's check of
+  each segment's entry base). The mutation table is in S0013 Changes 7.3.
   `tests/jit/test_exceptions.py` (S0013 6.1) checks which exception modules get the heap (a
   `throw` or a `catch` clause: 128 KiB committed, no object space; only `throw_ref` and `catch_all`:
   none) and a thrown tag type's exception record (kind 1, its offsets and size, its key apart from
@@ -195,7 +210,7 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   `return_call`, `unreachable`. It draws `BRTREE` from {0, 1, 2, 4} per module and also compares
   `sink` and `dse` alone; the rules change 0.9 % of smith modules (8 of 938) and 40 % of `--gen` modules (4 045 of 10 000). `--fbits` runs it
   with `WABOROS_PYC_FBITS=1` (D46).
-* `tools/fuzz.py --targets pyc,jit,wasmtime [--minutes M] [--seed S] [--gen] [--out DIR]` compares
+* `tools/fuzz.py --targets pyc,jit,wasmtime [--minutes M] [--seed S] [--gen] [--refs] [--out DIR]` compares
   `pyc`, `jit-x86_64` in guard and in explicit mode (`WABOROS_JIT_BOUNDS` set per module, in process)
   and Wasmtime (the spec runner's engines, so the same config switches) for `M` minutes. Per export
   call (three random argument sets with edge values, or the 28 fixed pairs with `--gen`) it compares
@@ -211,7 +226,18 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   with the minutes) runs smith and `--gen` for 45 minutes each outside `ci` and `platforms`, never
   blocks, puts the counts and the descriptions in the job summary and keeps the artifact `fuzz-out`
   (the modules, the descriptions, the logs) for 14 days; a divergence is triaged later (above), not
-  fixed at once.
+  fixed at once. `--refs` (S0013 step 7, D65) also turns on smith's reference types and GC
+  (exceptions are always on in this mode), passes null for a nullable reference parameter (an
+  export with a non-nullable one is not called; a reference result compares as null or not) and
+  limits the process's data to 8 GiB (`DATA_LIMIT`): smith's constant expressions allocate arrays
+  of up to 2³² elements, which `pyc` holds as Python lists, and without the limit the OOM killer
+  ends the run (LESSONS 126). Under the limit a GiB allocation can fail on one side only, which the
+  triage must tell apart from a real divergence (rerun the module in a fresh process). With the GC
+  switches (`WABOROS_JIT_GC_STRESS/POISON/VERIFY/WALK_CHECK=1`) the run exercises the live sets of
+  smith's reference locals at every allocation and host call; a module with a large heap then
+  exceeds the 20 s alarm (VERIFY digests the reachable graph twice per collection), so rerun a
+  `TimeoutError` alone without a limit. The oracle's wrapper cannot return a non-null `exnref`
+  result (`LookupError`): such an export diverges on Wasmtime alone.
 * Triage of the first runs (2026-11-05, 43 divergent modules from seeds 319-4020, 50204-50544, 70475-71186,
   90086-93499 and 900223-908219; the reduced cases are in `tests/test_pyc_trap_order.py`): in all of them only `pyc` differed, in
   five causes, all fixed and covered by `tests/test_pyc_trap_order.py` with the reduced modules. Four

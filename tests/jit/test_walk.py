@@ -287,3 +287,38 @@ def test_a_corrupt_record_is_an_error_not_a_crash(bad: str) -> None:
     jit = make(f"""(module {H} (func (export "run") (param i32) (result i32)
       (call $h (local.get 0))))""", store, {"env": {"h": host}})  # fmt: skip
     assert jit("run", 1) == [0] and hits == [1]
+
+
+@pytest.mark.parametrize("what", ["shift", "nslots"])
+def test_a_frame_outside_the_value_stack_is_an_error_not_a_write(
+    what: str, checks: list[int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gatherer checks a frame's slots against the value stack before it forwards or nulls
+    any (as walk.check). A forged shift alone is refused earlier: the walk checks each segment's
+    outermost base against its entry's, and shifts are unsigned, so every base lies between the
+    entry's and the innermost one. A forged `nslots` with a dead bit 2 MiB up reaches the check."""
+    monkeypatch.setenv("WABOROS_JIT_WALK_CHECK", "0")  # only the collection walks
+    monkeypatch.setenv("WABOROS_JIT_GC_STRESS", "1")
+    text = """(module (type $p (struct (field i32)))
+      (func $g (drop (struct.new $p (i32.const 8)))) (func (export "f") (result i32)
+        (local $s (ref null $p)) (local.set $s (struct.new $p (i32.const 7))) (call $g)
+        (struct.get $p 0 (local.get $s))))"""
+    mod = parse(wat(text))
+    validate(mod)
+    t, far = base.TARGETS[JIT](), 1 << 18
+    c = t.compile(mod)
+    assert isinstance(c, Compiled) and c.stackmaps is not None
+
+    def forge(sh: int, ra: int, up: int, n: int, refs: int, live: int) -> gc.SiteMap:
+        if refs and what == "shift":
+            return sh + (sh > 0), ra, up, n, refs, live  # the call site of $g: f's base moves
+        if refs:
+            return sh, ra, up, far + 1, refs | 1 << far, live
+        return sh, ra, up, n, refs, live
+
+    s = [(r, *forge(*x)) for r, x in gc.decode(c.stackmaps).items()]
+    c = dataclasses.replace(c, stackmaps=gc.encode(s))
+    jit = Inst(mod, t.instantiate(c, [], StoreState()))
+    match = "not its entry" if what == "shift" else "outside the value stack"
+    with pytest.raises(RuntimeError, match=match):
+        jit("f")

@@ -979,7 +979,27 @@ What went wrong or surprised us while building the PoC, so it is not found again
     lowers it as a call), and every site joins the pads' sets. The pass now gives both the pads'
     set explicitly; while the validator lists them, a mutant that gives them the empty set
     passes every test (checked: a defence in the sense of 105; `t7`'s `throw_ref` case pins the
-    set). Rule: for each instruction a
-    backward analysis treats as a terminator, list where the generated code goes next (pads,
-    outer pads, cold paths), not only where the wasm text says the path ends. Found: S0013 step
+    set; step 7.3 added a test that calls the pass with the throw left out of the sites). Rule:
+    for each instruction a backward analysis treats as a terminator, list where the generated
+    code goes next (pads, outer pads, cold paths), not only where the wasm text says the path
+    ends. Found: S0013 step
     7.2, 2026-11-16.
+126. **A fuzzer with GC on can take the machine's memory through one constant expression.** The
+    first `tools/fuzz.py --refs` runs were killed by the OOM killer (14 GB resident) within
+    minutes, and the kill took a background process of another command with them. Smith's global
+    and table initialisers compute array lengths from random `i32` arithmetic, so `array.new` of
+    10⁹ elements is common; Wasmtime commits lazily and the JIT stops at its semispace limit with
+    "GC heap out of memory", but `pyc` holds a non-`i8` array as a Python list, 8 bytes per
+    element, up to the allocation limit of 2³² bytes of elements. Rule: a fuzz mode that enables
+    GC limits its own data (`RLIMIT_DATA`, so the allocation raises `MemoryError`), collects
+    garbage after every module, and its triage reruns a one-sided `MemoryError` in a fresh
+    process before calling it a divergence. Found: S0013 step 7.3, 2026-11-16.
+127. **A forged input aimed at one check can be refused by an earlier one.** Step 7.3 added a
+    value-stack range check to the collection's gatherer, to be tested "with a forged shift", as
+    `walk.check` has one. No forged shift reaches it: the walk compares each segment's outermost
+    frame base with the one its entry saved, and shifts are unsigned, so an unbalanced shift is
+    refused there ("not its entry's") and a balanced pair keeps every base between the entry's and
+    the innermost one. The test forges `nslots` instead (a dead bit past the stack top), and keeps
+    the shift case to show where it is caught. Rule: before writing a test for a defence, trace
+    the forged value through every earlier check, and test both the check and the input it is
+    really for (LESSONS 105). Found: S0013 step 7.3, 2026-11-16.

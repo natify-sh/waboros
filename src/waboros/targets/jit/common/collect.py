@@ -78,11 +78,13 @@ def _gather(inst: Any, st: Any, coll: Any) -> tuple[list[tuple[int, int]], list[
         runs.append((ctypes.addressof(a), len(items)))
 
     for frames, _ in walk.walk(inst.store, st, inst.tramp):
-        for owner, (_, _, _, _, refs, live), _, base in frames:
+        for owner, (_, _, _, n, refs, live), _, base in frames:
             assert owner is not coll, "the walk met a collector frame"
+            if refs and not st.vstack.addr <= base <= st.vtop - 8 * n:  # as walk.check
+                raise RuntimeError(f"JIT walk: frame base {base:#x} outside the value stack")
             runs += _ones(base, live)
-            for a, n in _ones(base, refs & ~live):  # dead slots: null, not roots (D65)
-                ctypes.memset(a, 0, 8 * n)
+            for a, k in _ones(base, refs & ~live):  # dead slots: null, not roots (D65)
+                ctypes.memset(a, 0, 8 * k)
     globals_: set[int] = set()
     tables: set[int] = set()
     for i in inst.store.instances:
