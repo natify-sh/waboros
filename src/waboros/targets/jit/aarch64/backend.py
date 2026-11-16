@@ -710,6 +710,10 @@ class Backend:
         """dst = the address of context word `word` (a function record: `ref.func`)."""
         self._add_k(dst.id, CTX, 8 * word)
 
+    def func_type(self, dst: Reg, rec: Operand) -> None:
+        """dst = the canonical type id of the function record `rec` (its word 1; S0013 5.6)."""
+        self.a.ld(dst.id, self._r(rec, dst.id, True, zr=False), 8)  # never xzr: base 31 is sp
+
     # ---------------------------------------------------------------- floats
     # Values stay bit patterns in x registers and slots; v0/v1 are scratch inside one method, so
     # no v register is live across a call (v8-v15 never touched: AAPCS64 callee-saved). FP and

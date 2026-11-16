@@ -2,7 +2,7 @@
 title: Testing
 kind: reference
 status: current
-updated: 2026-11-15
+updated: 2026-11-16
 ---
 
 # Testing
@@ -95,6 +95,10 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   `tests/jit/test_gc_moving.py` runs them on, case by case, against `pyc` as the oracle;
   `tests/jit/test_gc_roots.py` holds one reference in one place (imported global, shared table,
   another instance's frame, a thunk or restore frame, a failed instantiation) under them.
+  `tests/jit/test_gc_subtype.py` (S0013 5.6) runs function-subtype sites (`call_indirect`,
+  `return_call_indirect`, `ref.test`, `ref.cast`, `br_on_cast(_fail)`, final and non-final targets)
+  on the functions of another module against `pyc`, shows that equality and final targets make no
+  call, and checks that no compiled module uses GC group word 7.
   `tests/jit/test_gc_memory.py` (native only, the GC switches cleared, about 5 s on CPython 3.11 and
   3.13; it runs in every `pytest` of the CI matrix and in the native arm64 `tests/jit` job, no
   marker) is the memory test: after a warm-up the heap's capacity and committed pages do not move under 576 MB of dropped structs and

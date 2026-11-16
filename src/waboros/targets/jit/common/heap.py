@@ -27,7 +27,7 @@ from waboros.frontend.types import key as types_key
 from waboros.frontend.validate import _root  # pyright: ignore[reportPrivateUsage, reportUnknownVariableType]
 from waboros.targets.base import Trap, TrapCode
 from waboros.targets.jit.common import collect, gc
-from waboros.targets.jit.common.instance import Memory
+from waboros.targets.jit.common.instance import Memory, type_id
 
 PAGE = 1 << 16
 S0 = 1 << 20  # the first semispace size; growth at least doubles it (S0013 Q2, D61)
@@ -71,8 +71,9 @@ class GcHeap:
                 ctx[word + 1] = end
 
     def rtt(self, mod: Any, ti: int) -> int:
-        """The offset of the type-info record of struct or array type `ti` of `mod`, written on
-        first use, its supertype first: equal for equivalent types of every module of the store."""
+        """The offset of the type-info record of type `ti` of `mod`, written on first use, its
+        supertype first: equal for equivalent types of every module of the store. A function
+        type's record (kind 3, no size, nothing traced) is entered in the tid map (S0013 5.6)."""
         k = types_key(mod, ti)
         off = self.records.get(k)
         if off is not None:
@@ -83,21 +84,29 @@ class GcHeap:
             offs, size = gc.struct_layout(mod, comp[1])
             refs = [o for o, (st, _) in zip(offs, comp[1], strict=True) if _root(mod, st)]
             kind = gc.KIND_STRUCT
-        else:
-            assert comp[0] == "array", "no record for a function type before step 5"
+        elif comp[0] == "array":
             size, refs, kind = gc.storage_size(mod, comp[1][0]), [], gc.KIND_ARRAY
+        else:
+            size, refs, kind = 0, [], gc.KIND_FUNC
+        tid = type_id(mod, ti) if kind == gc.KIND_FUNC else 0
+        if tid >= gc.TIDS:
+            raise MemoryError("GC type area exhausted")
         display = (*(self.display[sup] if sup is not None else ()), self.types)
-        nrefs = len(refs) if kind == gc.KIND_STRUCT else int(_root(mod, comp[1][0]))
+        nrefs = int(_root(mod, comp[1][0])) if kind == gc.KIND_ARRAY else len(refs)
         words = [kind | final << 8, len(display) - 1, size, nrefs, *display, *refs]
         off, n = self.types, -(-4 * len(words) // 8) * 8
-        if off + n > gc.OBJ:
+        if off + n > gc.TID_MAP:
             raise MemoryError("GC type area exhausted")
-        self._commit(off + n)
+        self._commit(gc.OBJ if tid else off + n)  # the whole map: is_subtype reads any entry
         buf = (ctypes.c_char * n).from_address(self.base + off)
         struct.pack_into(f"<{len(words)}I", buf, 0, *words)
         self.types += n
-        self.records[k], self.display[off], self.kind[off] = off, display, kind
-        self.offsets.add(off)
+        self.records[k], self.display[off] = off, display
+        if tid:
+            self.u32(gc.TID_MAP + 4 * tid, off)
+        else:  # an object's record (the walk check and the verifier)
+            self.kind[off] = kind
+            self.offsets.add(off)
         return off
 
     def alloc(self, size: int, inst: Any = None) -> int:

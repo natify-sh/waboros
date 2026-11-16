@@ -193,25 +193,25 @@ def test_a_struct_field_operand_is_marked_at_the_allocation_service(target: str)
 
 @pytest.mark.parametrize("target", TARGETS)
 def test_a_non_final_call_indirect_has_two_sites(target: str) -> None:
-    # $a 0 (L = 1); the operand $a below: slot 1; the argument slot 2, the index 3: FUNC_SUBTYPE
-    # (shift 0, its two slots from 3) then the call through the record (shift 2, the callee's frame)
+    # $a 0 (L = 1); the operand $a below: slot 1; the argument slot 2, the index 3, then the record:
+    # is_subtype (shift 4, its frame above the record) then the call through the record (shift 2)
     _, s = sites(
         target,
         """(module (type $f (sub (func (param i32)))) (table 1 funcref)
       (func (param $a anyref)
         local.get $a i32.const 5 i32.const 0 call_indirect (type $f) drop))""",
     )
-    assert [(x[0], x[3], x[4]) for x in s] == [(0, 5, 0b11), (2, 2, 0b11)]
+    assert [(x[0], x[3], x[4]) for x in s] == [(4, 4, 0b11), (2, 2, 0b11)]
 
 
 @pytest.mark.parametrize("target", TARGETS)
 def test_a_function_cast_at_the_top_of_the_frame_keeps_its_slots_inside(target: str) -> None:
-    # $r 0, $x 1 (L = 2); ref.test of $r at height 1: FUNC_SUBTYPE's two slots 3-4 are in the frame
-    # (the core asserts every call's slots are below L + maxh; the review found slot 4 past it)
+    # $r 0, $x 1 (L = 2); ref.test of $r at height 1: is_subtype's frame, slots 3-4, is in this
+    # frame (the core asserts every call's slots are below L + maxh; a review found one past it)
     _, s = sites(
         target,
         """(module (type $F (sub (func)))
       (func (param $r funcref) (param $x anyref) (result i32)
         (ref.test (ref $F) (local.get $r))))""",
     )
-    assert [(x[0], x[3], x[4]) for x in s] == [(0, 5, 0b10)]
+    assert [(x[0], x[3], x[4]) for x in s] == [(3, 3, 0b10)]

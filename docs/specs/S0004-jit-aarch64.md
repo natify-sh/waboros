@@ -6,7 +6,7 @@ status: implemented
 superseded_by:
 related: [D10, D14, D23, D24, D25, D26, D29, D30, D31, D32, D34, D35, D36, D37, R2, R3, R6, S0002, S0003]
 owner: maintainer
-updated: 2026-11-11
+updated: 2026-11-16
 ---
 
 # S0004 jit-aarch64, the second architecture (phase 4, integer core)
@@ -488,3 +488,7 @@ Resolved by the maintainer on 2026-11-01 (see Changes); none open.
   the first run under QEMU found no backend gap: no new method, no ABI or artifact change, module
   code of every module without GC unchanged (D35 lists). Spec under QEMU, guard and explicit with
   the walk check, and with poison: 64 229 pass, no expected failure, as `pyc`.
+* 2026-11-16 (S0013 step 5.6, D39 amendment): `func_type(dst, rec)` is `ldr dst, [rec, #8]` (a slot
+  or an immediate is loaded into `dst` first; never `xzr` as the base, LESSONS 118), tested against
+  llvm-mc. Only modules with a function-subtype site change code (the 12 `gc/type-subtyping`
+  modules 29-40, guard and explicit).

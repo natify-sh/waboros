@@ -2,7 +2,7 @@
 title: Runtime modules in wasm (D54) - which parts of the runtime should be one, and in what order
 kind: reference
 status: draft
-updated: 2026-11-15
+updated: 2026-11-16
 ---
 
 # Runtime modules in wasm: candidates and order
@@ -27,8 +27,8 @@ A part of the runtime is a good wasm module when it is:
 
 ### With the GC (S0013 step 5), in the collector's module
 
-1. **The subtype check of non-final types** (S0013 Q11): **in the module.** It walks the supertype
-   chain of the type-info records in the hidden memory, the records the collector reads. JIT code
+1. **The subtype check of non-final types** (S0013 Q11): **in the module.** It tests the display of
+   the type-info records in the hidden memory, the records the collector reads (built in 5.6). JIT code
    calls the module's function directly, as a call between instances, without entering Python; the
    site stays a safepoint.
 2. **Allocation for constant expressions** (`struct.new`, `array.new`, `array.new_fixed` in global
@@ -44,11 +44,18 @@ A part of the runtime is a good wasm module when it is:
 `collector.wasm` beside it, package data loaded as `importlib.resources.files("waboros.runtime") /
 "gc/collector.wasm"` (`runtime/gc/` has no `__init__.py`, so no package named `gc` exists). The D54
 tie is `tests/test_collector_module.py`: wasmtime-py's `wat2wasm` of the source equals the committed
-bytes; our decoder finds the one import `gc.heap`, the exports `begin`, `roots`, `finish`, no data,
+bytes; our decoder finds the one import `gc.heap`, the exports `begin`, `roots`, `finish` (and
+`is_subtype` since 5.6), no data,
 no `memory.grow` and only MVP opcodes plus `memory.copy`; and the module collects heap images to the
 same bytes on Wasmtime and on our JITs. Its exports and the header-page regions it uses (`ROOTS`,
-the handle report) are in S0013 Changes (5.2) and ARTIFACT.md part 3. `is_subtype` joins in step 5.6;
-the runtime starts using the module in step 5.3.
+the handle report) are in S0013 Changes (5.2) and ARTIFACT.md part 3; the runtime uses the module
+since step 5.3. **`is_subtype(q, t: i64) -> i32`** (step 5.6) answers whether function type id `q`
+is `t` or a declared subtype of it: both records through the tid map at `[60 MiB, 64 MiB)` of the
+heap (0 for an id at or past 2²⁰ or without an entry), each checked (in the record area, 8-aligned,
+kind 3, depth at most 63, its own display entry; else a trap), then the display test. JIT code
+calls it directly through the `IS_SUBTYPE` function record after its own equality test, for a
+non-final target only (D61, ARTIFACT.md part 3); the test checks the export list and both engines'
+answers.
 
 ### Built already, moved for the C loader (with ROADMAP "Next" item 6, not before)
 

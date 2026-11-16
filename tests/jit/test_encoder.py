@@ -408,3 +408,22 @@ def test_isa_levels(tmp_path: Path) -> None:
         assert p.returncode == 0, p.stdout + p.stderr
     for level in ("v1", "v2"):
         assert run_isa_check(tmp_path, vex, "--level", level).returncode == 1
+
+
+def test_func_type_matches_llvm_mc() -> None:
+    """The D39 method `func_type` (S0013 5.6): word 1 of the record in a register or a slot."""
+    from waboros.targets.jit.common.backend import Imm, Reg, Slot
+    from waboros.targets.jit.x86_64.backend import Backend
+
+    need(LLVM_MC, "llvm-mc")
+    cases = [
+        (Reg(RAX), "mov rax, qword ptr [rax + 8]"),
+        (Reg(RBP), "mov rax, qword ptr [rbp + 8]"),
+        (Reg(11), "mov rax, qword ptr [r11 + 8]"),
+        (Slot(3), "mov rax, qword ptr [r12 + 24]\nmov rax, qword ptr [rax + 8]"),
+        (Imm(0), "mov eax, 0\nmov rax, qword ptr [rax + 8]"),  # no flags written
+    ]
+    for rec, text in cases:
+        b = Backend()
+        b.func_type(Reg(RAX), rec)
+        assert b.a.finish() == b"".join(llvm_mc(text.split("\n"))), text

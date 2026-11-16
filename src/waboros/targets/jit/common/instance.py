@@ -55,7 +55,7 @@ from waboros.targets.jit.common.context import (
     EXCEPTION,
     EXIT_RECORD,
     EXN_REFILL,
-    FUNC_SUBTYPE,
+    GC_RESERVED,
     HOST_BRIDGE,
     HOST_ERROR,
     INTERRUPT,
@@ -116,8 +116,8 @@ _TYPE_SUPER: dict[int, int] = {}
 
 
 def func_subtype(q: int, t: int) -> bool:
-    """Function type id `q` is `t` or a declared subtype of it (S0013 Q11: the FUNC_SUBTYPE service
-    until step 5; a subtype is declared in a GC module, whose records registered it)."""
+    """Function type id `q` is `t` or a declared subtype of it: the host boundary's type check
+    (JIT code calls the collector module's `is_subtype`, S0013 5.6)."""
     while q:
         if q == t:
             return True
@@ -764,7 +764,7 @@ class Instance:
         missing = HOST(self._host(_no_service, 0, []))
         self.callbacks.append(missing)
         words = [self.layout.libcall(j) for j in range(LIBCALLS)]
-        words += [self.layout.service(j) for j in range(self.layout.gcsvc)]
+        words += [self.layout.service(j) for j in range(self.layout.gcsvc) if j != GC_RESERVED]
         for w in words:
             if not self.ctx[w]:
                 self.ctx[w] = ctypes.cast(missing, ctypes.c_void_p).value or 0
@@ -790,6 +790,9 @@ class Instance:
                     for inst in store.instances:
                         if isinstance(inst, Instance):
                             inst.ctx[NSTACK_LIMIT] = nlimit
+                # is_subtype runs on the collector's own context, and a collection lowers its limit
+                if st.heap is not None and st.heap.collector:
+                    st.heap.collector[0].ctx[NSTACK_LIMIT] = nlimit
             frame, n = st.vsp, max(len(args), nres)
             if frame + 8 * n > st.vtop:
                 raise Trap(TrapCode.STACK_OVERFLOW, "call stack exhausted")
@@ -1055,6 +1058,16 @@ class JitInstance(Instance):
             st.guard = True
         for k, ti in enumerate(c.rtts):  # type-info records before any code runs (S0013 3b)
             ctx[lay.rtt(k)] = st.heap.rtt(mod, ti)
+        if lay.heap:  # function types a subtype test may meet, with the tid map (S0013 5.6)
+            for ti, (comp, sups, final, *_) in enumerate(mod["tdefs"]):
+                if comp[0] == "func" and (sups or not final):
+                    st.heap.rtt(mod, ti)
+        if lay.gcsvc and gc.subtype_sites(mod):  # IS_SUBTYPE: the collector's is_subtype
+            from waboros.targets.jit.common import collect  # (collect imports this module)
+
+            coll, idx = collect._collector(self, st.heap)  # pyright: ignore[reportPrivateUsage]
+            code, _, cctx = JitFunc(coll, idx["is_subtype"]).record()
+            ctx[lay.subtype() : lay.subtype() + RECORD] = [code, 0, cctx]
         base = ctypes.addressof(ctx)
         self.records = {f: base + 8 * lay.record(r) for r, f in enumerate(c.records)}
         for f, addr in self.records.items():
@@ -1106,7 +1119,7 @@ class JitInstance(Instance):
             cb = HOST(self._host(fn, nargs, [M64] * nres))  # table.grow: masked by the table
             self.callbacks.append(cb)
             ctx[lay.libcall(j)] = ctypes.cast(cb, ctypes.c_void_p).value or 0
-        gcs = [(ALLOC, self._alloc, 1, 0), (FUNC_SUBTYPE, self._func_subtype, 2, 1)]
+        gcs = [(ALLOC, self._alloc, 1, 0)]
         gcs += [(ARRAY_NEW, self._array_new, 4, 1), (ARRAY_NEW_DATA, self._array_data, 4, 1)]
         gcs += [(ARRAY_NEW_ELEM, self._array_elem, 4, 1), (ARRAY_FILL, self._array_fill, 6, 0)]
         gcs += [(ARRAY_INIT_DATA, self._init_data, 6, 0), (ARRAY_INIT_ELEM, self._init_elem, 6, 0)]
@@ -1245,10 +1258,6 @@ class JitInstance(Instance):
         for k, v in enumerate(items[s : s + n]):
             heap.put(r + gc.ARRAY_DATA + (d + k) * es, es, v)
         return []
-
-    def _func_subtype(self, a: Sequence[Raw]) -> list[Raw]:
-        """FUNC_SUBTYPE (until step 5): 1 if the record at a[1] has type id a[0] or a subtype."""
-        return [int(func_subtype(ctypes.c_uint64.from_address(a[1] + 8).value, a[0]))]
 
     # runtime services (libcalls): arguments as the compiler put them in the slots
     def _table_grow(self, a: Sequence[Raw]) -> list[Raw]:

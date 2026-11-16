@@ -2,7 +2,7 @@
 title: Lessons
 kind: log
 status: current
-updated: 2026-11-15
+updated: 2026-11-16
 ---
 
 # Lessons
@@ -899,3 +899,22 @@ What went wrong or surprised us while building the PoC, so it is not found again
     and reads it back with no allocation between does not move it. Rule: for each mutant ask what a
     test would count or detach to see it, and check that the test allocates between the write and the
     read; if nothing can see it, argue it equivalent in writing. Found: S0013 step 5.5, 2026-11-16.
+117. **An instance kept out of `store.instances` misses every per-store update once code calls it.**
+    The collector instance is removed from `store.instances` so that no interrupt, walk or gathering
+    reaches it (5.3). Step 5.6 made JIT code call its `is_subtype` directly, through a function
+    record, and its prologue checks its own context's native stack limit, which the store updates
+    only in the contexts of `store.instances` (at each outermost entry, from that entry's stack
+    pointer). The collector kept the limit of its creation, so a later entry from deeper in the
+    Python stack would trap `STACK_OVERFLOW` in `is_subtype` (a test sets a stale limit: the call
+    traps without the fix). Rule: list every per-store word a context carries (stack limits,
+    interrupt, fuel) and, for an instance outside `store.instances` that code can reach, update it
+    where the store updates the others, or clear it before each use (LESSONS 115). The update must
+    not depend on the store's value changing: a collection writes its own limit there, and the
+    first fix (only when the store's limit changed) left that value in place (review of 5.6).
+    Found: S0013 step 5.6, 2026-11-16.
+118. **On aarch64 an immediate 0 must not become a load's base register.** The backend's operand
+    helper returns `xzr` for an immediate 0, which is right for a source; in a load's base field
+    register 31 is `sp`, so `ldr x0, [xzr, #8]` would encode `ldr x0, [sp, #8]` and read the native
+    stack instead of trapping. `func_type` (5.6) asks for a real register (`zr=False`); its encoder
+    test has the immediate case. Rule: when a backend method takes an operand as an address, check
+    what the helper gives for `Imm(0)`. Found: S0013 step 5.6, 2026-11-16.

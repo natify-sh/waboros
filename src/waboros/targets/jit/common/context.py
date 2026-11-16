@@ -31,9 +31,11 @@ MEMORY_GROW, TABLE_GROW, TABLE_INIT, ELEM_DROP, MEMORY_INIT, DATA_DROP = range(6
 LIBCALLS = 6
 RECORD = 3  # words of a function record: code address, canonical type id, context address
 # The GC group (S0013 3b), after the tag words of a module that uses GC: these services, in this
-# order, then one RTT word per type of `Compiled.rtts` (its type-info record's offset in the heap)
+# order (word 7 reserved, zero: FUNC_SUBTYPE until S0013 5.6), then one RTT word per type of
+# `Compiled.rtts` (its type-info record's offset in the heap), then the IS_SUBTYPE function record
+# `{code, 0, context}` of the collector module's `is_subtype` (S0013 5.6)
 ALLOC, ARRAY_NEW, ARRAY_NEW_DATA, ARRAY_NEW_ELEM, ARRAY_FILL = range(5)
-ARRAY_INIT_DATA, ARRAY_INIT_ELEM, FUNC_SUBTYPE = 5, 6, 7
+ARRAY_INIT_DATA, ARRAY_INIT_ELEM, GC_RESERVED = 5, 6, 7
 GC_SERVICES = 8
 
 
@@ -91,7 +93,11 @@ class Layout:
     def rtt(self, k: int) -> int:
         return self.service(self.gcsvc) + k
 
+    def subtype(self) -> int:
+        """The IS_SUBTYPE record (RECORD words), when `gcsvc`."""
+        return self.rtt(self.rtts)
+
     @property
     def words(self) -> int:
         # at least memory 0's two words: the entry loads them whether or not the module has a memory
-        return max(self.rtt(self.rtts), FIRST_VAR + 2)
+        return max(self.subtype() + (RECORD if self.gcsvc else 0), FIRST_VAR + 2)

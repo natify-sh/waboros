@@ -2,7 +2,7 @@
 title: JIT artifact, ISA levels and the context ABI
 kind: reference
 status: current
-updated: 2026-11-15
+updated: 2026-11-16
 ---
 
 # JIT artifact, ISA levels and the context ABI
@@ -180,8 +180,9 @@ the phase-3 meaning of each word and the register roles are in [S0003](specs/S00
 | … | per signature *k*: 1 word | host → code | the canonical type id of a type the module's `call_indirect`s name (equal for equivalent types of every module of the process, never 0) |
 | … | per function record *r*: 3 words | host → code | `{code address, canonical type id, context address}` of every function import and of every function the module can take a reference to (`ref.func`, segments): a defined one; an import from another instance of the same store (its code and context: a direct call); a host function (the module's thunk, which calls the import's word through the bridge). `call_indirect` checks bounds, null and the type id, then calls `code` with r15 = `context` (and that context's memory words); `call` and `return_call` of an import go through the import's record the same way (D32) |
 | … | per tag *t*: 1 word | host → code | the tag's identity: non-zero, unique in the process, imported tags first; an imported tag has its exporter's value, so a `catch` compares identities, never indices (S0012) |
-| … | the GC group: 8 service words | host → code | a module that uses GC only (S0013 step 3b), runtime services with the libcall signature, in this order (operands, then immediates, in slots): 0 `ALLOC` (`[bytes]`: room past the cursor; the code bumps it when it retries), 1 `ARRAY_NEW` (`[value low, high, n, type]` → object), 2 `ARRAY_NEW_DATA` and 3 `ARRAY_NEW_ELEM` (`[offset, n, type, segment]` → object), 4 `ARRAY_FILL` (`[array, i, value low, high, n, type]`), 5 `ARRAY_INIT_DATA` and 6 `ARRAY_INIT_ELEM` (`[array, d, s, n, type, segment]`), 7 `FUNC_SUBTYPE` (`[expected type id, function record]` → 1 or 0; until S0013 step 5). An element value is always two words (a scalar's second is 0) |
+| … | the GC group: 8 service words | host → code | a module that uses GC only (S0013 step 3b), runtime services with the libcall signature, in this order (operands, then immediates, in slots): 0 `ALLOC` (`[bytes]`: room past the cursor; the code bumps it when it retries), 1 `ARRAY_NEW` (`[value low, high, n, type]` → object), 2 `ARRAY_NEW_DATA` and 3 `ARRAY_NEW_ELEM` (`[offset, n, type, segment]` → object), 4 `ARRAY_FILL` (`[array, i, value low, high, n, type]`), 5 `ARRAY_INIT_DATA` and 6 `ARRAY_INIT_ELEM` (`[array, d, s, n, type, segment]`), 7 reserved, zero (`FUNC_SUBTYPE` until S0013 step 5.6; no code uses it). An element value is always two words (a scalar's second is 0) |
 | … | per RTT *k*: 1 word | host → code | a module that uses GC only: the offset in the heap of the type-info record of each struct or array type the code allocates inline or casts to (equal for equivalent types of every module of the store) |
+| … | `IS_SUBTYPE`: 3 words | host → code | a module that uses GC only (S0013 step 5.6, an amendment of v1 without a bump, Q5: appended, no word moves): a function record `{code, 0, context}` of the collector module's `is_subtype(q, t: i64) -> i32` in the store's collector instance; written when the module's code has a function-subtype site (below), else zero |
 
 Offsets of the variable part follow from the counts in the artifact, in exactly this order.
 
@@ -193,7 +194,11 @@ at 16 the handle-report overflow flag (u32), 20-2047 reserved, [2 KiB, 4 KiB) th
 sets the flag instead) and [4 KiB, 64 KiB) `ROOTS`, the buffer of 7 680 u64 root words the module
 forwards in place (the module traps on a malformed heap, but without a map of object starts it
 cannot tell an aligned interior offset from an object start: S0013 Changes, 5.2); type-info
-records in [64 KiB, 64 MiB); objects from 64 MiB in two adjacent semispaces `[64 MiB, 64 MiB +
+records in [64 KiB, 60 MiB); the **tid map** in [60 MiB, 64 MiB) (S0013 step 5.6): the u32 offset
+of the record of process-wide function type id *t* (ids count every function type the JIT sees in
+the process) at `60 MiB + 4t` (0: none), for *t* < 2²⁰,
+committed whole with the first function-type record (a type whose id would pass the cap fails the
+instantiation with "GC type area exhausted"); objects from 64 MiB in two adjacent semispaces `[64 MiB, 64 MiB +
 C/2)` and `[64 MiB + C/2, 64 MiB + C)`, both committed (`size_bytes` is `64 MiB + C`), whose
 boundary moves when the heap grows, with `64 MiB + C <= 2³² − 128 KiB` (D61). Code allocates by
 `cursor + size` against the limit (in 64 bits) and calls `ALLOC` when it does not fit; the cursor
@@ -206,11 +211,20 @@ bytes), or an object's offset (a multiple of 8). An `externref` element or value
 fields from 8 in declaration order at their natural alignment (`i8` 1, `i16` 2, `i32`/`f32` 4,
 `i64`/`f64` 8, `v128` 16 (unaligned access), an any- or extern-hierarchy reference 4, `funcref` and
 `exnref` 8), its size a multiple of 8 and at least 8; an array's u32 length at 8 and its elements
-from 16. **Type-info records** (u32 words): `kind | final << 8` (1 struct, 2 array), the depth *d*,
-the struct's size or the array's element size, the number of traced reference fields (an array:
-1 if its elements are references of the any or extern hierarchy), the display (*d* + 1 record
-offsets, the last its own), then the traced fields' offsets. A cast to a final type compares the
-object's record with the RTT word; to a non-final one, the display entry at the target's depth.
+from 16. **Type-info records** (u32 words): `kind | final << 8` (1 struct, 2 array, 3 function),
+the depth *d*, the struct's size or the array's element size (0 for a function type), the number
+of traced reference fields (an array: 1 if its elements are references of the any or extern
+hierarchy; 0 for a function type), the display (*d* + 1 record offsets, the last its own), then
+the traced fields' offsets. A cast to a final type compares the object's record with the RTT word;
+to a non-final one, the display entry at the target's depth. A **function-type record** is written
+at instantiation for every function type of a module that uses GC that has a supertype or is not
+final, its supertypes first, and entered in the tid map; no object has one. **A function-subtype
+site** (`call_indirect`, `return_call_indirect`, `ref.test`, `ref.cast`, `br_on_cast(_fail)` to a
+concrete function type): the function record's type id (word 1) against the signature word; equal
+is a match; else a final target fails, and a non-final one calls `IS_SUBTYPE` with `q` (the
+record's id) and `t` (the signature word) as the callee's frame above every slot the site reads
+after it (B1): 1 is a match. `is_subtype` answers 0 for an id at or past the cap or without a map
+entry (equality was tested already) and traps on a malformed record.
 
 **Host functions** (imports and libcalls) share one C signature in the host's calling convention:
 `int32_t f(uint64_t *ctx, uint64_t *slots)` — the arguments in `slots[0..n)`, one 64-bit slot per

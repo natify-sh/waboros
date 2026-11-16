@@ -2,7 +2,7 @@
 title: Decisions
 kind: log
 status: current
-updated: 2026-11-15
+updated: 2026-11-16
 ---
 
 # Decisions
@@ -558,7 +558,7 @@ the opcode sets out of `common/compiler.py`. Measured for that decision (S0004 4
 abi ~930 code lines on aarch64 (integer core) vs ~1490 on x86-64 (full); compile 0.19–0.22 vs
 0.14–0.18 ms per module.
 
-Amended four times: S0005 (D41) added the `simd` method and the meaning of a v128 operand, in both backends, approved by the maintainer; then S0005 (D39 amendment item 5, Changes of 2026-11-02) added `move_v128`, which moves a v128 slot pair or writes a 128-bit constant as one 16-byte store (the store-forwarding fix, LESSONS 44), in both backends, approved by the maintainer. S0007 (amendment A, step 3) added the operand kind `AddK` (a pinned i32 plus a constant mod 2³²), accepted only by `move` and as the `load`/`store` address, in both backends, approved by the maintainer with x86-64 byte identity waived (amendment F). S0009 (amendment B, step 2a, 2026-11-04; maintainer, Q3 (b)) gave every method that addresses a memory or a table a **required keyword-only** `a64` (the i64 address type; a `(dst, src)` pair for `memory_copy`/`table_copy`), and `load`, `store` and `simd` a required keyword-only `lo` (an i64 memory's declared minimum in bytes, a lower bound of its size at run time; 0 for an i32 memory or a non-memory operator), neither with a default, so a forgotten argument is a `TypeError`, never i32 checks for an i64 memory. With `a64` the address or index operand is a full 64-bit value (a copy's `n` only when both sides are i64) and no `AddK` is passed; with `a64` false the method emits exactly the earlier code. In both backends; the code of every module without an i64 memory is unchanged on both JITs, guard and explicit (D35 lists; CoreMark included). The table methods assert `not a64` until S0009 step 3. S0013 step 3a (2026-11-11, maintainer's Q9 decision of 2026-11-06): every method that emits a call (`call_direct`, `call_record`, `call_indirect`, `call_ref`, `call_host`, `host_thunk`, and `throw` through its refill call) appends a site record `(ret, ret_at, up)` to `Backend.sites`, in both backends; no operand or instruction changes, code byte-identical on both JITs in both bounds modes (D56).
+Amended six times: S0005 (D41) added the `simd` method and the meaning of a v128 operand, in both backends, approved by the maintainer; then S0005 (D39 amendment item 5, Changes of 2026-11-02) added `move_v128`, which moves a v128 slot pair or writes a 128-bit constant as one 16-byte store (the store-forwarding fix, LESSONS 44), in both backends, approved by the maintainer. S0007 (amendment A, step 3) added the operand kind `AddK` (a pinned i32 plus a constant mod 2³²), accepted only by `move` and as the `load`/`store` address, in both backends, approved by the maintainer with x86-64 byte identity waived (amendment F). S0009 (amendment B, step 2a, 2026-11-04; maintainer, Q3 (b)) gave every method that addresses a memory or a table a **required keyword-only** `a64` (the i64 address type; a `(dst, src)` pair for `memory_copy`/`table_copy`), and `load`, `store` and `simd` a required keyword-only `lo` (an i64 memory's declared minimum in bytes, a lower bound of its size at run time; 0 for an i32 memory or a non-memory operator), neither with a default, so a forgotten argument is a `TypeError`, never i32 checks for an i64 memory. With `a64` the address or index operand is a full 64-bit value (a copy's `n` only when both sides are i64) and no `AddK` is passed; with `a64` false the method emits exactly the earlier code. In both backends; the code of every module without an i64 memory is unchanged on both JITs, guard and explicit (D35 lists; CoreMark included). The table methods assert `not a64` until S0009 step 3. S0013 step 3a (2026-11-11, maintainer's Q9 decision of 2026-11-06): every method that emits a call (`call_direct`, `call_record`, `call_indirect`, `call_ref`, `call_host`, `host_thunk`, and `throw` through its refill call) appends a site record `(ret, ret_at, up)` to `Backend.sites`, in both backends; no operand or instruction changes, code byte-identical on both JITs in both bounds modes (D56). S0013 step 5.6 (2026-11-16, maintainer's D6 of S0013 "Step 5 decisions", item (i) of the plan): `func_type(dst: Reg, rec: Operand)` loads word 1 (the canonical type id) of the function record at address `rec` (x86-64 `mov dst, [rec + 8]`, aarch64 `ldr dst, [rec, #8]`; a slot or an immediate goes through `dst` first, never `xzr` as a base), writes only `dst`, no flags; in both backends, tested against llvm-mc; only the code of modules with a function-subtype site changes (D35 lists: the 12 `gc/type-subtyping` modules 29-40, on both JITs and in both bounds modes).
 
 Added without an amendment (the rule above: a method only a new opcode reaches): S0008 (Q2 (a), step 3) added `wide(op, dst: Slot, args)` for the four wide-arithmetic opcodes `0xFC13`-`0xFC16`, in both backends: the low and high 64 bits into slots `dst.k`, `dst.k + 1` (the first operand's slots, each operand read before its slot is written), may write `tos` (the core spills it first), no flags live afterwards, no trap; read by a `reviewer` (S0008 step 4). The code of every module without these opcodes is unchanged on both JITs (D35 lists).
 
@@ -1072,7 +1072,9 @@ Status: accepted (maintainer, 2026-11-10 and 2026-11-13: S0013 Q1, Q5, Q8, Q9, Q
   (`call_indirect`, `return_call_indirect`, a cast to a concrete function type) is a Python
   service, `FUNC_SUBTYPE`, a computation D25 does not let the JIT hand to Python. It ends at step 5,
   when JIT code calls the collector module's `is_subtype` with type-info records for function
-  types (Q11, S0013 step 5's acceptance).
+  types (Q11, S0013 step 5's acceptance). **Closed** in S0013 step 5.6 (D61, "Function subtyping"):
+  JIT code tests equality inline, a final target stops there, and otherwise calls `is_subtype`;
+  GC group word 7 is reserved.
 * **Host values are type-checked** (S0013 3b.2 review, revising the plan's decision O, which had
   left it to phase 6 as memory-safe: it was not, a wrong word corrupted the heap): a value the host
   gives for a reference parameter, or returns from a host function, must match the type, as
@@ -1195,7 +1197,7 @@ Status: accepted (maintainer, 2026-11-15) · Date: 2026-11-15 · Supersedes: —
   (ROADMAP "Next" (6)).
 
 ### D61. The JIT GC heap collects: a copying collector in wasm, Wasmtime's semispaces
-Status: accepted (maintainer, 2026-11-15: S0013 "Step 5 decisions" D1-D4, the step-5.3 design note); written in S0013 step 5.3, closed in step 5.7 · Date: 2026-11-15 · Supersedes: S0013's fixed semispaces A and B · Evidence: S0013 Changes 5.3; spec `gc` and `exceptions` with `WABOROS_JIT_GC_STRESS=1 WABOROS_JIT_GC_POISON=1 WABOROS_JIT_GC_VERIFY=1` on both JITs (0 fail); `tests/jit/test_gc_collect.py`; the Kotlin program runs 100 times in one store at 32 MiB of object space, where it ran out of heap at the 19th run before
+Status: accepted (maintainer, 2026-11-15: S0013 "Step 5 decisions" D1-D4 and D6, the step-5.3 design note); written in S0013 step 5.3, function subtyping in step 5.6, closed in step 5.7 · Date: 2026-11-15 · Supersedes: S0013's fixed semispaces A and B · Evidence: S0013 Changes 5.3 and 5.6; spec `gc` and `exceptions` with `WABOROS_JIT_GC_STRESS=1 WABOROS_JIT_GC_POISON=1 WABOROS_JIT_GC_VERIFY=1` on both JITs (0 fail); `tests/jit/test_gc_collect.py`; the Kotlin program runs 100 times in one store at 32 MiB of object space, where it ran out of heap at the 19th run before
 
 * **The collector** is `runtime/gc/collector.wasm` (Cheney, S0013 step 5.2), compiled by the
   store's JIT once per process and run as a **nested JIT entry** from the allocating service, its
@@ -1223,6 +1225,22 @@ Status: accepted (maintainer, 2026-11-15: S0013 "Step 5 decisions" D1-D4, the st
 * **Host values of `externref`** that a collection did not meet are freed, unless the collector's
   report overflowed (a live handle at or above 16 384); freed numbers are reused lowest first, so
   the table stays flat under churn. `GcRef` handles stay until the store is dropped (phase 6).
+* **Function subtyping** (S0013 step 5.6, D6 of "Step 5 decisions", Wasmtime's shape): a
+  function-subtype site compares the record's type id with the signature word inline (D39
+  amendment `func_type`); a final target stops there, with no call; a non-final one calls the
+  collector module's `is_subtype(q, t)` through the `IS_SUBTYPE` record appended after the RTT
+  words (ARTIFACT.md part 3; the context ABI v1 amended without a bump, no word moves; GC group word
+  7, `FUNC_SUBTYPE`, reserved and zero). `is_subtype` finds both records through a direct map from
+  the process-wide type id, `[60 MiB, 64 MiB)` of the heap, and does the display test; an id at or
+  past the cap of 2²⁰, or without an entry, answers 0. Records are written for the function types
+  that have a supertype or are not final (the only ones a non-equal test can match), not for every
+  function type as the plan said, so a GC module with only final function types commits no map.
+  Process-wide type ids are never reused (`_TYPE_IDS` only grows), so a map entry never goes stale;
+  the cost is the cap, a deviation from Wasmtime (which reuses ids after unregistration and has no
+  such cap): the 2²⁰-th distinct function type the JIT sees in the process (in any module, GC or not) makes
+  a later GC module that needs its record fail its instantiation
+  with "GC type area exhausted". The collector instance is made at the instantiation of the first
+  module with a function-subtype site; outside `store.instances`, its native stack limit is set to the store's at every outermost entry (a collection lowers it) and its interrupt word cleared when it is made (LESSONS 117).
 * Open until step 5.7: the work-list order (Cheney against depth-first, measured as S0013 Q2
   says) and the measurements in BENCHMARKS.md.
 

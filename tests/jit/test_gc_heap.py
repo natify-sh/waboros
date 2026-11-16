@@ -23,7 +23,7 @@ from waboros.targets.base import Trap, TrapCode
 from waboros.targets.jit.common import gc, walk
 from waboros.targets.jit.common.context import FIRST_VAR, GC_SERVICES, Layout
 from waboros.targets.jit.common.heap import POISON, GcHeap
-from waboros.targets.jit.common.instance import GcRef, Instance, _stacks  # pyright: ignore[reportPrivateUsage]
+from waboros.targets.jit.common.instance import GcRef, Instance, _stacks, type_id  # pyright: ignore[reportPrivateUsage]
 
 # externref and anyref as the boundary sees them (`reftypes`: hierarchy, nullable, heap type, ...)
 XR, AR = (EXTERN, True, EXTERN, None, 0), (ANY, True, ANY, None, 0)
@@ -115,6 +115,21 @@ def test_allocation_commits_and_grows(monkeypatch: pytest.MonkeyPatch, poison: b
         h.alloc(gc.CAP_MAX // 2)  # the heap's end stays below 2**32
 
 
+def test_function_records_and_the_tid_map(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A function type's record (kind 3, its supertype's first) is entered in the tid map, which
+    is committed whole; it is no object's record. Past the cap of 2**20 ids: exhausted (5.6)."""
+    m = mod("(module (type $t (sub (func))) (type $u (sub final $t (func))))")
+    h = heap(StoreState())
+    ru = h.rtt(m, 1)
+    rt = h.u32(gc.TID_MAP + 4 * type_id(m, 0))
+    assert h.u32(gc.TID_MAP + 4 * type_id(m, 1)) == ru and u32s(h, rt, 5) == [3, 0, 0, 0, rt]
+    assert u32s(h, ru, 6) == [3 | 1 << 8, 1, 0, 0, rt, ru] and ru not in h.offsets
+    assert h.mem.pages << 16 == gc.OBJ and gc.TYPES <= rt < ru < gc.TID_MAP
+    monkeypatch.setattr(gc, "TIDS", 1)
+    with pytest.raises(MemoryError, match="GC type area exhausted"):
+        heap(StoreState()).rtt(m, 0)
+
+
 def test_object_words_for_the_walk_check() -> None:
     native(native_jit())  # the store's JIT stacks are reserved through the same memory code
     st = _stacks(StoreState())
@@ -164,7 +179,8 @@ def test_layout_words() -> None:
     assert g.memory(2) == FIRST_VAR + 4  # the heap after the declared memories
     assert g.table(0) == plain.table(0) + 2 and g.tag(0) == plain.tag(0) + 2
     assert g.service(0) == g.tag(1) and g.rtt(0) == g.service(GC_SERVICES)
-    assert g.words == g.rtt(2) and plain.words == plain.tag(1) and repr(g) == repr(plain)
+    assert g.subtype() == g.rtt(2) and g.words == g.subtype() + 3  # IS_SUBTYPE (S0013 5.6)
+    assert plain.words == plain.tag(1) and repr(g) == repr(plain)
 
 
 def target(name: str) -> Any:
@@ -184,7 +200,8 @@ def test_an_instance_with_the_heap(name: str) -> None:
     h = _stacks(store).heap
     for inst in insts:  # one heap per store, as memory 0 of a module without memories
         assert inst.ctx[FIRST_VAR : FIRST_VAR + 2] == [h.base, 1 << 16]
-        assert all(inst.ctx[c.layout.service(j)] for j in range(GC_SERVICES))
+        svc = [bool(inst.ctx[c.layout.service(j)]) for j in range(GC_SERVICES)]
+        assert svc == [True] * 7 + [False]  # word 7 reserved, zero (S0013 5.6)
         assert inst.call(0, []) == [7]
     h.alloc(8)
     assert all(inst.ctx[FIRST_VAR + 1] == gc.OBJ + (2 << 20) for inst in insts)  # size published

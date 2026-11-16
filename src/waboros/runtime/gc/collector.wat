@@ -4,10 +4,13 @@
 ;;   16: the handle-report overflow flag (u32, set when a host handle >= 16384 is met);
 ;;   [2 KiB, 4 KiB): the handle report, bit h set for every host word (h << 2) | 2 met;
 ;;   [4 KiB, 64 KiB): ROOTS, 7680 u64 root words, forwarded in place by `roots`;
-;;   [64 KiB, 64 MiB): type-info records; objects from 64 MiB, in the spaces `begin` names.
+;;   [64 KiB, 60 MiB): type-info records; [60 MiB, 64 MiB): the tid map, the u32 record offset of
+;;   function type id t at 60 MiB + 4t (0: none), t < 2^20; objects from 64 MiB, in the spaces
+;;   `begin` names.
 ;; An object: u32 record offset, u32 collector bits (0; 1 when forwarded, its first word then the
 ;; new offset), fields. A record: kind | final << 8, depth d, size (struct) or element size (array),
-;; nrefs, the display (d + 1 offsets, the last its own), the traced field offsets.
+;; nrefs, the display (d + 1 offsets, the last its own), the traced field offsets. A function
+;; type's record has kind 3 and is reached only through the tid map.
 ;; A malformed heap traps (`unreachable`); every access is bounds-checked by wasm.
 (module
   (import "gc" "heap" (memory 1))
@@ -56,13 +59,13 @@
                   (i32.shl (i32.const 1) (i32.and (local.get $h) (i32.const 7))))))
       (else (i32.store (i32.const 16) (i32.const 1)))))
 
-  ;; The size in bytes of the object at $o, after checking its record: 8-aligned in the type area,
+  ;; The size in bytes of the object at $o, after checking its record: 8-aligned in [64 KiB, 60 MiB),
   ;; depth <= 63, its own display entry, kind 1 (size >= 8, a multiple of 8) or 2 (element size
   ;; 1..16; the size is 16 + len * es rounded up to 8, in 64 bits).
   (func $size (param $o i32) (result i64)
     (local $r i32) (local $k i32) (local $d i32) (local $s i32)
     (local.set $r (i32.load (local.get $o)))
-    (if (i32.or (i32.ge_u (i32.sub (local.get $r) (i32.const 0x10000)) (i32.const 0x3FF0000))
+    (if (i32.or (i32.ge_u (i32.sub (local.get $r) (i32.const 0x10000)) (i32.const 0x3BF0000))
                 (i32.and (local.get $r) (i32.const 7)))
       (then unreachable))
     (local.set $d (i32.load offset=4 (local.get $r)))
@@ -191,4 +194,35 @@
                     (br $elems)))))))
         (local.set $s (i32.add (local.get $s) (local.get $n)))
         (br $next)))
-    (global.get $copy)))
+    (global.get $copy))
+
+  ;; The record of function type id $t from the tid map, 0 if none (or $t >= 2^20); checked as
+  ;; $size checks one, with kind 3. No sum wraps: $r < 60 MiB and $d <= 63.
+  (func $func_rec (param $t i64) (result i32)
+    (local $r i32) (local $d i32)
+    (if (i64.ge_u (local.get $t) (i64.const 0x100000)) (then (return (i32.const 0))))
+    (local.set $r (i32.load offset=0x3C00000 (i32.shl (i32.wrap_i64 (local.get $t)) (i32.const 2))))
+    (if (i32.eqz (local.get $r)) (then (return (i32.const 0))))
+    (if (i32.or (i32.ge_u (i32.sub (local.get $r) (i32.const 0x10000)) (i32.const 0x3BF0000))
+                (i32.and (local.get $r) (i32.const 7)))
+      (then unreachable))
+    (local.set $d (i32.load offset=4 (local.get $r)))
+    (if (i32.or (i32.gt_u (local.get $d) (i32.const 63))
+                (i32.ne (i32.and (i32.load (local.get $r)) (i32.const -257)) (i32.const 3)))
+      (then unreachable))
+    (if (i32.ne (i32.load offset=16 (i32.add (local.get $r) (i32.shl (local.get $d) (i32.const 2))))
+                (local.get $r))
+      (then unreachable))
+    (local.get $r))
+
+  ;; 1 if function type id $q is $t or a declared subtype of it (the display test), else 0; JIT
+  ;; code calls it after its own equality test fails (S0013 5.6). An unregistered id answers 0.
+  (func (export "is_subtype") (param $q i64) (param $t i64) (result i32)
+    (local $rq i32) (local $rt i32) (local $d i32)
+    (local.set $rq (call $func_rec (local.get $q)))
+    (local.set $rt (call $func_rec (local.get $t)))
+    (if (i32.or (i32.eqz (local.get $rq)) (i32.eqz (local.get $rt))) (then (return (i32.const 0))))
+    (local.set $d (i32.load offset=4 (local.get $rt)))
+    (if (i32.gt_u (local.get $d) (i32.load offset=4 (local.get $rq))) (then (return (i32.const 0))))
+    (i32.eq (i32.load offset=16 (i32.add (local.get $rq) (i32.shl (local.get $d) (i32.const 2))))
+            (local.get $rt))))

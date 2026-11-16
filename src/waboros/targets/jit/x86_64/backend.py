@@ -989,6 +989,13 @@ class Backend:
         """dst = the address of context word `word` (a function record: `ref.func`)."""
         self.a.lea(dst.id, Mem(R15, 8 * word))
 
+    def func_type(self, dst: Reg, rec: Operand) -> None:
+        """dst = the canonical type id of the function record `rec` (its word 1; S0013 5.6)."""
+        if not isinstance(rec, Reg):
+            self.move(dst, rec, True)
+            rec = dst
+        self.a.mov(dst.id, Mem(rec.id, 8), w=True)
+
     def ctx_store(self, word: int, src: Operand, indirect: bool) -> None:
         r = self._rm(src, RDX, True)
         if not isinstance(r, int):

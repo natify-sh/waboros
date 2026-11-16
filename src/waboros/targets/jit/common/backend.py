@@ -122,6 +122,9 @@ class Backend(Protocol[L, F]):
     def ctx_store(self, word: int, src: Operand, indirect: bool) -> None: ...
 
     def ctx_addr(self, dst: Reg, word: int) -> None: ...  # a function record (ref.func)
+    # D39 amendment (S0013 5.6): dst = word 1 (the canonical type id) of the function record at
+    # address `rec` (non-null); writes only dst
+    def func_type(self, dst: Reg, rec: Operand) -> None: ...
 
     # SIMD (S0005, the D39 amendment): `op` = 0xFD000 + sub-opcode, or 0x23/0x24 for a v128
     # global (`imm` = (word, indirect)); `args` in wasm order. A v128 operand or result is

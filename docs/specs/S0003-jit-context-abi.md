@@ -6,7 +6,7 @@ status: implemented
 superseded_by:
 related: [D10, D14, D15, D18, D23, D24, R2, R3, R6, S0002]
 owner: maintainer
-updated: 2026-11-11
+updated: 2026-11-16
 ---
 
 # S0003 JIT context ABI and entry (phase 3, x86-64)
@@ -401,3 +401,8 @@ uv run pytest tests/jit -k "entry or trap or reentry or host or interrupt or sta
   clears its `sp` after; the entry keeps the enclosing record and its frame on the native stack
   during its call and puts the record back (x86-64: the pad 8 → 40 bytes, the block at `[rsp, rsp + 32)` in SysV and Win64). Module code is unchanged.
 * 2026-11-11 (S0013 steps 3a.3-3a.4, D56): the runtime walks a store's frames from the exit record by the per-site numbers of the `STACKMAPS` section and the trampolines' points (the entry's return point and its saved block, `tail_switch`'s 16-byte restore frame: the saved context, then the real return address); `WABOROS_JIT_WALK_CHECK=1` checks the walk at every host call. A compiled module without its site table is refused at instantiation (`ValueError`). No change of code or context words beyond step 3a.2's.
+* 2026-11-16 (S0013 step 5.6, D39 amendment, D61): the backend method `func_type(dst, rec)` loads
+  word 1, the canonical type id, of the function record at `rec`. In a module that uses GC, GC group
+  word 7 (`FUNC_SUBTYPE`) is reserved and zero, and a 3-word function record `IS_SUBTYPE` follows
+  the RTT words (the collector module's `is_subtype`); no word moves (ARTIFACT.md part 3). Only
+  modules with a function-subtype site change code.

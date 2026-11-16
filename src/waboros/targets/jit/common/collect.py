@@ -49,6 +49,7 @@ def _collector(inst: Any, heap: Any) -> tuple[Any, dict[str, int]]:
         coll = t.instantiate(c, [Extern("memory", None, heap.mem)], store)
         with store.interrupt_lock:  # an interrupt() mid-walk of its copy finishes before this
             store.instances.remove(coll)  # no interrupt, walk or gathering reaches it now
+        coll.ctx[INTERRUPT] = 0  # JIT code may call is_subtype before any collection (5.6)
         inst_._stacks(store).walk_ranges = None  # pyright: ignore[reportPrivateUsage]
         heap.collector = (coll, {n: i for n, k, i in c.module["exports"] if k == 0})
     return heap.collector

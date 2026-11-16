@@ -25,7 +25,6 @@ from waboros.targets.jit.common.context import (
     ARRAY_NEW,
     ARRAY_NEW_DATA,
     ARRAY_NEW_ELEM,
-    FUNC_SUBTYPE,
 )
 
 Site = tuple[int, int, int, int, int, int]  # ret, shift, ret_at, up, nslots, bits
@@ -36,19 +35,23 @@ OPS = frozenset((*range(0xFB00, 0xFB1F), 0xD3))
 
 # The heap (S0013 "JIT: the GC heap"; ARTIFACT.md part 3), offsets in the hidden memory: null 0,
 # the allocation cursor (u32) at CURSOR and its limit at LIMIT; type-info records from TYPES to
-# OBJ; objects from OBJ in two adjacent semispaces of CAP bytes together, CAP <= CAP_MAX, so the
+# TID_MAP, the tid map to OBJ; objects from OBJ in two adjacent semispaces of CAP bytes together, CAP <= CAP_MAX, so the
 # heap's end stays below 2**32 (the collector's bounds are u32; S0013 5.3, D61)
 CURSOR, LIMIT = 8, 12
 TYPES, OBJ = 64 << 10, 64 << 20
+# the tid map (S0013 5.6): [TID_MAP, OBJ), the u32 record offset of function type id t at
+# TID_MAP + 4t (0: none), for t < TIDS; type-info records lie in [TYPES, TID_MAP)
+TID_MAP, TIDS = 60 << 20, 1 << 20
 CAP_MAX = (1 << 32) - OBJ - (128 << 10)
 # an object: u32 type-info offset, u32 collector bits; a struct's fields from 8, an array's u32
 # length at ARRAY_LEN and its elements from ARRAY_DATA
 ARRAY_LEN, ARRAY_DATA = 8, 16
 # a type-info record (u32 words): kind | final << 8, depth, size (struct) or element size (array),
 # number of traced reference fields (an array: 1 if its elements are traced), the display (depth + 1
-# record offsets, the last its own), then the offsets of the traced fields
+# record offsets, the last its own), then the offsets of the traced fields; a function type's record
+# (kind 3) has its depth and display only (S0013 5.6)
 R_KIND, R_DEPTH, R_SIZE, R_NREFS, R_DISPLAY = 0, 4, 8, 12, 16
-KIND_STRUCT, KIND_ARRAY = 1, 2
+KIND_STRUCT, KIND_ARRAY, KIND_FUNC = 1, 2, 3
 _SIZES = {0x78: 1, 0x77: 2, 0x7F: 4, 0x7D: 4, 0x7E: 8, 0x7C: 8, 0x7B: 16}
 
 
@@ -61,6 +64,20 @@ def uses_gc(mod: Any) -> bool:
     open_ = {i for i, td in enumerate(mod.get("tdefs") or ()) if not td[2]}
     insns = (ins for body in mod.get("insns") or () for ins in body)
     return bool(open_) and any(ins[0] in (0x11, 0x13) and ins[1] in open_ for ins in insns)
+
+
+def subtype_sites(mod: Any) -> bool:
+    """The code calls `is_subtype` (S0013 5.6): a call_indirect / return_call_indirect, ref.test,
+    ref.cast or br_on_cast* whose function type is not final."""
+    tds = mod.get("tdefs") or ()
+    open_ = {i for i, td in enumerate(tds) if td[0][0] == "func" and not td[2]}
+    for ins in (ins for body in mod.get("insns") or () for ins in body) if open_ else ():
+        op = ins[0]
+        if (op in (0x11, 0x13) or 0xFB14 <= op <= 0xFB17) and ins[1] in open_:
+            return True
+        if op in (0xFB18, 0xFB19) and ins[4] in open_:
+            return True
+    return False
 
 
 def storage_size(mod: Any, st: Any) -> int:
@@ -182,17 +199,30 @@ def rtts(mod: Any) -> list[int]:
     return sorted(t for t in _targets(mod) if mod["tdefs"][t][0][0] != "func")
 
 
-def subtype(fn: Any, pc: int, h: int, rec: Any, ti: int, top: int) -> Slot:
-    """FUNC_SUBTYPE (S0013 Q11, a service until step 5) with its two slots at h, h + 1 (both in the
-    frame): the first gets 1 if the function record `rec` has type `ti` or a declared subtype, else
-    0; the second keeps the record. A safepoint whose map covers slots [0, h + 2)."""
-    b, s, r = fn.b, scratch(fn, h, 0), scratch(fn, h, 1)
-    b.move(r, rec, True)
-    b.ctx_load(fn.TOS, fn.m.layout.sig(fn.m.sigs[ti]), False)
-    b.move(s, fn.TOS, True)
-    b.call_host(fn.f, fn.m.layout.service(FUNC_SUBTYPE), s.k)
-    fn.site(pc, 0, h + 2, top)
-    return s
+def subtype(fn: Any, pc: int, h: int, rec: Any, ti: int, top: int, miss: Any) -> None:
+    """Fall through if the function record `rec` (non-null) has type `ti` or a declared subtype,
+    else jump to `miss` (S0013 5.6, Wasmtime's shape): its type id against the signature word; for
+    a non-final `ti`, then `is_subtype(q, t)` of the collector module through the IS_SUBTYPE record,
+    its frame (q, t; the result in q) at slots h, h + 1: a safepoint whose map covers [0, h).
+    Nothing above h - 1 is read after the call (B1)."""
+    b, tos, q = fn.b, fn.TOS, Slot(fn.L + h)
+    final = fn.m.mod["tdefs"][ti][2]
+    if final:
+        q = scratch(fn, h, 0)
+    fn.maxh = max(fn.maxh, h + 1 + (not final))
+    b.func_type(tos, rec)
+    b.move(q, tos, True)
+    b.ctx_load(tos, fn.m.layout.sig(fn.m.sigs[ti]), False)
+    if final:
+        b.cmp_branch("ne", q, tos, miss, True)
+        return
+    hit = b.new_label()
+    b.cmp_branch("eq", q, tos, hit, True)
+    b.move(Slot(fn.L + h + 1), tos, True)
+    b.call_record(fn.f, fn.m.layout.subtype(), fn.L + h)
+    fn.site(pc, fn.L + h, h, top)
+    b.cmp_branch("eq", q, Imm(0), miss, True)
+    b.bind(hit)
 
 
 def take(fn: Any, n: int) -> list[Any]:
@@ -320,7 +350,8 @@ def struct_new(fn: Any, pc: int, ti: int, default: bool) -> None:
 
 def ref_test(fn: Any, pc: int, x: Any, ht: int, null: bool, fail: Any, h: int) -> None:
     """Fall through when `x` is a `ht` (null too if `null`), else jump to `fail`. Uses `tos` and
-    scratch slots from h; a concrete function type calls FUNC_SUBTYPE (the stack in slots)."""
+    scratch slots from h; a non-final concrete function type calls `is_subtype` (the stack in
+    slots)."""
     b, f, mod, tos = fn.b, fn.f, fn.m.mod, fn.TOS
     hit = b.new_label()
     b.cmp_branch("eq", x, Imm(0), hit if null else fail, True)
@@ -335,8 +366,8 @@ def ref_test(fn: Any, pc: int, x: Any, ht: int, null: bool, fail: Any, h: int) -
     elif ht == T.I31:
         b.binop("and", tos, x, Imm(1), False)
         b.cmp_branch("eq", tos, Imm(0), fail, False)
-    elif kind == "func":  # the record's type id against the signature word (Q11, until step 5)
-        b.cmp_branch("eq", subtype(fn, pc, h, x, ht, h), Imm(0), fail, True)
+    elif kind == "func":  # the record's type id, then is_subtype if not final (S0013 5.6)
+        subtype(fn, pc, h, x, ht, h, fail)
     else:
         hw, rtt = _mem(fn), None
         if ht >= 0:
@@ -367,7 +398,8 @@ def cast(fn: Any, pc: int, ins: Any) -> None:
     op, b = ins[0], fn.b
     if op in (0xFB14, 0xFB15):  # ref.test (null)
         ht = ins[1]
-        if ht >= 0 and fn.m.mod["tdefs"][ht][0][0] == "func":  # FUNC_SUBTYPE: a safepoint
+        td = fn.m.mod["tdefs"][ht] if ht >= 0 else None
+        if td is not None and td[0][0] == "func" and not td[2]:  # is_subtype: a safepoint
             fn.flush()
         h = len(fn.st)
         (x,) = take(fn, 1)
@@ -560,8 +592,8 @@ def array(fn: Any, pc: int, ins: Any) -> None:
 
 def call_open(fn: Any, ti: int, table: int, pc: int, tail: bool) -> None:
     """call_indirect / return_call_indirect to a type that is not final: the element's record,
-    bounds and null as the backend checks them, then FUNC_SUBTYPE (a service until step 5, S0013
-    Q11), then a call (or tail call) through the record."""
+    bounds and null as the backend checks them, kept in slot h0 + n (the index's), then `subtype`
+    above it (S0013 Q11, 5.6), then a call (or tail call) through the record."""
     m, b, f = fn.m, fn.b, fn.f
     ps, rs = m.types[ti]
     n, nres = simd.width(ps), simd.width(rs)
@@ -570,14 +602,15 @@ def call_open(fn: Any, ti: int, table: int, pc: int, tail: bool) -> None:
     h0 = len(fn.st) - n
     b.table_get(f, fn.TOS, m.layout.table(table), index, a64=fn.t64(table))  # index read first
     b.null_check(f, fn.TOS, TrapCode.INDIRECT_CALL_TO_NULL)
-    s = subtype(fn, pc, h0 + n, fn.TOS, ti, h0 + n + 1)  # slots h0 + n (the index's), h0 + n + 1
-    b.cmp_branch("eq", s, Imm(0), trap(fn, TrapCode.BAD_SIGNATURE), True)
+    rec = scratch(fn, h0 + n, 0)  # below is_subtype's frame (B1)
+    b.move(rec, fn.TOS, True)
+    subtype(fn, pc, h0 + n + 1, fn.TOS, ti, h0 + n + 1, trap(fn, TrapCode.BAD_SIGNATURE))
     if tail:
-        b.tail_ref(f, Slot(s.k + 1), fn.L + h0, n)
+        b.tail_ref(f, rec, fn.L + h0, n)
         del fn.st[h0:]
         fn.dead = True
         return
-    b.call_ref(f, Slot(s.k + 1), fn.L + h0)
+    b.call_ref(f, rec, fn.L + h0)
     fn.site(pc, fn.L + h0, h0, h0 + n + 1)
     del fn.st[h0:]
     fn.st += [core.SLOTE] * nres
