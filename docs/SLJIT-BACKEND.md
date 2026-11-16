@@ -195,6 +195,20 @@ requirement that sljit must meet, checked on every ISA of the track before any b
    that sljit then emits position-independent code on each ISA (start here); (b) generate for the
    final address (breaks AOT and D35); (c) real `SHT_RELA` relocations, which D59 keeps only as a
    last resort.
+3. **No process address as an immediate** (maintainer, 2026-11-16). PIC is not only relative
+   jumps: the experiment `poc/sljit/sljit-be/` calls libm (`ceil`, `floor`, `trunc`, `sqrt`,
+   `nearbyint`) and libc (`memset`, `memmove`) at addresses taken through ctypes in the compiling
+   process and written into the code as `imm64`. That is right only in that process: wrong after
+   ASLR in the next one (AOT from a cache), wrong for another architecture (cross-compilation),
+   and meaningless when the micro-compiler is wasm (functions are indices there). Our hand-written
+   backends never do this: rounding is inline (SSE2 and NEON sequences) and bulk memory goes
+   through libcalls in context words the runtime fills at instantiation. The check therefore also
+   scans the generated code for immediates equal to a process address. Two ways for the sljit
+   backend, **to be agreed with the maintainer**: (a) inline, as the hand-written backends (the
+   rounding sequences of `x86_64/` and `aarch64/` through `sljit_emit_op_custom`); (b) through the
+   context (`ctx[libcall]`, an address the runtime puts there). The orchestrator's proposal: (a)
+   for rounding and `sqrt` (no call, the same bytes as our backends), (b) for `memory.fill` and
+   `memory.copy` (already libcalls in the context ABI).
 
 ## sljit built for wasm32 per target (maintainer, 2026-11-15)
 Pinned sljit `39c508d` with the patch in `poc/sljit`, the full API exported (as `full_*.wasm` in
