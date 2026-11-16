@@ -626,7 +626,7 @@ class Table:
         except (MemoryError, OverflowError):
             raise MemoryError(f"out of memory (failed to allocate {8 * size} bytes)") from None
         self.users: list[tuple[ctypes.Array[ctypes.c_uint64], int]] = []
-        self.refs = False  # any- or extern-hierarchy elements: roots (its creator sets it)
+        self.refs = False  # any-, extern- or exn-hierarchy elements: roots (its creator sets it)
 
     def bind(self, ctx: "ctypes.Array[ctypes.c_uint64]", word: int) -> None:
         ctx[word], ctx[word + 1] = ctypes.addressof(self.buf), self.size

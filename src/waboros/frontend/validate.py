@@ -511,15 +511,22 @@ def _validate(mod: dict) -> None:
             if _const(c, off, ng) != c.maddr[mi]:
                 raise Invalid("type mismatch")
     nimpf = len(c.funcs) - len(mod["funcs"])
-    c.masks = bool(mod["anyext"])  # an any-, extern- or exn-hierarchy type is declared
-    mod["refmasks"], mod["v128masks"] = [], []
-    for k, ((locs, _), insns) in enumerate(zip(mod["codes"], mod["insns"], strict=True)):
-        ps, rs = c.funcs[nimpf + k]
-        c.v128 = {}
-        masks = _body(c, ps + locs, len(ps), rs, insns)
-        if c.masks:
-            mod["refmasks"].append(masks)
-            mod["v128masks"].append(c.v128)
+    # masks when an any-, extern- or exn-hierarchy type is declared; a body can name one only
+    # inline (a block or `select` type), so if the bodies turned `anyext` on they are walked again
+    # with masks: an exnref of a `catch_all_ref` label needs no declared type (S0013 6.2 review)
+    c.masks = bool(mod["anyext"])
+    while True:
+        mod["refmasks"], mod["v128masks"] = [], []
+        for k, ((locs, _), insns) in enumerate(zip(mod["codes"], mod["insns"], strict=True)):
+            ps, rs = c.funcs[nimpf + k]
+            c.v128 = {}
+            masks = _body(c, ps + locs, len(ps), rs, insns)
+            if c.masks:
+                mod["refmasks"].append(masks)
+                mod["v128masks"].append(c.v128)
+        if c.masks or not mod["anyext"]:
+            break
+        c.masks = True
 
 
 def _body(c: _Ctx, lt: list, nparams: int, results: list, insns: list[tuple]) -> dict[int, int]:

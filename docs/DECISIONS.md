@@ -1306,7 +1306,12 @@ Status 14 propagation (D52) is unchanged.
   stay. `throw_ref` of null traps `NULL_REFERENCE` before anything is stored, as Wasmtime.
 * **`exnref` everywhere** is a reference the collector finds: `validate._root` covers the exn
   hierarchy, so exnref slots are in the stack maps, exnref globals and tables are roots, and
-  struct fields and array elements of `exnref` are 4 bytes and traced. **The pending word** (word
+  struct fields and array elements of `exnref` are 4 bytes and traced. The validator decides
+  whether a module gets masks after its bodies: an exnref needs no declared type (a
+  `catch_all_ref` into a block whose `(result exnref)` is inline), so a body that names one turns
+  the masks on and the bodies are walked again (review of 6.2). An any- or extern-hierarchy value
+  needed no such rule before: without a declared type of those hierarchies a body can only make
+  null or an i31, which never move. **The pending word** (word
   10's target) holds 0 or the last exception thrown and is a root (D7 (a)): a defence, since no
   collection happens between a `throw` and its pad or entry; it retains at most one dead object.
 * **The host** (D5 (a)): `ExnRef(index, store)` is an entry of the store's handle table shared

@@ -927,3 +927,14 @@ What went wrong or surprised us while building the PoC, so it is not found again
     `try_table`". Rule: restore a register only on the paths that clobbered it, and derive an
     identity prediction from what the lowering actually reads, so a stray change shows up as a
     module outside the set. Found: S0013 step 6.2, 2026-11-16.
+120. **A module-level flag decided before the bodies misses what the bodies set.** The validator
+    turned the reference masks on from `mod["anyext"]` before walking the bodies, and the body
+    walk itself set `anyext` for an inline block or `select` type. That was harmless while such a
+    type could only hold null or an i31; step 6.2 made `exnref` a moving reference, and an exnref
+    needs no declared type (`catch_all_ref` into `(block (result exnref))`, LLVM's cleanup shape),
+    so its module got no masks, every stack map was 0, and a collection left the slot on the old
+    object: a stale exception rethrown. The spec suite has no such module, so only the independent
+    review found it. Rule: a flag that decides how a pass records its output is computed from
+    everything that can set it, or the pass is redone when it changes; when a value class gains a
+    new property (here: it moves), recheck every argument of the form "such a value is always
+    null or declared". Found: S0013 step 6.2 review, 2026-11-16.

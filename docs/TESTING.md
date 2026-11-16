@@ -108,7 +108,12 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   throw commits the semispaces, that a full heap at `throw` ("GC heap out of memory", the
   semispace cap lowered to 2 MiB with live exceptions in an exnref table) is not caught by an
   enclosing `catch_all`, that `throw_ref` of null traps before the pending word changes, and that
-  an object whose identity a probe forged in the high or the low half matches no `catch $t`.
+  an object whose identity a probe forged in the high or the low half matches no `catch $t`;
+  after the 6.2 review also an exnref whose only type is an inline block result across
+  collections, a missed clause that keeps a value under the outer label (the pad's scratch
+  slot), and a pad read past the heap through a forged handle (`MEMORY_OUT_OF_BOUNDS`, both bounds
+  modes). `test_a_throw_runs_no_python` and the full-heap test skip under
+  `WABOROS_JIT_GC_STRESS=1`, where every throw collects.
   `test_gc_collect.py`, `test_gc_roots.py`, `test_walk.py` and `test_stackmaps.py` hold exception
   payloads, exnref locals, globals and tables across collections and the throw's ALLOC site in
   place of the arena; the full list t1-t12 and the mutations are step 6.4.

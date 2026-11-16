@@ -110,7 +110,7 @@ call, before x86-64's `call` pushes, to this frame's own return address), `u16 u
 stack pointer to the caller's stack pointer at its own call), `u32 map` (0: no reference slot; k:
 the k-th map of the pool); then `u32 nmaps` and per map `u32 nslots` and `ceil(nslots / 32)` u32
 words, bit i set when value-stack slot i of the frame (locals first, a v128 two slots) holds a
-reference of the any or extern hierarchy at that site. Equal maps are stored once. Every call site
+reference of the any, extern or exn hierarchy (exn from S0013 step 6.2) at that site. Equal maps are stored once. Every call site
 has a record, a module without any reference type too (16 bytes per site: CoreMark 108 sites, 1 736
 bytes). The trampolines' own points (the entry's return point and its saved block, `tail_switch`'s
 `restore` frame) are part 3's, not this section's.

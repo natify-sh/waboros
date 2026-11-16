@@ -6,6 +6,7 @@ nested pads, imported tags, a full heap, forged identities, no Python on a throw
 (`exceptions/`) is the metric."""
 
 import ctypes
+import os
 import struct
 import sys
 import threading
@@ -29,6 +30,12 @@ from waboros.targets.jit.common.instance import ExnRef, Tag
 
 __all__ = ["pins"]  # the fixture, used by name
 JIT = native_jit()
+BOUNDS = ["guard", "explicit"] if JIT == "jit-x86_64" else ["explicit"]  # QEMU tears (D45)
+SWITCHES = ("WABOROS_JIT_GC_STRESS", "WABOROS_JIT_GC_POISON", "WABOROS_JIT_GC_VERIFY")
+# under the stress switch every throw collects (Python runs, and filling a heap takes minutes)
+STRESSED = pytest.mark.skipif(
+    os.environ.get("WABOROS_JIT_GC_STRESS") == "1", reason="every throw collects under STRESS"
+)
 
 
 @pytest.fixture(autouse=True)
@@ -358,6 +365,7 @@ LOOP = """
 """
 
 
+@STRESSED
 def test_a_throw_runs_no_python() -> None:
     i = build(LOOP)
     i("loop", 10)
@@ -396,6 +404,7 @@ FULL = """(module (tag $t (param i32)) (table $k 0 exnref)
     (i32.const 2)))"""
 
 
+@STRESSED
 def test_a_full_heap_at_throw_is_an_error_no_pad_catches(monkeypatch: pytest.MonkeyPatch) -> None:
     """Approval note, addition 1 (Wasmtime's GcHeapOutOfMemory): a `throw` whose allocation finds
     the heap full after collecting and growing to its limit fails with "GC heap out of memory",
@@ -484,3 +493,87 @@ def test_a_thrown_tag_type_has_one_struct_record_apart_from_its_function_record(
     assert words == (gc.KIND_STRUCT | 1 << 8, 0, 64, 1, r, 20)
     assert heap.kind[r] == gc.KIND_STRUCT and r in heap.offsets and fr not in heap.offsets
     assert ctypes.c_uint32.from_address(heap.base + fr).value == gc.KIND_FUNC  # not final
+
+
+INLINE = """(module (tag $t (param i32))
+  (func $g (block $h (result i32) (try_table (catch $t $h) (throw $t (i32.const 5))) unreachable)
+    (drop))
+  (func (export "go") (param $n i32) (result i32)
+    (block $c (result i32)
+      (try_table (catch $t $c)
+        (block $l (result exnref)  ;; the module's only exnref type: inline
+          (try_table (catch_all_ref $l) (throw $t (i32.const 77))) unreachable)
+        (loop $lp (call $g) (br_if $lp (local.tee $n (i32.sub (local.get $n) (i32.const 1)))))
+        (throw_ref))
+      unreachable)))"""
+
+
+@pytest.mark.parametrize("switched", [False, True])
+def test_an_exnref_of_an_inline_block_type_is_in_the_maps(
+    monkeypatch: pytest.MonkeyPatch, switched: bool
+) -> None:
+    """6.2 review: an exnref whose only type is a block's inline `(result exnref)` (LLVM's cleanup
+    shape) is marked at the call sites below it, so the collections of the throws in `$g` move
+    the object it names (the masks were decided before the bodies turned them on: the old object,
+    status 14 without an exception, or another exception's payload 5)."""
+    for s in SWITCHES:
+        monkeypatch.setenv(s, "1" if switched else "0")
+    store = StoreState()
+    i = build(INLINE, store=store)
+    assert i.mod["refmasks"]
+    assert i("go", 5 if switched else 200_000) == [77]
+    assert cast(Any, store.target_state).heap.collections > 0
+
+
+def test_a_missed_clause_keeps_a_value_below_the_outer_label(pins: None) -> None:
+    """The scratch slot of a pad's identity compare is the try_table's entry height: the inner
+    clause misses, and the value under the outer pad's label (42, from a call) is still there when
+    the outer pad catches (9). With the slot at the label's own position it would be lost (M15)."""
+    i = build("""
+(module (tag $t1 (param i32)) (tag $t2 (param i32))
+  (func $id (param i32) (result i32) (local.get 0))
+  (func (export "go") (result i32)
+    (block $c (result i32)
+      (call $id (i32.const 42))
+      (block $m (result i32)
+        (try_table (catch $t2 $m) (try_table (catch $t1 $c) (throw $t2 (i32.const 9))))
+        unreachable)
+      i32.add)))
+""")
+    assert i("go") == [51]
+
+
+@pytest.mark.parametrize("bounds", BOUNDS)
+def test_a_pad_read_out_of_the_heap_traps(monkeypatch: pytest.MonkeyPatch, bounds: str) -> None:
+    """Every read of the pending object is a checked load (D1 (b)): a handle forged to an offset
+    past the heap's committed end, or near 2**32, traps MEMORY_OUT_OF_BOUNDS in both bounds
+    modes, and a trap is not caught by the `catch_all` beside the `catch $t`."""
+    monkeypatch.setenv("WABOROS_JIT_BOUNDS", bounds)
+    store = StoreState()
+    i = build(
+        """
+(module (tag $t (param i32))
+  (func (export "make") (result exnref)
+    (block $h (result exnref) (try_table (catch_all_ref $h) (throw $t (i32.const 5))) unreachable))
+  (func (export "rethrow") (param exnref) (result i32)
+    (block $all
+      (block $h (result i32)
+        (try_table (catch $t $h) (catch_all $all) (throw_ref (local.get 0))) unreachable)
+      (return))
+    (i32.const -1)))
+""",
+        store=store,
+    )
+    st: Any = store.target_state
+    k = next(x for n, _, x in i.mod["exports"] if n == "rethrow")
+    e: Any = i("make")[0]
+    old = st.gc_handles[e.index]
+    for bad in (0xFFFFFFF0, st.heap.mem.pages << 16):
+        del st.gcrefs[st.gc_handles[e.index]]
+        st.gc_handles[e.index], st.gcrefs[bad] = bad, e
+        with pytest.raises(Trap) as t:
+            i.inst.call(k, [e])
+        assert t.value.code is TrapCode.MEMORY_OUT_OF_BOUNDS
+    del st.gcrefs[st.gc_handles[e.index]]
+    st.gc_handles[e.index], st.gcrefs[old] = old, e
+    assert i.inst.call(k, [e]) == [5]
