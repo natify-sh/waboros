@@ -872,7 +872,7 @@ restore in a `finally` (for example reset when the outermost entry finds no JIT 
 item in ROADMAP.md, phase 5.
 
 ### D52. JIT exceptions: status 14 through frames, objects bumped from a store arena in code, context ABI v1 amended
-Status: accepted (maintainer, 2026-11-05) · Date: 2026-11-05 · Supersedes: — · Evidence: S0012 steps 3-4; `tests/jit/test_exceptions.py`; BENCHMARKS.md "Exceptions: throw cost"
+Status: accepted (maintainer, 2026-11-05) · Date: 2026-11-05 · Supersedes: — · Superseded in part by: D63 (the arena, words 11-13, the object and `exnref` encoding, the methods `exn_*` and `throw`; status 14 propagation stays) · Evidence: S0012 steps 3-4; `tests/jit/test_exceptions.py`; BENCHMARKS.md "Exceptions: throw cost"
 
 An exception crosses JIT frames as status 14 (`UNCAUGHT_EXCEPTION`), as traps do (S0012 Q1 A): each
 call site's existing `test eax, eax; jnz` goes to the frame's `error` label, which is the epilogue
@@ -1202,9 +1202,10 @@ Status: accepted (maintainer, 2026-11-15: S0013 "Step 5 decisions" D1-D4 and D6,
 * **The collector** is `runtime/gc/collector.wasm` (Cheney, S0013 step 5.2), compiled by the
   store's JIT once per process and run as a **nested JIT entry** from the allocating service, its
   frame above the service's slots (ARTIFACT.md "Host functions", B1). Python gathers the roots
-  (`jit/common/collect.py`: frames by the walk, reference globals, any- and extern-hierarchy tables,
-  passive element segments, GC handles, the exception arena's payloads until step 6) and writes
-  the forwarded words back. The collector's instance is kept out of `store.instances`, so
+  (`jit/common/collect.py`: frames by the walk, reference globals, any- and extern-hierarchy tables
+  (exn too from step 6), passive element segments, GC handles, the exception arena's payloads
+  until step 6, then the pending-exception word, D63) and writes the forwarded words back. The
+  collector's instance is kept out of `store.instances`, so
   `store.interrupt()` never cuts a collection in half.
 * **Semispaces as Wasmtime's**: two adjacent halves `[OBJ, OBJ + C/2)` and `[OBJ + C/2, OBJ + C)`,
   both committed, their boundary moving with growth; growing while the upper half is active
@@ -1271,3 +1272,47 @@ depends on global symbol names and finds the entry trampolines through a `.wabor
 (offsets, as `ENTRIES`), so names can take a per-artifact prefix later (`.symtab` is for tools and
 a future linker); unknown sections are skipped (D59), so `.note.GNU-stack` and a future descriptor
 section need no version change.
+
+### D63. JIT exceptions in the GC heap: a throw allocates, pads read through the heap, `exnref` a u32 reference
+Status: accepted (maintainer, 2026-11-16: the step-6 plan's D1 (b), D2-D5 (a), D6 (b), D7 (a) and the three additions from Wasmtime) · Date: 2026-11-16 · Supersedes: D52 in part (the arena, words 11-13, the object and `exnref` encoding, the D39 methods `exn_match`, `exn_field`, `exn_load` and `throw`) · Evidence: S0013 Changes 6.1 and 6.2; spec `gc` and `exceptions` with `WABOROS_JIT_GC_STRESS=1 WABOROS_JIT_GC_POISON=1 WABOROS_JIT_GC_VERIFY=1` on both JITs, both bounds modes (905 pass, 0 fail); `tests/jit/test_exceptions.py`; the throw cost follows in step 6.5 (BENCHMARKS.md)
+
+S0013 Q7 (b), as Wasmtime: an exception object is an object of the store's GC heap, and an
+`exnref` is its u32 offset, a reference like any other (S0013 step 6, `docs/plans/S0013-6-plan.md`).
+Status 14 propagation (D52) is unchanged.
+
+* **The object** (D2 (a), D3 (a)): a struct of the u64 tag identity at 8 and the tag's parameters
+  at their natural alignment (`gc.exn_layout`), with a kind-1 (struct) record per canonical tag
+  type, final, depth 0, keyed `"exn " + types.key`, apart from the type's kind-3 record. The
+  collector module and the verifier need no new kind. The identity stays the process-wide u64;
+  an imported tag has its exporter's.
+* **Which modules get the heap** (D4 (a), D6 (b)): a `throw`, or a `try_table` with a `catch` or
+  `catch_ref` clause, gives the module the heap's words and the full GC group, with one RTT word
+  per tag it throws; a module with only `throw_ref` and `catch_all(_ref)` reads the pending word
+  alone and keeps its layout and code.
+* **`throw`** is lowered in the core as `struct.new` is: a bump, a cold `ALLOC` call when it does
+  not fit (a safepoint whose map covers the payload, read from its slots after the call, B1), then
+  the identity, the pending word and status 14. It runs no Python unless the space is full.
+  **A full heap at `throw`** (after collecting and growing to the limit) is "GC heap out of
+  memory", status 13: an embedder error no pad catches, never a wasm exception (Wasmtime's
+  `GcHeapOutOfMemory`). Under stress every throw collects, so with less than 4 KiB of value stack
+  left a throw traps `STACK_OVERFLOW` (D61's deviation now covers `throw`).
+* **Landing pads** (D1 (b)) are lowered in the core from existing D39 methods (`ctx_load`,
+  checked `load`/`simd` on the hidden memory, `cmp_branch`): every read of the object is bounds
+  checked or a guard fault point, as S0013 Q8 (a) asks, and aarch64 is at parity by construction.
+  The identity is compared in 64 bits, so a forged or stale identity matches no tag and is never a
+  wrong pad. The status register, used as `tos` at the pad, is made 14 again before the jump to
+  the enclosing pad. D39 amendment: `exn_match`, `exn_field`, `exn_load` and `throw` leave the
+  interface (no code calls them from step 6.2; step 6.3 deletes them); `landing` and `throw_ref`
+  stay. `throw_ref` of null traps `NULL_REFERENCE` before anything is stored, as Wasmtime.
+* **`exnref` everywhere** is a reference the collector finds: `validate._root` covers the exn
+  hierarchy, so exnref slots are in the stack maps, exnref globals and tables are roots, and
+  struct fields and array elements of `exnref` are 4 bytes and traced. **The pending word** (word
+  10's target) holds 0 or the last exception thrown and is a root (D7 (a)): a defence, since no
+  collection happens between a `throw` and its pad or entry; it retains at most one dead object.
+* **The host** (D5 (a)): `ExnRef(index, store)` is an entry of the store's handle table shared
+  with `GcRef` (re-keyed after every collection); a forged handle or one of another store is a
+  `TypeError`. An uncaught exception's payload is read from the object at the entry, before any
+  wasm or collection runs, and its references become handles.
+* **ABI**: context ABI v1 amended without a bump under S0013 Q5's approval (no artifact file
+  exists): word 10's target holds a u32 offset; words 11-13 are no longer read (step 6.3 makes
+  them reserved and zero, with a test that no code names them).

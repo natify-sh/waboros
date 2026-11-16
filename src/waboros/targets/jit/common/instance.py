@@ -169,11 +169,12 @@ class Tag:
         self.params, self.store, self.module = tuple(params), store, module
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class ExnRef:
-    """A non-null exnref outside the code: the address of an exception object of its store."""
+    """A non-null exnref outside the code: entry `index` of its store's handle table, which holds
+    the exception object's offset in the heap, as for a `GcRef` (S0013 step 6, D5)."""
 
-    addr: int
+    index: int
     store: object
 
 
@@ -237,16 +238,15 @@ class _StoreStacks:
         # dropped (Q10: generations and a free list come with release in phase 6)
         self.heap: Any = None
         self.gc_handles: list[int] = []
-        self.gcrefs: dict[int, GcRef] = {}
+        self.gcrefs: dict[int, GcRef | ExnRef] = {}  # word -> its handle (exnrefs too, step 6)
         self.lost: str | None = None  # a collection did not complete: every call refused (D61)
         # exceptions (S0012): {pending exnref, arena cursor, arena limit}, which context words
-        # 10, 12 and 13 point to; code bumps objects {tag, payload words} from the arena's last
-        # chunk. Chunks never move and are kept until the store is dropped (Q3); the first comes
-        # with the store, so only a throw that fills one calls into Python (`refill`).
+        # 10, 12 and 13 point to. The pending word holds 0 or the u32 heap offset of the last
+        # exception thrown, a root (S0013 step 6, D7); the arena is unused since then (6.3
+        # removes it).
         self.exn = (ctypes.c_uint64 * 3)()
         self.chunks: list[ctypes.Array[ctypes.c_uint64]] = []
         self.new_chunk(ARENA_WORDS)
-        self.exnrefs: dict[int, ExnRef] = {}
         self.tags: dict[int, Tag] = {}  # every tag of the store by identity
         self.refill: Any = None  # context word EXN_REFILL (a ctypes callback)
         # the exit record {sp, pc, frame} of the innermost host call (S0013 3a), word EXIT_RECORD
@@ -274,10 +274,11 @@ class _StoreStacks:
             return self._host_word(v)
         if ht in (NOFUNC, NOEXTERN, NONE, NOEXN):
             raise TypeError(f"{v!r} for a reference type that holds only null")
-        if h == EXN:
-            if not isinstance(v, ExnRef) or self.exnrefs.get(v.addr) is not v:
+        if h == EXN:  # a handle this store gave out (LESSONS 35)
+            i = v.index if isinstance(v, ExnRef) else -1
+            if not 0 <= i < len(self.gc_handles) or self.gcrefs.get(self.gc_handles[i]) is not v:
                 raise TypeError(f"not an exception reference of this store: {v!r}")
-            return v.addr
+            return self.gc_handles[i]
         if h == FUNC:
             # only a reference this store handed out: a record of another store would run on that
             # store's context and value stack, a forged address anywhere (LESSONS 35)
@@ -335,24 +336,24 @@ class _StoreStacks:
     def from_raw(self, h: int, r: int) -> object:
         if not r:
             return None
-        if h == EXN:
-            return self.exnrefs.setdefault(r, ExnRef(r, self))
         if h == FUNC:
             ref = self.funcrefs.get(r)
             if ref is None:
                 ref = self.funcrefs[r] = FuncRef(r, self)
             return ref
-        if r & 3 == 2:
+        if r & 3 == 2 and h != EXN:
             return self.externs[(r >> 2) - 1]
         if h == ANY and r & 1:
             v = r >> 1 & 0x7FFFFFFF
             return v - (v >> 30 << 31)
         ref = self.gcrefs.get(r)
         if ref is None:
-            if not r & 1 and (self.heap is None or not self.heap.is_object(r)):
+            obj = h == EXN or not r & 1  # an exnref is always an object
+            if obj and (self.heap is None or not self.heap.is_object(r)):
                 raise RuntimeError(f"JIT code returned {r:#x}, not a reference of this store")
+            n = len(self.gc_handles)
             kind = "i31" if r & 1 else self.heap.kind_of(r)
-            ref = self.gcrefs[r] = GcRef(len(self.gc_handles), kind, self)
+            ref = self.gcrefs[r] = ExnRef(n, self) if h == EXN else GcRef(n, kind, self)
             self.gc_handles.append(r)
         return ref
 
@@ -842,15 +843,23 @@ class Instance:
 
     def _uncaught(self) -> BaseException:
         """Status 14 at an entry: `Trap(UNCAUGHT_EXCEPTION)` with (tag, payload values as `call`
-        returns them on this target), read from the pending object (S0012 Q4)."""
+        returns them on this target), read from the pending object in the heap before any wasm
+        or collection runs (S0012 Q4, S0013 step 6); references become rooted handles."""
         st = _stacks(self.store)
-        addr = st.exn[0]
-        tag = st.tags.get(ctypes.c_uint64.from_address(addr).value) if addr else None
+        off, heap = st.exn[0], st.heap
+        if not off or heap is None:
+            return RuntimeError("JIT code returned status 14 without an exception")
+        tag = st.tags.get(ctypes.c_uint64.from_address(heap.base + off + 8).value)
         if tag is None:
             return RuntimeError("JIT code returned status 14 without an exception")
-        raw = list((ctypes.c_uint64 * simd.width(tag.params)).from_address(addr + 8))
-        ks = reftypes(tag.module, tag.params)
-        vals = zip(ks, simd.join(tag.params, raw), strict=True)
+        mod = tag.module
+        offs, _ = gc.exn_layout(mod, tag.params)
+        sizes = [16 if p == simd.V128 else gc.storage_size(mod, p) for p in tag.params]
+        at = [heap.base + off + o for o in offs]
+        raw = [
+            int.from_bytes(ctypes.string_at(a, n), "little") for a, n in zip(at, sizes, strict=True)
+        ]
+        vals = zip(reftypes(mod, tag.params), raw, strict=True)
         t = Trap(TrapCode.UNCAUGHT_EXCEPTION, "thrown Wasm exception")
         t.exn = (tag, tuple(v if k is None else st.from_raw(k[0], v) for k, v in vals))
         return t

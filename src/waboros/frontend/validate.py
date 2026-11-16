@@ -155,8 +155,9 @@ PACKED = (0x78, 0x77)  # storage types i8, i16
 
 
 def _root(mod: dict, t) -> bool:
-    """`t` is a reference type of the any or the extern hierarchy (what a collector must find)."""
-    return isref(t) and top(mod, nn(t)[1]) in (ANY, EXTERN)
+    """`t` is a reference type of the any, extern or exn hierarchy (what a collector must find;
+    an exnref is a heap object from S0013 step 6)."""
+    return isref(t) and top(mod, nn(t)[1]) in (ANY, EXTERN, EXN[1])
 
 
 def _vt(t, mod: dict):
@@ -510,7 +511,7 @@ def _validate(mod: dict) -> None:
             if _const(c, off, ng) != c.maddr[mi]:
                 raise Invalid("type mismatch")
     nimpf = len(c.funcs) - len(mod["funcs"])
-    c.masks = bool(mod["anyext"])  # an any- or extern-hierarchy type is declared
+    c.masks = bool(mod["anyext"])  # an any-, extern- or exn-hierarchy type is declared
     mod["refmasks"], mod["v128masks"] = [], []
     for k, ((locs, _), insns) in enumerate(zip(mod["codes"], mod["insns"], strict=True)):
         ps, rs = c.funcs[nimpf + k]
@@ -525,7 +526,7 @@ def _body(c: _Ctx, lt: list, nparams: int, results: list, insns: list[tuple]) ->
     """Validate a function body. Returns its reference masks: for each safepoint (`_SAFEPOINTS`,
     every 0xFB instruction) at instruction index `pc` of reachable code, a bitmask with bit i set
     when operand-stack position i (from the bottom of the function's stack, across all open
-    blocks, before the instruction pops) holds an any- or extern-hierarchy reference; `c.v128`
+    blocks, before the instruction pops) holds a reference `_root` marks; `c.v128`
     gets, at the same safepoints, the positions holding a v128 (two slots in the JITs). Empty if
     `c.masks` is off."""
     masks: dict[int, int] = {}

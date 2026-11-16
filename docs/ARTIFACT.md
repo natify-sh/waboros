@@ -166,14 +166,14 @@ the phase-3 meaning of each word and the register roles are in [S0003](specs/S00
 | 7 | `HOST_ERROR` | host → code | the status of the current host call: the bridge presets 13, the host function writes its status last (D34) |
 | 8 | `HOST_BRIDGE` | host → code | address of the host-call bridge for the host's calling convention |
 | 9 | `TAIL_SWITCH` | host → code | address of the cross-context tail-call trampoline (below; D30) |
-| 10 | `EXCEPTION` | host → code | address of the store's pending-exception word: the exnref of the exception in flight, valid only while status 14 propagates (S0012) |
-| 11 | `EXN_REFILL` | host → code | the exception arena's refill service (a host function, signature below; S0012) |
-| 12, 13 | `ARENA_CURSOR`, `ARENA_LIMIT` | host → code | addresses of the store's arena cursor (next free byte) and limit (end of the current chunk); code advances the cursor (S0012) |
+| 10 | `EXCEPTION` | host → code | address of the store's pending-exception word: the exnref of the exception in flight, valid only while status 14 propagates (S0012); from S0013 step 6.2 it holds 0 or the zero-extended u32 heap offset of the last exception thrown, and the word is a root of every collection |
+| 11 | `EXN_REFILL` | host → code | the exception arena's refill service (a host function, signature below; S0012); no code calls it since S0013 step 6.2 (6.3 makes the word reserved) |
+| 12, 13 | `ARENA_CURSOR`, `ARENA_LIMIT` | host → code | addresses of the store's arena cursor (next free byte) and limit (end of the current chunk) (S0012); no code reads them since S0013 step 6.2 (6.3 makes the words reserved) |
 | 14 | `EXIT_RECORD` | host → code | address of the store's exit record `{sp, pc, frame}` of the innermost host call: the bridge writes it before the host runs (the calling frame's stack pointer at its call, the return address, the frame register) and clears `sp` after; every entry keeps the enclosing record and its frame on the native stack during its call and puts the record back (S0013; an amendment of v1 without a bump, Q5) |
 | 15 | reserved | | zero |
 | 16 … | per memory *i*: `base`, `size_bytes` (2 words) | host ↔ code | imported memories first; an i32 memory's base never moves (4 GiB + 32 MiB reserved, committed on grow; S0006); an i64 memory's base and `size_bytes` may both change during any host call or libcall (a `memory.grow` that moves it; D50, S0009: an amendment of v1 without a bump), so code keeps neither across a call: code that keeps a memory in registers (x86-64: memory 0 in r13/r14; aarch64: x26/x25) reloads them after every host call, any other memory is read here at each access |
 | … | the GC heap: `base`, `size_bytes` (2 words), right after the module's memories | host ↔ code | only in a module that uses GC (GC types or instructions, or a `call_indirect` / `return_call_indirect` to a non-final type; S0013 step 3b, an amendment of v1 without a bump, Q5) or, from S0013 step 6.1, allocates or reads exception objects (a `throw`, or a `try_table` with a `catch` or `catch_ref` clause; a module with only `throw_ref` and `catch_all(_ref)` has none): the store's heap, an i32 memory (4 GiB + 32 MiB reserved, never moves) that `memory.size`, `memory.grow` and the libcall immediates do not count; a module without memories of its own has it as memory 0 (r13/r14, x26/x25). `size_bytes` is the committed end: everything below it is committed |
-| … | per table *i*: `base`, `size` (2 words) | host ↔ code | `base`: the element words (one per element), `size`: elements; `table.grow` may move the elements, so code reads both words at each use and never keeps them across a host call. A `funcref` element (and value) is 0 (null) or the address of a function record (below); an `externref` element is 0 (null) or a reference word: a host value is `(h << 2) \| 2`, *h* its 1-based handle in the store (S0013 step 3b; the encoding is the runtime's, no code reads the bits) |
+| … | per table *i*: `base`, `size` (2 words) | host ↔ code | `base`: the element words (one per element), `size`: elements; `table.grow` may move the elements, so code reads both words at each use and never keeps them across a host call. A `funcref` element (and value) is 0 (null) or the address of a function record (below); an `externref` element is 0 (null) or a reference word: a host value is `(h << 2) \| 2`, *h* its 1-based handle in the store (S0013 step 3b; the encoding is the runtime's, no code reads the bits); an `exnref` element is 0 or an exception object's heap offset (S0013 step 6.2) |
 | … | per global *i*: 1 word (2 for v128) | both | imported globals: a pointer to the owner's word instead |
 | … | per function import *i*: 1 word | host → code | address of a host function (signature below) |
 | … | per libcall *j*: 1 word | host → code | a runtime service, same signature as an import, in a fixed order, all six words in every context: 0 `memory.grow`, 1 `table.grow`, 2 `table.init`, 3 `elem.drop`, 4 `memory.init`, 5 `data.drop`; never computation (D25). The operands are in the slots, the instruction's immediates (table, segment) after them; the memory index of `memory.grow` and `memory.init` only when the module has more than one memory. Operands and results have the address width of the memory or table they name (S0009, an amendment of v1 without a bump, Q4): for an i64 memory the delta, the old size and its failure −1 of `memory.grow` and the destination of `memory.init` are 64-bit values (−1 is `2⁶⁴−1`), for an i32 one they are i32 zero-extended as before; `table.grow` and `table.init` of an i64 table the same way (S0009 step 3) |
@@ -206,14 +206,16 @@ and the limit lie in the active space, and a collection (in `ALLOC` or an array 
 them into the other half. A
 **reference word** of the any or extern hierarchy is 0 (null), `(v << 1) | 1` for an i31, `(h << 2)
 | 2` for a host value (*h* its 1-based handle in the store; at most 2³⁰ − 1, so a word fits 4
-bytes), or an object's offset (a multiple of 8). An `externref` element or value is such a word.
+bytes), or an object's offset (a multiple of 8). An `externref` element or value is such a word;
+an `exnref` is 0 or an exception object's offset (S0013 step 6.2), and slots, globals, table
+words and the pending word hold every such word zero-extended to 64 bits.
 **Objects**: a u32 type-info offset and a u32 of collector bits (0 while wasm runs); a struct's
 fields from 8 in declaration order at their natural alignment (`i8` 1, `i16` 2, `i32`/`f32` 4,
-`i64`/`f64` 8, `v128` 16 (unaligned access), an any- or extern-hierarchy reference 4, `funcref` and
-`exnref` 8), its size a multiple of 8 and at least 8; an array's u32 length at 8 and its elements
+`i64`/`f64` 8, `v128` 16 (unaligned access), an any-, extern- or exn-hierarchy reference 4 (exn
+from S0013 step 6.2, 8 before), `funcref` 8), its size a multiple of 8 and at least 8; an array's u32 length at 8 and its elements
 from 16. **Type-info records** (u32 words): `kind | final << 8` (1 struct, 2 array, 3 function),
 the depth *d*, the struct's size or the array's element size (0 for a function type), the number
-of traced reference fields (an array: 1 if its elements are references of the any or extern
+of traced reference fields (an array: 1 if its elements are references of the any, extern or exn
 hierarchy; 0 for a function type), the display (*d* + 1 record offsets, the last its own), then
 the traced fields' offsets. A cast to a final type compares the object's record with the RTT word;
 to a non-final one, the display entry at the target's depth. A **function-type record** is written
@@ -222,7 +224,8 @@ final, its supertypes first, and entered in the tid map; no object has one. An *
 record** (S0013 step 6.1) is a kind-1 record, final, depth 0, written at instantiation for the
 type of each tag a module throws: the object is a struct of the u64 tag identity at 8, then the
 tag's parameters at their natural alignment as struct fields; its key is the type's canonical key
-prefixed `exn `, so it is a different record from that type's function-type record. **A function-subtype
+prefixed `exn `, so it is a different record from that type's function-type record. Its traced
+fields are the parameters of the any, extern and exn hierarchies. **A function-subtype
 site** (`call_indirect`, `return_call_indirect`, `ref.test`, `ref.cast`, `br_on_cast(_fail)` to a
 concrete function type): the function record's type id (word 1) against the signature word; equal
 is a match; else a final target fails, and a non-final one calls `IS_SUBTYPE` with `q` (the
@@ -242,22 +245,24 @@ A host function may enter wasm again; the nested entry's frame starts at `slots 
 above the call's slots, so no value-stack slot above them survives the call. Compiled code keeps
 nothing it reads after a host call there (S0013 B1; the core asserts it at every call site; an
 amendment of version 1 without a bump, as no artifact file has been written, S0013 Q5). The
-exception refill (`EXN_REFILL`) does not set the frame base and must not enter wasm.
+exception refill (`EXN_REFILL`) does not set the frame base and must not enter wasm; no code calls
+it since S0013 step 6.2.
 
 **Exceptions** (S0012, D52; an amendment of version 1 without a bump, as D34). An exception travels
 as status `14` returned through frames, as a trap does; inside a `try_table` a call site's non-zero
 status goes to the try_table's landing pad, which dispatches only 14 and passes every other status
-on. An **exception object** is 8-byte words `{tag identity, payload words…}`, the payload in slot
-form (a v128 two words, low half first); an `exnref` is its address, null 0. Objects live in the
-store's **arena**: chunks that never move, kept until the store is dropped. `throw` bumps the
-cursor (word 12's target) by the object's size in code, checks it against the limit (word 13's
-target), writes the object, stores its address in the pending word (word 10's target) and returns
-14. Only when the chunk is full does it call `EXN_REFILL` through the bridge with `slots[0]` = the
-words it needs; the service makes a new chunk of at least that size, points the cursor and limit
-at it and returns 0, and the code allocates again. The first chunk comes with the store. The three
-targets are store words, not context words, because every context of a store allocates from the
-same arena. At an entry, status 14 is the host's `Trap(UNCAUGHT_EXCEPTION)` with the tag and the
-values; a host function never returns 14 (a re-raised `UNCAUGHT_EXCEPTION` trap is status 13).
+on. From S0013 step 6.2 (D63) an **exception object** is an object of the GC heap with its tag
+type's exception record (above): the u64 tag identity at 8, the payload as struct fields from 16
+at their natural alignment; an `exnref` is its offset, null 0. `throw` allocates it as `struct.new` does (the cursor against
+the limit, a cold `ALLOC` call when it does not fit, which may collect; the payload is read from
+its slots after the call), writes the payload and the identity, stores the offset in the pending
+word (word 10's target) and returns 14. A failed allocation ("GC heap out of memory") is status
+13, which no pad catches. A landing pad reads the identity and the payload through the heap
+memory's words with checked loads and compares the identity in 64 bits. Until step 6.2 objects
+were 8-byte words `{tag identity, payload words…}` in a store arena that `throw` bumped through
+words 12 and 13, calling `EXN_REFILL` for a new chunk (S0012). At an entry, status 14 is the
+host's `Trap(UNCAUGHT_EXCEPTION)` with the tag and the values, read from the object before any
+wasm or collection runs; a host function never returns 14 (a re-raised `UNCAUGHT_EXCEPTION` trap is status 13).
 
 **Tail calls** (D30). A `return_call*` puts its arguments at its own frame base, drops its native
 frame and jumps, so both stacks stay constant. When the callee's function record names another

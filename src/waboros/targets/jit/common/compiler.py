@@ -31,9 +31,11 @@ from waboros.targets.jit.common.backend import NEGATE, AddK, Backend, Imm, Opera
 from waboros.targets.jit.common.context import (
     DATA_DROP,
     ELEM_DROP,
+    EXCEPTION,
     GC_SERVICES,
     MEMORY_GROW,
     MEMORY_INIT,
+    STATUS_EXCEPTION,
     TABLE_GROW,
     TABLE_INIT,
     Layout,
@@ -234,9 +236,10 @@ class _Mod:
     m64: list[bool] = field(default_factory=list[bool])
     mlo: list[int] = field(default_factory=list[int])
     t64: list[bool] = field(default_factory=list[bool])
-    tagw: list[int] = field(default_factory=list[int])  # payload slots of each tag (S0012)
+    tagp: list[Any] = field(default_factory=list[Any])  # parameter types of each tag (S0012)
     mod: Any = None  # the validated module: reference masks and types for the stack maps
     rtts: dict[int, int] = field(default_factory=dict[int, int])  # type index -> RTT word (S0013)
+    exn: dict[int, int] = field(default_factory=dict[int, int])  # thrown tag -> RTT word (step 6)
 
 
 def compile_module(mod: ValidModule, b: Backend[Any, Any], target: str) -> Compiled:
@@ -273,9 +276,10 @@ def compile_module(mod: ValidModule, b: Backend[Any, Any], target: str) -> Compi
     m.mlo = [mn << 16 if w else 0 for mn, w in zip(mins, m.m64, strict=True)]
     m.t64 = [at == I64 for at in mod["taddr"]]
     tts: list[int] = [im[3] for im in imps if im[0] == "tag"] + mod["tags"]
-    m.tagw = [simd.width(m.types[ti][0]) for ti in tts]
+    m.tagp = [m.types[ti][0] for ti in tts]
     m.mod = mod
     m.rtts = {t: k for k, t in enumerate(rtts)}
+    m.exn = {t: k for k, t in enumerate(thrown, len(rtts))}
     nopin = os.environ.get("WABOROS_JIT_NOPIN", "")
     funcs: list[tuple[int, int]] = []
     s0 = len(b.sites)
@@ -332,7 +336,7 @@ class _Func:
         self.dead_depth = 0
         self.tos_taken = False  # an operand of the current instruction is in `tos` (LESSONS 32)
         self.f: Any = None  # the backend's frame, from run()
-        self.pads: list[tuple[Any, Any, list[tuple[int, int | None, _Ctl]]]] = []  # S0012, cold
+        self.pads: list[tuple[Any, Any, list[tuple[int, int | None, _Ctl]], int]] = []  # cold
         self.gccold: list[Any] = []  # S0013: allocation slow paths and trap labels, cold
         self.gctraps: dict[int, Any] = {}
         # stack maps (S0013 3a): (shift, nslots, bits) per call site, in code order; with the
@@ -776,43 +780,37 @@ class _Func:
         self.enter(0x02, bt)
         pad = self.b.new_label()
         self.ctl[-1].outer = self.f.error
-        self.pads.append((pad, self.f.error, targets))
+        self.pads.append((pad, self.f.error, targets, self.ctl[-1].h))
         self.f.error = pad
 
     def landing_pads(self) -> None:
-        """Payload words straight into the label's slots, then the exnref; a miss of every
-        clause goes on to the enclosing pad (or the epilogue) with the status still 14."""
-        b, lay = self.b, self.m.layout
-        for pad, outer, targets in self.pads:
+        """Lowered here on D39 methods (S0013 step 6, D1 (b)): a clause with a tag reads the
+        pending object from the heap (`gc.catch`), its payload straight into the label's slots,
+        then the exnref (the pending word). The status is 14 after `landing`, so `tos` is free;
+        a miss of every clause makes it 14 again for the enclosing pad (or the epilogue). The
+        compare's scratch slot is the try_table's entry height: everything from there up is the
+        abandoned body's, and a label's values (`c.dst`, outside it) are written only on a match."""
+        b, tos = self.b, self.TOS
+        for pad, outer, targets, h in self.pads:
             b.landing(self.f, pad, outer)
             for kind, tag, c in targets:
                 n, miss = 0, None
                 if tag is not None:
                     miss = b.new_label()
-                    b.exn_match(lay.tag(tag), miss)
-                    n = self.m.tagw[tag]
-                    for k in range(n):
-                        b.exn_field(Slot(c.dst + k), k)
+                    self.maxh = max(self.maxh, h + 1)  # the scratch slot
+                    n = gc.catch(self, tag, c.dst, Slot(self.L + h), miss)
                 if kind & 1:
-                    b.exn_load(Slot(c.dst + n))
+                    b.ctx_load(tos, EXCEPTION, True)
+                    b.move(Slot(c.dst + n), tos, True)
+                self.maxh = max(self.maxh, c.dst - self.L + n + (kind & 1))
                 b.jump(c.label)
                 if miss is None:
                     break
                 b.bind(miss)
             else:
+                if targets:  # a clause that missed compared through `tos`
+                    b.move(tos, Imm(STATUS_EXCEPTION), False)
                 b.jump(outer)
-
-    def throw(self, t: int, pc: int) -> None:
-        """The payload (slots h0..h0+n) becomes a new object of the store's arena, in machine
-        code; the slot above it carries the size to the refill service when the chunk is full."""
-        n = self.m.tagw[t]
-        self.flush()
-        h0 = len(self.st) - n
-        self.b.throw(self.f, self.m.layout.tag(t), self.L + h0, n)
-        self.maxh = max(self.maxh, h0 + n + 1)
-        self.site(pc, 0, h0 + n + 1, h0 + n)  # its refill call: the payload and the size slot
-        del self.st[h0:]
-        self.dead = True
 
     # ------------------------------------------------------------------ the pass
     def run(self, far: bool) -> bool:
@@ -901,7 +899,7 @@ class _Func:
             elif op == 0x1F:
                 self.try_table(ins[1], ins[2])
             elif op == 0x08:
-                self.throw(ins[1], pc)
+                gc.throw(self, pc, ins[1])
             elif op == 0x0A:  # a reference is never a pending compare
                 b.throw_ref(f, self.pop())
                 self.dead = True

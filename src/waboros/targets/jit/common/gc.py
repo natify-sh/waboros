@@ -25,6 +25,8 @@ from waboros.targets.jit.common.context import (
     ARRAY_NEW,
     ARRAY_NEW_DATA,
     ARRAY_NEW_ELEM,
+    EXCEPTION,
+    STATUS_EXCEPTION,
 )
 
 Site = tuple[int, int, int, int, int, int]  # ret, shift, ret_at, up, nslots, bits
@@ -98,7 +100,7 @@ def subtype_sites(mod: Any) -> bool:
 
 def storage_size(mod: Any, st: Any) -> int:
     """Bytes of a field or element of storage type `st` in the JIT heap: packed and numeric types
-    their size, an any- or extern-hierarchy reference 4 (a u32 word), funcref and exnref 8."""
+    their size, an any-, extern- or exn-hierarchy reference 4 (a u32 word), funcref 8."""
     n = _SIZES.get(st)
     return n if n is not None else 4 if _root(mod, st) else 8
 
@@ -301,16 +303,17 @@ def _mem(fn: Any) -> int:
     return lay.memory(lay.memories)
 
 
-def alloc(fn: Any, pc: int, ti: int, size: Any, h: int) -> None:
-    """A new object of type `ti` and `size` bytes (an `Imm` or a `Slot`), its header written, its
-    offset in `tos`. The operand stack is in slots (a safepoint): slots [0, h) are the frame's.
-    ALLOC's argument is the topmost scratch slot: a nested entry's frame starts above it, and the
-    retry reads `rtt` and `size` again (B1, ARTIFACT.md "Host functions")."""
+def alloc(fn: Any, pc: int, word: int, size: Any, h: int) -> None:
+    """A new object of the type whose RTT is context word `word`, of `size` bytes (an `Imm` or a
+    `Slot`), its header written, its offset in `tos`. The operand stack is in slots (a safepoint):
+    slots [0, h) are the frame's. ALLOC's argument is the topmost scratch slot: a nested entry's
+    frame starts above it, and the retry reads `rtt` and `size` again (B1, ARTIFACT.md "Host
+    functions")."""
     b, f, hw = fn.b, fn.f, _mem(fn)
     rtt, new = scratch(fn, h, 0), scratch(fn, h, 1)
     assert isinstance(size, Imm) or size.k >= fn.L + h + 2  # a scratch slot below `arg` (B1)
     arg = scratch(fn, h, 2 if isinstance(size, Imm) else size.k - fn.L - h + 1)
-    b.ctx_load(fn.TOS, fn.m.layout.rtt(fn.m.rtts[ti]), False)
+    b.ctx_load(fn.TOS, word, False)
     b.move(rtt, fn.TOS, True)
     retry, slow = b.new_label(), b.new_label()
     b.bind(retry)
@@ -358,7 +361,7 @@ def struct_new(fn: Any, pc: int, ti: int, default: bool) -> None:
     fn.flush()  # a safepoint (I2)
     h = len(fn.st)
     k = base = h - (0 if default else sum(1 + (st == 0x7B) for st, _ in fields))
-    alloc(fn, pc, ti, Imm(size), h)
+    alloc(fn, pc, fn.m.layout.rtt(fn.m.rtts[ti]), Imm(size), h)
     for (st, _), off in zip(fields, offs, strict=True):
         if default:
             for half in range(1 + (st == 0x7B)):
@@ -369,6 +372,60 @@ def struct_new(fn: Any, pc: int, ti: int, default: bool) -> None:
             k += 1 + (st == 0x7B)
     del fn.st[base:]
     fn.push((core.TOS, None))
+
+
+def throw(fn: Any, pc: int, t: int) -> None:
+    """`throw` (S0013 step 6): a new exception object, allocated as `struct.new` is (its ALLOC
+    call a safepoint over the payload, which is read from its slots after it, I4), then its tag
+    identity at 8, the pending word (EXCEPTION's target) and status 14 to the frame's error
+    label. A failed allocation is status 13, which no pad catches."""
+    b, f, tos, lay = fn.b, fn.f, fn.TOS, fn.m.layout
+    params = fn.m.tagp[t]
+    offs, size = exn_layout(fn.m.mod, params)
+    fn.flush()
+    h = len(fn.st)
+    h0 = k = h - simd.width(params)
+    alloc(fn, pc, lay.rtt(fn.m.exn[t]), Imm(size), h)
+    for p, off in zip(params, offs, strict=True):
+        _set(fn, p, tos, off, Slot(fn.L + k))
+        k += 1 + (p == 0x7B)
+    new = scratch(fn, h, 1)  # dead after the allocation; below ALLOC's argument
+    b.move(new, tos, True)
+    b.ctx_load(tos, lay.tag(t), False)
+    b.store(f, 8, new, 8, tos, _mem(fn), a64=False, lo=0)
+    b.move(tos, new, True)
+    b.ctx_store(EXCEPTION, tos, True)  # a zero-extended u32 offset
+    b.move(tos, Imm(STATUS_EXCEPTION), False)  # tos is the status register
+    b.jump(f.error)
+    del fn.st[h0:]
+    fn.dead = True
+
+
+def catch(fn: Any, t: int, dst: int, s: Slot, miss: Any) -> int:
+    """A landing pad's clause for tag `t` (S0013 step 6, D1 (b)): to `miss` unless the pending
+    object's identity equals the tag's, compared in 64 bits (a forged or stale identity matches
+    nothing), else its parameters into slots dst, dst + 1, ...; returns their count. `s` is a
+    scratch slot that only the compare uses. Every read is a checked load of the heap."""
+    b, f, tos, hw = fn.b, fn.f, fn.TOS, _mem(fn)
+    params = fn.m.tagp[t]
+    offs, _ = exn_layout(fn.m.mod, params)
+    b.ctx_load(tos, EXCEPTION, True)
+    b.load(f, 8, False, True, tos, tos, 8, hw, a64=False, lo=0)
+    b.move(s, tos, True)
+    b.ctx_load(tos, fn.m.layout.tag(t), False)
+    b.cmp_branch("ne", s, tos, miss, True)
+    k = dst
+    for p, off in zip(params, offs, strict=True):
+        b.ctx_load(tos, EXCEPTION, True)
+        if p == 0x7B:
+            b.simd(f, 0xFD000, Slot(k), (tos,), (off, hw), a64=False, lo=0)
+            fn.maxh = max(fn.maxh, k - fn.L + simd.SCRATCH)
+        else:
+            n = storage_size(fn.m.mod, p)
+            b.load(f, n, False, n == 8, tos, tos, off, hw, a64=False, lo=0)
+            b.move(Slot(k), tos, True)
+        k += 1 + (p == 0x7B)
+    return k - dst
 
 
 def ref_test(fn: Any, pc: int, x: Any, ht: int, null: bool, fail: Any, h: int) -> None:
@@ -569,7 +626,7 @@ def array(fn: Any, pc: int, ins: Any) -> None:
         b.binop("add", tos, tos, Imm(ARRAY_DATA + 7), True)
         b.binop("and", tos, tos, Imm(-8 & (1 << 64) - 1), True)
         b.move(size, tos, True)
-        alloc(fn, pc, ins[1], size, h)
+        alloc(fn, pc, fn.m.layout.rtt(fn.m.rtts[ins[1]]), size, h)
         obj, d = scratch(fn, h, 3), scratch(fn, h, 4)
         b.store(f, 4, tos, ARRAY_LEN, n, _mem(fn), a64=False, lo=0)
         b.move(obj, tos, True)
@@ -583,7 +640,8 @@ def array(fn: Any, pc: int, ins: Any) -> None:
         fn.push((core.TOS, None))
     elif o == 0xFB08:  # array.new_fixed: N values from their slots
         nslots = ins[2] * (1 + (st == 0x7B))
-        alloc(fn, pc, ins[1], Imm(-(-(ARRAY_DATA + ins[2] * es) // 8) * 8), h)
+        rtt, size = fn.m.layout.rtt(fn.m.rtts[ins[1]]), -(-(ARRAY_DATA + ins[2] * es) // 8) * 8
+        alloc(fn, pc, rtt, Imm(size), h)
         b.store(f, 4, tos, ARRAY_LEN, Imm(ins[2]), _mem(fn), a64=False, lo=0)
         for k in range(ins[2]):
             _set(fn, st, tos, ARRAY_DATA + k * es, at[h - nslots + k * (1 + (st == 0x7B))])

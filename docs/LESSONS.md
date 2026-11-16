@@ -918,3 +918,12 @@ What went wrong or surprised us while building the PoC, so it is not found again
     stack instead of trapping. `func_type` (5.6) asks for a real register (`zr=False`); its encoder
     test has the immediate case. Rule: when a backend method takes an operand as an address, check
     what the helper gives for `Imm(0)`. Found: S0013 step 5.6, 2026-11-16.
+119. **A value restored on every exit path changes code that never clobbered it.** Step 6.2's
+    landing pads use the status register as `tos` to compare tag identities, so the pad must make
+    it 14 again before passing the exception on; the first version did so on every pad's
+    fall-through, also for a `try_table` without clauses, where nothing had touched it. Every
+    test passed; the D35 check found one module (`try_table` 16) whose code changed outside the
+    predicted set, because the prediction was derived from the clauses, not from "has a
+    `try_table`". Rule: restore a register only on the paths that clobbered it, and derive an
+    identity prediction from what the lowering actually reads, so a stray change shows up as a
+    module outside the set. Found: S0013 step 6.2, 2026-11-16.

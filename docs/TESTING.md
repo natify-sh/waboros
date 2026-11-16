@@ -65,13 +65,15 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
 * **The walk check** (`WABOROS_JIT_WALK_CHECK=1`, both JITs, S0013 step 3a): every JIT instance
   created while it is set serves each of its host calls and libcalls only after walking the store's
   whole native stack (`jit/common/walk.py`); the exception arena's refill service is checked too
-  when the store's first instance (the one that creates it) was created with the switch. The exit
+  when the store's first instance (the one that creates it) was created with the switch (no code
+  calls it since S0013 step 6.2: a `throw` allocates through `ALLOC`, checked as every service). The exit
   record must be written, every return address must be a recorded call site, every stack word read
   must lie between the store's native limit and the thread's stack top, the walk must cross exactly
   the active entries and end each segment at the frame the runtime gave that entry, and every slot
   the stack maps mark must hold a reference word: 0, a host value `(h << 2) | 2` with a live handle,
   and, only in a store with a GC heap, an i31 below 2³² or the offset of a heap object (allocated,
-  8-aligned, its header a type-info record; S0013 step 3b). That last test cannot see a wrongly
+  8-aligned, its header a type-info record; S0013 step 3b; an exception object too, as exnref
+  slots are marked from step 6.2). That last test cannot see a wrongly
   marked i32 slot holding a small integer, nor a missing mark (nothing moves before the
   collector, S0013 step 5). A failure is a `RuntimeError` raised by the
   call, so a broken frame layout or table shows up as a spec failure. Off by default: the
@@ -102,7 +104,14 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   `tests/jit/test_exceptions.py` (S0013 6.1) checks which exception modules get the heap (a
   `throw` or a `catch` clause: 128 KiB committed, no object space; only `throw_ref` and `catch_all`:
   none) and a thrown tag type's exception record (kind 1, its offsets and size, its key apart from
-  the type's kind-3 record).
+  the type's kind-3 record). From 6.2 (exceptions in the heap) it also checks that the first
+  throw commits the semispaces, that a full heap at `throw` ("GC heap out of memory", the
+  semispace cap lowered to 2 MiB with live exceptions in an exnref table) is not caught by an
+  enclosing `catch_all`, that `throw_ref` of null traps before the pending word changes, and that
+  an object whose identity a probe forged in the high or the low half matches no `catch $t`.
+  `test_gc_collect.py`, `test_gc_roots.py`, `test_walk.py` and `test_stackmaps.py` hold exception
+  payloads, exnref locals, globals and tables across collections and the throw's ALLOC site in
+  place of the arena; the full list t1-t12 and the mutations are step 6.4.
   `tests/jit/test_gc_memory.py` (native only, the GC switches cleared, about 5 s on CPython 3.11 and
   3.13; it runs in every `pytest` of the CI matrix and in the native arm64 `tests/jit` job, no
   marker) is the memory test: after a warm-up the heap's capacity and committed pages do not move under 576 MB of dropped structs and

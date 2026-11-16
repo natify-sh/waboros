@@ -126,7 +126,7 @@ def test_frames_of_another_instance_indirect_and_ref_calls(checks: list[int]) ->
     assert a("f", 5) == [5] and seen == [[[0, 0, 0, 1, 1]]] and checks[0] == 1
 
 
-def test_try_table_frames_libcalls_and_arena_refills(checks: list[int]) -> None:
+def test_try_table_frames_libcalls_and_throw_allocations(checks: list[int]) -> None:
     store, seen = StoreState(), []
     jit = make(f"""(module {H} (memory 1) (tag $e (param externref))
       (func $g (param i32) (result i32) (drop (memory.grow (i32.const 0))) (call $h (local.get 0)))
@@ -141,9 +141,10 @@ def test_try_table_frames_libcalls_and_arena_refills(checks: list[int]) -> None:
             (try_table (catch $e $c) (throw $e (local.get 1))) (unreachable)))
           (br_if $l (local.tee $n (i32.sub (local.get $n) (i32.const 1)))))))""",
                store, recorder(store, seen))  # fmt: skip
-    assert jit("f", 2) == [2] and seen == [[[0, 0, 0]]] and checks[0] == 2  # grow, then h
-    jit("many", 10_000)  # 2 words a throw: arena chunks of 8192 words fill up
-    assert checks[0] > 2
+    # grow, h, then ALLOC of the first exception object (it commits the heap)
+    assert jit("f", 2) == [2] and seen == [[[0, 0, 0]]] and checks[0] == 3
+    jit("many", 100_000)  # 24 bytes a throw: the 1 MiB semispace fills, ALLOC collects
+    assert checks[0] > 3 and _stacks(store).heap.collections > 0
 
 
 def test_reference_slots_are_checked(checks: list[int]) -> None:

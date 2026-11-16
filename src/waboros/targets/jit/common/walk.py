@@ -120,8 +120,9 @@ def check(store: Any, st: Any, tramp: Any, slots: int) -> None:
 
 
 def valid(st: Any, w: int) -> bool:
-    """`w` is a reference word of the any or extern hierarchy in store `st` (S0013 3b): null, an i31
-    `(v << 1) | 1`, a host value `(h << 2) | 2` with a live handle h, or an object of the heap."""
+    """`w` is a reference word of the any, extern or exn hierarchy in store `st` (S0013 3b, step
+    6): null, an i31 `(v << 1) | 1`, a host value `(h << 2) | 2` with a live handle h, or an object
+    of the heap (an exception object too)."""
     if w == 0:
         return True
     if w & 3 == 2:  # a live handle (D61 frees the ones no collection met)

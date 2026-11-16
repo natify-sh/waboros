@@ -77,13 +77,14 @@ def test_funcref_is_never_marked(target: str) -> None:
 
 
 @pytest.mark.parametrize("target", TARGETS)
-def test_throw_refill_is_a_site_over_its_payload(target: str) -> None:
+def test_throw_allocation_is_a_site_over_its_payload(target: str) -> None:
+    """S0013 step 6: the ALLOC call of a `throw`'s object, its 3 scratch slots above the payload."""
     _, s = sites(
         target,
         """(module (tag $e (param externref))
       (func (param $a externref) local.get $a throw $e))""",
     )
-    assert [(x[0], x[3], x[4]) for x in s] == [(0, 3, 0b11)]
+    assert [(x[0], x[3], x[4]) for x in s] == [(0, 5, 0b11)]
 
 
 @pytest.mark.parametrize("target", TARGETS)

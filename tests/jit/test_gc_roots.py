@@ -2,7 +2,7 @@
 kept in that one place while collections move everything (stress, poison, verify): an imported
 global, a table imported by two instances, a frame of another instance (direct, and through a host
 thunk), the globals of an instance whose instantiation failed. The other classes:
-`test_gc_collect.py` (arena payload, non-GC instances, handles, tables in batches, passive
+`test_gc_collect.py` (exception payload, non-GC instances, handles, tables in batches, passive
 segments) and
 `test_gc_moving.py` (locals, operands, parameters, globals, nested entries)."""
 
@@ -166,7 +166,7 @@ PROBES = f"""(module {P}
     (block $h2 (result v128 anyref)
       (try_table (catch $tv $h2) (throw_ref (local.get $e))) unreachable)
     (call $val) (i32x4.replace_lane 0) (i32x4.extract_lane 0))
-  (func (export "keepfirst")  ;; an exnref whose payload is in the arena's first chunk
+  (func (export "keepfirst")  ;; an exnref kept in a global while many others are thrown
     (block $h (result anyref exnref)
       (try_table (catch_ref $t1 $h) (throw $t1 (call $mk (i32.const 44)))) unreachable)
     (global.set $first) (drop))
@@ -186,20 +186,20 @@ BIG = """(module (type $l (array (mut i64)))
 
 
 def test_a_payload_after_a_v128_parameter(monkeypatch: pytest.MonkeyPatch) -> None:
-    """An arena payload walks two words for a v128: the reference after it is still a root."""
+    """A payload reference after a v128 parameter is traced at its offset in the object."""
     store = setup(monkeypatch)
     i = build(wat(PROBES), store=store)
     n = _stacks(store).heap.collections
     assert i("v128tag") == [43] and _stacks(store).heap.collections > n
 
 
-def test_a_payload_in_the_first_arena_chunk(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Every chunk of the arena is walked, not only the last: 5 000 throws start a second chunk."""
+def test_a_payload_kept_in_a_global_across_many_throws(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An exnref global keeps its object, and the object its payload, while 5 000 more exceptions
+    are thrown and collected (S0013 step 6; the arena's chunk walk before it)."""
     store = setup(monkeypatch)
     i = build(wat(PROBES), store=store)
     i("keepfirst")
     i("throws", 5000)
-    assert len(_stacks(store).chunks) >= 2
     n = _stacks(store).heap.collections
     assert i("readfirst") == [44] and _stacks(store).heap.collections > n
 

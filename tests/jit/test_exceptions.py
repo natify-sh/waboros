@@ -1,8 +1,9 @@
 # pyright: reportUnknownVariableType=false, reportUnknownArgumentType=false, reportUnknownMemberType=false
 """Exception handling on the native JIT (S0012 steps 3-4; aarch64 under QEMU, tools/run_arm64.py):
-the cases of tests/test_exceptions_pyc.py, and what only the status path and the inline arena can
-get wrong (pins across unwinding, v128 payloads, clause order, nested pads, imported tags, the
-refill path, no Python on a throw). The spec suite (`exceptions/`) is the metric."""
+the cases of tests/test_exceptions_pyc.py, and what only the status path and the exception objects
+in the GC heap (S0013 step 6) can get wrong (pins across unwinding, v128 payloads, clause order,
+nested pads, imported tags, a full heap, forged identities, no Python on a throw). The spec suite
+(`exceptions/`) is the metric."""
 
 import ctypes
 import struct
@@ -23,7 +24,7 @@ from waboros.frontend.validate import validate
 from waboros.runtime.store import StoreState
 from waboros.targets import base
 from waboros.targets.base import Trap, TrapCode
-from waboros.targets.jit.common import gc, instance
+from waboros.targets.jit.common import gc
 from waboros.targets.jit.common.instance import ExnRef, Tag
 
 __all__ = ["pins"]  # the fixture, used by name
@@ -64,8 +65,9 @@ def test_payload_words_land_in_the_label_slots(pins: None) -> None:
 
 
 def test_an_object_larger_than_an_add_immediate() -> None:
-    """520 words: the object is 4168 bytes, which no aarch64 add imm12 takes (LESSONS 83); each
-    word lands at its own position (a weighted sum), and the cursor moves by the whole object."""
+    """520 words: the object is 4176 bytes, which no aarch64 add imm12 takes (LESSONS 83); each
+    word lands at its own position (a weighted sum), and the heap's cursor moves by the whole
+    object (the first allocation grows the heap, it never collects)."""
     n, store = 520, StoreState()
     sets = "".join(f"(local.set {k})" for k in reversed(range(n)))
     acc = "".join(f"(i64.add (i64.mul (local.get {k}) (i64.const {k + 1})))" for k in range(n))
@@ -80,14 +82,16 @@ def test_an_object_larger_than_an_add_immediate() -> None:
 """,
         store=store,
     )
-    st: Any = store.target_state
-    cursor = st.exn[1]
+    heap: Any = cast(Any, store.target_state).heap
+    cursor = heap.cursor
     assert i("go") == [sum((k * k + 1) * (k + 1) for k in range(n)) % 2**64]
-    assert st.exn[1] - cursor == 8 * (1 + n)
+    assert heap.cursor - cursor == 8 * (2 + n)  # header, identity, payload
 
 
 def test_catch_ref_and_throw_ref_keep_the_object(pins: None) -> None:
-    i = build("""
+    store = StoreState()
+    i = build(
+        """
 (module
   (tag $t (param i32))
   (tag $w (param exnref i32))
@@ -111,11 +115,15 @@ def test_catch_ref_and_throw_ref_keep_the_object(pins: None) -> None:
   (func (export "null") (result i32) (throw_ref (ref.null exn)) (i32.const 0))
   (func (export "null_in_try") (result i32)
     (block (try_table (catch_all 0) (throw_ref (ref.null exn)))) (i32.const 0)))
-""")
+""",
+        store=store,
+    )
     assert i("go", 42) == [42]
     assert i("wrapped") == [8]
-    for name in ("null", "null_in_try"):  # a trap: not caught
-        assert raises(i, name).code is TrapCode.NULL_REFERENCE
+    pending = cast(Any, store.target_state).exn
+    last = pending[0]
+    for name in ("null", "null_in_try"):  # a trap before anything is stored: not caught
+        assert raises(i, name).code is TrapCode.NULL_REFERENCE and pending[0] == last
 
 
 def test_three_frames_deep_with_live_pins(pins: None) -> None:
@@ -373,63 +381,81 @@ def test_a_throw_runs_no_python() -> None:
     assert calls(2000) - calls(1) < 50
 
 
-def test_the_refill_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    """An object here is 4 words: 2048 fit a default chunk; with chunks smaller than an object
-    every throw refills with the size the code passes, then allocates again."""
+FULL = """(module (tag $t (param i32)) (table $k 0 exnref)
+  (func (export "go") (result i32) (local $i i32) (local $e exnref)
+    (block $h
+      (try_table (catch_all $h)
+        (loop $l  ;; each exception kept in the table: the heap fills up
+          (block $c (result i32 exnref)
+            (try_table (catch_ref $t $c) (throw $t (local.get $i))) unreachable)
+          (local.set $e) (drop)
+          (drop (table.grow $k (local.get $e) (i32.const 1)))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $l)))
+      (return (i32.const 1)))
+    (i32.const 2)))"""
+
+
+def test_a_full_heap_at_throw_is_an_error_no_pad_catches(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Approval note, addition 1 (Wasmtime's GcHeapOutOfMemory): a `throw` whose allocation finds
+    the heap full after collecting and growing to its limit fails with "GC heap out of memory",
+    status 13, which the enclosing `catch_all` does not catch: the entry raises it. Live
+    exceptions are kept in an exnref table (a root) until a 1 MiB semispace is full."""
+    monkeypatch.setattr(gc, "CAP_MAX", 2 << 20)
     store = StoreState()
-    i = build(LOOP, store=store)
-    st: Any = store.target_state  # the JIT's per-store state: the arena's chunks
-    first = st.chunks[0]
-    n = len(st.chunks)
-    assert i("loop", 10000) == [10000 * 10001 // 2]  # 4 words each: 2048 per 8192-word chunk
-    assert len(st.chunks) == n + 4 and st.chunks[0] is first  # chunks never move
-    monkeypatch.setattr(instance, "ARENA_WORDS", 3)  # smaller than an object: max(3, 4)
-    st.exn[2] = st.exn[1]  # the current chunk is full
-    n = len(st.chunks)
-    assert i("loop", 5) == [15]
-    assert len(st.chunks) == n + 5 and all(len(c) == 4 for c in st.chunks[n:])
-    e = raises(i, "escape")
-    assert e.exn[1] == (5, 6 | 7 << 64)
+    i = build(FULL, store=store)
+    with pytest.raises(MemoryError, match="GC heap out of memory"):
+        i("go")
+    heap = cast(Any, store.target_state).heap
+    assert heap.cap == 2 << 20 and heap.collections >= 1
 
 
-def test_a_failing_refill_is_a_host_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The refill service fails once (MemoryError): status 13 with the error pending, so the
-    catch_all does not catch it and the entry raises the error itself. Failing once only, so a
-    refill that reported 0 would retry, succeed and be caught: a result, not a hang."""
+def test_a_forged_identity_matches_no_tag() -> None:
+    """Approval note, addition 3: the pad compares the full 64-bit identity read from the heap, so
+    an object whose identity differs from the tag's in the high or the low half only (a probe
+    writes it through the host's handle) is caught by no `catch $t`: the `catch_all` takes it."""
     store = StoreState()
     i = build(
         """
-(module (tag $t)
-  (func (export "go") (result i32) (block (try_table (catch_all 0) (throw $t))) (i32.const 1)))
+(module (tag $t (param i32))
+  (func (export "make") (result exnref)
+    (block $h (result exnref) (try_table (catch_all_ref $h) (throw $t (i32.const 5))) unreachable))
+  (func (export "rethrow") (param exnref) (result i32)
+    (block $all
+      (block $h (result i32)
+        (try_table (catch $t $h) (catch_all $all) (throw_ref (local.get 0))) unreachable)
+      (return))
+    (i32.const -1)))
 """,
         store=store,
     )
     st: Any = store.target_state
-    real, calls = st.new_chunk, [0]
+    e = i("make")[0]
+    k = next(x for n, _, x in i.mod["exports"] if n == "rethrow")
 
-    def once(words: int) -> None:
-        calls[0] += 1
-        if calls[0] == 1:
-            raise MemoryError("arena")
-        real(words)
+    def rethrow() -> list[Any]:
+        return i.inst.call(k, [e])
 
-    monkeypatch.setattr(st, "new_chunk", once)
-    st.exn[2] = st.exn[1]  # the current chunk is full
-    with pytest.raises(MemoryError, match="arena"):
-        i("go")
-    assert calls[0] == 1
-    assert i("go") == [1]  # the next refill works: thrown and caught
+    assert isinstance(e, ExnRef) and rethrow() == [5]
+    at = st.heap.base + st.gc_handles[e.index] + 8
+    ident = ctypes.c_uint64.from_address(at).value
+    for forged in (ident | 1 << 32, ident ^ 1):
+        ctypes.c_uint64.from_address(at).value = forged
+        assert rethrow() == [0xFFFFFFFF]
+    ctypes.c_uint64.from_address(at).value = ident
+    assert rethrow() == [5]
 
 
 def test_a_module_that_throws_or_catches_by_tag_gets_the_heap() -> None:
     """t5 (S0013 step 6.1, D6 (b)): a `throw` gives the store the heap, its header page and first
-    type-info page committed (128 KiB) and no object space; the throw still uses the arena. A
-    `catch` clause alone gets the heap and no RTT word; `throw_ref` and `catch_all` get none."""
+    type-info page committed (128 KiB) and no object space until the first throw commits the
+    semispaces (6.2). A `catch` clause alone gets the heap and no RTT word; `throw_ref` and
+    `catch_all` get none."""
     store, other = StoreState(), StoreState()
     i = build(THROWS, store=store)
     st: Any = store.target_state
     assert st.heap.mem.pages << 16 == 128 << 10 and st.heap.cap == 0
-    assert i("go") == [7] and st.heap.cap == 0
+    assert i("go") == [7] and st.heap.cap > 0
     lay: Any = build(CATCHES).inst.layout  # pyright: ignore[reportAttributeAccessIssue]
     build(CLEANUP, store=other)
     assert lay.heap and lay.rtts == 0 and cast(Any, other.target_state).heap is None

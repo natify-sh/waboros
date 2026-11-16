@@ -6,7 +6,7 @@ status: implemented
 superseded_by:
 related: [D19, D25, D30, D32, D34, D35, D39, D47, D51, R2, R3, S0001, S0002, S0003, S0004, S0011]
 owner: maintainer
-updated: 2026-11-05
+updated: 2026-11-16
 ---
 
 # S0012 Exception handling (exnref) on pyc, jit-x86_64 and jit-aarch64
@@ -479,3 +479,18 @@ in a comment (REFERENCES.md).
 * 2026-11-05: implemented. The fuzz findings were triaged before closing (ROADMAP): every
   divergence was a `pyc` evaluation-order or naming defect outside the exception code and is fixed
   (TESTING.md, LESSONS 95-96); a 3-minute cross-target run with exceptions enabled finds none.
+* 2026-11-16: superseded in part by S0013 step 6.2 (D63; S0013 Q7 (b)). On the JITs an exception
+  object is now an object of the store's GC heap (the u64 tag identity at 8, the payload as struct
+  fields at their natural alignment) and an `exnref` its zero-extended u32 offset, a reference
+  the collector finds in slots, globals, tables and fields. So the Interface text above is
+  history: **"`throw` runs no Python"** holds only while the heap's space has room (a full space
+  calls `ALLOC`, which may collect, and a full heap is "GC heap out of memory", status 13, which
+  no pad catches); "the exception object" and "an `exnref` value" (arena words, an address) are
+  replaced; the pending word holds 0 or the u32 offset of the last exception thrown and is a root;
+  context words 11-13 are no longer read (S0013 step 6.3 makes them reserved and zero). The D39
+  amendment shrinks: the landing pads are lowered in the shared core over checked heap loads
+  (`exn_match`, `exn_field`, `exn_load` and `throw` are no longer called; 6.3 deletes them), and
+  `landing`, `throw_ref` and the `error` label stay. Q3's (a) (objects kept until the store is
+  dropped) ends: unreachable exceptions are reclaimed, as with (c). Q2's amendment of v1 stands,
+  extended under S0013 Q5. `ExnRef` is a handle into the store's GC handle table. `pyc` is
+  unchanged.

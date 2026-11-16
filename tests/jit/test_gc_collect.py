@@ -255,7 +255,8 @@ EXN = """(module
         (try_table (catch $t $h2) (throw_ref (local.get $e))) unreachable)))))"""
 
 
-def test_arena_payload_is_a_root(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_an_exception_payload_is_traced(monkeypatch: pytest.MonkeyPatch) -> None:
+    """S0013 step 6: the exnref local is a root and the object's anyref payload a traced field."""
     i, st = make(monkeypatch, "stress", "poison")
     e = build(wat(EXN), store=store_of(i))
     n = st.heap.collections
@@ -386,11 +387,11 @@ TABLES = """(module (type $p (struct (field i32))) (tag $t)
       (ref.is_null (table.get $x (i32.const 0))))))"""
 
 
-def test_tables_are_roots_in_batches_and_func_exn_tables_are_not(
+def test_tables_are_roots_in_batches_and_funcref_tables_are_not(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """8 000 table roots cross ROOTS' 7 680-word bound; funcref and exnref words (addresses
-    above 2**32) sent as roots would make the collector trap."""
+    """8 000 table roots cross ROOTS' 7 680-word bound; funcref words (addresses above 2**32) sent
+    as roots would make the collector trap. An exnref table is a root (S0013 step 6)."""
     i, st = make(monkeypatch, "poison", "verify")
     t = build(wat(TABLES), store=store_of(i))
     fn(t, "setup")
