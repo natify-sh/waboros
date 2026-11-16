@@ -116,12 +116,13 @@ bytes). The trampolines' own points (the entry's return point and its saved bloc
 `restore` frame) are part 3's, not this section's.
 
 Strings are UTF-8 with a u32 length prefix. A loader refuses an artifact whose `magic`,
-`format_version` major, `ctx_abi_version`, `arch` or ISA it does not support — it never "tries".
+`format_version` major, `ctx_abi_version`, `arch` or ISA it does not support, or whose `compiler`
+target is not the Store's compiler (D64) — it never "tries".
 `Module.serialize()` writes this format; the cache stores it.
 
 **Thin and fat files (D18).** A thin file (no `WASM` section) is refused on any mismatch. A fat file is
-never refused: when the loader cannot use the code — another waboros or target version, another ISA
-level, a compiler version on the known-bad list, a format it does not know — it checks that the
+never refused: when the loader cannot use the code — another waboros or target version, another
+compiler target than the Store's (D64), another ISA level, a compiler version on the known-bad list, a format it does not know — it checks that the
 embedded wasm matches `module_sha256` and regenerates from it. For this the loader must be able to
 read the header and find section 14 in every format version, so the header prefix (`magic`,
 `format_version`) and the section framing are frozen across versions.
@@ -277,8 +278,11 @@ architectures, the saved context at the stack pointer of the `call`/`blr` and th
 address 8 above it; the GC's frame walk steps over it by these numbers (S0013).
 
 **Per architecture** (S0004, D38; an amendment of version 1, which phase 5 fixes): what a host that
-provides the bridge or the tail-call trampoline itself must follow. Everything else in this part is
-the same 64-bit little-endian words for every architecture.
+provides the bridge or the tail-call trampoline itself must follow. The table is per compiler and
+architecture, keyed by the target in the header's `compiler` field (D64): the columns below are
+`jit-x86_64` and `jit-aarch64`; another compiler (a sljit micro-compiler) states its own table, and
+a host providing the bridge or `tail_switch` follows the table of its Store's compiler. Everything
+else in this part is the same 64-bit little-endian words for every architecture and compiler.
 
 | | x86-64 | aarch64 |
 |---|---|---|

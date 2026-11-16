@@ -1316,3 +1316,41 @@ Status 14 propagation (D52) is unchanged.
 * **ABI**: context ABI v1 amended without a bump under S0013 Q5's approval (no artifact file
   exists): word 10's target holds a u32 offset; words 11-13 are no longer read (step 6.3 makes
   them reserved and zero, with a test that no code names them).
+
+### D64. One compiler per Store; nothing shared between Stores; part 3's register table is per compiler
+Status: accepted (maintainer, 2026-11-16) · Date: 2026-11-16 · Supersedes: the advice of the first sljit package (freeze part 3's per-architecture table to sljit's registers, or decide hand-written against sljit before freezing part 3) · Evidence: SLJIT-BACKEND.md (sljit keeps the context in rbx and the frame in r15 on x86-64, `jit-x86_64` in r15 and r12)
+
+* **A Store uses exactly one compiler.** If the runtime picks a compiler (for example a sljit
+  micro-compiler on x86-64), every module, instance and runtime module of that Store goes through
+  it; mixing compilers inside a Store is not allowed.
+* **Nothing is shared between Stores**: no functions, contexts or trampolines, so Stores with
+  different compilers live in one process without conflict.
+* Why: two compilers give the same module different machine code and register roles. Calls between
+  instances of one Store are direct (a function record with a context switch, `tail_switch`, the
+  shared bridge and entry) and need one set of boundary conventions; with one compiler per Store
+  that holds by construction, and no table has to be common to all compilers.
+
+Consequences:
+1. **ARTIFACT.md part 3's "Per architecture" table belongs to a compiler**, keyed by the target in
+   the header's `compiler` field. The present table is `jit-x86_64`'s and `jit-aarch64`'s; a sljit
+   micro-compiler brings its own. A host that provides the bridge or `tail_switch` follows the table
+   of its Store's compiler.
+2. **A loader refuses, never guesses**: a thin artifact whose compiler target differs from the
+   Store's compiler is refused, like an `arch` or ISA mismatch; a fat artifact is regenerated from
+   its wasm, as for another target today. The AOT cache key already holds `compiler` and
+   `config_sha256`.
+3. **Runtime modules** (the collector, D61, and the other D54 modules) are compiled by the Store's
+   compiler.
+4. **The oracle between compilers is behaviour**: the spec suite, `spec_diff` both ways, the walk
+   check, poison. D35 (byte identity, cross-compilation) holds within one compiler, not across.
+5. **Static builds (D62)**: trampolines may be one set per compiler (they hold no state), shared by
+   Stores of that compiler; state lives in each Store's context.
+
+Rejected: mixing compilers inside a Store; one register table per architecture common to every
+compiler (it would force the Python JIT onto sljit's register roles or the reverse, for no gain
+once Stores do not mix).
+
+Still open, unaffected: the sljit backend embeds libm and libc addresses as 64-bit immediates
+(`_ccall`, `_cmem` in `poc/sljit/sljit-be/`), invalid in a cached or cross-compiled artifact; it is
+fixed (inline sequences through `sljit_emit_op_custom`, or calls through context words) before a
+sljit micro-compiler emits AOT artifacts (SLJIT-BACKEND.md, check 3).
