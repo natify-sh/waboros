@@ -30,9 +30,10 @@ STATUS_EXCEPTION = 14  # inside code: an exception is in flight (S0012)
 MEMORY_GROW, TABLE_GROW, TABLE_INIT, ELEM_DROP, MEMORY_INIT, DATA_DROP = range(6)
 LIBCALLS = 6
 RECORD = 3  # words of a function record: code address, canonical type id, context address
-# The GC group (S0013 3b), after the tag words of a module that uses GC: these services, in this
-# order (word 7 reserved, zero: FUNC_SUBTYPE until S0013 5.6), then one RTT word per type of
-# `Compiled.rtts` (its type-info record's offset in the heap), then the IS_SUBTYPE function record
+# The GC group (S0013 3b), after the tag words of a module that needs the heap (`gc.needs_heap`):
+# these services, in this order (word 7 reserved, zero: FUNC_SUBTYPE until S0013 5.6), then one
+# RTT word per type of `Compiled.rtts` (its type-info record's offset in the heap) and one per tag
+# of `Compiled.thrown` (its exception record, S0013 step 6), then the IS_SUBTYPE function record
 # `{code, 0, context}` of the collector module's `is_subtype` (S0013 5.6)
 ALLOC, ARRAY_NEW, ARRAY_NEW_DATA, ARRAY_NEW_ELEM, ARRAY_FILL = range(5)
 ARRAY_INIT_DATA, ARRAY_INIT_ELEM, GC_RESERVED = 5, 6, 7

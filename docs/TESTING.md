@@ -99,6 +99,10 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   `return_call_indirect`, `ref.test`, `ref.cast`, `br_on_cast(_fail)`, final and non-final targets)
   on the functions of another module against `pyc`, shows that equality and final targets make no
   call, and checks that no compiled module uses GC group word 7.
+  `tests/jit/test_exceptions.py` (S0013 6.1) checks which exception modules get the heap (a
+  `throw` or a `catch` clause: 128 KiB committed, no object space; only `throw_ref` and `catch_all`:
+  none) and a thrown tag type's exception record (kind 1, its offsets and size, its key apart from
+  the type's kind-3 record).
   `tests/jit/test_gc_memory.py` (native only, the GC switches cleared, about 5 s on CPython 3.11 and
   3.13; it runs in every `pytest` of the CI matrix and in the native arm64 `tests/jit` job, no
   marker) is the memory test: after a warm-up the heap's capacity and committed pages do not move under 576 MB of dropped structs and

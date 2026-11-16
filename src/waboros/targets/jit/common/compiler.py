@@ -201,6 +201,7 @@ class Compiled:
     faults: list[tuple[int, int]] = field(default_factory=lambda: [])  # S0006 fault map
     stackmaps: bytes | None = None  # the STACKMAPS section (S0013 3a); None: not instantiable
     rtts: list[int] = field(default_factory=lambda: [])  # the type of each RTT word (S0013 3b)
+    thrown: list[int] = field(default_factory=lambda: [])  # tag of each later RTT word (S0013 6)
 
 
 @dataclass(slots=True)
@@ -254,13 +255,13 @@ def compile_module(mod: ValidModule, b: Backend[Any, Any], target: str) -> Compi
     refd |= {i[1] for insns in mod["insns"] for i in insns if i[0] == 0xD2}
     sigs = {i[1] for insns in mod["insns"] for i in insns if i[0] in (0x11, 0x13)}
     sigs = sorted(sigs | gc.sigs(mod))  # and the function types casts name (S0013)
-    rtts = gc.rtts(mod)
+    rtts, thrown, heap = gc.rtts(mod), gc.thrown(mod), gc.needs_heap(mod)
     wide = tuple(len(gimps) + i for i, g in enumerate(mod["globals"]) if g[0] == simd.V128)
     layout = Layout(
         memories=nmem, tables=len(mod["ttypes"]),
         globals=len(gimps) + len(mod["globals"]), imports=len(fimps), sigs=len(sigs),
         records=len(refd), wide=wide, tags=sum(im[0] == "tag" for im in imps) + len(mod["tags"]),
-        heap=gc.uses_gc(mod), gcsvc=GC_SERVICES if gc.uses_gc(mod) else 0, rtts=len(rtts),
+        heap=heap, gcsvc=GC_SERVICES if heap else 0, rtts=len(rtts) + len(thrown),
     )  # fmt: skip
     m = _Mod(
         b, mod["types"], fimps + mod["funcs"], len(fimps), [b.new_label() for _ in mod["funcs"]],
@@ -305,7 +306,7 @@ def compile_module(mod: ValidModule, b: Backend[Any, Any], target: str) -> Compi
         for (ret, ret_at, up), (shift, n, bits) in zip(b.sites[s0:], maps, strict=True)
     ]
     c = Compiled(mod, code, data, funcs, layout, sorted(refd), sigs, thunks)
-    c.rtts = rtts
+    c.rtts, c.thrown = rtts, thrown
     c.stackmaps = gc.encode(sites)
     return c
 

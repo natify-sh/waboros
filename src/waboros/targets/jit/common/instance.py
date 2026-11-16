@@ -1058,6 +1058,9 @@ class JitInstance(Instance):
             st.guard = True
         for k, ti in enumerate(c.rtts):  # type-info records before any code runs (S0013 3b)
             ctx[lay.rtt(k)] = st.heap.rtt(mod, ti)
+        tts = [im[3] for im in mod["imports"] if im[0] == "tag"] + mod["tags"]
+        for k, t in enumerate(c.thrown, len(c.rtts)):  # exception records (S0013 step 6, D3)
+            ctx[lay.rtt(k)] = st.heap.rtt(mod, tts[t], exn=True)
         if lay.heap:  # function types a subtype test may meet, with the tid map (S0013 5.6)
             for ti, (comp, sups, final, *_) in enumerate(mod["tdefs"]):
                 if comp[0] == "func" and (sups or not final):

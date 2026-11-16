@@ -4,10 +4,12 @@ the cases of tests/test_exceptions_pyc.py, and what only the status path and the
 get wrong (pins across unwinding, v128 payloads, clause order, nested pads, imported tags, the
 refill path, no Python on a throw). The spec suite (`exceptions/`) is the metric."""
 
+import ctypes
+import struct
 import sys
 import threading
 from types import FrameType
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -16,11 +18,12 @@ from tests.jit.test_compiler import Inst, pins, wat
 from tests.jit.test_compiler import build as _build
 from tests.jit.test_tables import provider
 from waboros.frontend.binary import parse
+from waboros.frontend.types import key
 from waboros.frontend.validate import validate
 from waboros.runtime.store import StoreState
 from waboros.targets import base
 from waboros.targets.base import Trap, TrapCode
-from waboros.targets.jit.common import instance
+from waboros.targets.jit.common import gc, instance
 from waboros.targets.jit.common.instance import ExnRef, Tag
 
 __all__ = ["pins"]  # the fixture, used by name
@@ -416,3 +419,42 @@ def test_a_failing_refill_is_a_host_error(monkeypatch: pytest.MonkeyPatch) -> No
         i("go")
     assert calls[0] == 1
     assert i("go") == [1]  # the next refill works: thrown and caught
+
+
+def test_a_module_that_throws_or_catches_by_tag_gets_the_heap() -> None:
+    """t5 (S0013 step 6.1, D6 (b)): a `throw` gives the store the heap, its header page and first
+    type-info page committed (128 KiB) and no object space; the throw still uses the arena. A
+    `catch` clause alone gets the heap and no RTT word; `throw_ref` and `catch_all` get none."""
+    store, other = StoreState(), StoreState()
+    i = build(THROWS, store=store)
+    st: Any = store.target_state
+    assert st.heap.mem.pages << 16 == 128 << 10 and st.heap.cap == 0
+    assert i("go") == [7] and st.heap.cap == 0
+    lay: Any = build(CATCHES).inst.layout  # pyright: ignore[reportAttributeAccessIssue]
+    build(CLEANUP, store=other)
+    assert lay.heap and lay.rtts == 0 and cast(Any, other.target_state).heap is None
+
+
+THROWS = """(module (tag $t (param i32)) (func (export "go") (result i32)
+  (block $h (result i32) (try_table (catch $t $h) (throw $t (i32.const 7))) unreachable)))"""
+CATCHES = "(module (tag $t) (func (block $h (try_table (catch $t $h)))))"
+CLEANUP = "(module (func (param exnref) (try_table (catch_all 0) (throw_ref (local.get 0)))))"
+
+
+def test_a_thrown_tag_type_has_one_struct_record_apart_from_its_function_record() -> None:
+    """S0013 step 6.1 (D2, D3): two thrown tags of one type share one kind-1 record, final,
+    depth 0, of `gc.exn_layout` (the identity at 8, the externref traced, the funcref not), under
+    a key distinct from the type's own kind-3 record (a non-final function type, S0013 5.6)."""
+    store = StoreState()
+    a = "(i32.const 0) (ref.null extern) (f64.const 0) (ref.null func) (v128.const i64x2 0 0)"
+    t = "(module (type $f (sub (func (param i32 externref f64 funcref v128))))"
+    t += f"(tag $t (type $f)) (tag $u (type $f)) (tag $c (param i64)) (func (throw $t {a}))"
+    i = build(t + f"(func (throw $u {a})))", store=store)
+    jit, heap = cast(Any, i.inst), cast(Any, store.target_state).heap
+    assert gc.exn_layout(i.mod, i.mod["types"][0][0]) == ([16, 20, 24, 32, 48], 64)
+    r, fr = heap.records["exn " + key(i.mod, 0)], heap.records[key(i.mod, 0)]
+    assert jit.layout.rtts == 2 and [jit.ctx[jit.layout.rtt(k)] for k in (0, 1)] == [r, r]
+    words = struct.unpack_from("<6I", ctypes.string_at(heap.base + r, 24))
+    assert words == (gc.KIND_STRUCT | 1 << 8, 0, 64, 1, r, 20)
+    assert heap.kind[r] == gc.KIND_STRUCT and r in heap.offsets and fr not in heap.offsets
+    assert ctypes.c_uint32.from_address(heap.base + fr).value == gc.KIND_FUNC  # not final

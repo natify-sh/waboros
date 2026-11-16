@@ -67,6 +67,21 @@ def uses_gc(mod: Any) -> bool:
     return bool(open_) and any(ins[0] in (0x11, 0x13) and ins[1] in open_ for ins in insns)
 
 
+def needs_heap(mod: Any) -> bool:
+    """The module gets the heap and the GC group: it uses GC, or it allocates or reads exception
+    objects, a `throw` or a `try_table` with a `catch` or `catch_ref` clause (S0013 step 6, D6
+    (b)); `throw_ref` and `catch_all(_ref)` read only the pending word."""
+    insns = (ins for body in mod.get("insns") or () for ins in body)
+    return uses_gc(mod) or any(
+        ins[0] == 0x08 or ins[0] == 0x1F and any(c[1] is not None for c in ins[2]) for ins in insns
+    )
+
+
+def thrown(mod: Any) -> list[int]:
+    """The tags the module throws: one RTT word each, after the types' (S0013 step 6, D4)."""
+    return sorted({ins[1] for body in mod.get("insns") or () for ins in body if ins[0] == 0x08})
+
+
 def subtype_sites(mod: Any) -> bool:
     """The code calls `is_subtype` (S0013 5.6): a call_indirect / return_call_indirect, ref.test,
     ref.cast or br_on_cast* whose function type is not final."""
@@ -98,6 +113,13 @@ def struct_layout(mod: Any, fields: Any) -> tuple[list[int], int]:
         offs.append(at)
         at += n
     return offs, -(-at // 8) * 8
+
+
+def exn_layout(mod: Any, params: Any) -> tuple[list[int], int]:
+    """An exception object's parameter offsets and size: a struct of the u64 tag identity (at 8),
+    then the tag's parameters (S0013 step 6, D2)."""
+    offs, size = struct_layout(mod, [(0x7E, False), *((p, False) for p in params)])
+    return offs[1:], size
 
 
 def slot_bits(refs: int, v128: int) -> int:

@@ -1,5 +1,5 @@
 """The GC heap of a store on the JIT targets (docs/specs/S0013, "JIT: the GC heap"): one per store,
-an i32 `Memory` (4 GiB + 32 MiB reserved, never moves) bound into every instance that uses GC as a
+an i32 `Memory` (4 GiB + 32 MiB reserved, never moves) bound into every instance that needs it as a
 hidden memory after its declared memories. It is committed from its start, in 64 KiB pages: the
 header page at creation, the type-info area as records are written, the objects at the first
 allocation (with the rest of the type-info area below them) and as the heap grows. So every byte
@@ -70,17 +70,26 @@ class GcHeap:
             for ctx, word in self.mem.users:
                 ctx[word + 1] = end
 
-    def rtt(self, mod: Any, ti: int) -> int:
+    def rtt(self, mod: Any, ti: int, exn: bool = False) -> int:
         """The offset of the type-info record of type `ti` of `mod`, written on first use, its
         supertype first: equal for equivalent types of every module of the store. A function
-        type's record (kind 3, no size, nothing traced) is entered in the tid map (S0013 5.6)."""
-        k = types_key(mod, ti)
+        type's record (kind 3, no size, nothing traced) is entered in the tid map (S0013 5.6).
+        With `exn`, the record of an exception object of tag type `ti` (S0013 step 6): kind 1,
+        final, depth 0, `gc.exn_layout`; keyed apart from the type's own kind-3 record (D2, D3)."""
+        k = ("exn " if exn else "") + types_key(mod, ti)
         off = self.records.get(k)
         if off is not None:
             return off
         comp, sups, final = mod["tdefs"][ti][:3]
+        if exn:
+            sups, final = (), True
         sup = self.rtt(mod, sups[0]) if sups else None  # the depth is at most 63 (the spec's limit)
-        if comp[0] == "struct":
+        if exn:
+            params = mod["types"][ti][0]
+            offs, size = gc.exn_layout(mod, params)
+            refs = [o for o, p in zip(offs, params, strict=True) if _root(mod, p)]
+            kind = gc.KIND_STRUCT
+        elif comp[0] == "struct":
             offs, size = gc.struct_layout(mod, comp[1])
             refs = [o for o, (st, _) in zip(offs, comp[1], strict=True) if _root(mod, st)]
             kind = gc.KIND_STRUCT
