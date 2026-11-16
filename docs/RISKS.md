@@ -104,8 +104,10 @@ retention (a dead object kept) or a live local read as null (a `NULL_REFERENCE` 
 failure), never a stale offset: a nulled slot is not forwarded, and the gatherer refuses a frame
 whose slots leave the value stack. Mitigations: exact sets per edge kind (`test_liveness.py`),
 behaviour tests that collect between the write and the read on each edge (`test_gc_roots.py`
-t16-t26, under stress, poison and verify), the step-7.3 mutation table (every mutant caught or
-argued equivalent, S0013 Changes 7.3), `WABOROS_JIT_NOLIVE` to bisect per function, and
+t16-t26, under stress, poison and verify), the step-7.3 mutation table and both
+reviews' own mutants (each caught or argued equivalent; a review still found four unsound
+mutants the tests missed, now caught: the tests cover the shapes tried, not every shape; S0013
+Changes 7.3 and its review), `WABOROS_JIT_NOLIVE` to bisect per function, and
 `tools/fuzz.py --refs` with the GC switches.
 
 **Risk.** Encoding mistakes, register-allocation mistakes and missed checks are not exceptions but

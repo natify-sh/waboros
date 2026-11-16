@@ -398,6 +398,18 @@ LCASES: dict[str, tuple[str, list[tuple[tuple[int, ...], int]]]] = {
     # t26: $r dead after the call (S1) and no write before the next allocation (S2)
     "t26 inconsistent": (f"{R} (drop (call $f (local.get $r))) (call $alloc) (drop {NEW})"
                          " (i32.const 9)", [((), 9)]),
+    # the 7.3 review's surviving mutants: br one level out, an if inside a try_table without H,
+    # only the first catch clause joining H, a local.set killing its neighbour slot
+    "review br": (f"{R} (block $b (call $alloc) (br $b)) (call $f (local.get $r))", [((), 7)]),
+    "review second clause": (f"{R} (block $h2 (block $h1 (try_table (catch $e2 $h1) (catch $e $h2)"
+                             " (call $athrow)) (return (i32.const -1))) (return (i32.const -2)))"
+                             " (call $f (local.get $r))", [((), 7)]),
+    "review if in try": (f"{R} (block $h (try_table (catch_all $h) (if (local.get $c) (then"
+                         " (call $athrow)))) (return (i32.const -1))) (call $f (local.get $r))",
+                         [((1,), 7)]),
+    "review set next slot": ("(local $a anyref) (local $b anyref) (local.set $b (struct.new $p"
+                             " (i32.const 2) (ref.null any))) (call $alloc)"
+                             " (local.set $a (ref.null any)) (call $f (local.get $b))", [((), 2)]),
 }  # fmt: skip
 
 
