@@ -92,7 +92,15 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   `WABOROS_JIT_BOUNDS=explicit`, and on `jit-aarch64` under QEMU) must give 0 fail. The walk
   check's "nothing moves before the collector" no longer holds under stress: a missing mark now
   shows up as a stale or poisoned reference.
-  `tests/jit/test_gc_moving.py` runs them on, case by case, against `pyc` as the oracle.
+  `tests/jit/test_gc_moving.py` runs them on, case by case, against `pyc` as the oracle;
+  `tests/jit/test_gc_roots.py` holds one reference in one place (imported global, shared table,
+  another instance's frame, a thunk or restore frame, a failed instantiation) under them.
+  `tests/jit/test_gc_memory.py` (native only, the GC switches cleared, about 5 s on CPython 3.11 and
+  3.13; it runs in every `pytest` of the CI matrix and in the native arm64 `tests/jit` job, no
+  marker) is the memory test: after a warm-up the heap's capacity and committed pages do not move under 576 MB of dropped structs and
+  cycles, a live set over half the lowered cap raises "GC heap out of memory", and the peak RSS
+  of a subprocess grows by under 8 MiB (Linux). The step's mutation list (S0013 Changes 5.5) is a
+  scratch script, not in the tree: each mutant a `git archive` copy, a process group killed on timeout.
 
 ## Differential testing
 

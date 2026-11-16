@@ -885,3 +885,17 @@ What went wrong or surprised us while building the PoC, so it is not found again
     state that forbids running is checked where control returns into wasm too (the host bridge,
     after the host function), and a word that must stay clear is cleared before each use, not only
     kept out of reach. Found: S0013 step 5.3 review, 2026-11-15.
+116. **A mutation run needs a test per way a root is reached, not per root class.** Step 5.5's first run
+    of the plan's list left three mutants alive. An imported global is also the exporter's own word, a
+    root while the exporter is in `store.instances`, and instances are never removed from it: the class
+    is a defence, tested only by taking the exporter out by hand. A table imported twice is sent twice,
+    which the collector tolerates (it skips words already in to-space): only the count of words it
+    receives differs. A frame below a tail call into another instance is the restore frame, which no
+    earlier test collected under. And `room`'s final check is unreachable: after a collection without
+    growth `end - lo == cap/2` and the no-growth branch gives `cur + r < end`, and on every other path
+    `_grow` has checked the same bound; a defence in the sense of 105. The independent review then found
+    three more survivors (the arena's earlier chunks, a `v128` payload parameter, the to-space chosen
+    from `lo`), and that t10 and t10b held no array across a collection: a test that builds an object
+    and reads it back with no allocation between does not move it. Rule: for each mutant ask what a
+    test would count or detach to see it, and check that the test allocates between the write and the
+    read; if nothing can see it, argue it equivalent in writing. Found: S0013 step 5.5, 2026-11-16.
