@@ -6,6 +6,7 @@ nested pads, imported tags, a full heap, forged identities, no Python on a throw
 (`exceptions/`) is the metric."""
 
 import ctypes
+import importlib.resources
 import os
 import struct
 import sys
@@ -664,8 +665,11 @@ def test_no_module_uses_the_reserved_words(monkeypatch: pytest.MonkeyPatch, targ
     files = [
         f for d in ("exceptions", "gc") for f in sorted((CACHE_DIR / "json" / d).rglob("*.wasm"))
     ]
-    files += [ROOT / "poc/in/core.wasm", ROOT / "src/waboros/runtime/gc/collector.wasm"]
+    spec = len(files)
+    core = ROOT / "poc/in/core.wasm"  # not in the wheel harness's copy of the tests
     wasm = [wat(THROWS), wat(CATCHES), wat(CLEANUP)] + [f.read_bytes() for f in files]
+    wasm += [core.read_bytes()] if core.exists() else []
+    wasm.append((importlib.resources.files("waboros.runtime") / "gc/collector.wasm").read_bytes())
     n = 0
     for bounds in ("guard", "explicit"):
         monkeypatch.setenv("WABOROS_JIT_BOUNDS", bounds)
@@ -681,9 +685,9 @@ def test_no_module_uses_the_reserved_words(monkeypatch: pytest.MonkeyPatch, targ
             n += 1
             assert not {11, 12, 13} & set(words)
             seen |= set(words)
-    # without the fetched spec suite (the wheel harness), the local modules, CoreMark and the
-    # collector still run: 5 modules in each of the two bounds modes
-    assert n > (250 if files[:-2] else 9) and {8, 10} <= seen  # the bridge and the pending word
+    # without the fetched spec suite and the PoC (the wheel harness: LESSONS 124), the local
+    # modules and the installed collector still run, 4 modules in each bounds mode
+    assert n > (250 if spec else 7) and {8, 10} <= seen  # the bridge and the pending word
     builds: list[Any] = [abi.assemble]
     if x:
         builds = [lambda: xabi.assemble(False), lambda: xabi.assemble(True)]

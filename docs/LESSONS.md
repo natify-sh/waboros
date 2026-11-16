@@ -967,5 +967,7 @@ What went wrong or surprised us while building the PoC, so it is not found again
     job that runs pytest (`ci` test and `jit`, `platforms` wheel harness) runs it before or
     without `tests/spec/fetch.py`, so the test failed on every platform at once. Rule: a test that
     reads `.cache/spec` either skips without it or scales its floor to what it found, and is run
-    once locally with the cache moved away before it is committed. Found: S0013 step 6.4 CI,
+    once locally with the cache moved away before it is committed. The Android harness also runs
+    a copy of `tests/` with neither `src/` nor `poc/` beside it: package data is read through
+    `importlib.resources`, PoC files only if they exist. Found: S0013 step 6.4 CI,
     2026-11-16.
