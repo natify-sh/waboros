@@ -35,8 +35,9 @@ OPS = frozenset((*range(0xFB00, 0xFB1F), 0xD3))
 
 # The heap (S0013 "JIT: the GC heap"; ARTIFACT.md part 3), offsets in the hidden memory: null 0,
 # the allocation cursor (u32) at CURSOR and its limit at LIMIT; type-info records from TYPES to
-# TID_MAP, the tid map to OBJ; objects from OBJ in two adjacent semispaces of CAP bytes together, CAP <= CAP_MAX, so the
-# heap's end stays below 2**32 (the collector's bounds are u32; S0013 5.3, D61)
+# TID_MAP, the tid map to OBJ; objects from OBJ in two adjacent semispaces of CAP bytes together,
+# CAP <= CAP_MAX, so the heap's end stays below 2**32 (the collector's bounds are u32; S0013 5.3,
+# D61)
 CURSOR, LIMIT = 8, 12
 TYPES, OBJ = 64 << 10, 64 << 20
 # the tid map (S0013 5.6): [TID_MAP, OBJ), the u32 record offset of function type id t at
