@@ -679,12 +679,12 @@ class Instance:
         memories: Sequence[Memory] = (),
         nglobals: int = 0,
         layout: Layout | None = None,
-        stackmaps: bytes | None = None,
+        sites: dict[int, gc.SiteMap] | None = None,
     ) -> None:
         self.store, self.tramp, self.funcs = store, tramp, funcs
-        # the STACKMAPS section (S0013 3a): None for hand-assembled code, which is never checked
-        self.stackmaps, self.walk_sites = stackmaps, None
-        self.walk = stackmaps is not None and walk.checking()
+        # the decoded STACKMAPS section (S0013 3a): None for hand-assembled code, never walked
+        self.walk_sites = sites
+        self.walk = sites is not None and walk.checking()
         self.nimports = len(imports)
         self.layout = layout or Layout(
             memories=len(memories), globals=nglobals, imports=len(imports)
@@ -965,6 +965,7 @@ class JitInstance(Instance):
     ) -> None:
         if c.stackmaps is None:  # every frame of a store must be walkable (S0013 Q5)
             raise ValueError("compiled module has no stack-map table (STACKMAPS); recompile it")
+        sites = gc.decode(c.stackmaps)  # checked: another form is refused here (D65)
         refuse_lost(store)
         mod = self.module = c.module
         self.hier: dict[int, tuple[list[RefType | None], list[RefType | None]]] = {}  # per export
@@ -1019,7 +1020,7 @@ class JitInstance(Instance):
         self.gtypes = [im[3][0] for im in mod["imports"] if im[0] == "global"]
         self.gtypes += [g[0] for g in mod["globals"]]
         ng = len(self.gtypes)
-        super().__init__(store, tramp, c.code, c.funcs, hosts, memories, ng, c.layout, c.stackmaps)
+        super().__init__(store, tramp, c.code, c.funcs, hosts, memories, ng, c.layout, sites)
         lay, ctx = self.layout, self.ctx
         if c.flags & guard.BOUNDS_GUARD:  # before any of its code can run (S0006)
             guard.add_code(self.code, c.faults)

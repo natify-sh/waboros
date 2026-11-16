@@ -78,9 +78,11 @@ def _gather(inst: Any, st: Any, coll: Any) -> tuple[list[tuple[int, int]], list[
         runs.append((ctypes.addressof(a), len(items)))
 
     for frames, _ in walk.walk(inst.store, st, inst.tramp):
-        for owner, (_, _, _, _, bits), _, base in frames:
+        for owner, (_, _, _, _, refs, live), _, base in frames:
             assert owner is not coll, "the walk met a collector frame"
-            runs += _ones(base, bits)
+            runs += _ones(base, live)
+            for a, n in _ones(base, refs & ~live):  # dead slots: null, not roots (D65)
+                ctypes.memset(a, 0, 8 * n)
     globals_: set[int] = set()
     tables: set[int] = set()
     for i in inst.store.instances:

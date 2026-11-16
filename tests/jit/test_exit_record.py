@@ -33,7 +33,7 @@ def word(addr: int) -> int:
     return ctypes.c_uint64.from_address(addr).value
 
 
-def compiled(text: str) -> tuple[Any, Any, list[tuple[int, tuple[int, int, int, int, int]]]]:
+def compiled(text: str) -> tuple[Any, Any, list[tuple[int, gc.SiteMap]]]:
     """(module, Compiled, its sites sorted by return offset)."""
     native(JIT)
     mod = parse(wat(text))

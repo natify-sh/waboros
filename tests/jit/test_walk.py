@@ -12,6 +12,7 @@ import pytest
 
 from tests.jit import native, native_jit
 from tests.jit.test_compiler import Inst, wat
+from tests.jit.test_stackmaps import form_3a
 from waboros.frontend.binary import parse
 from waboros.frontend.types import EXTERN
 from waboros.frontend.validate import validate
@@ -19,7 +20,8 @@ from waboros.runtime import link
 from waboros.runtime.store import StoreState
 from waboros.targets import base
 from waboros.targets.base import Raw
-from waboros.targets.jit.common import walk
+from waboros.targets.jit.common import gc, walk
+from waboros.targets.jit.common.compiler import Compiled
 from waboros.targets.jit.common.instance import _stacks  # pyright: ignore[reportPrivateUsage]
 
 JIT = native_jit()
@@ -198,15 +200,55 @@ def test_a_broken_record_is_an_error(checks: list[int]) -> None:
     assert jit("f", 1) == [1]
 
 
-def test_a_module_without_its_site_table_is_refused() -> None:
-    mod = parse(wat('(module (tag $t) (func (export "f")))'))
+def test_a_module_without_its_site_table_or_with_a_3a_one_is_refused() -> None:
+    mod = parse(
+        wat('(module (tag $t) (func (export "f") (param externref) (call 0 (ref.null extern))))')
+    )
     validate(mod)
     t, store = base.TARGETS[JIT](), StoreState()
     c = t.compile(mod)
-    with pytest.raises(ValueError, match="stack-map table"):
-        t.instantiate(dataclasses.replace(c, stackmaps=None), [], store)  # type: ignore[type-var]
+    assert isinstance(c, Compiled) and c.stackmaps is not None  # one map: step 3a's form differs
+    old = form_3a([(r, *x[:5]) for r, x in gc.decode(c.stackmaps).items()])
+    for bad, match in [(None, "stack-map table"), (old, "STACKMAPS")]:  # D2: never a guess
+        with pytest.raises(ValueError, match=match):
+            t.instantiate(dataclasses.replace(c, stackmaps=bad), [], store)
     assert store.instances == [] and _stacks(store).tags == {}
     t.instantiate(c, [], store)
+
+
+def forged(text: str, store: StoreState, providers: Any = None, kill: int = 0) -> Inst:
+    """An instance whose maps say slot `kill` is dead wherever they mark it (step 7.1 has no
+    liveness yet; the walk's nulling is tested through a forged table)."""
+    mod = parse(wat(text))
+    validate(mod)
+    t = base.TARGETS[JIT]()
+    c = t.compile(mod)
+    assert isinstance(c, Compiled) and c.stackmaps is not None
+    s = [(r, *x[:5], x[5] & ~(1 << kill)) for r, x in gc.decode(c.stackmaps).items()]
+    c = dataclasses.replace(c, stackmaps=gc.encode(s))
+    return Inst(mod, t.instantiate(c, link.resolve(mod, providers or {}), store))
+
+
+@pytest.mark.parametrize("kill", [0, 63])  # 63: no slot, the control
+@pytest.mark.parametrize("by", ["check", "collection"])
+def test_a_dead_slot_is_nulled(
+    by: str, kill: int, checks: list[int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, o = StoreState(), object()
+    if by == "check":  # D7: at every host call, no heap needed
+        jit = forged(f"""(module {H} (func (export "f") (param $x externref) (result externref)
+          (drop (call $h (i32.const 1))) (local.get $x)))""",
+                     store, {"env": {"h": list[Raw]}}, kill)  # fmt: skip
+        out = jit.inst.call(1, [o])  # type: ignore[attr-defined]
+        assert out == [None if kill == 0 else o] and checks[0] == 1
+        return
+    monkeypatch.setenv("WABOROS_JIT_WALK_CHECK", "0")  # only the collection nulls
+    monkeypatch.setenv("WABOROS_JIT_GC_STRESS", "1")  # every allocation collects
+    jit = forged("""(module (type $p (struct (field i32)))
+      (func (export "f") (result i32) (local $s (ref null $p))
+        (local.set $s (struct.new $p (i32.const 7))) (drop (struct.new $p (i32.const 8)))
+        (ref.is_null (local.get $s))))""", store, None, kill)  # fmt: skip
+    assert jit("f") == [kill == 0] and checks[0] == 0
 
 
 BAD_SAVED: dict[

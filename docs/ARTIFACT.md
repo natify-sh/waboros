@@ -108,11 +108,18 @@ offset of the return address of a call), `u32 shift` (slots from this frame's ba
 0 for a host or service call and in a host thunk), `u16 ret_at` (bytes from the stack pointer at the
 call, before x86-64's `call` pushes, to this frame's own return address), `u16 up` (bytes from that
 stack pointer to the caller's stack pointer at its own call), `u32 map` (0: no reference slot; k:
-the k-th map of the pool); then `u32 nmaps` and per map `u32 nslots` and `ceil(nslots / 32)` u32
-words, bit i set when value-stack slot i of the frame (locals first, a v128 two slots) holds a
-reference of the any, extern or exn hierarchy (exn from S0013 step 6.2) at that site. Equal maps are stored once. Every call site
-has a record, a module without any reference type too (16 bytes per site: CoreMark 108 sites, 1 736
-bytes). The trampolines' own points (the entry's return point and its saved block, `tail_switch`'s
+the k-th map of the pool); then `u32 nmaps` and per map `u32 nslots`, `ceil(nslots / 32)` u32
+words of `refs`, bit i set when value-stack slot i of the frame (locals first, a v128 two slots)
+holds a reference of the any, extern or exn hierarchy (exn from S0013 step 6.2) at that site, and
+as many words of `live`, a subset of `refs` (S0013 step 7, D65). A walk forwards the `live` slots
+and writes null into the slots of `refs` that `live` does not mark; until the liveness pass (step
+7.2) `live` equals `refs`. A map is never empty and equal maps (`nslots`, `refs`, `live`) are
+stored once. Every call site has a record, a module without any reference type too (16 bytes per
+site: CoreMark 108 sites, 1 736 bytes, no map). The two-bitmap form (S0013 step 7.1) also
+amended version 1 without a bump; instantiation decodes the table with checks and refuses
+(`ValueError`) one that does not parse exactly, has a map index past the pool or a `live` bit
+outside `refs`, so a table in step 3a's one-bitmap form with a map is refused, and one without a
+map, the same bytes in both forms, still runs. The trampolines' own points (the entry's return point and its saved block, `tail_switch`'s
 `restore` frame) are part 3's, not this section's.
 
 Strings are UTF-8 with a u32 length prefix. A loader refuses an artifact whose `magic`,

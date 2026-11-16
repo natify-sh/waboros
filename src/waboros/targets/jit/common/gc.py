@@ -5,8 +5,10 @@ hierarchy, the backend where its native frame keeps the return address (`Backend
 
 The `STACKMAPS` section (id 15; ARTIFACT.md part 2 from step 3a.4), little-endian: `u32 nsites`;
 per site, sorted by `ret`: `u32 ret, u32 shift, u16 ret_at, u16 up, u32 map`; then `u32 nmaps` and
-per map `u32 nslots` and `ceil(nslots / 32)` u32 words (bit i = slot i of the frame). `map` 0
-means no reference slot, k >= 1 the k-th map of the pool; equal maps are stored once."""
+per map `u32 nslots`, `ceil(nslots / 32)` u32 words of `refs` (bit i: slot i of the frame holds a
+reference) and as many of `live` (a subset; step 7, D65: the walk forwards `live` and nulls the
+rest of `refs`). `map` 0 means no reference slot, k >= 1 the k-th map of the pool; equal maps are
+stored once."""
 
 import struct
 from typing import Any
@@ -29,7 +31,8 @@ from waboros.targets.jit.common.context import (
     STATUS_EXCEPTION,
 )
 
-Site = tuple[int, int, int, int, int, int]  # ret, shift, ret_at, up, nslots, bits
+Site = tuple[int, int, int, int, int, int, int]  # ret, shift, ret_at, up, nslots, refs, live
+SiteMap = tuple[int, int, int, int, int, int]  # decoded: shift, ret_at, up, nslots, refs, live
 
 # The GC opcodes (0xFB00 + sub, and ref.eq): a backend compiles GC modules when its `supported`
 # set has them all (S0013 3b)
@@ -138,35 +141,42 @@ def slot_bits(refs: int, v128: int) -> int:
 
 
 def encode(sites: list[Site]) -> bytes:
-    pool: dict[tuple[int, int], int] = {}
+    pool: dict[tuple[int, int, int], int] = {}
     out = [struct.pack("<I", len(sites))]
-    for ret, shift, ret_at, up, n, bits in sites:
-        assert ret_at < 1 << 16 and up < 1 << 16 and bits >> n == 0
-        k = pool.setdefault((n, bits), len(pool) + 1) if bits else 0
+    for ret, shift, ret_at, up, n, refs, live in sites:
+        assert ret_at < 1 << 16 and up < 1 << 16 and refs >> n == 0 and live & ~refs == 0
+        k = pool.setdefault((n, refs, live), len(pool) + 1) if refs else 0
         out.append(struct.pack("<IIHHI", ret, shift, ret_at, up, k))
     out.append(struct.pack("<I", len(pool)))
-    for n, bits in pool:  # in index order (dicts keep insertion order)
-        words = (n + 31) // 32
-        out.append(
-            struct.pack(f"<I{words}I", n, *((bits >> 32 * w) & 0xFFFFFFFF for w in range(words)))
-        )
+    for n, refs, live in pool:  # in index order (dicts keep insertion order)
+        words = [b >> 32 * i & 0xFFFFFFFF for b in (refs, live) for i in range((n + 31) // 32)]
+        out.append(struct.pack(f"<I{len(words)}I", n, *words))
     return b"".join(out)
 
 
-def decode(data: bytes) -> dict[int, tuple[int, int, int, int, int]]:
-    """ret -> (shift, ret_at, up, nslots, bits); nslots and bits are 0 for map 0."""
-    (n,) = struct.unpack_from("<I", data)
-    raw = [struct.unpack_from("<IIHHI", data, 4 + 16 * i) for i in range(n)]
-    at = 4 + 16 * n
-    (nmaps,) = struct.unpack_from("<I", data, at)
-    at += 4
-    maps = [(0, 0)]
-    for _ in range(nmaps):
-        (ns,) = struct.unpack_from("<I", data, at)
-        words = struct.unpack_from(f"<{(ns + 31) // 32}I", data, at + 4)
-        maps.append((ns, sum(w << 32 * i for i, w in enumerate(words))))
-        at += 4 + 4 * len(words)
-    assert at == len(data), "STACKMAPS: trailing bytes"
+def decode(data: bytes) -> dict[int, SiteMap]:
+    """ret -> (shift, ret_at, up, nslots, refs, live), zeros for map 0. Checked, as instantiation
+    reads it (D65): a table in another form (step 3a's, one bitmap per map) raises ValueError."""
+    try:
+        (n,) = struct.unpack_from("<I", data)
+        raw = [struct.unpack_from("<IIHHI", data, 4 + 16 * i) for i in range(n)]
+        at = 4 + 16 * n
+        (nmaps,) = struct.unpack_from("<I", data, at)
+        at += 4
+        maps = [(0, 0, 0)]
+        for _ in range(nmaps):
+            (ns,) = struct.unpack_from("<I", data, at)
+            w = (ns + 31) // 32
+            words = struct.unpack_from(f"<{2 * w}I", data, at + 4)
+            refs, live = (sum(x << 32 * i for i, x in enumerate(words[h : h + w])) for h in (0, w))
+            if not refs or refs >> ns or live & ~refs:
+                raise ValueError(f"STACKMAPS: map {len(maps)} is not (refs, live ⊆ refs)")
+            maps.append((ns, refs, live))
+            at += 4 + 8 * w
+    except struct.error as e:
+        raise ValueError(f"STACKMAPS: truncated ({e})") from None
+    if at != len(data) or any(r[4] > nmaps for r in raw):
+        raise ValueError("STACKMAPS: trailing bytes or a map index past the pool")
     return {ret: (shift, ret_at, up, *maps[k]) for ret, shift, ret_at, up, k in raw}
 
 

@@ -3,6 +3,7 @@
 records of both backends, the STACKMAPS encoding. Compile only, so both targets run on any host
 (D35); the walk that checks the native numbers on running code is step 3a.3."""
 
+import struct
 from typing import Any
 
 import pytest
@@ -17,8 +18,8 @@ from waboros.targets.jit.common.compiler import Compiled
 TARGETS = ["jit-x86_64", "jit-aarch64"]
 
 
-def sites(target: str, text: str) -> tuple[Any, list[tuple[int, int, int, int, int]]]:
-    """The module and its sites in code order: (shift, ret_at, up, nslots, bits)."""
+def sites(target: str, text: str) -> tuple[Any, list[gc.SiteMap]]:
+    """The module and its sites in code order: (shift, ret_at, up, nslots, refs, live)."""
     mod = parse(wat2wasm(text))
     validate(mod)
     c = base.TARGETS[target]().compile(mod)
@@ -94,10 +95,10 @@ def test_record_call_and_host_thunk(target: str) -> None:
         """(module (import "m" "h" (func $h (param externref)))
       (func (param $a externref) local.get $a call $h))""",
     )
-    (shift, ret_at, up, n, bits), thunk = s
-    assert (shift, n, bits) == (1, 1, 0b1)
+    (shift, ret_at, up, n, bits, live), thunk = s
+    assert (shift, n, bits, live) == (1, 1, 0b1, 0b1)
     assert ret_at == 24 and up == 32  # no pins: x86 pad + r15 and pad; aarch64 record + x28
-    assert thunk == (0, 8, 16, 0, 0)
+    assert thunk == (0, 8, 16, 0, 0, 0)
 
 
 # (ret_at, up) of a direct call, a record call and the host thunk, by the number of pinned i32
@@ -150,15 +151,55 @@ def test_a_module_without_references_has_empty_maps(target: str) -> None:
 
 
 def test_encoding_round_trip_and_pool_sharing() -> None:
-    big = (1 << 39) | 1  # 40 slots: two words
-    raw = [(4, 2, 8, 16, 3, 0b101), (9, 0, 24, 32, 0, 0), (20, 1, 8, 16, 3, 0b101),
-           (30, 5, 40, 48, 40, big), (31, 5, 40, 48, 7, 0)]  # fmt: skip
+    big = (1 << 39) | 1  # 40 slots: two words of refs, two of live
+    raw = [(4, 2, 8, 16, 3, 0b101, 0b101), (9, 0, 24, 32, 0, 0, 0),
+           (20, 1, 8, 16, 3, 0b101, 0b101), (25, 1, 8, 16, 3, 0b101, 0b100),
+           (30, 5, 40, 48, 40, big, 1), (31, 5, 40, 48, 7, 0, 0)]  # fmt: skip
     data = gc.encode(raw)
-    assert len(data) == 4 + 16 * len(raw) + 4 + (4 + 4) + (4 + 8)  # two maps in the pool
-    assert gc.decode(data) == {
-        4: (2, 8, 16, 3, 0b101), 9: (0, 24, 32, 0, 0), 20: (1, 8, 16, 3, 0b101),
-        30: (5, 40, 48, 40, big), 31: (5, 40, 48, 0, 0),
-    }  # fmt: skip
+    assert len(data) == 4 + 16 * len(raw) + 4 + 2 * (4 + 8) + (4 + 16)  # three maps in the pool
+    assert gc.decode(data) == {r: (*x[:3], x[3] if x[4] else 0, *x[4:]) for r, *x in raw}
+
+
+def form_3a(sites: list[tuple[int, int, int, int, int, int]]) -> bytes:
+    """Step 3a's STACKMAPS: one bitmap per map (`refs` only), the form step 7.1 replaced."""
+    pool: dict[tuple[int, int], int] = {}
+    recs = [struct.pack("<IIHHI", r, s, a, u, pool.setdefault((n, b), len(pool) + 1) if b else 0)
+            for r, s, a, u, n, b in sites]  # fmt: skip
+    maps = [struct.pack(f"<I{(n + 31) // 32}I", n, *(b >> 32 * i & 0xFFFFFFFF
+            for i in range((n + 31) // 32))) for n, b in pool]  # fmt: skip
+    return b"".join([struct.pack("<I", len(sites)), *recs, struct.pack("<I", len(pool)), *maps])
+
+
+@pytest.mark.parametrize("target", TARGETS)
+def test_a_step_3a_table_is_refused_unless_it_has_no_map(target: str) -> None:
+    for text, mapped in [("(module (func $g) (func (param i32) call $g))", False),
+                         ("(module (func $g) (func (param externref) call $g))", True),
+                         ("(module (func $g) (func (param externref)"  # two maps
+                          " call $g local.get 0 call $g drop))", True)]:  # fmt: skip
+        mod = parse(wat2wasm(text))
+        validate(mod)
+        c = base.TARGETS[target]().compile(mod)
+        assert isinstance(c, Compiled) and c.stackmaps is not None
+        old = form_3a([(r, *x[:5]) for r, x in gc.decode(c.stackmaps).items()])
+        assert (old == c.stackmaps) is not mapped  # a map-less table: the same in both forms
+        if mapped:
+            with pytest.raises(ValueError, match="STACKMAPS"):
+                gc.decode(old)
+
+
+def test_a_forged_table_is_refused() -> None:
+    data = gc.encode([(4, 0, 8, 16, 3, 0b101, 0b001)])
+    rec, pool = data[:20], data[20:]  # nsites, one site; nmaps, the map: 3 slots, refs, live
+    for bad in [
+        rec + pool[:-4] + struct.pack("<I", 0b011),  # live not inside refs
+        rec + pool[:8] + struct.pack("<II", 0b1001, 0),  # refs past nslots
+        rec + pool[:8] + struct.pack("<II", 0, 0),  # an empty map in the pool
+        data[:16] + struct.pack("<I", 2) + pool,  # a map index past the pool
+        data + b"\0",  # trailing bytes
+        data[:-1],  # truncated
+    ]:
+        with pytest.raises(ValueError, match="STACKMAPS"):
+            gc.decode(bad)
 
 
 def test_slot_bits() -> None:

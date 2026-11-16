@@ -1012,7 +1012,8 @@ store must be found without frame pointers or per-call stores:
   is), both from the stack pointer at the call; the shared core adds the slot shift to the callee
   and a bitmap of the frame's reference slots (from the validator's `refmasks` and `v128masks`:
   value positions, which the core turns into slots, a v128 taking two). They form the artifact's
-  `STACKMAPS` section (ARTIFACT.md part 2, id 15). Machine code does not change: the D39 amendment
+  `STACKMAPS` section (ARTIFACT.md part 2, id 15; two bitmaps per map since S0013 step 7, D65).
+  Machine code does not change: the D39 amendment
   is an output of the call methods (`Backend.sites`), not an instruction.
 * **Exit record.** Context word 14 (`EXIT_RECORD`) holds, in every context of a store, the address
   of the store's `{sp, pc, frame}`; the bridge writes it before every host call and clears `sp`
@@ -1362,3 +1363,27 @@ Still open, unaffected: the sljit backend embeds libm and libc addresses as 64-b
 (`_ccall`, `_cmem` in `poc/sljit/sljit-be/`), invalid in a cached or cross-compiled artifact; it is
 fixed (inline sequences through `sljit_emit_op_custom`, or calls through context words) before a
 sljit micro-compiler emits AOT artifacts (SLJIT-BACKEND.md, check 3).
+
+### D65. JIT liveness maps and the nulling walk
+Status: accepted (maintainer, 2026-11-16: S0013 step 7 plan, D1, D2, D7; the plan's D3-D6 and D8 are added with step 7.2) · Date: 2026-11-16 · Supersedes: S0013's "per function, the bitmap of its reference-typed local slots" (never built) · Evidence: S0013 Changes 7.1; `tests/jit/test_stackmaps.py`, `tests/jit/test_walk.py`; the whole spec suite with `WABOROS_JIT_WALK_CHECK=1` on both JITs, both bounds modes
+
+S0013 Q3 has the walk null the reference slots a site does not mark live, so a dead slot never
+keeps an offset into the old space. The walk cannot find a site's function, so a per-function
+bitmap of reference slots cannot tell it which unmarked slots to null:
+* **Two bitmaps per pool map** (plan D1 (a)): `refs`, every reference slot of the frame at the
+  site (the full map of steps 3a-6), and `live ⊆ refs`. The 16-byte site record is unchanged;
+  reference-free modules keep byte-identical tables (no map). A collection forwards `live` and
+  writes 0 into `refs ∖ live` while gathering the roots (the world is stopped; only slots
+  `[0, nslots)` of a frame, never a callee's parameters, B1).
+* **Version 1 amended without a bump** (plan D2 (a), as `STACKMAPS` itself, D56, S0013 Q5): no
+  artifact file exists. Instantiation decodes the table once, with checks that raise
+  `ValueError` (exact length, map index within the pool, no empty map, no bit past `nslots`,
+  `live ⊆ refs`), so a step-3a table with a map is refused and one without a map runs.
+* **Check mode nulls** (plan D7 (a)): `WABOROS_JIT_WALK_CHECK=1` writes 0 into the dead slots at
+  every host call and libcall, then validates every `refs` slot, so the whole-suite walk-check
+  runs exercise every dead set, modules that never collect included.
+
+Rejected: a second pool index per site (20-byte records, every module's table changes, CoreMark's
+included); a per-function table of reference slots with a function lookup per frame (a new
+section, a second search, operands never nullable). Wasmtime's maps list only live slots and it
+never nulls (Cranelift reuses spill slots), which a fixed slot per local cannot copy.

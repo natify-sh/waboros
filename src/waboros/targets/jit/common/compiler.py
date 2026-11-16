@@ -283,7 +283,7 @@ def compile_module(mod: ValidModule, b: Backend[Any, Any], target: str) -> Compi
     nopin = os.environ.get("WABOROS_JIT_NOPIN", "")
     funcs: list[tuple[int, int]] = []
     s0 = len(b.sites)
-    maps: list[tuple[int, int, int]] = []  # (shift, nslots, bits) of each of b.sites[s0:]
+    maps: list[tuple[int, int, int, int]] = []  # (shift, nslots, refs, live) of b.sites[s0:]
     for k, ((locs, _), insns) in enumerate(zip(mod["codes"], mod["insns"], strict=True)):
         fidx = len(fimps) + k
         pin = not (nopin == "all" or str(fidx) in nopin.split(","))
@@ -302,12 +302,12 @@ def compile_module(mod: ValidModule, b: Backend[Any, Any], target: str) -> Compi
     for i in sorted(refd):
         if i < len(fimps):  # its frame is the host function's arguments: no map
             thunks[i] = b.host_thunk(layout.import_(i))
-            maps.append((0, 0, 0))
+            maps.append((0, 0, 0, 0))
     assert len(b.sites) - s0 == len(maps)
     code, data = b.finish()
     sites = [
-        (ret, shift, ret_at, up, n, bits)
-        for (ret, ret_at, up), (shift, n, bits) in zip(b.sites[s0:], maps, strict=True)
+        (ret, shift, ret_at, up, n, refs, live)
+        for (ret, ret_at, up), (shift, n, refs, live) in zip(b.sites[s0:], maps, strict=True)
     ]
     c = Compiled(mod, code, data, funcs, layout, sorted(refd), sigs, thunks)
     c.rtts, c.thrown = rtts, thrown
@@ -339,9 +339,9 @@ class _Func:
         self.pads: list[tuple[Any, Any, list[tuple[int, int | None, _Ctl]], int]] = []  # cold
         self.gccold: list[Any] = []  # S0013: allocation slow paths and trap labels, cold
         self.gctraps: dict[int, Any] = {}
-        # stack maps (S0013 3a): (shift, nslots, bits) per call site, in code order; with the
-        # validator's masks on, every reference local is marked at every site (liveness: step 7)
-        self.sites: list[tuple[int, int, int]] = []
+        # stack maps (S0013 3a): (shift, nslots, refs, live) per call site, in code order; with
+        # the validator's masks on, every reference local is marked at every site (liveness: 7.2)
+        self.sites: list[tuple[int, int, int, int]] = []
         self.rm: dict[int, int] | None = None
         mod, k = m.mod, fidx - m.nimp
         if mod is not None and mod["refmasks"]:
@@ -363,7 +363,7 @@ class _Func:
             ops = gc.slot_bits(self.rm[pc], self.vm[pc])
             assert ops >> top == 0, (pc, ops, top)  # the core's stack and the validator's agree
             bits = (self.lmask | ops << self.L) & ((1 << (self.L + keep)) - 1)
-        self.sites.append((shift, self.L + keep, bits))
+        self.sites.append((shift, self.L + keep, bits, bits))  # live = refs until step 7.2
 
     def choose_pins(self) -> dict[int, int]:
         """Integer locals by uses weighted by loop depth (as w2jit2), as many as the pool holds."""

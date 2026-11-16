@@ -69,8 +69,11 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   only when the store's first instance had the switch). The exit
   record must be written, every return address must be a recorded call site, every stack word read
   must lie between the store's native limit and the thread's stack top, the walk must cross exactly
-  the active entries and end each segment at the frame the runtime gave that entry, and every slot
-  the stack maps mark must hold a reference word: 0, a host value `(h << 2) | 2` with a live handle,
+  the active entries and end each segment at the frame the runtime gave that entry; the walk then
+  writes null into the dead reference slots of every frame (the map's `refs` slots that its `live`
+  map does not mark, as a collection does; S0013 step 7, D65; none until the liveness pass of step
+  7.2, so `tests/jit/test_walk.py` tests it with a forged table, through check mode and through a
+  collection), and every slot of `refs` must hold a reference word: 0, a host value `(h << 2) | 2` with a live handle,
   and, only in a store with a GC heap, an i31 below 2³² or the offset of a heap object (allocated,
   8-aligned, its header a type-info record; S0013 step 3b; an exception object too, as exnref
   slots are marked from step 6.2). That last test cannot see a wrongly
@@ -101,6 +104,11 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   `return_call_indirect`, `ref.test`, `ref.cast`, `br_on_cast(_fail)`, final and non-final targets)
   on the functions of another module against `pyc`, shows that equality and final targets make no
   call, and checks that no compiled module uses GC group word 7.
+  `tests/jit/test_stackmaps.py` (S0013 7.1, D65) checks the two-bitmap `STACKMAPS` encoding (round
+  trip, pool sharing on `(nslots, refs, live)`), that a map-less table is the same bytes in step
+  3a's form, and that a step-3a table with a map and forged tables (a `live` bit outside `refs`, a
+  bit past `nslots`, an empty map, a map index past the pool, trailing or missing bytes) raise
+  `ValueError`; `tests/jit/test_walk.py` refuses the step-3a table at instantiation.
   `tests/jit/test_exceptions.py` (S0013 6.1) checks which exception modules get the heap (a
   `throw` or a `catch` clause: 128 KiB committed, no object space; only `throw_ref` and `catch_all`:
   none) and a thrown tag type's exception record (kind 1, its offsets and size, its key apart from

@@ -15,7 +15,7 @@ from typing import Any
 from waboros.targets.jit.common import gc
 
 RESTORE_RET_AT, RESTORE_UP = 8, 16  # tail_switch's restore frame: context, real return address
-Frame = tuple[Any, tuple[int, int, int, int, int], int, int]  # instance, site, sp, base
+Frame = tuple[Any, gc.SiteMap, int, int]  # instance, site, sp, base
 
 
 def checking() -> bool:
@@ -26,13 +26,14 @@ def _word(addr: int) -> int:
     return ctypes.c_uint64.from_address(addr).value
 
 
-def _site(store: Any, st: Any, pc: int) -> tuple[Any, tuple[int, int, int, int, int]]:
+def _site(store: Any, st: Any, pc: int) -> tuple[Any, gc.SiteMap]:
     """The instance whose code holds `pc` and the site whose return address it is. Code ranges
-    and site tables are built on first use (cached by the number of instances, which only grow)."""
+    are built on first use (cached by the number of instances, which only grow); site tables are
+    decoded at instantiation."""
     cache = st.walk_ranges
     if cache is None or cache[0] != len(store.instances):
         insts = sorted(
-            (i for i in store.instances if getattr(i, "stackmaps", None) is not None),
+            (i for i in store.instances if getattr(i, "walk_sites", None) is not None),
             key=lambda i: i.code.addr,
         )
         cache = st.walk_ranges = (len(store.instances), [i.code.addr for i in insts], insts)
@@ -40,8 +41,6 @@ def _site(store: Any, st: Any, pc: int) -> tuple[Any, tuple[int, int, int, int, 
     inst = cache[2][k] if k >= 0 else None
     if inst is None or pc >= inst.code.addr + inst.code.size:
         raise RuntimeError(f"JIT walk: return address {pc:#x} is in no code of the store")
-    if inst.walk_sites is None:
-        inst.walk_sites = gc.decode(inst.stackmaps)
     site = inst.walk_sites.get(pc - inst.code.addr)
     if site is None:
         raise RuntimeError(f"JIT walk: return address {pc:#x} is not a call site")
@@ -71,7 +70,7 @@ def walk(store: Any, st: Any, tramp: Any) -> list[tuple[list[Frame], int]]:
     inst, site = _site(store, st, pc)
     while True:
         frames.append((inst, site, sp, base))
-        _, ret_at, up, _, _ = site
+        _, ret_at, up, _, _, _ = site
         pc, nsp = read(sp + ret_at), sp + up
         if pc == tramp.restore:  # one restore frame at most; the tail-called frame keeps the base
             pc, nsp = read(nsp + RESTORE_RET_AT), nsp + RESTORE_UP
@@ -100,8 +99,9 @@ def walk(store: Any, st: Any, tramp: Any) -> list[tuple[list[Frame], int]]:
 
 def check(store: Any, st: Any, tramp: Any, slots: int) -> None:
     """At a host call (check mode): the record was written for this call, the walk crosses exactly
-    the active entries, each segment ends at the frame the runtime gave its entry, and every
-    marked slot holds a valid reference word (`valid`)."""
+    the active entries, each segment ends at the frame the runtime gave its entry; the dead
+    reference slots (`refs` but not `live`) are nulled, as a collection does (D65), and every
+    reference slot holds a valid reference word (`valid`)."""
     sp, _, frame = st.exit
     if not sp or frame > slots:
         raise RuntimeError(f"JIT walk check: exit record not written ({sp:#x}, {frame:#x})")
@@ -111,11 +111,13 @@ def check(store: Any, st: Any, tramp: Any, slots: int) -> None:
     if found != entries:
         raise RuntimeError(f"JIT walk check: segments at {found}, entries at {entries}")
     for frames, _ in segments:
-        for _, (_, _, _, n, bits), _, base in frames:
-            if bits and not st.vstack.addr <= base <= st.vtop - 8 * n:
+        for _, (_, _, _, n, refs, live), _, base in frames:
+            if refs and not st.vstack.addr <= base <= st.vtop - 8 * n:
                 raise RuntimeError(f"JIT walk check: frame base {base:#x} outside the value stack")
             for k in range(n):
-                if bits >> k & 1 and not valid(st, _word(base + 8 * k)):
+                if (refs & ~live) >> k & 1:
+                    ctypes.c_uint64.from_address(base + 8 * k).value = 0
+                if refs >> k & 1 and not valid(st, _word(base + 8 * k)):
                     raise RuntimeError(f"JIT walk check: slot {k} of {base:#x} not a reference")
 
 
