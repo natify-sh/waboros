@@ -1547,3 +1547,120 @@ three targets' results compared and equal):
   operators) copy 8 bytes per iteration where Wasmtime calls `memset`/`memcpy`. It is a bulk-memory
   cost, the same for `memory.fill`/`memory.copy` of linear memory, not specific to GC; any change
   needs its own measurement.
+
+## GC collector (S0013 step 5, 2026-11-16)
+
+Step 5 makes the JIT heap collect (D61). This section measures the collector, and answers S0013 Q2:
+Cheney (breadth-first, the to-space is the queue; `collector.wat`) or a depth-first work list.
+
+Conditions: the dev VM (Intel Xeon @ 2.10 GHz, 4 vCPU, Linux 6.18), CPython 3.13.17, wasmtime-py
+50.0.1, every process pinned with `taskset -c 2`, `WABOROS_JIT_GC_STRESS`, `_POISON` and `_VERIFY`
+unset, `jit-x86_64`. The VM is noisy: the same code differs by 20-40 % between rounds, so every
+comparison has a **control** (the same build measured twice, `cheney2`, as the code-placement
+rule of S0013 Q2 asks for).
+
+**The depth-first build** (a scratch build, `poc/gc_dfs/collector_dfs.wat`, 249 lines; not in `src`):
+the same four exports and the same checks, with an explicit stack of field addresses in the free
+end of to-space (`[sp, to_hi)`, growing down; a push that would meet the copy cursor traps). An
+object is copied when its field is popped, so the copy order is a pre-order (the first field's
+subtree first); `roots` drains the stack after each root and `finish` only returns the cursor. It is
+**not** a drop-in: the stack can need up to 4 bytes per pending field of free to-space (an array of
+10⁶ references pushes 4 MB), where Cheney needs nothing. Correct on the suite: `WABOROS_JIT_GC_STRESS=1
+WABOROS_JIT_GC_POISON=1 WABOROS_JIT_GC_VERIFY=1 python -m tests.spec.run --engine jit-x86_64 gc
+exceptions` with the variant's `.wasm` swapped into a `git archive` copy of HEAD (d4be34f): 905 pass,
+0 fail, in guard and in explicit mode (the copy's `collect.py` logged the SHA-256 of the `.wasm` it
+loaded: 14 collector instances, all the variant's); `tests/jit/test_gc_collect.py`, `_roots.py`
+and `_moving.py` also pass on it (75).
+
+**Microbenchmarks** (`tools/bench_gc_collect.py --builds cheney=DIR,dfs=DIR,cheney2=DIR --rounds 9
+--bounds guard|explicit`: three builds alternated round by round, each in its own process; median
+and the range over 9 rounds). Each heap has about 10⁶ live objects, is built, then garbage is
+allocated until six more collections have run: *pause* is the mean time of `collect()` (root
+gathering in Python plus the collector), *collector* only the calls into the collector module,
+*walk* the mutator walking the live data afterwards (median of 5 walks, per object):
+
+| bounds | measure (10⁶ live objects) | Cheney | depth-first | Cheney again (control) |
+|---|---|---|---|---|
+| guard | list: pause, ms | 25.5 (20.7-33.7) | 28.9 (20.7-41.1) | 25.3 (23.6-42.4) |
+| guard | list: walk, ns/object | 6.7 (4.5-9.5) | 6.2 (4.7-8.2) | 5.7 (3.9-8.8) |
+| guard | tree (depth 20, 2²⁰-1 nodes): pause, ms | 35.0 (31.1-45.5) | 47.7 (37.4-57.8) | 42.8 (29.8-53.8) |
+| guard | tree: walk, ns/node | 7.3 (6.0-9.5) | 10.1 (6.4-11.7) | 7.8 (5.8-10.8) |
+| guard | array of 10⁶ references to pairs: pause, ms | 27.4 (25.5-38.4) | 29.8 (20.3-50.5) | 28.6 (25.6-69.8) |
+| guard | array: scan, ns/element | 3.2 (1.9-4.8) | 2.3 (2.0-5.2) | 2.3 (1.8-5.7) |
+| explicit | list: pause, ms | 27.3 (21.2-45.0) | 35.8 (24.6-45.6) | 35.1 (24.6-40.9) |
+| explicit | list: walk, ns/object | 6.0 (4.8-7.6) | 5.7 (4.9-8.1) | 6.0 (4.8-7.0) |
+| explicit | tree: pause, ms | 44.5 (35.7-51.6) | 42.4 (39.1-67.0) | 38.4 (36.9-50.4) |
+| explicit | tree: walk, ns/node | 10.2 (6.4-11.3) | 8.5 (6.5-12.6) | 8.4 (5.5-10.1) |
+| explicit | array: pause, ms | 32.0 (28.3-41.7) | 34.1 (24.7-44.5) | 34.4 (24.4-45.5) |
+| explicit | array: scan, ns/element | 4.0 (2.5-4.7) | 3.1 (2.4-5.1) | 3.9 (2.3-4.7) |
+
+* The pause is **25-45 ns per live object**, 25-45 ms per 10⁶ live objects (the collector module's
+  own time is 99 % of it: the Python root walk is not the cost with few roots).
+* The list and the array have the same layout in both orders (one pointer per object; elements in
+  index order), so they are controls too: their differences (Cheney against Cheney again differs by up to
+  7.8 ms in the list pause and 0.9 ns in the array scan) show the noise floor. The tree is where the
+  orders differ. There the depth-first mutator is faster in one bounds mode (explicit, 8.5 against
+  10.2) and slower in the other (guard, 10.1 against 7.3), each within the spread of the control
+  (the control's own medians differ by up to 1.8 ns); its pause is 36 % longer in guard and 5 %
+  shorter in explicit. No consistent gain, in the pause or the mutator.
+* The collector module is compiled once per process and bounds mode: 5-9 ms (parse, validate and
+  compile of 1.5 kB of wasm; the table's run: 6.2 ms guard, 6.1 explicit); each store that collects
+  instantiates it in 0.3 ms (0.28-0.39 ms, the medians of the three builds in both modes). Neither
+  depends on the order.
+
+**The Kotlin program** (`gc_kotlin` of the corpus, `run` once in a fresh store, the wall time of the
+export; 36 collections in the first run; `taskset -c 2`, 7 alternated rounds of Cheney, depth-first
+and Cheney again, each in a new process; the result checked against the Python reference every run;
+"later runs" is the mean of nine further runs in the same store):
+
+| bounds | measure | Cheney | depth-first | Cheney again (control) |
+|---|---|---|---|---|
+| guard | first run, ms | 161.8 (137.5-218.5) | 184.5 (141.5-204.1) | 211.2 (135.0-241.9) |
+| guard | later runs, ms per run | 78.7 (68.5-87.6) | 78.7 (61.7-98.7) | 78.2 (60.4-83.4) |
+| explicit | first run, ms | 199.4 (182.5-296.4) | 205.1 (161.0-330.2) | 211.7 (161.0-238.4) |
+| explicit | later runs, ms per run | 77.1 (62.7-122.5) | 96.0 (88.7-109.5) | 89.9 (76.3-104.8) |
+
+Depth-first gains nowhere here: within the spread in guard, 25 % slower in explicit on the later
+runs (the control itself is 17 % away from Cheney).
+
+**The decision (S0013 Q2 rule): Cheney stays.** Depth-first would replace it only if it gained on the
+microbenchmarks **and** on the corpus program beyond the spread between rounds. It gains on neither:
+the one cell where it looks better (the tree walk in explicit mode) is within the spread and
+reversed in guard mode, the Kotlin program is equal or slower, its collection pause on the tree is
+no shorter, and it needs a stack in the free end of to-space (a trap when the stack meets the
+cursor) where Cheney needs none. Only `collector.wasm` of Cheney is committed; nothing in `src` changes.
+
+**The four loops of 3b with collections** (`tools/bench_gc.py --targets jit-x86_64,wasmtime
+--rounds 5`, ns per iteration, best of 5 rounds, the targets alternated; run three times from
+`git archive` copies, Cheney, depth-first, Cheney; the first and last are the same code):
+
+| loop | 3b (no collection) | Cheney | depth-first | Cheney again | Wasmtime (the three runs) |
+|---|---|---|---|---|---|
+| churn | 8.9 | 4.8 | 5.5 | 4.9 | 37.3 / 30.5 / 29.7 |
+| list | 11.8 | 43.2 | 42.5 | 43.4 | 70.8 / 71.4 / 64.6 |
+| casts | 2.7 | 2.8 | 2.3 | 2.2 | 6.7 / 7.6 / 6.3 |
+| arrays | 602.0 | 349.8 | 297.5 | 280.2 | 58.6 / 59.1 / 56.4 |
+
+* Churn is 1.8× faster than without a collector (the 3b heap only grew, so every object touched fresh
+  pages; now two semispaces are reused) and 6-8× faster than Wasmtime's.
+* The list loop is 3.7× slower than in 3b: building 2·10⁵ nodes collects with growth while the list
+  is live: a fresh store collects 4 times while building 2·10⁵ nodes (counted with
+  `heap.collections`), each copying the list built so far, and at the 25-45 ns per live object of
+  the pause measurements below that is about the 31 ns per node added; Wasmtime's 65-71 ns per
+  node is still 1.6× more.
+* Casts do not allocate in the loop: unchanged. The array loop is still 5-6× Wasmtime's, the
+  bulk-memory cost of the 3b section (copy of 8 bytes per iteration); it varies by 25 % between
+  the three runs here.
+* The depth-first column is within the spread of the two Cheney runs on every loop.
+
+**CoreMark** (`tools/run_coremark_jit.py poc/in/core.wasm`, iterations/s, every self-check passed):
+the tree before step 5.3 (5c0ef35, no collector) against HEAD d4be34f, each from its own `git archive`
+copy, alternated, 5 pairs per bounds mode. No JIT code of a module without GC changes, so no change is
+expected:
+
+| mode | before 5.3: median (range) | HEAD: median (range) |
+|---|---|---|
+| guard | 16 737 (15 977-17 378) | 16 982 (15 792-18 420) |
+| explicit | 14 853 (14 334-16 948) | 15 007 (14 796-15 615) |
+
+The ranges overlap, as in 3b.

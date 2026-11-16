@@ -1197,7 +1197,7 @@ Status: accepted (maintainer, 2026-11-15) · Date: 2026-11-15 · Supersedes: —
   (ROADMAP "Next" (6)).
 
 ### D61. The JIT GC heap collects: a copying collector in wasm, Wasmtime's semispaces
-Status: accepted (maintainer, 2026-11-15: S0013 "Step 5 decisions" D1-D4 and D6, the step-5.3 design note); written in S0013 step 5.3, function subtyping in step 5.6, closed in step 5.7 · Date: 2026-11-15 · Supersedes: S0013's fixed semispaces A and B · Evidence: S0013 Changes 5.3 and 5.6; spec `gc` and `exceptions` with `WABOROS_JIT_GC_STRESS=1 WABOROS_JIT_GC_POISON=1 WABOROS_JIT_GC_VERIFY=1` on both JITs (0 fail); `tests/jit/test_gc_collect.py`; the Kotlin program runs 100 times in one store at 32 MiB of object space, where it ran out of heap at the 19th run before
+Status: accepted (maintainer, 2026-11-15: S0013 "Step 5 decisions" D1-D4 and D6, the step-5.3 design note); written in S0013 step 5.3, function subtyping in step 5.6, closed in step 5.7 (the order measured) · Date: 2026-11-15 · Supersedes: S0013's fixed semispaces A and B · Evidence: S0013 Changes 5.3 and 5.6; spec `gc` and `exceptions` with `WABOROS_JIT_GC_STRESS=1 WABOROS_JIT_GC_POISON=1 WABOROS_JIT_GC_VERIFY=1` on both JITs (0 fail); `tests/jit/test_gc_collect.py`; the Kotlin program runs 100 times in one store at 32 MiB of object space, where it ran out of heap at the 19th run before
 
 * **The collector** is `runtime/gc/collector.wasm` (Cheney, S0013 step 5.2), compiled by the
   store's JIT once per process and run as a **nested JIT entry** from the allocating service, its
@@ -1241,8 +1241,17 @@ Status: accepted (maintainer, 2026-11-15: S0013 "Step 5 decisions" D1-D4 and D6,
   a later GC module that needs its record fail its instantiation
   with "GC type area exhausted". The collector instance is made at the instantiation of the first
   module with a function-subtype site; outside `store.instances`, its native stack limit is set to the store's at every outermost entry (a collection lowers it) and its interrupt word cleared when it is made (LESSONS 117).
-* Open until step 5.7: the work-list order (Cheney against depth-first, measured as S0013 Q2
-  says) and the measurements in BENCHMARKS.md.
+* **The work-list order: Cheney** (S0013 step 5.7, measured as Q2 says; BENCHMARKS.md, "GC collector
+  (S0013 step 5)"). A depth-first build (an explicit stack of field addresses in the free end of
+  to-space, a pre-order copy; correct under stress, poison and verify on `gc` and `exceptions`) was
+  alternated with Cheney on a linked list, a binary tree and a reference array (about 10⁶ live
+  objects each; mutator walk and pause separately, both bounds modes) and on the Kotlin program,
+  with a second Cheney run as the control. It gains on none beyond the spread between rounds (the
+  tree walk is 8.5 against 10.2 ns in explicit mode and 10.1 against 7.3 in guard mode; the tree
+  pause is 36 % longer in guard; the Kotlin program is equal or slower), and it needs a stack in
+  the free end of to-space that Cheney does not. Only Cheney's `collector.wasm` is committed. The
+  pause is 25-45 ns per live object; the collector compiles in 5-9 ms once per process and bounds
+  mode and instantiates in about 0.3 ms per store; CoreMark is unchanged.
 
 ### D62. Statically linked AOT artifacts and static builds: after threads or WASI; three rules in format v1 now
 Status: accepted (maintainer, 2026-11-16) · Date: 2026-11-16 · Supersedes: — · Evidence: STATIC-BUILDS.md; the ELF64 prototype checks of D59 and D60 (2026-11-15)

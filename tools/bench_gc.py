@@ -9,8 +9,9 @@ four loops, each target alternated round by round, the best of `--rounds`.
 * arrays: `array.fill` of a 4 KiB i8 array and `array.copy` of a 512-element i64 array, per round
   trip (ns per byte-and-element operation pair).
 
-Until step 5 the JIT never collects: its heap only grows (the loops are sized to stay far below
-the 2 GiB of semispace A). Wasmtime (optional) is wasmtime-py with GC on (its default collector).
+Since step 5 the JIT heap collects, so the loops include their collections (BENCHMARKS.md, "GC
+collector (S0013 step 5)"; `tools/bench_gc_collect.py` separates pause and mutator). Wasmtime
+(optional) is wasmtime-py with GC on (its default collector).
 Needs `wasm-tools` (a development tool) through tests/watcache.py."""
 
 import sys
@@ -96,7 +97,7 @@ def main() -> None:
     best: dict[tuple[str, str], float] = {}
     results: dict[tuple[str, str], int] = {}
     for _ in range(rounds):
-        for t in targets:  # a fresh instance per round: the JIT's heap only grows until step 5
+        for t in targets:  # a fresh instance per round
             run = wasmtime_runner() if t == "wasmtime" else ours(t)
             for f, n in N.items():
                 n = max(1, int(n * scale) // SLOW.get(t, 1))
