@@ -92,6 +92,7 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   `WABOROS_JIT_BOUNDS=explicit`, and on `jit-aarch64` under QEMU) must give 0 fail. The walk
   check's "nothing moves before the collector" no longer holds under stress: a missing mark now
   shows up as a stale or poisoned reference.
+  `tests/jit/test_gc_moving.py` runs them on, case by case, against `pyc` as the oracle.
 
 ## Differential testing
 
