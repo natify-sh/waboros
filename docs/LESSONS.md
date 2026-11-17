@@ -1027,3 +1027,9 @@ What went wrong or surprised us while building the PoC, so it is not found again
     guest memory in chunks through a `memoryview`, never one copy, and treat a harness exception
     as a finding to read, not a skip to count. Found: the first `fuzz-nightly` run with `--refs`
     (the runner was lost in the smith mode, no log), seed 509584219, 2026-11-17.
+131. **A fold that drops an operand must still evaluate it when it can trap.** `pyc` rewrote the
+    signed comparison against a constant that makes it always true (`C <= INT_MAX`, `x >= INT_MIN`)
+    to `True` and forgot `x`; with `x` an `i32.trunc_f32_u` of a negative float the trap
+    INTEGER_OVERFLOW was lost (Wasmtime and the JITs trap). Since the PoC port, so it predates GC.
+    Rule: a rewrite that discards an operand emits it as a statement unless it is a plain name.
+    Found: `--smith` fuzz, seed 952237952 (first `fuzz-nightly` run, 2026-11-17).

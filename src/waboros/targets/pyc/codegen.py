@@ -1341,6 +1341,9 @@ class FuncGen:
                     )
                 else:  # unreachable edge (le MAX / ge MIN): always true
                     c = "True"
+                    if not x_.isidentifier():  # x may trap (a trunc): it is still evaluated
+                        s.flush_all()
+                        s.emit(x_)
                 if not x_.isidentifier() and " or " in c:
                     t = s.newtmp(I32 if W == 32 else I64)
                     s.flush_all()

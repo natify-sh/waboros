@@ -198,3 +198,19 @@ def test_table_grow_evaluates_the_initial_value_before_the_count() -> None:
     with pytest.raises(Trap) as e:
         load(wat2wasm(wat), {})["f"]()
     assert e.value.code == TrapCode.NULL_REFERENCE
+
+
+@pytest.mark.parametrize(
+    "cmp",
+    [
+        "i32.const 2147483647 f32.const -1 i32.trunc_f32_u i32.ge_s",  # MAX >= x: always true
+        "f32.const -1 i32.trunc_f32_u i32.const 2147483647 i32.le_s",  # x <= MAX
+        "f32.const -1 i32.trunc_f32_u i32.const -2147483648 i32.ge_s",  # x >= MIN
+    ],
+)
+def test_always_true_signed_compare_still_traps(cmp: str) -> None:
+    # fuzz seed 952237952: the folded comparison dropped its operand, which traps
+    wat = f'(module (func (export "f") (result i32) {cmp}))'
+    with pytest.raises(Trap) as e:
+        load(wat2wasm(wat), {})["f"]()
+    assert e.value.code == TrapCode.INTEGER_OVERFLOW

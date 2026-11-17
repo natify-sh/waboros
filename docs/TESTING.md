@@ -247,6 +247,11 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   `--refs` as its third mode (`fuzz-out/refs`, the same minutes; the job's limit is 180 minutes);
   one child can take up to 8 GiB, so one fuzz run at a time (LESSONS 128). Class A divergences
   (the heap limit, about 1 % of modules) are kept in the artifact and triaged, not filtered.
+  Wasmtime has its own limits that look the same from here: its GC heap (about 4 GiB, cumulative:
+  a `LinkError` "GC heap out of memory: no capacity for allocation of N bytes" while instantiating,
+  where `pyc` still allocates), and a `table.grow` of a 64-bit table by a huge delta (2^32 and up)
+  that raises an out-of-memory `WasmtimeError` instead of returning -1 (class E, S0013 Changes,
+  step 8 triage); both are Wasmtime's behaviour, not ours.
 * Triage of the first runs (2026-11-05, 43 divergent modules from seeds 319-4020, 50204-50544, 70475-71186,
   90086-93499 and 900223-908219; the reduced cases are in `tests/test_pyc_trap_order.py`): in all of them only `pyc` differed, in
   five causes, all fixed and covered by `tests/test_pyc_trap_order.py` with the reduced modules. Four
