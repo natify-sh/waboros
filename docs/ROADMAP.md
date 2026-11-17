@@ -291,8 +291,8 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29; done 2026-11-03) -> 
   check on aarch64: done under QEMU 2026-11-16 (parity with `jit-aarch64` in both bounds modes,
   `poc/sljit/sljit-be/`); left: native arm64 timings, BTI landing pads, and the per-function frame size (sljit fixes the
   local size at `sljit_emit_enter`: 96 bytes per frame against 32, so the depth under the default
-  budget is about 5 400 against 16 400; a D39 hint to `func_begin` from one scan of the body is the
-  proposed fix, to be decided with the C core). Then D48,
+  budget is about 5 400 against 16 400; the fix is decided: a pre-pass over the body tells `func_begin` what the function needs, D67;
+  it is implemented with the C core). Then D48,
   MICRO-COMPILERS.md and JIT-AS-WASM.md are amended.
 * **One LIR vocabulary** before porting to the micro-compilers (MICRO-COMPILERS.md): the operation
   names that are strings today in several places become one enumerated list, defined once,

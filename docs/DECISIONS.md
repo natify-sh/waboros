@@ -1421,3 +1421,32 @@ fallback if a module shows a pathological pass count); only call and throw sites
 to the first `catch_all` (a second list of "which sites throw" to keep in step with the
 lowering). Wasmtime's maps list only live slots and it never nulls (Cranelift reuses spill slots),
 which a fixed slot per local cannot copy.
+
+### D66. Artifact versioning: one `format_version` for the whole file; amendments by feature flags, no per-section versions
+Status: accepted (maintainer, 2026-11-17) · Date: 2026-11-17 · Supersedes: — · Evidence: the S0013 7.1/7.2 review (a step-3a `STACKMAPS` table can be built that the new decoder parses); ARTIFACT.md part 2
+
+* A change to the layout of any section (as `STACKMAPS` in S0013 7.1) is a change of the artifact
+  format: the whole file's `format_version` is bumped, and a loader refuses a version it does not
+  support (part 2). Sections carry **no version field of their own**: one versioning scheme.
+* An amendment inside a version (an optional section, a flag a newer writer may set and an older
+  loader can ignore or must refuse) is expressed by **feature flags** in the header, as ELF does;
+  the flag set and which flags a loader must understand are defined by the artifact-format spec
+  (ROADMAP "Next" (6)).
+* Rejected: a version per section. It lets an old loader skip one changed section, but adds a
+  second versioning scheme for a case that does not arise while waboros writes and reads its own
+  artifacts.
+* Until the format is frozen no artifact is written to disk, so the amendments of v1 made so far
+  (D56, D61, D63, D65) need no flag; the format spec starts from their final form.
+
+### D67. A pre-pass gives `func_begin` the function's needs, so the native frame is sized before the body
+Status: accepted (maintainer, 2026-11-17) · Date: 2026-11-17 · Supersedes: — · Evidence: `poc/sljit/sljit-be/SLJIT-BACKEND-RESULTS.md`, "Update 2026-11-16 (3)" (96-byte sljit frames against 32, recursion depth about 5 400 against 16 400 under the default budget)
+
+* A one-pass code generator (sljit, and the C micro-compilers of D60) fixes the frame size when the
+  function starts, before its body is generated; the hand-written backends size it after the body
+  (or retry in far mode).
+* The core therefore scans each function body once before `func_begin` and passes what it needs
+  (calls through a record or a host, `wide`/v128 values, bulk memory copies, the pins it uses);
+  `func_begin` takes these hints as a D39 amendment, and a backend may ignore them.
+* Implemented with the C core (D60), not before: the Python backends do not need it, and their
+  machine code must not change for it (D35).
+

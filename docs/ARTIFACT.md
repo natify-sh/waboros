@@ -121,7 +121,8 @@ amended version 1 without a bump; instantiation decodes the table with checks an
 (`ValueError`) one that does not parse exactly, has a map index past the pool or a `live` bit
 outside `refs`, so a table in step 3a's one-bitmap form with a map is refused in the shapes tested, not by
 contract: the table has no version field, and a 3a table can be built that parses (the 7.2 review);
-versioning is the artifact format's (`format_version`, an open question of its spec). One without
+versioning is the artifact format's: one `format_version` for the whole file, no per-section
+version, amendments inside a version through feature flags (D66). One without
 a map, the same bytes in both forms, still runs. The trampolines' own points (the entry's return point and its saved block, `tail_switch`'s
 `restore` frame) are part 3's, not this section's.
 
