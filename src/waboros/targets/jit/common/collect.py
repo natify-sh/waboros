@@ -133,7 +133,8 @@ def collect(inst: Any, heap: Any) -> None:
     if st.lost:
         raise RuntimeError(st.lost)
     sp, _, frame = st.exit
-    assert sp and st.vsp > frame, "a collection outside a host call that set the frame base (B1)"
+    if not (sp and st.vsp > frame):  # a real check: `python -O` drops asserts (step 8 review)
+        raise RuntimeError("a collection outside a host call that set the frame base (B1)")
     coll, idx = _collector(inst, heap)
     if st.vsp + VSTACK_RESERVE > st.vtop:  # before anything moves
         raise Trap(TrapCode.STACK_OVERFLOW, "call stack exhausted")

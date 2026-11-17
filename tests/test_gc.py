@@ -672,3 +672,50 @@ def test_deeply_nested_constant_expressions(target: str) -> None:
         (local.get $n)))""",
     )
     assert call(p, "d") == [n]
+
+
+# ---- step 8 review, part B (expected values checked against Wasmtime)
+SELECT_T = """(module (type $s (struct (field i32)))
+  (func (export "get") (param i32) (result i32)
+    (struct.get $s 0 (select (result (ref null $s)) (struct.new $s (i32.const 7)) (ref.null $s) (local.get 0))))
+  (func (export "eq") (param i32 i32) (result i32)
+    (ref.eq (select (result eqref) (struct.new $s (i32.const 1)) (ref.i31 (local.get 1)) (local.get 0))
+            (select (result eqref) (struct.new $s (i32.const 2)) (ref.i31 (i32.add (local.get 1) (i32.const 0))) (local.get 0)))))"""
+
+
+@pytest.mark.parametrize("target", TARGETS)
+def test_typed_select_result_type_is_the_declared_one(target: str) -> None:
+    p = make(target, SELECT_T)
+    assert call(p, "get", 1) == [7]
+    assert (
+        trap(p, "get", 0) == TrapCode.NULL_REFERENCE
+    )  # the first arm is non-null, the result is not
+    assert call(p, "eq", 0, 100000) == [1]  # two i31 with one value are equal
+    assert call(p, "eq", 1, 100000) == [0]
+
+
+def struct_module(n: int) -> bytes:
+    def leb(v: int) -> bytes:
+        return bytes([v & 0x7F | 0x80, v >> 7 & 0x7F | 0x80, v >> 14]) if v > 127 else bytes([v])
+
+    body = b"\x01\x5f" + leb(n) + b"\x7f\x00" * n
+    return b"\0asm\1\0\0\0\x01" + leb(len(body)) + body
+
+
+def test_struct_field_limit_is_10000() -> None:
+    validate(parse(struct_module(10000)))
+    with pytest.raises(Invalid, match="struct fields size is out of bounds"):
+        validate(parse(struct_module(10001)))
+
+
+def test_subtype_depth_limit_is_63() -> None:
+    def chain(n: int) -> str:  # n supertypes above the last type
+        return (
+            "(module (type $t0 (sub (struct))) "
+            + "".join(f"(type $t{i} (sub $t{i - 1} (struct)))" for i in range(1, n + 1))
+            + ")"
+        )
+
+    validate(parse(wat2wasm(chain(63))))
+    with pytest.raises(Invalid, match="sub type hierarchy too deep"):
+        validate(parse(wat2wasm(chain(64))))

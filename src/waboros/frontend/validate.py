@@ -393,7 +393,13 @@ def _check_types(mod: dict) -> None:
     earlier rec group, supertypes defined earlier and not final, and a subtype that matches its
     supertype. Two passes: matching reads supertype chains, which the first pass makes safe."""
     tdefs = mod["tdefs"]
+    depth = []  # subtype depth, as in Wasmtime: at most 63 supertypes above a type
     for i, (comp, sup, _, _, ge) in enumerate(tdefs):
+        if comp[0] == "struct" and len(comp[1]) > 10000:
+            raise Invalid("struct fields size is out of bounds")
+        depth.append(depth[sup[0]] + 1 if sup and sup[0] < i else 0)
+        if depth[-1] > 63:
+            raise Invalid("sub type hierarchy too deep")
         if comp[0] == "func":
             ts = (*comp[1], *comp[2])
         else:

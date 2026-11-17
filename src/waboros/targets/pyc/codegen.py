@@ -1075,7 +1075,8 @@ class FuncGen:
                         e = E(t, e.t, e.b, k=True, w=e.w)
                     ab.append(e)
                 a, b = ab
-            push(E("(%s if %s else %s)" % (a.c, s.cond(c), b.c), a.t, bb, **dep(a, b, c)))
+            st = x[1][0] if len(x) > 1 and x[1] else a.t  # the typed form declares the result type
+            push(E("(%s if %s else %s)" % (a.c, s.cond(c), b.c), st, bb, **dep(a, b, c)))
             return
         if op == 0x20:
             nm = s.lname(x[1])
