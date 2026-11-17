@@ -223,7 +223,7 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   export, the arguments, each side's outcome and which differ from Wasmtime) into `--out`
   (default `fuzz-out`). The exit status is always 0; the last line is the summary (modules, skips
   per target, timeouts, divergences). The workflow `fuzz-nightly.yml` (cron, and `workflow_dispatch`
-  with the minutes) runs smith and `--gen` for 45 minutes each outside `ci` and `platforms`, never
+  with the minutes) runs smith, `--gen` and `--refs` for 45 minutes each outside `ci` and `platforms`, never
   blocks, puts the counts and the descriptions in the job summary and keeps the artifact `fuzz-out`
   (the modules, the descriptions, the logs) for 14 days; a divergence is triaged later (above), not
   fixed at once. `--refs` (S0013 step 7, D65) also turns on smith's reference types and GC
@@ -243,10 +243,10 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   exercises the live sets of smith's reference locals at every allocation and host call. The
   oracle's wrapper returns a non-null `exnref` result as an opaque "exn" reference, so such an
   export compares as non-null on every engine. Without `--refs` the engines still share one
-  process and one alarm per module (the mode is unchanged). The nightly workflow does not use
-  `--refs` yet (S0013 Changes 7.4): a third run in the loop of `fuzz-nightly.yml`, `uv run python
-  tools/fuzz.py --targets pyc,jit,wasmtime --refs --minutes $MINUTES --seed ... --out
-  fuzz-out/refs`, would add it; one child can take up to 8 GiB.
+  process and one alarm per module (the mode is unchanged). The nightly workflow runs
+  `--refs` as its third mode (`fuzz-out/refs`, the same minutes; the job's limit is 180 minutes);
+  one child can take up to 8 GiB, so one fuzz run at a time (LESSONS 128). Class A divergences
+  (the heap limit, about 1 % of modules) are kept in the artifact and triaged, not filtered.
 * Triage of the first runs (2026-11-05, 43 divergent modules from seeds 319-4020, 50204-50544, 70475-71186,
   90086-93499 and 900223-908219; the reduced cases are in `tests/test_pyc_trap_order.py`): in all of them only `pyc` differed, in
   five causes, all fixed and covered by `tests/test_pyc_trap_order.py` with the reduced modules. Four
