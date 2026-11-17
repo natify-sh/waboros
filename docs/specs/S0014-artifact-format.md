@@ -2,7 +2,7 @@
 title: JIT artifact format v1 in the ELF64 container
 kind: spec
 id: S0014
-status: draft
+status: approved
 superseded_by:
 related: [D18, D23, D24, D29, D33, D35, D36, D44, D48, D54, D58, D59, D60, D61, D62, D63, D64, D65, D66, R2, R3, R6, S0003, S0006, S0013]
 owner: maintainer
@@ -752,7 +752,7 @@ When approved and implemented (step 7 unless noted):
 * LESSONS.md: none expected; any trap found on the way.
 
 ## Progress
-* Not started: the spec is a draft for the maintainer's approval.
+* Approved by the maintainer 2026-11-17; implementation not started (the maintainer says when).
 
 ## Changes
 * 2026-11-17: created (draft).
@@ -761,3 +761,4 @@ When approved and implemented (step 7 unless noted):
   store's one-copy rule checked byte for byte; the `kind` field and the trampoline artifact
   removed); Q5 decided (a), no checksum, with a CRC32 in the header considered and rejected.
   Every open question is decided.
+* 2026-11-17: approved by the maintainer.
