@@ -653,6 +653,7 @@ bytes); step 2 measures it.
    JIT loaders refuse `EM_NONE`. (b) Outside ELF (a marshal file with a small header): no `EM_NONE`
    oddity, but a second container, a second fat rule and a second reader. Recommendation: **(a)**,
    specified when `pyc` serialization is a step.
+   **Decided (maintainer, 2026-11-17): (a).**
 7. **The file extension.** (a) `.wbo` ("waboros object"; ELF `ET_REL` files are objects); (b)
    `.wab` (taken by the Windows Address Book); (c) keep the working `.w2a` (the old project name).
    Not `.cwasm`: it is Wasmtime's and its files are not ours. Recommendation: **(a)**.
