@@ -280,7 +280,8 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29; done 2026-11-03) -> 
 * **The JIT compilers as AOT-compiled wasm modules** ([JIT-AS-WASM.md](JIT-AS-WASM.md), draft,
   maintainer 2026-11-05): port, then replace the Python backends; a decision point (Dn) once the
   artifact format below is fixed; criterion byte identity and portability to non-Python hosts.
-* **Hand-written or sljit micro-compilers** (maintainer, 2026-11-16). The x86-64 experiment `poc/sljit/sljit-be/` (our core over sljit, D56
+* **Micro-compilers on sljit: decided** (maintainer, 2026-11-17, D68): no hand-written port; the
+  micro-compilers are our core in C over sljit. History of the question (maintainer, 2026-11-16): The x86-64 experiment `poc/sljit/sljit-be/` (our core over sljit, D56
   site records and SIMD through `sljit_emit_op_custom`) passes every directory `jit-x86_64` claims, exceptions and memory64 included (third update,
   2026-11-16: 64 228 commands on `jit-x86_64`, `jit-sljit` x86-64, `jit-aarch64` and `jit-sljit`
   aarch64 under QEMU, `spec_diff` 0 both ways), at CoreMark parity (99-101 %), with no process

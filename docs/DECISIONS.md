@@ -1454,3 +1454,28 @@ Status: accepted (maintainer, 2026-11-17) · Date: 2026-11-17 · Supersedes: —
 * Implemented with the C core (D60), not before: the Python backends do not need it, and their
   machine code must not change for it (D35).
 
+### D68. The micro-compilers are our core in C over sljit; no hand-written port
+Status: accepted (maintainer, 2026-11-17) · Date: 2026-11-17 · Supersedes: the hand-written-port plan of MICRO-COMPILERS.md ("First: `aarch64.wasm`, a port of the aarch64 backend") and the byte oracle for the ports (D60's "Unchanged" bullet, MICRO-COMPILERS.md); amends D48 · Evidence: `poc/sljit/sljit-be/SLJIT-BACKEND-RESULTS.md` (third update, 2026-11-16); the orchestrator's check on `gc` at 43114f2, 2026-11-17
+
+* The micro-compilers (D60: C, shipped as `x86_64.wasm`, `aarch64.wasm`, `riscv64.wasm` and
+  embedded in the native runtime for its own architecture) are the waboros core ported to C, with
+  code generation through sljit (D48's sljit backend), not hand-written ports of the Python
+  backends `jit-x86_64` and `jit-aarch64`.
+* **Oracle: behaviour, not bytes.** The spec suite on every claimed directory, `spec_diff` both
+  ways against the Python JIT of the same architecture, the walk check and poison, CoreMark's self
+  check; D35's byte identity holds within one compiler (deterministic output, cross-compilation),
+  not across compilers (D64 item 4).
+* **Why:** the prototype already covers every D39 method on x86-64 and aarch64 (QEMU). The
+  orchestrator's own check on 2026-11-17 (x86-64, `gc` at 43114f2, sljit 39c508d1):
+  * the whole spec suite with the walk check and poison: 64 229 pass, 0 fail, in guard and in
+    explicit mode, the same as `jit-x86_64`;
+  * CoreMark (`taskset -c 2`, two alternated rounds): `jit-sljit` 15 603 / 15 888, `jit-x86_64`
+    14 571 / 14 943 iterations/s, both self checks passed.
+  One code generator for three architectures (riscv64 for free) instead of three hand-written
+  backends; D63 already reduced the per-ISA part to SIMD custom words, `sqrt`, `tail_switch`, the
+  frame helper and fault-point guards.
+* **Left before the micro-compilers:** the frame size (D67's pre-pass), BTI landing pads on
+  aarch64, a sljit API for `ret_at` (read from sljit's internals today), native arm64 timings.
+* The Python backends stay: they are the reference behaviour, `pyc`'s fallback partners and the
+  targets of the Python package until JIT-AS-WASM's decision (after the artifact format).
+
