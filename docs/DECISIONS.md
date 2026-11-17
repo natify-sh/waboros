@@ -2,7 +2,7 @@
 title: Decisions
 kind: log
 status: current
-updated: 2026-11-16
+updated: 2026-11-17
 ---
 
 # Decisions
@@ -1369,7 +1369,7 @@ fixed (inline sequences through `sljit_emit_op_custom`, or calls through context
 sljit micro-compiler emits AOT artifacts (SLJIT-BACKEND.md, check 3).
 
 ### D65. JIT liveness maps and the nulling walk
-Status: accepted (maintainer, 2026-11-16: S0013 step 7 plan, D1-D9; D1, D2, D7 built in step 7.1, D3-D6 and D8 in step 7.2, D9 in step 7.3) · Date: 2026-11-16 · Supersedes: S0013's "per function, the bitmap of its reference-typed local slots" (never built); narrows S0013 Q3 "Operands" (D3 below) · Evidence: S0013 Changes 7.1, 7.2 and 7.3 (the mutation table); `tests/jit/test_stackmaps.py`, `tests/jit/test_walk.py`, `tests/jit/test_liveness.py`, `tests/jit/test_gc_roots.py` (7.3); the whole spec suite with `WABOROS_JIT_WALK_CHECK=1` on both JITs, both bounds modes, and with the GC switches as well (7.2)
+Status: accepted (maintainer, 2026-11-16: S0013 step 7 plan, D1-D9; D1, D2, D7 built in step 7.1, D3-D6 and D8 in step 7.2, D9 in step 7.3; measured in step 7.4) · Date: 2026-11-16 · Supersedes: S0013's "per function, the bitmap of its reference-typed local slots" (never built); narrows S0013 Q3 "Operands" (D3 below) · Evidence: S0013 Changes 7.1, 7.2, 7.3 (the mutation table) and 7.4 (the measurements: BENCHMARKS.md "Liveness (S0013 step 7)": the pass is 0.4-3 % of a GC compile, the nulling 1.2-2.1 µs per frame, a 16 MiB dead local freed; the cost of D2's eager decode: instantiation +34 %); `tests/jit/test_stackmaps.py`, `tests/jit/test_walk.py`, `tests/jit/test_liveness.py`, `tests/jit/test_gc_roots.py` (7.3); the whole spec suite with `WABOROS_JIT_WALK_CHECK=1` on both JITs, both bounds modes, and with the GC switches as well (7.2)
 
 S0013 Q3 has the walk null the reference slots a site does not mark live, so a dead slot never
 keeps an offset into the old space. The walk cannot find a site's function, so a per-function
@@ -1388,6 +1388,10 @@ bitmap of reference slots cannot tell it which unmarked slots to null:
   `live ⊆ refs`), so a step-3a table with a map is refused in the shapes tested (not guaranteed: the table has no
   version field and a parsing 3a table exists, 7.2 review; versioning is left to the artifact
   format's `format_version`) and one without a map runs.
+  The decode is done in every instantiation, not once per compiled module; measured in step 7.4
+  (BENCHMARKS.md): +125 µs (+34 %) for CoreMark, +2.4 ms (+34 %) for the Kotlin program and
+  +19 / +174 KiB per instance. A decode shared by the instances of a `Compiled` is the cheap fix,
+  left to the maintainer's decision (S0013 Changes 7.4).
 * **Check mode nulls** (plan D7 (a)): `WABOROS_JIT_WALK_CHECK=1` writes 0 into the dead slots at
   every host call and libcall, then validates every `refs` slot, so the whole-suite walk-check
   runs exercise every dead set, modules that never collect included.

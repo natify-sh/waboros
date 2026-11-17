@@ -2,7 +2,7 @@
 title: Benchmarks
 kind: log
 status: current
-updated: 2026-11-16
+updated: 2026-11-17
 ---
 
 # Benchmarks
@@ -1777,3 +1777,178 @@ instance, 5 runs alternated, median (min-max); `ru_maxrss` after the 1 000):
 **CoreMark** was not re-run. Its code does not change in this step (plan section 5; S0013 Changes
 6.3 for the identity check), which is the evidence for code without exceptions (S0012's rule). `jit-aarch64` throw cost is not
 measured: QEMU is not a benchmark and there is no arm64 hardware here.
+
+## Liveness (S0013 step 7, 2026-11-17)
+
+Step 7 gives each stack map a second bitmap (`live`), runs a backward liveness pass over every
+function that has a reference local and a site, and has the collection null the dead reference
+slots (D65). This section measures what it costs (compile time, instantiation, the collection) and
+what it frees (retention), as section 7 of `docs/plans/S0013-7-plan.md` lays it out. The plan
+expected reference-free compile time unchanged (the pass does not run, D4) and recorded the rest.
+
+Conditions: the dev VM (Intel Xeon @ 2.10 GHz, 4 vCPU, Linux 6.18), CPython 3.13.17, `taskset -c 2`
+for every timed process, the GC switches unset unless named, one session, the builds alternated
+(the order rotated each round; nothing else ran during the timed parts).
+* **base**: a `git archive` of 112d981 (step 6, the last commit before step 7), `src` and `tests`;
+  **HEAD**: a `git archive` of 081305e (step 7.3 and its review; `src` is the same as this step's
+  tree, the step changes tools, tests and docs). Each run had `PYTHONPATH=<copy>/src:<copy>` and
+  the driver checked `waboros.__file__` against the copy (LESSONS 52, 98, 121).
+* **NOLIVE**: HEAD with `WABOROS_JIT_NOLIVE=all` (D8: `live = refs`, no pass, the step-6 maps; the
+  code bytes are the same): the same-tree control. For the collection tool, which sets no
+  environment per build, a copy of HEAD with a `sitecustomize.py` that sets it.
+* Scratch drivers (in the session's scratch directory, not in the tree) for everything except
+  `tools/bench_gc_collect.py`, which is unchanged.
+* CoreMark is **not re-run**: its code and tables are byte-identical to step 6 (S0013 Changes 7.1
+  and 7.2, the D35 lists), so there is nothing to time; no `jit-aarch64` timings (QEMU).
+
+**Compile time, reference-free modules** (CoreMark + `hash` + `mono` + `zip`, the 3a method: each
+process's fastest of 10 compiles of the four; 30 rounds, one process per build and round; median
+(min-max) over the 30 processes in ms, and the paired change, the median of the per-round HEAD/base
+ratios, with the rounds in which HEAD was slower):
+
+| target | bounds | base | HEAD | paired |
+|---|---|---|---|---|
+| `jit-x86_64` | guard | 204.5 (197.9-295.9) | 204.4 (197.6-310.0) | +0.4 % (17/30) |
+| `jit-x86_64` | explicit | 231.4 (221.7-287.9) | 232.2 (223.2-329.0) | +0.7 % (16/30) |
+| `jit-aarch64` (cross-compiled) | guard | 201.3 (194.6-323.4) | 204.8 (195.5-333.9) | +1.3 % (17/30) |
+| `jit-aarch64` (cross-compiled) | explicit | 224.1 (213.8-296.5) | 228.5 (215.9-328.0) | −0.3 % (14/30) |
+
+Unchanged within the spread, as expected: the pass does not run for these modules (D4), and a
+profile with the pass wrapped counted 0 runs and 0.0 % for them.
+
+**Compile time, GC modules** (`jit-x86_64`; "GC suite" is the 121 modules of the spec cache's `gc/`
+and `exceptions/` that compile, summed; "Kotlin" is `poc/bench/corpus/gc_kotlin.wasm`; the same
+method and 30 rounds, three builds per round):
+
+| group | bounds | base | HEAD | NOLIVE | HEAD against base | NOLIVE against HEAD |
+|---|---|---|---|---|---|---|
+| GC suite | guard | 88.8 (83.3-129.8) | 89.0 (85.7-141.9) | 88.4 (83.2-143.0) | +2.7 % (19/30) | −1.6 % (12/30) |
+| GC suite | explicit | 92.7 (90.3-142.9) | 92.3 (86.9-140.9) | 95.4 (88.6-139.9) | +0.0 % (15/30) | +0.9 % (18/30) |
+| Kotlin | guard | 121.6 (115.5-189.8) | 130.3 (121.9-198.4) | 127.8 (116.2-194.4) | +4.7 % (24/30) | −2.0 % (12/30) |
+| Kotlin | explicit | 134.2 (126.7-230.8) | 136.4 (131.9-215.8) | 136.1 (128.5-159.5) | +2.2 % (19/30) | −2.1 % (9/30) |
+
+The pass's own share, `liveness.live` wrapped with a timer (HEAD, median of 10 compiles of the
+group; the wrapper's two clock reads per call are in it):
+
+| group | bounds | pass runs | share of the compile | passes per run |
+|---|---|---|---|---|
+| GC suite | guard | 50 | 0.45 % (0.42-0.48) | 1 (50) |
+| GC suite | explicit | 50 | 0.41 % (0.38-0.42) | 1 (50) |
+| Kotlin | guard | 135 | 3.28 % (3.14-3.56) | 1 (109), 2 (25), 3 (1) |
+| Kotlin | explicit | 135 | 2.81 % (2.72-2.94) | 1 (109), 2 (25), 3 (1) |
+
+* A compile that has the pass pays 0.4 % (the spec's GC modules, whose functions are small) to
+  3 % (the Kotlin program, 4-5 ms of 137-144 ms): the paired +4.7 % and +2.2 % of the table are the
+  pass plus the second bitmap per map; NOLIVE (no pass, the second bitmap still written) is 2 %
+  below HEAD (1.6-2.1 %) in three of the four rows. The spread of a single process is 15-50 % on this VM, so the
+  signs of single rows are weak; the shares are the sharper number.
+* **Passes**: the Kotlin program's 135 runs take at most 3 passes, the spec suite's 50 take 1, the
+  same counts as in S0013 Changes 7.2 for the Kotlin program; the plan's "loop depth + 2"
+  expectation holds (no function in either set needed more). A pathological module, the case D5's
+  fallback is for, did not appear.
+
+**Instantiation** (D2's eager, checked decode of `STACKMAPS` at every instantiation; one compile,
+then 100 or 1 000 new `StoreState`s kept alive, guard mode; mean µs per instance and the RSS growth
+of the loop, `ru_maxrss`; 7 rounds alternated, median (min-max)):
+
+| module | stores | base µs | HEAD µs | base RSS per instance | HEAD RSS per instance |
+|---|---|---|---|---|---|
+| CoreMark | 1 000 | 366 (298-456) | 491 (397-625) | 63.7 KiB | 83.1 KiB |
+| CoreMark | 100 | 380 (292-446) | 512 (366-563) | 60.2 KiB | 80.6 KiB |
+| Kotlin | 1 000 | 7 249 (5 997-8 015) | 9 690 (8 100-11 092) | 302.6 KiB | 476.7 KiB |
+| Kotlin | 100 | 7 737 (5 424-8 451) | 8 577 (7 034-11 196) | 288.0 KiB | 464.6 KiB |
+
+* **This is a cost the plan did not expect to be this size.** Every instantiation now decodes the
+  table (the walk's lazy decode, which only a store that collected or checked paid, is gone, 7.1):
+  +125 µs (+34 %) for CoreMark and about +2.4 ms (+34 %) for the Kotlin program at 1 000 stores,
+  and +19 KiB and +174 KiB of resident memory per instance. `gc.decode` alone, timed on the
+  finished table: 54 µs for CoreMark (108 sites, 1 736 bytes, 7.4 KiB of Python objects kept) and
+  1.7 ms for the Kotlin program (907 sites, 20 332 bytes, 72 KiB): 40-70 % of the time and about
+  40 % of the memory; the rest was not attributed. The decode result depends only on the compiled
+  module, so it could be done once per `Compiled` and shared by its instances (a source change,
+  not made here: the step's scope is measurement; open question in S0013).
+* The ranges overlap in the 100-store rows (the spread is 30-50 %); the medians and the RSS growth
+  (which has no noise to speak of: 63 744 against 83 072 KiB over 1 000 CoreMark stores) agree.
+
+**Collection pause** (`tools/bench_gc_collect.py --builds base=B,live=H,nolive=N,live2=H --rounds 9
+--bounds guard|explicit`: the tool of step 5.7, each heap about 10⁶ live objects, six collections
+timed; `live2` is HEAD again, the control; median (min-max) of the mean pause in ms; these
+collections have few frames, so the liveness work is the table decode per frame and nothing else):
+
+| bounds | heap | base | HEAD | NOLIVE | HEAD again (control) |
+|---|---|---|---|---|---|
+| guard | list | 36.0 (26.5-41.2) | 35.8 (26.4-45.1) | 30.7 (26.5-45.9) | 37.5 (26.5-42.4) |
+| guard | tree | 46.4 (34.7-59.7) | 41.5 (35.0-55.5) | 38.7 (34.8-51.3) | 48.6 (34.9-57.6) |
+| guard | array | 29.9 (28.2-43.3) | 32.1 (26.5-40.8) | 29.6 (26.4-42.4) | 31.4 (26.1-42.5) |
+| explicit | list | 46.9 (29.4-52.2) | 31.8 (29.7-51.9) | 40.2 (28.7-51.9) | 37.9 (29.5-48.2) |
+| explicit | tree | 49.4 (39.3-69.9) | 46.7 (39.4-68.8) | 48.7 (42.4-61.1) | 55.6 (41.8-65.8) |
+| explicit | array | 45.3 (30.1-52.9) | 39.1 (30.8-42.1) | 36.5 (29.7-50.3) | 43.7 (30.0-52.1) |
+
+No change beyond the spread: the control differs from HEAD by up to 9 ms, base from HEAD by up
+to 15 ms (explicit list, base the slower); the mutator's walk time after a collection (ns per object, not repeated here) is within the spread too.
+
+**The nulling, per frame** (scratch driver: a recursion 10 000 deep in which each frame has two
+reference locals and the first is dead at the call (its last read is before it); the leaf allocates
+10⁶ small structs, so about 20 collections walk all the frames; mean collection pause divided by
+the depth, 15 rounds alternated, HEAD pooled with a second HEAD process per round, median
+(min-max), ns per frame). **A**: the dead local holds a fresh struct per frame (HEAD copies half
+as many objects); **B**: it holds one shared struct, so the copy is the same and only the nulling
+differs:
+
+| variant | base | HEAD | NOLIVE | collections in the run |
+|---|---|---|---|---|
+| A, a fresh struct | 4 465 (2 960-5 535) | 6 256 (4 040-8 238) | 4 150 (3 207-5 996) | base 22, HEAD 18, NOLIVE 22 |
+| B, a shared struct | 4 049 (2 872-5 882) | 5 715 (4 075-7 699) | 4 490 (3 436-6 422) | 18 in all three |
+
+* **Nulling a frame's dead slot costs about 1.2-2.1 µs** in the Python gatherer (HEAD against
+  NOLIVE in B: 5 715 against 4 490; against base 4 049), a pause of 57 ms against 45 ms for 10 000
+  frames. The whole gather is 4-6 µs per frame, so the nulling adds 25-50 % to it; a collection
+  with few frames, as the table above, has no frames to pay it. The spread is large: two HEAD
+  processes of the same build differed by 25 % in the first, 9-round run.
+* In A, HEAD collects 18 times where base and NOLIVE collect 22: the dead struct of each frame is
+  not copied, so the live set is smaller and the allocation reaches the limit later.
+
+**Retention** (a scratch driver; t24's module of `tests/jit/test_gc_roots.py`: a 16 MiB array held
+only by a dead local while a loop allocates, with the test's switches `WABOROS_JIT_GC_STRESS`,
+`_POISON` and `_VERIFY` on so that each allocation collects; `go(3)` twice, then `go(100)`; four
+runs of each build, one process each):
+
+| build | collections after `go(3)` ×2 | live bytes after the last collection | collections after `go(100)` | `go(100)`, ms | heap capacity |
+|---|---|---|---|---|---|
+| base | 7 | 16 777 248 | 108 | 7 670-8 696 | 64 MiB |
+| HEAD | 7 | 16 | 108 | 150-218 | 64 MiB |
+| NOLIVE | 7 | 16 777 248 | 108 | 7 597-8 679 | 64 MiB |
+
+The array is copied by every collection without liveness (16 MiB each, so 100 collections cost
+8 s) and by none with it: 35-58 times faster, and the heap does not hold it. NOLIVE equals base
+exactly, as D8 says.
+
+**The Kotlin program** (`gc_kotlin`, `run` in a fresh store; the corpus's stub host; 9 alternated
+rounds per bounds mode, each build in a process of its own; first `run`, then the mean of nine
+more in the same store; median (min-max) ms):
+
+| bounds | build | first run | later runs, per run | collections, first run | pause in the first run |
+|---|---|---|---|---|---|
+| guard | base | 243 (209-278) | 106 (78-123) | 36 | 166 (143-194) |
+| guard | HEAD | 223 (174-278) | 92 (76-110) | 36 | 151 (113-194) |
+| guard | NOLIVE | 238 (173-302) | 95 (79-123) | 36 | 162 (120-214) |
+| explicit | base | 281 (209-304) | 116 (105-125) | 36 | 192 (143-207) |
+| explicit | HEAD | 271 (191-328) | 116 (100-137) | 36 | 185 (131-217) |
+| explicit | NOLIVE | 279 (225-309) | 118 (107-122) | 36 | 192 (157-213) |
+
+The run takes the same time on all three (the ranges overlap in every column) and makes the same 36
+collections, 7.6 per later run; the result is equal (13887334026647758917, the corpus's reference).
+At the end of the first run the heap holds **14 879 704 bytes on HEAD against 15 928 248 on base
+and on NOLIVE** (1 048 544 fewer, 6.6 %); the capacity is 32 MiB for all. So the Kotlin program
+shows the feature working (a 1 MiB object stops being retained) but its live set is mostly real,
+and the saving is small. A first draft ran the Kotlin program after t24's stress stage in the
+same process and showed HEAD 50-100 ms slower than base in the first run; with `run` as the first
+work of a fresh process, as here, it does not reproduce (the cause was not looked for; LESSONS
+129).
+
+**Summary.** Reference-free code and compile time: unchanged. GC compile time: the pass is 0.4-3 %
+of the compile. A collection with few frames: unchanged; per frame, the nulling costs 1.2-2.1 µs.
+Retention: a 16 MiB dead local freed (a stress loop 35-58 times faster), the Kotlin program's heap
+6.6 % smaller. **Instantiation: +34 % and +19 to +174 KiB per instance, the one cost larger than
+planned**, and the one thing here a change in `src` (a decode per `Compiled`, not per instance)
+would reduce.

@@ -123,8 +123,11 @@ class WasmtimeEngine:
                 return None
             v = wasmtime.Val._from_raw(store, raw).value
             return OpaqueRef("extern") if v is None else cast(ExternRef, v)  # not made by the host
-        if ty == EXNREF and raw.of.exnref.store_id == 0:
-            return None
+        if ty == EXNREF:  # no value to compare (the host cannot make one): null or not
+            try:
+                return None if raw.of.exnref.store_id == 0 else OpaqueRef("exn")
+            finally:
+                ffi.wasmtime_val_unroot(ctypes.byref(raw))
         if ty != ANYREF:
             raise LookupError(f"unsupported result kind {ty}")
         ctx, ref = store._context(), ctypes.byref(raw.of.anyref)

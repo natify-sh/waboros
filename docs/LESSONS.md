@@ -2,7 +2,7 @@
 title: Lessons
 kind: log
 status: current
-updated: 2026-11-16
+updated: 2026-11-17
 ---
 
 # Lessons
@@ -1003,3 +1003,19 @@ What went wrong or surprised us while building the PoC, so it is not found again
     the shift case to show where it is caught. Rule: before writing a test for a defence, trace
     the forged value through every earlier check, and test both the check and the input it is
     really for (LESSONS 105). Found: S0013 step 7.3, 2026-11-16.
+128. **Concurrent fuzz runs add up their data limits, and a child killed from outside looked like
+    a timeout.** Each `tools/fuzz.py --refs` engine process may hold 8 GiB (`DATA_LIMIT`, LESSONS
+    126), and `pyc` alone peaks at 7.7 GB on seed 9884; three runs at once on the 15 GB VM made
+    the cgroup's OOM killer take a 7.4 GB `python`, and the harness counted the module as a
+    timeout because the child sent no result. Rule: one memory-heavy fuzz run at a time; a
+    harness that forks a worker tells "no result" apart by the exit status (the alarm's code, or a
+    signal), and prints the signal. Found: S0013 step 7.4, 2026-11-17.
+129. **A scratch measurement that reuses a test's module must reuse the test's environment, and
+    one measurement per fresh process.** t24's loop "collects at each allocation" only because
+    the test's `setup` sets `WABOROS_JIT_GC_STRESS`; without it the same module ran 0 collections
+    and showed no difference between the builds (live bytes 33 554 560 in both). The Kotlin
+    program run after the 100-collection stage in the same process then looked 50-100 ms slower
+    on HEAD, and was not when it ran first in its own process. Rule: copy the fixture's
+    environment along with the module, check the counters the claim depends on (collections, live
+    bytes) before the times, and time each claim in a process that did nothing else. Found:
+    S0013 step 7.4, 2026-11-17.

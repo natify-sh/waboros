@@ -2,7 +2,7 @@
 title: Testing
 kind: reference
 status: current
-updated: 2026-11-16
+updated: 2026-11-17
 ---
 
 # Testing
@@ -229,15 +229,24 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   fixed at once. `--refs` (S0013 step 7, D65) also turns on smith's reference types and GC
   (exceptions are always on in this mode), passes null for a nullable reference parameter (an
   export with a non-nullable one is not called; a reference result compares as null or not) and
-  limits the process's data to 8 GiB (`DATA_LIMIT`): smith's constant expressions allocate arrays
-  of up to 2³² elements, which `pyc` holds as Python lists, and without the limit the OOM killer
-  ends the run (LESSONS 126). Under the limit a GiB allocation can fail on one side only, which the
-  triage must tell apart from a real divergence (rerun the module in a fresh process). With the GC
-  switches (`WABOROS_JIT_GC_STRESS/POISON/VERIFY/WALK_CHECK=1`) the run exercises the live sets of
-  smith's reference locals at every allocation and host call; a module with a large heap then
-  exceeds the 20 s alarm (VERIFY digests the reachable graph twice per collection), so rerun a
-  `TimeoutError` alone without a limit. The oracle's wrapper cannot return a non-null `exnref`
-  result (`LookupError`): such an export diverges on Wasmtime alone.
+  runs each engine in a process of its own (a fork per engine and module, one after the other; the
+  parent keeps no engine), each with the whole 8 GiB data limit (`DATA_LIMIT`) and its own alarm.
+  Smith's constant expressions allocate arrays of up to 2³² elements, which `pyc` holds as Python
+  lists, and without the limit the OOM killer ends the run (LESSONS 126); since the engines no
+  longer share one process's memory, a failure to allocate is that engine's own: the JIT's "GC
+  heap out of memory" (the documented 2 GiB limit, S0013), or `pyc`'s lists past 8 GiB, is the
+  divergence that remains, and a rerun alone gives the same answer. A child that is killed from outside or crashes shows as
+  `inst:ChildDied <code>`; one that exceeds its alarm makes the module count as a timeout, not as a
+  divergence. The alarm is 20 s per engine, 400 s when `WABOROS_JIT_GC_VERIFY=1` (every collection
+  digests the reachable graph before and after: a module with a large heap took 297 s there, S0013
+  Changes 7.3). With the GC switches (`WABOROS_JIT_GC_STRESS/POISON/VERIFY/WALK_CHECK=1`) the run
+  exercises the live sets of smith's reference locals at every allocation and host call. The
+  oracle's wrapper returns a non-null `exnref` result as an opaque "exn" reference, so such an
+  export compares as non-null on every engine. Without `--refs` the engines still share one
+  process and one alarm per module (the mode is unchanged). The nightly workflow does not use
+  `--refs` yet (S0013 Changes 7.4): a third run in the loop of `fuzz-nightly.yml`, `uv run python
+  tools/fuzz.py --targets pyc,jit,wasmtime --refs --minutes $MINUTES --seed ... --out
+  fuzz-out/refs`, would add it; one child can take up to 8 GiB.
 * Triage of the first runs (2026-11-05, 43 divergent modules from seeds 319-4020, 50204-50544, 70475-71186,
   90086-93499 and 900223-908219; the reduced cases are in `tests/test_pyc_trap_order.py`): in all of them only `pyc` differed, in
   five causes, all fixed and covered by `tests/test_pyc_trap_order.py` with the reduced modules. Four

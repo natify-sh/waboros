@@ -33,7 +33,7 @@ class HostRef:
 @dataclass(frozen=True)
 class OpaqueRef:
     """A non-null reference an engine returns that has no value to compare: kind is "i31",
-    "struct", "array" or "extern" (an externref the host did not make)."""
+    "struct", "array", "extern" (an externref the host did not make) or "exn" (an exnref)."""
 
     kind: str
 
