@@ -206,6 +206,10 @@ class Compiled:
     stackmaps: bytes | None = None  # the STACKMAPS section (S0013 3a); None: not instantiable
     rtts: list[int] = field(default_factory=lambda: [])  # the type of each RTT word (S0013 3b)
     thrown: list[int] = field(default_factory=lambda: [])  # tag of each later RTT word (S0013 6)
+    # (the bytes, their decode) of the first instantiation; read-only, shared by the instances
+    sites: "tuple[bytes, dict[int, gc.SiteMap]] | None" = field(
+        default=None, init=False, repr=False, compare=False
+    )
 
 
 @dataclass(slots=True)

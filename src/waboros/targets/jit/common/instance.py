@@ -965,7 +965,10 @@ class JitInstance(Instance):
     ) -> None:
         if c.stackmaps is None:  # every frame of a store must be walkable (S0013 Q5)
             raise ValueError("compiled module has no stack-map table (STACKMAPS); recompile it")
-        sites = gc.decode(c.stackmaps)  # checked: another form is refused here (D65)
+        cached, table = c.sites, c.stackmaps  # decoded once per table (S0013 7.5)
+        if cached is None or cached[0] is not table:
+            cached = c.sites = (table, gc.decode(table))  # checked: refused here (D65)
+        sites = cached[1]
         refuse_lost(store)
         mod = self.module = c.module
         self.hier: dict[int, tuple[list[RefType | None], list[RefType | None]]] = {}  # per export

@@ -1858,7 +1858,7 @@ of the loop, `ru_maxrss`; 7 rounds alternated, median (min-max)):
 | Kotlin | 1 000 | 7 249 (5 997-8 015) | 9 690 (8 100-11 092) | 302.6 KiB | 476.7 KiB |
 | Kotlin | 100 | 7 737 (5 424-8 451) | 8 577 (7 034-11 196) | 288.0 KiB | 464.6 KiB |
 
-* **This is a cost the plan did not expect to be this size.** Every instantiation now decodes the
+* **This is a cost the plan did not expect to be this size** (before step 7.5, below). Every instantiation now decodes the
   table (the walk's lazy decode, which only a store that collected or checked paid, is gone, 7.1):
   +125 µs (+34 %) for CoreMark and about +2.4 ms (+34 %) for the Kotlin program at 1 000 stores,
   and +19 KiB and +174 KiB of resident memory per instance. `gc.decode` alone, timed on the
@@ -1869,6 +1869,22 @@ of the loop, `ru_maxrss`; 7 rounds alternated, median (min-max)):
   not made here: the step's scope is measurement; open question in S0013).
 * The ranges overlap in the 100-store rows (the spread is 30-50 %); the medians and the RSS growth
   (which has no noise to speak of: 63 744 against 83 072 KiB over 1 000 CoreMark stores) agree.
+
+After step 7.5 (the table decoded once per `Compiled`, `Compiled.sites`; same driver, HEAD d2a4b4c
+as the base, 7 rounds alternated, median (min-max); the base column is the per-instance decode):
+
+| module | stores | d2a4b4c µs | 7.5 µs | d2a4b4c RSS per instance | 7.5 RSS per instance |
+|---|---|---|---|---|---|
+| CoreMark | 1 000 | 477 (446-539) | 397 (311-536) | 83.1 KiB | 63.7 KiB |
+| CoreMark | 100 | 527 (366-594) | 422 (292-459) | 79.4 KiB | 58.9 KiB |
+| Kotlin | 1 000 | 9 021 (8 155-10 318) | 6 984 (6 680-8 300) | 476.3 KiB | 302.7 KiB |
+| Kotlin | 100 | 9 413 (7 254-10 580) | 6 143 (5 418-8 015) | 465.9 KiB | 289.3 KiB |
+
+The RSS per instance is back at the 112d981 figures (63.7 and 302.6 KiB at 1 000 stores). The time
+drops by 17-35 % against d2a4b4c in the same run; against the 112d981 rows above it is lower for
+Kotlin and still higher for CoreMark (397 against 366 µs), but those rows come from another run on
+a machine that was faster then (d2a4b4c: 491 µs there, 477 µs here), so only the two columns of
+this table compare.
 
 **Collection pause** (`tools/bench_gc_collect.py --builds base=B,live=H,nolive=N,live2=H --rounds 9
 --bounds guard|explicit`: the tool of step 5.7, each heap about 10⁶ live objects, six collections
@@ -1950,5 +1966,4 @@ work of a fresh process, as here, it does not reproduce (the cause was not looke
 of the compile. A collection with few frames: unchanged; per frame, the nulling costs 1.2-2.1 µs.
 Retention: a 16 MiB dead local freed (a stress loop 35-58 times faster), the Kotlin program's heap
 6.6 % smaller. **Instantiation: +34 % and +19 to +174 KiB per instance, the one cost larger than
-planned**, and the one thing here a change in `src` (a decode per `Compiled`, not per instance)
-would reduce.
+planned**; step 7.5 (a decode per `Compiled`, not per instance) removed it (the table above).

@@ -322,3 +322,16 @@ def test_a_frame_outside_the_value_stack_is_an_error_not_a_write(
     match = "not its entry" if what == "shift" else "outside the value stack"
     with pytest.raises(RuntimeError, match=match):
         jit("f")
+
+
+def test_the_site_table_is_decoded_once_per_table() -> None:
+    mod = parse(wat('(module (func (export "f") (result i32) (i32.const 1)))'))
+    validate(mod)
+    t = base.TARGETS[JIT]()
+    c = t.compile(mod)
+    assert isinstance(c, Compiled) and c.stackmaps is not None
+    a, b = (t.instantiate(c, [], StoreState()) for _ in range(2))
+    assert a.walk_sites is b.walk_sites  # type: ignore[attr-defined]
+    c.stackmaps = b"\1"  # replaced after the first instantiation: decoded afresh, refused
+    with pytest.raises(ValueError, match="STACKMAPS"):
+        t.instantiate(c, [], StoreState())

@@ -1388,10 +1388,10 @@ bitmap of reference slots cannot tell it which unmarked slots to null:
   `live ⊆ refs`), so a step-3a table with a map is refused in the shapes tested (not guaranteed: the table has no
   version field and a parsing 3a table exists, 7.2 review; versioning is left to the artifact
   format's `format_version`) and one without a map runs.
-  The decode is done in every instantiation, not once per compiled module; measured in step 7.4
-  (BENCHMARKS.md): +125 µs (+34 %) for CoreMark, +2.4 ms (+34 %) for the Kotlin program and
-  +19 / +174 KiB per instance. A decode shared by the instances of a `Compiled` is the cheap fix,
-  left to the maintainer's decision (S0013 Changes 7.4).
+  The decode was done in every instantiation; measured in step 7.4 (BENCHMARKS.md): +125 µs
+  (+34 %) for CoreMark, +2.4 ms (+34 %) for the Kotlin program and +19 / +174 KiB per instance.
+  Step 7.5 shares it: once per `Compiled` (and per replaced `stackmaps`), the cost is gone
+  (S0013 Changes 7.5).
 * **Check mode nulls** (plan D7 (a)): `WABOROS_JIT_WALK_CHECK=1` writes 0 into the dead slots at
   every host call and libcall, then validates every `refs` slot, so the whole-suite walk-check
   runs exercise every dead set, modules that never collect included.
