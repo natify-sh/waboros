@@ -626,6 +626,9 @@ bytes); step 2 measures it.
    tables: no file, but every host language reimplements the trampolines. Recommendation: **(a)**.
    It contradicts ARTIFACT.md part 2's `ENTRIES` and D59's symbol list, which predate the code
    (the code has one per-process blob since phase 3); a DECISIONS entry records it.
+   **Decided (maintainer, 2026-11-17): (b), in every module artifact.** One file per module, as
+   part 2 and D59 say; the loader still runs a store on one copy (the walk's rule), so the
+   sections and steps above that assume (a) are revised with the other answers.
 3. **Which versions the waboros runtime accepts in a thin file.** (a) Only its own `compiler`
    string, exactly (D18 as written; Wasmtime's default): a new waboros release refuses older thin
    files, the cache recompiles. (b) Any file whose `format_version`, `ctx_abi_version`, target and
