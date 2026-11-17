@@ -518,14 +518,24 @@ class _Side:
 
     def memhash(self) -> str:
         h = hashlib.sha1()
-        for n in self.mems:
+        for n in self.mems:  # in chunks: a memory can reach 4 GiB (string_at's size is a C int)
             if self.mod is None:  # wasmtime
-                m = self.inst.exports(self.eng._store)[n]
-                b = m.read(self.eng._store, 0, m.data_len(self.eng._store))
+                m, st = self.inst.exports(self.eng._store)[n], self.eng._store
+                size = m.data_len(st)
+                read = lambda a, b, m=m, st=st: m.read(st, a, b)  # noqa: E731
             else:
                 v = self.inst.provider[1].export(n).value
-                b = ctypes.string_at(v.res.addr, v.pages << 16) if hasattr(v, "res") else bytes(v)
-            h.update(len(b).to_bytes(8, "little") + hashlib.sha1(b).digest())
+                if hasattr(v, "res"):  # the JIT's memory: no copy of the whole
+                    size = v.pages << 16
+                    mv = memoryview((ctypes.c_char * size).from_address(v.res.addr)).cast("B")
+                else:
+                    mv = memoryview(v).cast("B")
+                    size = len(mv)
+                read = lambda a, b, mv=mv: mv[a:b]  # noqa: E731
+            d = hashlib.sha1()
+            for a in range(0, size, 1 << 26):
+                d.update(read(a, min(a + (1 << 26), size)))
+            h.update(size.to_bytes(8, "little") + d.digest())
         return h.hexdigest()
 
 

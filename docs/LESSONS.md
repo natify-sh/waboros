@@ -1019,3 +1019,11 @@ What went wrong or surprised us while building the PoC, so it is not found again
     environment along with the module, check the counters the claim depends on (collections, live
     bytes) before the times, and time each claim in a process that did nothing else. Found:
     S0013 step 7.4, 2026-11-17.
+130. **A harness that copies a guest memory whole breaks at 2 GiB and can take the machine with
+    it.** The fuzz harness hashed each memory with `ctypes.string_at(addr, pages << 16)`: a smith
+    module that grows an i32 memory to 32 772 pages (2 GiB + 256 KiB, valid) made the size
+    negative in `string_at`'s C int (`SystemError`, counted as a harness skip, so hidden), and the
+    other engines' memories were copied whole into `bytes` (2 GiB each). Rule: hash or compare a
+    guest memory in chunks through a `memoryview`, never one copy, and treat a harness exception
+    as a finding to read, not a skip to count. Found: the first `fuzz-nightly` run with `--refs`
+    (the runner was lost in the smith mode, no log), seed 509584219, 2026-11-17.
