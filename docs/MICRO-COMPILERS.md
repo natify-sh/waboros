@@ -135,6 +135,10 @@ anyone can run: [MICRO-COMPILERS-SHIPPING.md](MICRO-COMPILERS-SHIPPING.md) (main
   `jit-aarch64` is a ready oracle: every spec module and CoreMark compared byte for byte, so the
   ported core, the backend and the toolchain are validated before anything new is written. aarch64
   is the smaller backend (~1.2k lines).
+* **The oracle depends on the code generator** (maintainer, 2026-11-17): a hand-written port is
+  compared byte for byte with the Python JIT of its architecture; a port over sljit cannot be, and
+  is compared by behaviour (the spec suite, `spec_diff` both ways, the walk check and poison), as
+  the `poc/sljit/sljit-be/` prototype already is (D60, D64).
 * **Then the third architecture: `riscv64`**, written as a micro-compiler on the proven core instead
   of a third Python backend; checked by the spec suite under QEMU against `pyc` and Wasmtime (no
   byte oracle exists for it).

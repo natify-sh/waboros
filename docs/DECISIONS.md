@@ -1193,7 +1193,11 @@ Status: accepted (maintainer, 2026-11-15) · Date: 2026-11-15 · Supersedes: —
   compiler, then runs it to produce artifacts for that target. The Python package keeps its
   shipping as MICRO-COMPILERS-SHIPPING.md describes; this decision fixes the language and the shape
   of the native runtime, not the Python side.
-* Unchanged: the Python JIT stays the byte oracle of each port (MICRO-COMPILERS.md); whether a port
+* Unchanged: the Python JIT stays the byte oracle of each hand-written port (MICRO-COMPILERS.md).
+  A port whose code generation is sljit cannot match it byte for byte; its oracle is behaviour:
+  the spec suite, `spec_diff` both ways against the Python JIT of the same architecture, the walk
+  check and poison, as the `poc/sljit/sljit-be/` prototype is checked (maintainer, 2026-11-17;
+  D64 item 4); whether a port
   replaces its Python backend is still the JIT-AS-WASM decision taken after the artifact format
   (ROADMAP "Next" (6)).
 
