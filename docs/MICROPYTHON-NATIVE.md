@@ -85,7 +85,8 @@ runtime through a pinned table.
   emit real instructions with wasm semantics. `@viper` is closer to us: machine words for `int`,
   `uint` and `bool`, and raw loads and stores through `ptr8`/`ptr16`/`ptr32`.
 * **GC.** MicroPython's collector is conservative and scans the C stack as memory, so it needs no
-  stack maps or call-site records. Ours are precise (D56, D65) because our collector moves objects.
+  stack maps or call-site records. Ours are precise (D56, D65) because our collector moves objects. The comparison,
+  and mark-compact as a variant for small memories: [GC-SMALL-MEMORY.md](GC-SMALL-MEMORY.md).
 * **Exceptions.** MicroPython uses `nlr`, a non-local jump like `setjmp`/`longjmp` with a buffer in
   the frame. We return a status (trap-by-return) and use landing pads.
 * **Traps and memory bounds.** Python has neither; we have explicit checks or guard mode with fault
