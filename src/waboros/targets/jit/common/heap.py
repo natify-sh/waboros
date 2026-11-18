@@ -43,7 +43,7 @@ class GcHeap:
         self.u32(gc.CURSOR, gc.OBJ)  # empty: the first allocation commits the first chunk
         self.u32(gc.LIMIT, gc.OBJ)
         self.types = gc.TYPES  # next free byte of the type-info area
-        self.records: dict[str, int] = {}  # canonical key -> record offset
+        self.records: dict[bytes, int] = {}  # canonical key -> record offset
         self.offsets: set[int] = set()  # every record offset (the walk check)
         self.display: dict[int, tuple[int, ...]] = {}
         self.kind: dict[int, int] = {}
@@ -76,7 +76,7 @@ class GcHeap:
         type's record (kind 3, no size, nothing traced) is entered in the tid map (S0013 5.6).
         With `exn`, the record of an exception object of tag type `ti` (S0013 step 6): kind 1,
         final, depth 0, `gc.exn_layout`; keyed apart from the type's own kind-3 record (D2, D3)."""
-        k = ("exn " if exn else "") + types_key(mod, ti)
+        k = (b"exn " if exn else b"") + types_key(mod, ti)
         off = self.records.get(k)
         if off is not None:
             return off

@@ -9,6 +9,7 @@ whole group with in-group references written as positions.
 """
 
 from hashlib import sha256
+from struct import pack
 from typing import Any
 
 from waboros.frontend.binary import NULLABLE
@@ -47,17 +48,17 @@ def isref(t: Any) -> bool:
     return t.__class__ is tuple or t in _NN
 
 
-def key(mod: dict[str, Any], i: int) -> str:
-    """Canonical key of type `i`: a SHA-256 hex digest, equal for equivalent types of any module,
-    the same in every process and on every machine. `mod["tkeys"]` caches them and may be shared
-    by threads (stores instantiating one compiled module): a type is done when its own entry is
-    there, and a group's entries are written after all are computed, so a reader never sees a
-    half group (at worst two threads compute the same values).
+def key(mod: dict[str, Any], i: int) -> bytes:
+    """Canonical key of type `i`: 32 raw bytes, a SHA-256 digest of the byte encoding of
+    docs/specs/S0014 ("Canonical type key"), equal for equivalent types of any module, the same in
+    every process and on every machine. `mod["tkeys"]` caches them and may be shared by threads
+    (stores instantiating one compiled module): a type is done when its own entry is there, and a
+    group's entries are written after all are computed, so a reader never sees a half group (at
+    worst two threads compute the same values).
     A rec group (its composite types, supertypes and final flags; a reference inside it is
-    `("rec", position)`, one outside it the digest of that type) is digested together with the
-    position; `repr` of tuples of ints, strings and bools is deterministic. Only the groups a type
-    needs are keyed, earliest first, with an explicit stack: a key is never a nested tree
-    (hashing and comparing stay constant-time) and there is no recursion."""
+    `u8 1, u32 position`, one outside it `u8 2` and that type's key) is hashed together with the
+    position. Only the groups a type needs are keyed, earliest first, with an explicit stack: a key
+    is never a nested tree (hashing and comparing stay constant-time) and there is no recursion."""
     cache = mod.setdefault("tkeys", {})
     if i in cache:
         return cache[i]
@@ -93,28 +94,52 @@ def key(mod: dict[str, Any], i: int) -> str:
             stack.extend(missing)
             continue
         stack.pop()
+        b = bytearray(pack("<I", ge - gs))
 
-        def ref(t, gs=gs):
-            return ("rec", t - gs) if t >= gs else cache[t]
+        def ref(x, gs=gs, b=b):
+            if x >= gs:
+                b += pack("<BI", 1, x - gs)
+            else:
+                b += b"\2" + cache[x]
 
-        def vk(t, ref=ref):
-            return (t[0], ref(t[1])) if t.__class__ is tuple and t[1] >= 0 else t
+        def vt(t, ref=ref, b=b):  # a value type, or a packed storage type (0x78, 0x77)
+            t = nn(t)
+            if t.__class__ is not tuple:
+                b.append(t)
+            elif t[1] >= 0:
+                b.append(0x63 if t[0] else 0x64)
+                ref(t[1])
+            else:
+                b += pack("<BBi", 0x63 if t[0] else 0x64, 0, t[1])
 
-        def fk(f, vk=vk):
-            return vk(f[0]), f[1]
+        def field(f, vt=vt, b=b):
+            vt(f[0])
+            b.append(f[1])
 
-        def ck(c, vk=vk, fk=fk):
+        for c, sp, fin, _, _ in tdefs[gs:ge]:
+            b += bytes((fin, len(sp)))
+            for x in sp:
+                ref(x)
             if c[0] == "func":
-                return ("func", tuple(map(vk, c[1])), tuple(map(vk, c[2])))
-            return ("struct", tuple(map(fk, c[1]))) if c[0] == "struct" else ("array", fk(c[1]))
-
-        group = repr(tuple((ck(c), tuple(map(ref, sp)), fin) for c, sp, fin, _, _ in tdefs[gs:ge]))
-        h = sha256(group.encode())  # hashed once; each member adds its position (O(G), not G**2)
+                b += pack("<BI", 0x60, len(c[1]))
+                for t in c[1]:
+                    vt(t)
+                b += pack("<I", len(c[2]))
+                for t in c[2]:
+                    vt(t)
+            elif c[0] == "struct":
+                b += pack("<BI", 0x5F, len(c[1]))
+                for f in c[1]:
+                    field(f)
+            else:
+                b.append(0x5E)
+                field(c[1])
+        h = sha256(b)  # hashed once; each member adds its position (O(G), not G**2)
         keys = {}
         for t in range(gs, ge):
             m = h.copy()
-            m.update(b",%d" % (t - gs))
-            keys[t] = m.hexdigest()
+            m.update(pack("<I", t - gs))
+            keys[t] = m.digest()
         cache.update(keys)  # after every member is known: an interrupt leaves no half group
     return cache[i]
 

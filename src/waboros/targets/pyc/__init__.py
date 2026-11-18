@@ -224,7 +224,7 @@ class PycInstance:
 
 
 def _host_adapter(
-    mod: ValidModule, h: HostFunc, ps: list[int], rs: list[int], sig: str
+    mod: ValidModule, h: HostFunc, ps: list[int], rs: list[int], sig: bytes
 ) -> Callable[..., Any]:
     """A `HostFunc` as a function on `pyc` values; `.s` lets it sit in a table."""
 

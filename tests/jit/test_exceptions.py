@@ -489,7 +489,7 @@ def test_a_thrown_tag_type_has_one_struct_record_apart_from_its_function_record(
     i = build(t + f"(func (throw $u {a})))", store=store)
     jit, heap = cast(Any, i.inst), cast(Any, store.target_state).heap
     assert gc.exn_layout(i.mod, i.mod["types"][0][0]) == ([16, 20, 24, 32, 48], 64)
-    r, fr = heap.records["exn " + key(i.mod, 0)], heap.records[key(i.mod, 0)]
+    r, fr = heap.records[b"exn " + key(i.mod, 0)], heap.records[key(i.mod, 0)]
     assert jit.layout.rtts == 2 and [jit.ctx[jit.layout.rtt(k)] for k in (0, 1)] == [r, r]
     words = struct.unpack_from("<6I", ctypes.string_at(heap.base + r, 24))
     assert words == (gc.KIND_STRUCT | 1 << 8, 0, 64, 1, r, 20)
@@ -736,7 +736,7 @@ def test_the_object_and_its_record(monkeypatch: pytest.MonkeyPatch) -> None:
     e, s, f, inner = call(i, "go", host)
     ti = i.mod["tags"][0]
     assert gc.exn_layout(i.mod, i.mod["types"][ti][0]) == ([16, 20, 24, 32, 48, 64, 72, 80, 84], 88)
-    r = st.heap.records["exn " + key(i.mod, ti)]
+    r = st.heap.records[b"exn " + key(i.mod, ti)]
     obj = ctypes.string_at(st.heap.base + st.gc_handles[e.index], 88)
     assert struct.unpack_from("<IIQifQd", obj) == (r, 0, jit.ctx[jit.layout.tag(0)], -2, 1.5,
                                                    0x0102030405060708, 2.5)  # fmt: skip

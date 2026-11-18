@@ -181,11 +181,11 @@ def test_keys_are_the_same_in_another_process() -> None:
     code = (
         "import sys; from waboros.frontend.binary import parse;"
         "from waboros.frontend.validate import validate; from waboros.frontend.types import key;"
-        "m = parse(bytes.fromhex(sys.argv[1])); validate(m); print(key(m, 1))"
+        "m = parse(bytes.fromhex(sys.argv[1])); validate(m); print(key(m, 1).hex())"
     )
     run = [sys.executable, "-c", code, wasm.hex()]
     other = subprocess.run(run, capture_output=True, text=True, check=True)
-    assert other.stdout.strip() == key(module(b"\x60\x00\x00", func(ref(0))), 1)
+    assert other.stdout.strip() == key(module(b"\x60\x00\x00", func(ref(0))), 1).hex()
 
 
 _A = """(module

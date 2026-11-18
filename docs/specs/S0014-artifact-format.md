@@ -758,6 +758,17 @@ When approved and implemented (step 7 unless noted):
   before and after on `jit-x86_64` and `jit-aarch64` (QEMU), both bounds modes; the D35 lists of
   an x86-64 and an aarch64 (QEMU) host are identical; code bytes changed in 217 of 2 527 compiled
   modules, each with words after the block.
+* Step 1 done (2026-11-18): `frontend.types.key` returns the 32 raw bytes of "Canonical type key"
+  (no `repr` left in `src`; `heap.records` keys `b"exn " + key`; generated `pyc` code embeds the
+  key as a bytes literal). `tests/test_type_key.py`: the encoding by hand (final, supertype,
+  in-group and out-of-group references, `exn`/`noexn` and other abstract codes, shorthand equal to
+  long form) and, over the 2 526 validating modules of the pinned suite (3 949 types), the old
+  `repr` key as the oracle: new keys equal exactly when old keys equal (no collision on the suite's
+  types; injectivity rests on the encoding being prefix-free, which the hand cases pin byte for
+  byte: the step-1 review's mutations of every count and tag fail them). `linking`, `type-*`,
+  `gc/` and `exceptions` (1 129 pass, 3 skip) are the same on `pyc`, `jit-x86_64` and
+  `jit-aarch64` (QEMU); the D35 lists (5 979 modules, 2 527 compiled) are byte-identical before
+  and after on both JITs.
 
 ## Changes
 * 2026-11-17: created (draft).
@@ -768,3 +779,4 @@ When approved and implemented (step 7 unless noted):
   Every open question is decided.
 * 2026-11-17: approved by the maintainer.
 * 2026-11-18: step 0 implemented (D58's libcall reservation).
+* 2026-11-18: step 1 implemented (the canonical type key in bytes).
