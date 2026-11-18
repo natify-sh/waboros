@@ -105,7 +105,10 @@ def test_allocation_commits_and_grows(monkeypatch: pytest.MonkeyPatch, poison: b
     h = heap(StoreState())
     assert u32s(h, gc.CURSOR, 2) == [gc.OBJ, gc.OBJ] and h.mem.pages == 1  # nothing committed yet
     a = h.alloc(24)
-    assert a == gc.OBJ and u32s(h, gc.CURSOR, 2) == [gc.OBJ + 24, gc.OBJ + (1 << 20)]
+    # the limit: the active space's end; under WABOROS_JIT_GC_STRESS the cursor plus the request
+    # (S0013 "Test switches": every allocation takes the slow path), so the test holds either way
+    limit = gc.OBJ + 24 if h.stress else gc.OBJ + (1 << 20)
+    assert a == gc.OBJ and u32s(h, gc.CURSOR, 2) == [gc.OBJ + 24, limit]
     assert h.mem.pages << 16 == gc.OBJ + (2 << 20)  # both halves: the size explicit checks see
     assert ctypes.string_at(h.base + a, 8) == bytes([POISON if poison else 0]) * 8
     big = h.alloc(3 << 20)  # past the first half, no collection without a service: it grows

@@ -2,7 +2,7 @@
 title: Lessons
 kind: log
 status: current
-updated: 2026-11-17
+updated: 2026-11-18
 ---
 
 # Lessons
@@ -1033,3 +1033,12 @@ What went wrong or surprised us while building the PoC, so it is not found again
     INTEGER_OVERFLOW was lost (Wasmtime and the JITs trap). Since the PoC port, so it predates GC.
     Rule: a rewrite that discards an operand emits it as a statement unless it is a plain name.
     Found: `--smith` fuzz, seed 952237952 (first `fuzz-nightly` run, 2026-11-17).
+132. **Bookkeeping pushed before the `try` whose `finally` undoes it leaks when an asynchronous
+    exception lands at the push.** The walk check's `_checked` appended to `walk_vsp` and then
+    entered `try: ... finally: pop()`; `test_async_exception_at_every_delivery_point_restores_the_store`
+    delivers an exception at the append's own `c_return`, the entry stayed, and every later walk
+    check of the store failed ("segments at [X], entries at [X, X+24]"; with the profiler still on,
+    the `repr` in the test's handler then raised `KeyboardInterrupt`). Moving the push inside the
+    `try` is not enough: at the push's `c_call` the `finally` would pop an outer entry. Rule: take
+    the length before the `try`, push inside it, and truncate to that length in `finally`. Found:
+    under `WABOROS_JIT_WALK_CHECK=1` only, 2026-11-18.

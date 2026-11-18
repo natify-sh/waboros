@@ -372,11 +372,14 @@ def _checked(
             store.pending = e
             ctypes.c_uint64.from_address(ctx + 8 * HOST_ERROR).value = STATUS_HOST_ERROR
             return 0
-        st.walk_vsp.append(slots + 8 * n)
+        # an asynchronous exception can land at the push itself (before or after it): undo to the
+        # length before it, never pop an outer entry (D34; LESSONS 132)
+        depth = len(st.walk_vsp)
         try:
+            st.walk_vsp.append(slots + 8 * n)
             return cb(ctx, slots)
         finally:
-            st.walk_vsp.pop()
+            del st.walk_vsp[depth:]
 
     return checked
 
