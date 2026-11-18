@@ -467,8 +467,8 @@ def test_table_set_of_a_funcref_parameter_at_a_computed_index() -> None:
 def test_segment_drops_without_memory_or_table() -> None:
     """data.drop of a passive segment in a module without memory, elem.drop without a table: the
     services exist (a zero libcall word would be a call to address 0); and every libcall word of
-    a module without any of them is callable."""
-    from waboros.targets.jit.common.context import LIBCALLS
+    a module without any of them is callable; the block's 4 reserved words (D58) are zero."""
+    from waboros.targets.jit.common.context import LIBCALL_WORDS, LIBCALLS
 
     jit = build(
         wat("""(module (data "x") (elem func $f) (func $f)
@@ -478,6 +478,8 @@ def test_segment_drops_without_memory_or_table() -> None:
     bare = build(wat('(module (func (export "n")))'))
     ctx, lay = cast(Any, bare.inst).ctx, cast(Any, bare.inst).layout
     assert all(ctx[lay.libcall(j)] for j in range(LIBCALLS))
+    assert (LIBCALLS, LIBCALL_WORDS, lay.sig(0)) == (6, 10, lay.libcall(10))
+    assert [ctx[lay.libcall(j)] for j in range(LIBCALLS, LIBCALL_WORDS)] == [0] * 4
 
 
 def test_references_and_imports_of_another_store_are_refused() -> None:

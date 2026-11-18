@@ -6,7 +6,7 @@ status: implemented
 superseded_by:
 related: [D10, D14, D15, D18, D23, D24, R2, R3, R6, S0002]
 owner: maintainer
-updated: 2026-11-16
+updated: 2026-11-18
 ---
 
 # S0003 JIT context ABI and entry (phase 3, x86-64)
@@ -48,7 +48,7 @@ it is not a new format. The runtime side is [S0002](S0002-target-interface.md).
 | … | table *i*: `base`, `size` | element words (record address / extern handle, 0 = null); step 3d |
 | … | global *i*: 1 word | defined: the value; imported: a pointer to the owner's word (same target, S0002) |
 | … | function import *i*: 1 word | address of a host function (signature below) |
-| … | libcall *j*: 1 word | same signature; the runtime services the module uses (`memory.grow`, `table.grow`, segment init — never computation, D25), in a fixed order |
+| … | libcall *j*: 1 word, 10 in all | same signature; the runtime services the module uses (`memory.grow`, `table.grow`, segment init — never computation, D25), in a fixed order; words 6-9 of the block reserved, zero (D58) |
 | … | signature *k*, function record *r* | step 3d: canonical type ids for `call_indirect`; `{code, type id, context}` records (ARTIFACT.md part 3) |
 | … | tag *t* | the tag's identity, imported tags first (S0012) |
 
@@ -416,3 +416,9 @@ uv run pytest tests/jit -k "entry or trap or reentry or host or interrupt or sta
   deleted (D39 interface), and so is the refill service, the only host call that did not set the
   frame base. Module code is byte-identical (D35, both architectures and bounds modes). A test
   checks that no compiled `exceptions/` module names or addresses words 11-13.
+* 2026-11-18 (S0014 step 0, D58, an amendment of v1 without a bump: no artifact had been
+  written): the libcall block is 10 words, the 6 libcalls, then 4 reserved words that stay zero
+  (threads' `wait32`, `wait64` and `notify` later); every word after the block (signatures,
+  records, tags, the GC group) moves by 4 (`context.LIBCALL_WORDS`). Code bytes change only in
+  modules whose code names such a word (217 of 2 527 compiled modules on each JIT, CoreMark among
+  them); the spec suite's output is identical on both JITs in both bounds modes.

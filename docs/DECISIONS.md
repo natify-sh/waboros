@@ -2,7 +2,7 @@
 title: Decisions
 kind: log
 status: current
-updated: 2026-11-17
+updated: 2026-11-18
 ---
 
 # Decisions
@@ -1097,7 +1097,7 @@ containment, no reuse of S0011's checks, a collector that could not be a wasm mo
 backend methods (the semantics written twice); a frame-pointer chain for the roots (D56).
 
 ### D58. Threads after the artifact format; what they need in the context ABI reserved before it
-Status: accepted (maintainer, 2026-11-15: the direction and option (a)) · Date: 2026-11-15 · Supersedes: — · Evidence: ROADMAP "Next" items (6) and (7); ARTIFACT.md part 3 (the libcall block, word layout, code 15 `HEAP_MISALIGNED`, `MEMORIES.shared`); D50
+Status: accepted (maintainer, 2026-11-15: the direction and option (a)) · Date: 2026-11-15 · Supersedes: — · Evidence: ROADMAP "Next" items (6) and (7); ARTIFACT.md part 3 (the libcall block, word layout, code 15 `HEAP_MISALIGNED`, `MEMORIES.shared`); D50; the libcall reservation implemented by S0014 step 0 (2026-11-18, `context.LIBCALL_WORDS`, `tests/jit/test_tables.py`)
 
 Threads (shared memory, the atomic instructions, `memory.atomic.wait32/64`, `memory.atomic.notify`)
 come after the artifact format is fixed, as ROADMAP orders them. So that they arrive as an amendment
@@ -1125,8 +1125,8 @@ Needs no reservation: the atomic operations and `atomic.fence` (code generation;
 trap (code 15 exists), `MEMORIES.shared` (exists), a shared memory's `memory.grow` (libcall 0, with
 the size rule above).
 
-When: the four libcall words shift every context offset after the block, so every module's code
-bytes change (D35); they go in with the artifact-format spec, after S0013 step 8 (step 6 changes
+When: the four libcall words shift every context offset after the block, so the code bytes of
+every module whose code names such a word change (D35; 217 of 2 527 compiled modules, S0014 step 0); they go in with the artifact-format spec, after S0013 step 8 (step 6 changes
 words 10-13 anyway), and ARTIFACT.md part 3 states the reservation and the size rule then, not
 before the code does. Cost: Wasmtime 50 enables threads by default, so a gap from its defaults stays
 until threads are done; toolchains emit threads only on request (`-pthread`, wasi-threads).

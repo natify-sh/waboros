@@ -724,8 +724,9 @@ class Instance:
             )
         self.memories = list(memories)
         self.memory = self.memories[0] if memories else None  # memory 0
-        # every libcall word is callable: one the instance does not provide reports an error
-        # instead of the bridge calling address 0 (a subclass replaces the ones it serves)
+        # every libcall word in use is callable: one the instance does not provide reports an error
+        # instead of the bridge calling address 0 (a subclass replaces the ones it serves); the
+        # block's reserved words (D58) stay zero, as the fresh context is
         missing = HOST(self._host(_no_service, 0, []))
         self.callbacks.append(missing)
         words = [self.layout.libcall(j) for j in range(LIBCALLS)]

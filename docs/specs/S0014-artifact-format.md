@@ -6,7 +6,7 @@ status: approved
 superseded_by:
 related: [D18, D23, D24, D29, D33, D35, D36, D44, D48, D54, D58, D59, D60, D61, D62, D63, D64, D65, D66, R2, R3, R6, S0003, S0006, S0013]
 owner: maintainer
-updated: 2026-11-17
+updated: 2026-11-18
 ---
 
 # S0014 JIT artifact format v1 in the ELF64 container
@@ -752,7 +752,12 @@ When approved and implemented (step 7 unless noted):
 * LESSONS.md: none expected; any trap found on the way.
 
 ## Progress
-* Approved by the maintainer 2026-11-17; implementation not started (the maintainer says when).
+* Approved by the maintainer 2026-11-17.
+* Step 0 done (2026-11-18): the libcall block is 10 words on both JITs (`context.LIBCALL_WORDS`;
+  words 6-9 zero); ARTIFACT.md part 3 and S0003 updated. The spec suite's output is identical
+  before and after on `jit-x86_64` and `jit-aarch64` (QEMU), both bounds modes; the D35 lists of
+  an x86-64 and an aarch64 (QEMU) host are identical; code bytes changed in 217 of 2 527 compiled
+  modules, each with words after the block.
 
 ## Changes
 * 2026-11-17: created (draft).
@@ -762,3 +767,4 @@ When approved and implemented (step 7 unless noted):
   removed); Q5 decided (a), no checksum, with a CRC32 in the header considered and rejected.
   Every open question is decided.
 * 2026-11-17: approved by the maintainer.
+* 2026-11-18: step 0 implemented (D58's libcall reservation).

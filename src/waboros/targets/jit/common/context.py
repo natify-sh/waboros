@@ -29,6 +29,8 @@ STATUS_EXCEPTION = 14  # inside code: an exception is in flight (S0012)
 # Libcalls (S0003): runtime services, one context word each after the imports, in this order.
 MEMORY_GROW, TABLE_GROW, TABLE_INIT, ELEM_DROP, MEMORY_INIT, DATA_DROP = range(6)
 LIBCALLS = 6
+# the block's words (D58): the LIBCALLS used, then 4 reserved, zero (wait32, wait64, notify later)
+LIBCALL_WORDS = 10
 RECORD = 3  # words of a function record: code address, canonical type id, context address
 # The GC group (S0013 3b), after the tag words of a module that needs the heap (`gc.needs_heap`):
 # these services, in this order (word 7 reserved, zero: FUNC_SUBTYPE until S0013 5.6), then one
@@ -79,7 +81,7 @@ class Layout:
         return self.import_(self.imports) + j
 
     def sig(self, k: int) -> int:
-        return self.libcall(LIBCALLS) + k
+        return self.libcall(LIBCALL_WORDS) + k
 
     def record(self, r: int) -> int:
         return self.sig(self.sigs) + RECORD * r
