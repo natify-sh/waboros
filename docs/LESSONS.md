@@ -2,7 +2,7 @@
 title: Lessons
 kind: log
 status: current
-updated: 2026-11-18
+updated: 2026-11-19
 ---
 
 # Lessons
@@ -1042,3 +1042,12 @@ What went wrong or surprised us while building the PoC, so it is not found again
     `try` is not enough: at the push's `c_call` the `finally` would pop an outer entry. Rule: take
     the length before the `try`, push inside it, and truncate to that length in `finally`. Found:
     under `WABOROS_JIT_WALK_CHECK=1` only, 2026-11-18.
+133. **Generated code executed for speed runs in a module's `__dict__`, never a plain dict.** `pyc`'s
+    `load()` and `instantiate()` executed the translation in `{"__name__": ...}`; on PyPy every global
+    read (`M`, `U32`, each function) became a guarded dict lookup instead of a constant the JIT folds
+    from a module's cell dict, and CoreMark ran 6.5-7.5 times slower than the PoC, which imports its
+    output as a module. Results were identical, so no test or spec run saw it, and the PyPy rows of
+    BENCHMARKS.md recorded the slow namespace for weeks. Rule: `ModuleType(name).__dict__` for any
+    `exec` of generated code whose speed matters; a test pins the namespace, since correctness tests
+    cannot. Found: the maintainer, comparing the package with the PoC on PyPy, 2026-11-19.
+

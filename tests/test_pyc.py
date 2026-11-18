@@ -607,3 +607,28 @@ def test_two_instances_share_an_imported_second_memory() -> None:
     assert b["w"]() == 9
     assert a["get1"](0) == 0x7907  # B's store of 7 at address 0 of its memory 0 landed in A's m1
     assert len(a["m1"]) == 65536
+
+
+def test_generated_code_runs_in_a_module_namespace(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Both exec sites (`load`, `PycTarget.instantiate`) run the generated code in a module's
+    `__dict__`: in a plain dict PyPy's JIT does not fold global reads (CoreMark x6.5-7.5 slower on
+    PyPy 7.3, results unchanged, so only this test sees it; LESSONS 133)."""
+    import waboros.targets.pyc as pyc
+    from waboros.frontend.binary import parse
+    from waboros.frontend.validate import validate
+    from waboros.runtime.store import StoreState
+
+    seen: list[dict[str, object]] = []
+    real = pyc._namespace
+
+    def spy() -> dict[str, object]:
+        seen.append(real())
+        return seen[-1]
+
+    monkeypatch.setattr(pyc, "_namespace", spy)
+    load(DIV, {})
+    mod = parse(DIV)
+    validate(mod)
+    t = pyc.PycTarget()
+    t.instantiate(t.compile(mod), [], StoreState())
+    assert len(seen) == 2 and all("__loader__" in ns and "instantiate" in ns for ns in seen)

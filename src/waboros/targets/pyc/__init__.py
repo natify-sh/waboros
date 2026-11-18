@@ -3,7 +3,7 @@
 
 import struct
 from collections.abc import Callable, Mapping, Sequence
-from types import CodeType
+from types import CodeType, ModuleType
 from typing import Any, Literal, cast
 
 from waboros.frontend.binary import F32, F64, parse
@@ -160,11 +160,19 @@ def _run(store: StoreState, fn: Callable[..., Any], *args: Any) -> Any:
         store.depth -= 1
 
 
+def _namespace() -> dict[str, Any]:
+    """The globals the generated code runs in: a module's `__dict__`, not a plain dict. PyPy keeps
+    a module's globals in a cell dict whose lookups its JIT folds into constants; in a plain dict
+    every read of `M`, `U32` or a function is a dict lookup with guards (CoreMark ×6.5 slower on
+    PyPy 7.3; no change on CPython)."""
+    return ModuleType("waboros_pyc_module").__dict__
+
+
 def load(wasm: bytes, imports: Mapping[str, Mapping[str, Callable[..., Any]]]) -> dict[str, Any]:
     """Translate, compile and instantiate (own store); exports by name, functions as plain
     callables on `pyc` values (memory as a `bytearray`)."""
     code = compile(translate(wasm), "<waboros-pyc>", "exec", optimize=2)
-    namespace: dict[str, Any] = {"__name__": "waboros_pyc_module"}
+    namespace = _namespace()
     exec(code, namespace)
     store = StoreState()
     exports = cast(dict[str, Any], _run(store, namespace["instantiate"], imports))
@@ -254,7 +262,7 @@ class PycTarget:
         self, compiled: object, imports: Sequence[Extern], store: StoreState
     ) -> PycInstance:
         c = cast(_Compiled, compiled)
-        namespace: dict[str, Any] = {"__name__": "waboros_pyc_module"}
+        namespace = _namespace()
         exec(c.code, namespace)
         wired: dict[str, dict[str, Any]] = {}
         for im, ext in zip(c.module["imports"], imports, strict=True):

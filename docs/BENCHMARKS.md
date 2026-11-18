@@ -2,7 +2,7 @@
 title: Benchmarks
 kind: log
 status: current
-updated: 2026-11-17
+updated: 2026-11-19
 ---
 
 # Benchmarks
@@ -1126,6 +1126,10 @@ and PyPy 3.11.17 (PyPy 8.0.1). Base and variant alternated, the order rotated ea
 | CPython 3.14.10 | 5 | 135.7 (134.1–138.5) | 144.9 (142.4–149.7) | +6.8 % |
 | PyPy 3.11.17 | 5 | 478.0 (446.0–501.5) | 463.6 (455.6–501.6) | −3.0 %, within the ~10 % spread |
 
+*The PyPy row measured generated code run in a plain dict (`run_src.py`, like `load()` then), where
+PyPy's JIT does not fold global reads: about 7 times below what the same code reaches in a module's
+`__dict__` ("`pyc` on PyPy: the module namespace", 2026-11-19). The CPython rows are unaffected.*
+
 **Per rule, CPython 3.13** (cumulative, then each rule left out of the full set). The 10-round set is the
 one that decides; the 5-round set is below it for the left-out rows:
 
@@ -1149,7 +1153,8 @@ confirmed by the 10-round set (+2.6 %). dse adds nothing beyond the noise; it on
 
 **Switch VM** (`poc/bench/switch/vm.wasm` through the package's `pyc`, million VM operations per second,
 median of 5 sets of 3 runs; every run the same result, `fb62750f`): CPython 3.11 1.11 → 2.81 (×2.5), 3.13
-1.00 → 2.28 (×2.3), 3.14 1.23 → 2.68 (×2.2), PyPy 15.2 → 15.7 (×1.03). `_br` occurrences 158 → 0.
+1.00 → 2.28 (×2.3), 3.14 1.23 → 2.68 (×2.2), PyPy 15.2 → 15.7 (×1.03). `_br` occurrences 158 → 0. (PyPy: plain-dict namespace, see
+"`pyc` on PyPy: the module namespace".)
 
 **Switch VM per rule** (follow-up, 2026-11-05, CPython 3.13.18, `taskset -c 3`; 12 configurations, one
 process each per round, 10 rounds, order rotated each round and reversed on odd rounds; a value is the
@@ -1985,3 +1990,29 @@ of the compile. A collection with few frames: unchanged; per frame, the nulling 
 Retention: a 16 MiB dead local freed (a stress loop 35-58 times faster), the Kotlin program's heap
 6.6 % smaller. **Instantiation: +34 % and +19 to +174 KiB per instance, the one cost larger than
 planned**; step 7.5 (a decode per `Compiled`, not per instance) removed it (the table above).
+
+## `pyc` on PyPy: the module namespace (2026-11-19)
+
+**Finding (maintainer).** The package's `pyc` ran CoreMark on PyPy about 6.5 times slower than the
+PoC (`poc/w2py.py`, loaded as a real module through `importlib`): `load()` and
+`PycTarget.instantiate()` executed the generated code in a plain dict `{"__name__": ...}`. PyPy keeps
+a module's globals in a cell dict whose lookups its JIT folds into constants; in a plain dict every
+read of `M`, `U32`, `G0` or a function `fN` is a dict lookup with guards (PyPy `jit-summary`: 34 167
+guards against the PoC's 12 732). The generated source itself was not the cause. Fix: both sites run
+the code in `ModuleType(...).__dict__` (`pyc._namespace`; `tests/test_pyc.py`
+`test_generated_code_runs_in_a_module_namespace`).
+
+**CoreMark, `tools/run_coremark_pyc.py poc/in/core.wasm`, it/s, every run "Correct operation
+validated".** Maintainer's container, x86-64, 2 vCPU, `taskset -c 1`, branch `gc` after S0014 step 1:
+
+| Python | before (plain dict) | after (module `__dict__`) | PoC `w2py`, same machine |
+|---|---|---|---|
+| PyPy 7.3.23 (3.11.15) | 526 / 534 | 3 249 / 3 281 | 3 359 / 3 363 |
+| PyPy 7.3.19 (3.10.16) | 499 / 515 | 3 240 / 3 303 | 3 390 / 3 286 |
+| CPython 3.13.17 (isolated wrapper) | 156 | 161 | — |
+
+Checked by the orchestrator (dev VM, `taskset -c 2`, PyPy 3.11.17, rounds alternated): before 400 /
+405, after 2 941 / 3 085. CPython is unaffected within the noise. Earlier PyPy rows of the package's
+`pyc` in this file (S0010 step 0, the switch VM) measured the plain dict and are low by about that
+factor; the PoC rows were right.
+
