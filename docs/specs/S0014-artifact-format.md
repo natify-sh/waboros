@@ -800,3 +800,19 @@ When approved and implemented (step 7 unless noted):
   record, as `ref.func` expressions do; `global.get` in global `k`'s initializer reads only
   imported globals and earlier ones (index < imported + k); the `compiler` field's target version
   is the target class's `version` (`write` has no `target_version` parameter any more).
+* 2026-11-18: the `compiler` field's waboros version (step-2 review): `__version__` from
+  setuptools-scm carries a local part (`+g<hash>.d<date>`) that changes with `uv sync` and a dirty
+  tree, not with the code, so two hosts at one commit wrote different files and a code change
+  without a re-sync kept the same string. **Decided (maintainer, 2026-11-18): (c)**: a release
+  build writes its release version; a development build writes the version without its local part
+  plus a SHA-256 of the compiler-side sources (`frontend/`, `jit/`), computed once per process, so
+  the string is deterministic and changes with the code. Implemented in step 4 (the loader rules
+  that compare the string), with a test that two copies of one tree write identical files.
+* 2026-11-18: deferred from the step-2 review to step 3: constant expressions are evaluated without
+  recursion (a 300 000-deep `i32.add` chain reads fine and would overflow `_const`), and their
+  value types are checked against the global, table or offset they initialise. To step 4: the
+  container's strictness (overlapping sections, sections over the ELF or section headers, bytes
+  after the section header table, `SHT_NOBITS` for a required section, non-zero padding and null
+  header, `.shstrtab`'s type), so that every accepted file writes back to the same bytes; the
+  header's `flags`, `isa_level`, `ctx_abi_version` checks; pinned section headers, symbols and
+  `config_sha256` in the tests.
