@@ -795,5 +795,8 @@ When approved and implemented (step 7 unless noted):
   `module_sha256=` (or `wasm=`) besides the bounds mode, which is `Compiled.flags`. (3) The isa
   name of aarch64 level 1 in `config_sha256` is `armv8.0-a`. (4) Until step 5 the section
   `.waboros.trampolines` is not written and the reader does not require it; no global symbols exist
-  yet (`sh_info` is the symbol count). (5) `global.get` in a global's initializer is range-checked
-  against every global of the module (an earlier global is legal in Wasm 3.0).
+  yet (`sh_info` is the symbol count). (5) was a range check of `global.get` against every global; fixed (see the next line).
+* 2026-11-18: step 2 review fixes: an element segment's function indices (`items` 0) must have a
+  record, as `ref.func` expressions do; `global.get` in global `k`'s initializer reads only
+  imported globals and earlier ones (index < imported + k); the `compiler` field's target version
+  is the target class's `version` (`write` has no `target_version` parameter any more).

@@ -18,6 +18,7 @@ from typing import Any
 from waboros import __version__
 from waboros.frontend import types as T
 from waboros.frontend.binary import NULLABLE
+from waboros.targets import base
 from waboros.targets.jit.common import gc
 from waboros.targets.jit.common.context import GC_SERVICES, Layout
 
@@ -254,7 +255,6 @@ def write(
     target: str,
     module_sha256: bytes | None = None,
     wasm: bytes | None = None,
-    target_version: int = 0,
 ) -> bytes:
     """The artifact of a `Compiled` (or a `ModuleView`) for the compiler `target` (a key of
     `TARGETS`; `Compiled` does not carry it). The bounds mode is `c.flags` (the writer does not look
@@ -275,7 +275,8 @@ def write(
         raise ValueError(f"invalid artifact flags {c.flags:#x}")
     cfg = f"bounds={'guard' if guard else 'explicit'}\nguard_log2={c.flags >> 8 & 0xFF}\n"
     cfg += f"isa={isa}\ntarget={target}\n"
-    compiler = f"waboros {__version__} {target} {target_version}"
+    version = base.TARGETS[target]().version  # the compiler target's own, not a caller's guess
+    compiler = f"waboros {__version__} {target} {version}"
     hdr = module_sha256 + hashlib.sha256(cfg.encode()).digest()
     hdr += _u("HHHHIIQQQ", 1, 0, 1, 0, c.flags, 0, 0, 0, 0) + _str(compiler)
     secs = _sections(c, wasm)
@@ -370,8 +371,16 @@ class _Env:
     ntables: int = 0
     nmems: int = 0
     nglobals: int = 0
+    gmax: int | None = None  # a global's initializer reads imported and earlier globals only
     ntags: int = 0
     records: list[int] | None = None
+
+    def func_ref(self, r: _R) -> int:
+        """A function index that `ref.func` may name: in range and with a record."""
+        i = r.index(self.nfuncs, "function")
+        if self.records is not None and i not in self.records:
+            r.fail(f"function {i} has no record")
+        return i
 
     def ftype(self, r: _R) -> int:
         i = r.index(self.ntypes, "type")
@@ -490,12 +499,11 @@ def _cexpr_r(r: _R, env: _Env) -> Any:
         elif op == 0xFD0C:
             st.append(("v128", sub.u(16)))
         elif op == 0x23:
-            st.append(("global", sub.index(env.nglobals, "global")))
+            st.append(
+                ("global", sub.index(env.nglobals if env.gmax is None else env.gmax, "global"))
+            )
         elif op == 0xD2:
-            i = sub.index(env.nfuncs, "function")
-            if env.records is not None and i not in env.records:
-                sub.fail(f"function {i} has no record")
-            st.append(("func", i))
+            st.append(("func", env.func_ref(sub)))
         elif op == 0xD0:
             st.append(("null", None))  # the heap type is not written (no immediate)
         elif op in BIN_NAME:
@@ -686,13 +694,15 @@ def read(b: bytes) -> ModuleView:
     r = _R(s["globals"], ".waboros.globals")
     gtypes = [d[0] for k, _, _, d in mod["imports"] if k == "global"]
     n = r.count(6)
-    env.nglobals += n  # an initializer may read an earlier global of its own module
-    for _ in range(n):
+    env.nglobals += n
+    for k in range(n):
+        env.gmax = nimpg + k  # imported globals and the earlier ones of this module
         t, m = _vt_r(r, nt, pend), r.u8()
         if m > 1:
             r.fail("mutability is not 0 or 1")
         mod["globals"].append((t, m, _cexpr_r(r, env)))
         gtypes.append(t)
+    env.gmax = None
     r.done()
     r = _R(s["exports"], ".waboros.exports")
     lim = (env.nfuncs, env.ntables, env.nmems, env.nglobals, env.ntags)
@@ -717,7 +727,7 @@ def read(b: bytes) -> ModuleView:
             r.fail("items is not 0 or 1")
         n = r.count(4 if kind == 0 else 6)
         if kind == 0:
-            items = [("func", r.index(env.nfuncs, "function")) for _ in range(n)]
+            items = [("func", env.func_ref(r)) for _ in range(n)]
         else:
             items = [_cexpr_r(r, env) for _ in range(n)]
         mod["elem_info"].append((ti, off, rt, items))

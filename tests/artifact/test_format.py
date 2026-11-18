@@ -255,3 +255,32 @@ def test_readelf_reads_without_warning(tmp_path: Path) -> None:
     f.write_bytes(small(wasm=True))
     p = subprocess.run(["readelf", "-aW", str(f)], capture_output=True, text=True, check=False)
     assert p.returncode == 0 and "arning" not in p.stdout + p.stderr and "rror" not in p.stderr
+
+
+def build(text: str) -> bytes:
+    m = parse(wat(text))
+    validate(m)
+    c = base.TARGETS["jit-x86_64"]().compile(m)
+    return A.write(c, target="jit-x86_64", module_sha256=SHA)
+
+
+def test_element_index_without_a_record_is_refused() -> None:
+    blob = build("(module (table 1 funcref) (func $a) (func $b) (elem (i32.const 0) $a))")
+    _, data, size = secs(blob)[".waboros.segments"]
+    assert A.read(blob)  # $a has a record, $b has none
+    with pytest.raises(A.ArtifactError, match="function 1 has no record"):
+        A.read(put(blob, data + size - 8, u32(1)))
+
+
+def test_global_initializer_reads_only_imported_and_earlier_globals() -> None:
+    blob = build('(module (import "m" "g" (global i32)) (global i32 (i32.const 1)))')
+    _, data, _ = secs(blob)[".waboros.globals"]
+    assert A.read(put(blob, data + 10, b"\x23\0" + u32(0)))  # the imported global
+    for k in (1, 2):  # itself, and past the end
+        with pytest.raises(A.ArtifactError, match="global index"):
+            A.read(put(blob, data + 10, b"\x23\0" + u32(k)))
+
+
+def test_compiler_string_carries_the_targets_own_version() -> None:
+    v = A.read(small())
+    assert v.target_version == base.TARGETS["jit-x86_64"]().version
