@@ -2,7 +2,7 @@
 title: Micro-compilers - what they are and why
 kind: reference
 status: draft
-updated: 2026-11-03
+updated: 2026-11-19
 ---
 
 # Micro-compilers: what they are and why
@@ -164,6 +164,10 @@ anyone can run: [MICRO-COMPILERS-SHIPPING.md](MICRO-COMPILERS-SHIPPING.md) (main
   interface for it without the amendment process D39 describes.
 
 ## Related (not micro-compilers)
+
+* **MicroPython's native emitters** ([MICROPYTHON-NATIVE.md](MICROPYTHON-NATIVE.md), maintainer, 2026-11-19): the
+  same one-pass design; a reference for encoders on small targets, Xtensa above all (no sljit
+  backend), not a base for waboros on MicroPython.
 
 * **Pyodide**: no compiler is needed there; the browser's WebAssembly engine already JIT-compiles a
   guest module. A pass-through target (`WebAssembly.compile` via Pyodide's `js`, imports as proxies,
