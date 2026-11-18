@@ -769,6 +769,14 @@ When approved and implemented (step 7 unless noted):
   `gc/` and `exceptions` (1 129 pass, 3 skip) are the same on `pyc`, `jit-x86_64` and
   `jit-aarch64` (QEMU); the D35 lists (5 979 modules, 2 527 compiled) are byte-identical before
   and after on both JITs.
+* Step 2 done (2026-11-18): `targets/jit/common/artifact.py` (`write`, `read`, `ModuleView`,
+  `ArtifactError`; standard library only) and `tests/artifact/`. Round trip on the 2 526 modules of
+  the pinned suite that the JITs compile, on `jit-x86_64` and `jit-aarch64` (cross-compiled),
+  explicit and guard: each equal in the inventory's fields, `write(read(b)) == b`, thin and fat,
+  written twice identical; CoreMark: thin 55 048 / fat 74 592 bytes (x86-64, explicit), 51 408 /
+  70 952 (guard), aarch64 49 456 / 69 000 and 46 720 / 66 264 ([BENCHMARKS](../BENCHMARKS.md),
+  "Artifact size"). Not yet: `.waboros.trampolines`, the trampoline symbols (step 5), the loader's
+  compatibility checks (step 4), instantiation from a view (step 3).
 
 ## Changes
 * 2026-11-17: created (draft).
@@ -780,3 +788,12 @@ When approved and implemented (step 7 unless noted):
 * 2026-11-17: approved by the maintainer.
 * 2026-11-18: step 0 implemented (D58's libcall reservation).
 * 2026-11-18: step 1 implemented (the canonical type key in bytes).
+* 2026-11-18: step 2 implemented (writer and reader). Points the code needed that the text did not
+  settle: (1) `ref.null` has no immediate in the file, so a read expression is `("null", None)`
+  where the front end has `("null", heap type)`; nothing in the instance reads it. (2) `Compiled`
+  carries neither the compiler target nor the wasm hash, so `write` takes `target=` and
+  `module_sha256=` (or `wasm=`) besides the bounds mode, which is `Compiled.flags`. (3) The isa
+  name of aarch64 level 1 in `config_sha256` is `armv8.0-a`. (4) Until step 5 the section
+  `.waboros.trampolines` is not written and the reader does not require it; no global symbols exist
+  yet (`sh_info` is the symbol count). (5) `global.get` in a global's initializer is range-checked
+  against every global of the module (an earlier global is legal in Wasm 3.0).

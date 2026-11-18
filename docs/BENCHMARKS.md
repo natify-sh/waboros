@@ -213,6 +213,24 @@ measure speed. The Linux leg stays: native CoreMark, guard against explicit, bel
 | `mpy`: import of source / of `.mpy` | 59 ms / 2 ms (`.mpy` 37 KB bytecode; native `.mpy` 285–312 KB) |
 | JIT `w2jit` / `w2jit2` | ~28–31 ms (3.13), ~50 ms (3.8); 71 KB / 39 KB of x86-64 |
 
+## Artifact size (S0014 step 2, 2026-11-18)
+
+CoreMark (`poc/in/core.wasm`, 19 463 bytes of wasm) written by `artifact.write` as an ELF64 file
+(the package's `gc` branch, no trampolines yet: step 5 adds about 0.6 KB per x86-64 file and 0.3 KB
+per aarch64 one). Thin = no `.waboros.wasm`, fat = with it.
+
+| target, bounds mode | thin (bytes) | fat (bytes) |
+|---|---|---|
+| `jit-x86_64`, explicit | 55 048 | 74 592 |
+| `jit-x86_64`, guard | 51 408 | 70 952 |
+| `jit-aarch64`, explicit | 49 456 | 69 000 |
+| `jit-aarch64`, guard | 46 720 | 66 264 |
+
+The spec's estimate (about 51 KB thin, 70 KB fat, x86-64 guard) holds: 51 408 and 70 952 plus the
+missing trampolines. Wasmtime's `.cwasm` of the same module is 53 608 bytes. Times on one run of
+CPython 3.13 (best of 7, type keys already cached): `write` 0.2 ms (explicit) and 0.4 ms (guard,
+669 fault points), `read` 0.3 ms and 0.8 ms; the instantiation time through a file is step 3's.
+
 ## Micro-benchmarks behind the decisions
 
 **Memory access in CPython 3.13** (`poc/bench/mem_access_cpython.py`, ns per op): `M[a]` 35 ·
