@@ -1072,5 +1072,6 @@ What went wrong or surprised us while building the PoC, so it is not found again
     `ast.parse` once new tests moved the schedule. Reproduced on Linux with `prlimit --data=6000 MiB`
     (`mprotect` to read-write counts against RLIMIT_DATA like a Windows commit): 3.15t 1-31 failures
     per run at both commits, 3.15 with the GIL none. Rule: the tests collect garbage after every test
-    on a free-threaded build (`tests/conftest.py`); whether the runtime should collect under commit
-    pressure itself is open. Found: CI run 44421319412 (Windows x64), 2026-11-19.
+    on a free-threaded build (`tests/conftest.py`); the runtime's part is planned (ROADMAP "Memory of
+    dropped stores": collect and retry on failure, lazy commit of the heap's service areas,
+    `Store.close()` in phase 6). Found: CI run 44421319412 (Windows x64), 2026-11-19.
