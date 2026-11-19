@@ -9,7 +9,8 @@ updated: 2026-11-19
 
 Maintainer's investigation, 2026-11-19; input for the micro-compiler track (D48, D60, D68) and for
 waboros on MicroPython. Checked against micropython `master` at `8901bf2` (2026-11-18), directories
-`py/` and `ports/unix`. The questions at the end are open.
+`py/` and `ports/unix`. A record only, not a plan: MicroPython is deferred as a target (ROADMAP,
+phase 7), and nothing here is scheduled.
 
 ## Summary
 
@@ -146,9 +147,8 @@ still applies: read and understand, write our own, name the source; no line-by-l
 was suggested as a speed path. It stays possible only as the per-function optimisation in the last
 row, for the reasons above.
 
-## Open questions for the maintainer
+## Status
 
-1. **An Xtensa micro-compiler backend:** whether it belongs on the roadmap (ESP32 is a common
-   MicroPython target), or whether wasm3 covers Xtensa for now.
-2. **Porting code from `asmxtensa.c`** (MIT, with its copyright kept), or writing it again from the
-   ISA manual with MicroPython as the check.
+A record, not a plan (maintainer, 2026-11-19). The `mpy` target is deferred (ROADMAP, phase 7); an
+Xtensa backend and how to use `asmxtensa.c` are decided when that phase or a micro-compiler for
+Xtensa is taken up.

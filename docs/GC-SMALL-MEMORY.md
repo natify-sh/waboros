@@ -8,8 +8,9 @@ updated: 2026-11-19
 # MicroPython's GC against ours, and mark-compact for small memories
 
 Maintainer's investigation, 2026-11-19; input for the JIT GC heap (D57, D61) on microcontroller
-targets. Nothing changes now. Checked against micropython `master` at `8901bf2` (`py/gc.c`) and our
-collector after S0013 (`src/waboros/runtime/gc/collector.wat`). The questions at the end are open.
+targets. A record only, not a plan: nothing changes now, and MicroPython is deferred as a target
+(ROADMAP, phase 7). Checked against micropython `master` at `8901bf2` (`py/gc.c`) and our collector
+after S0013 (`src/waboros/runtime/gc/collector.wat`).
 Companion note: [MICROPYTHON-NATIVE.md](MICROPYTHON-NATIVE.md).
 
 ## How MicroPython's native code lives with its GC (`py/gc.c`)
@@ -115,9 +116,7 @@ collector cannot compact at all: it does not know which words may be rewritten. 
 * **When:** when a microcontroller target of the GC heap is on the roadmap (the micro-compiler + C
   runtime as a natmod, D60). Not now.
 
-## Open questions for the maintainer
+## Status
 
-1. Should a mark-compact collector be on the roadmap for small-memory targets, or wait for the first
-   MCU target of the GC heap?
-2. Which marking scheme: a bounded mark stack with an overflow rescan (simple), or pointer reversal
-   (no extra memory, more code)?
+A record, not a plan (maintainer, 2026-11-19). Mark-compact and its marking scheme are decided when a
+microcontroller target of the GC heap is taken up; MicroPython itself is deferred (ROADMAP, phase 7).
