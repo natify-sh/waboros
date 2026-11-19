@@ -231,6 +231,26 @@ missing trampolines. Wasmtime's `.cwasm` of the same module is 53 608 bytes. Tim
 CPython 3.13 (best of 7, type keys already cached): `write` 0.2 ms (explicit) and 0.4 ms (guard,
 669 fault points), `read` 0.3 ms and 0.8 ms; the instantiation time through a file is step 3's.
 
+## Instantiation from an artifact (S0014 step 3, 2026-11-19)
+
+`jit-x86_64`, guard mode (the default here), CPython 3.13, `taskset -c 2`, Intel Xeon @ 2.10 GHz
+(Linux 6.18); best of 7 (compile: of 3), two runs each, the second in brackets. "From the read form"
+is `JitInstance` built from `artifact.read`'s `ModuleView` (no `ValidModule`), each with a new
+store; `ref_test.1.wasm` is the largest import-free GC module (structs) of the suite's `gc/`.
+
+| module | parse + validate | compile | write (thin) | read | instantiate compiled | instantiate read form | file |
+|---|---|---|---|---|---|---|---|
+| CoreMark (19 463 B) | 9.3 ms | 35.0 (33.0) ms | 0.34 (0.32) ms | 0.77 (0.76) ms | 0.24 (0.26) ms | 0.28 (0.24) ms | 51 408 B |
+| `gc/ref_test.1.wasm` (1 014 B) | 1.2 ms | 7.5 (7.6) ms | 0.16 (0.17) ms | 0.40 (0.39) ms | 0.25 (0.23) ms | 0.22 (0.22) ms | 21 744 B |
+
+Loading a file (read + instantiate) takes about 1.1 ms against 45 ms for parse, validate and
+compile on CoreMark: about 40 times less. Instantiation is the same from either form.
+
+CoreMark run through a file (`WABOROS_JIT_ARTIFACT=1 tools/run_coremark_jit.py`, alternated with
+the direct path, same session and conditions, 6 runs each): direct 17 236, 17 030, 17 650,
+16 745, 17 296, 17 496 it/s (median 17 266); through a file 15 840, 17 376, 17 326, 17 414,
+17 499, 16 928 it/s (median 17 351). Within the spread, as expected: the code bytes are the same.
+
 ## Micro-benchmarks behind the decisions
 
 **Memory access in CPython 3.13** (`poc/bench/mem_access_cpython.py`, ns per op): `M[a]` 35 ·

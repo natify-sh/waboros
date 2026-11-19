@@ -5,8 +5,8 @@ only, no host code (ctypes, mmap): the micro-compilers (D60) port this file's sh
 
 The module view carries the keys of the ValidModule that instantiation reads (S0014 "What
 instantiation reads: inventory"), as the front end builds them, so `JitInstance` has one path for a
-compiled and a loaded module. Not here yet: `.waboros.trampolines` (step 5), the loader's
-compatibility checks (step 4).
+compiled and a loaded module: `module_view` gives `Compiled` the same keys (step 3). Not here yet:
+`.waboros.trampolines` (step 5), the loader's compatibility checks (step 4).
 """
 
 import hashlib
@@ -46,6 +46,10 @@ NULLREF = "nullref"
 # section names in file order (S0014 "File layout"); no `.waboros.trampolines` until step 5
 NAMES = [".text" if n == "text" else f".waboros.{n}" for n in ORDER if n != "trampolines"]
 NAMES += [".symtab", ".strtab", ".shstrtab"]
+# the module keys instantiation reads (S0014 "What instantiation reads: inventory"): no bodies
+INVENTORY = ("tdefs", "types", "tkeys", "imports", "ttypes", "taddr", "maddr", "mems", "funcs",
+             "tables", "tinit", "globals", "tags", "exports", "start", "elem_info", "elem_mode",
+             "datas", "data_mem")  # fmt: skip
 
 
 class ArtifactError(ValueError):
@@ -84,6 +88,15 @@ class ModuleView:
     faults: list[tuple[int, int]]
     stackmaps: bytes
     wasm: bytes | None
+    # the decoded stack maps of the first instantiation (as `Compiled.sites`)
+    sites: Any = dc_field(default=None, init=False, repr=False, compare=False)
+
+
+def module_view(mod: dict[str, Any]) -> dict[str, Any]:
+    """The inventory's keys of a ValidModule (shared values, the key cache included): what
+    `Compiled.module` holds, so a compiled and a read module give the instance the same keys."""
+    mod.setdefault("tkeys", {})
+    return {k: mod[k] for k in INVENTORY}
 
 
 # ------------------------------------------------------------------------------------- writer
@@ -220,7 +233,7 @@ def _sections(c: Any, wasm: bytes | None) -> dict[str, bytes]:
         sg.append(b"\1" if mi is None else b"\0" + _u("I", mi) + _cexpr(off))
         sg.append(_u("I", len(data)) + bytes(data))
     s["segments"] = b"".join(sg)
-    sub = c.subtype if isinstance(c, ModuleView) else gc.subtype_sites(mod)
+    sub = c.subtype
     lists = (c.records, c.sigs, [c.thunks[i] for i in range(nf)], c.rtts, c.thrown)
     s["context"] = (
         bytes((c.layout.heap, bool(sub))) + _u("H", 0)

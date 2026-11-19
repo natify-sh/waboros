@@ -6,7 +6,9 @@ fault handler's code and the host rows it has a handler for (`guard_rows`) and w
 is verified (`verified`: `auto` picks guard only there).
 
 Test-only: `WABOROS_JIT_DUMP=<dir>` writes each compiled module's code as `<dir>/<sha1>.<data>.bin`,
-where `<data>` is the offset of its data area (for tools/isa_check.py `--data`)."""
+where `<data>` is the offset of its data area (for tools/isa_check.py `--data`).
+`WABOROS_JIT_ARTIFACT=1` instantiates every module from its artifact (S0014 step 3): written thin,
+read back, the instance built from the read form only."""
 
 import ctypes
 import hashlib
@@ -123,6 +125,11 @@ class JitTarget:
         why = self.foreign()
         if why:
             raise RuntimeError(f"{self.name} cannot run here: {why}")
+        if os.environ.get("WABOROS_JIT_ARTIFACT") == "1":
+            from waboros.targets.jit.common import artifact
+
+            sha = hashlib.sha256(cast(Compiled, compiled).code).digest()  # (no wasm here)
+            compiled = artifact.read(artifact.write(compiled, target=self.name, module_sha256=sha))
         if cast(Compiled, compiled).flags & guard.BOUNDS_GUARD:
             guard.install(self)  # before anything of the instance exists; raises where none
         took = store.claim()  # binds to memories no other thread may grow meanwhile (S0009)

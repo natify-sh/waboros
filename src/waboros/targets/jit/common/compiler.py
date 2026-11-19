@@ -191,7 +191,7 @@ def unsupported(mod: ValidModule, ops: frozenset[int]) -> str | None:
 
 @dataclass
 class Compiled:
-    module: ValidModule
+    module: ValidModule  # the inventory's keys only (artifact.module_view; S0014 step 3)
     code: bytes  # the code, then the data area from `data_start` (jump tables)
     data_start: int
     funcs: list[tuple[int, int]]  # (code offset, result slot count) per defined function
@@ -206,6 +206,7 @@ class Compiled:
     stackmaps: bytes | None = None  # the STACKMAPS section (S0013 3a); None: not instantiable
     rtts: list[int] = field(default_factory=lambda: [])  # the type of each RTT word (S0013 3b)
     thrown: list[int] = field(default_factory=lambda: [])  # tag of each later RTT word (S0013 6)
+    subtype: bool = False  # the code has a function-subtype site: write IS_SUBTYPE (S0013 5.6)
     # (the bytes, their decode) of the first instantiation; read-only, shared by the instances
     sites: "tuple[bytes, dict[int, gc.SiteMap]] | None" = field(
         default=None, init=False, repr=False, compare=False
@@ -317,8 +318,10 @@ def compile_module(mod: ValidModule, b: Backend[Any, Any], target: str) -> Compi
         (ret, shift, ret_at, up, n, refs, live)
         for (ret, ret_at, up), (shift, n, refs, live) in zip(b.sites[s0:], maps, strict=True)
     ]
-    c = Compiled(mod, code, data, funcs, layout, sorted(refd), sigs, thunks)
-    c.rtts, c.thrown = rtts, thrown
+    from waboros.targets.jit.common.artifact import module_view  # (artifact imports gc, gc this)
+
+    c = Compiled(module_view(mod), code, data, funcs, layout, sorted(refd), sigs, thunks)
+    c.rtts, c.thrown, c.subtype = rtts, thrown, heap and gc.subtype_sites(mod)
     c.stackmaps = gc.encode(sites)
     return c
 

@@ -2,7 +2,7 @@
 title: Testing
 kind: reference
 status: current
-updated: 2026-11-17
+updated: 2026-11-19
 ---
 
 # Testing
@@ -83,6 +83,15 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   instances then use the same host callbacks as without the switch. Hand-assembled instances
   (`tests/jit/test_abi*.py`, no stack-map table) are never checked. CI runs one spec run per
   architecture with it (below); `tests/jit/test_walk.py` sets it itself.
+* **Through files** (`WABOROS_JIT_ARTIFACT=1`, both JITs, S0014 step 3; read at each
+  instantiation): every compiled module is written as a thin artifact, read back and instantiated
+  from the read form (`artifact.ModuleView`, no `ValidModule` behind it). `WABOROS_JIT_ARTIFACT=1
+  uv run python -m tests.spec.run --engine jit-x86_64` (both bounds modes, and `jit-aarch64` under
+  QEMU) must give the same results as without it (`tools/spec_diff.py` both ways: no difference),
+  also with the walk check and the GC switches on `gc exceptions`. It cannot be combined with the
+  switches that change code (`WABOROS_JIT_NOPIN`, `NOLIVE`, `PAD`, `LOOP_ALIGN`: `write` refuses).
+  `tests/artifact/test_instantiate.py` instantiates from the read form directly and checks that
+  `Compiled.module` and the read module have only the inventory's keys.
 * **The GC switches** (both JITs, S0013 step 5.3, D61; read when a store's heap is created, so a
   test sets them with `monkeypatch.setenv` before instantiating): `WABOROS_JIT_GC_STRESS=1` makes
   every allocation that may collect (in wasm code and the array services; never instantiation)

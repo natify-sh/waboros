@@ -15,7 +15,7 @@ from waboros.frontend.binary import parse
 from waboros.frontend.types import key
 from waboros.frontend.validate import validate
 from waboros.targets import base
-from waboros.targets.jit.common import artifact, gc
+from waboros.targets.jit.common import artifact
 
 ROOT = Path(__file__).resolve().parents[2]
 TARGETS = ("jit-x86_64", "jit-aarch64")
@@ -63,7 +63,7 @@ def roundtrip(c: Any, wasm: bytes, target: str) -> bytes:
         assert (v.records, v.sigs, v.thunks) == (c.records, c.sigs, c.thunks)
         assert (v.rtts, v.thrown, v.flags, v.faults) == (c.rtts, c.thrown, c.flags, c.faults)
         assert v.stackmaps == c.stackmaps and v.wasm == w
-        assert v.heap == c.layout.heap and v.subtype == gc.subtype_sites(mod)
+        assert v.heap == c.layout.heap and v.subtype == c.subtype
         assert v.target == target and v.module_sha256 == hashlib.sha256(wasm).digest()
         again = artifact.write(v, target=v.target, module_sha256=v.module_sha256, wasm=v.wasm)
         assert again == blob

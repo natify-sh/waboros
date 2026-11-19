@@ -1077,3 +1077,10 @@ What went wrong or surprised us while building the PoC, so it is not found again
     `Store.close()` in phase 6). Item (a) is done 2026-11-19: `execmem._retry` collects and retries once
     around every reservation, commit and executable mapping (so linear memories, the GC heap and the
     value stack too; `tests/jit/test_execmem.py`). Found: CI run 44421319412 (Windows x64), 2026-11-19.
+136. **A depth the wasm module chooses must never become Python recursion.** Constant expressions
+    nest without limit (extended constants: an `i32.add` chain of any length). The JIT instance's
+    `_const` recursed on `add`/`sub`/`mul` and the validator's `validate._const` still does: a
+    300 000-deep chain raises `RecursionError` (a Python exception, not a crash, but not the
+    validator's verdict either). Rule: walk trees the input shapes with an explicit stack, as the
+    artifact's writer and reader and, since S0014 step 3, the instance do; the validator's case is
+    open (S0014 Changes, 2026-11-19). Found: S0014 step 3, 2026-11-19.

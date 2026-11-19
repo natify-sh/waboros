@@ -39,6 +39,7 @@ from waboros.runtime.link import LinkError
 from waboros.runtime.store import StoreState
 from waboros.targets.base import Extern, HostError, HostFunc, Raw, Trap, TrapCode
 from waboros.targets.jit.common import gc, guard, simd, walk
+from waboros.targets.jit.common.artifact import ModuleView
 from waboros.targets.jit.common.compiler import I64, M32, M64, NARROW, Compiled
 from waboros.targets.jit.common.context import (
     ALLOC,
@@ -963,7 +964,7 @@ class JitInstance(Instance):
         self,
         store: StoreState,
         tramp: Trampolines,
-        c: Compiled,
+        c: "Compiled | ModuleView",
         imports: Sequence[Extern],
         owner: str,
     ) -> None:
@@ -1046,7 +1047,7 @@ class JitInstance(Instance):
             for ti, (comp, sups, final, *_) in enumerate(mod["tdefs"]):
                 if comp[0] == "func" and (sups or not final):
                     st.heap.rtt(mod, ti)
-        if lay.gcsvc and gc.subtype_sites(mod):  # IS_SUBTYPE: the collector's is_subtype
+        if c.subtype:  # IS_SUBTYPE: the collector's is_subtype (decided by the compiler)
             from waboros.targets.jit.common import collect  # (collect imports this module)
 
             coll, idx = collect._collector(self, st.heap)  # pyright: ignore[reportPrivateUsage]
@@ -1129,48 +1130,48 @@ class JitInstance(Instance):
             self.call(mod["start"], [])
 
     def _const(self, e: tuple[Any, ...]) -> int:
-        k = e[0]
-        if k in ("i32", "i64", "f32", "f64", "v128"):
-            return e[1]
-        if k == "global":
-            g: int = e[1]
-            return self._read_global(g)
-        if k == "func":
-            return self.records[e[1]]
-        if k == "null":
-            return 0
-        if k == "gc":
-            return self._gc_const(e)
-        x, y, m = self._const(e[2]), self._const(e[3]), M32 if e[1] == "i32" else M64
-        return (x + y if k == "add" else x - y if k == "sub" else x * y) & m
-
-    def _gc_const(self, e: tuple[Any, ...]) -> int:
-        """An allocating constant expression (S0013), operands first, of any depth without
-        recursion: struct.new, struct.new_default, ref.i31 and the two conversions."""
-        vals: dict[int, int] = {}
-        todo = [e]
+        """A constant expression's value, operands first, of any depth without recursion (S0014
+        "Constant expressions"): a tree of the front end or of the artifact reader."""
+        vals: list[int] = []
+        todo: list[tuple[Any, bool]] = [(e, False)]
         while todo:
-            n = todo[-1]
-            more = [a for a in n[2] if a[0] == "gc" and id(a) not in vals]
-            if more:
-                todo += reversed(more)
-                continue
-            todo.pop()
-            a = [vals[id(x)] if x[0] == "gc" else self._const(x) for x in n[2]]
-            o = n[1][0]
-            if o == 0xFB1C:
-                vals[id(n)] = (a[0] << 1 | 1) & M32
-            elif o in (0xFB1A, 0xFB1B):
-                vals[id(n)] = a[0]
-            elif o in (0xFB00, 0xFB01):  # struct.new, struct.new_default
-                vals[id(n)] = _stacks(self.store).heap.new_struct(self.module, n[1][1], a or None)
-            else:  # array.new (value, n), array.new_default (n), array.new_fixed (values)
-                heap, ti = _stacks(self.store).heap, n[1][1]
-                if o == 0xFB08:
-                    vals[id(n)] = heap.new_array(self.module, ti, len(a), vals=a)
-                else:
-                    vals[id(n)] = heap.new_array(self.module, ti, a[-1], a[0] if o == 0xFB06 else 0)
-        return vals[id(e)]
+            n, done = todo.pop()
+            k = n[0]
+            kids = n[2:4] if k in ("add", "sub", "mul") else n[2] if k == "gc" else ()
+            if kids and not done:
+                todo.append((n, True))
+                todo += [(x, False) for x in reversed(kids)]
+            elif k in ("i32", "i64", "f32", "f64", "v128"):
+                vals.append(n[1])
+            elif k == "global":
+                vals.append(self._read_global(n[1]))
+            elif k == "func":
+                vals.append(self.records[n[1]])
+            elif k == "null":
+                vals.append(0)
+            elif k == "gc":
+                a = vals[len(vals) - len(kids) :]
+                del vals[len(vals) - len(kids) :]
+                vals.append(self._gc_op(n[1], a))
+            else:
+                y, x, m = vals.pop(), vals.pop(), M32 if n[1] == "i32" else M64
+                vals.append((x + y if k == "add" else x - y if k == "sub" else x * y) & m)
+        return vals[0]
+
+    def _gc_op(self, ins: tuple[int, ...], a: list[int]) -> int:
+        """One allocating or converting operation of a constant expression (S0013): ref.i31, the
+        two conversions, struct.new(_default), array.new(_default, _fixed)."""
+        o = ins[0]
+        if o == 0xFB1C:
+            return (a[0] << 1 | 1) & M32
+        if o in (0xFB1A, 0xFB1B):
+            return a[0]
+        heap = _stacks(self.store).heap
+        if o in (0xFB00, 0xFB01):  # struct.new, struct.new_default
+            return heap.new_struct(self.module, ins[1], a or None)
+        if o == 0xFB08:  # array.new_fixed (values)
+            return heap.new_array(self.module, ins[1], len(a), vals=a)
+        return heap.new_array(self.module, ins[1], a[-1], a[0] if o == 0xFB06 else 0)  # (value, n)
 
     # the GC group's services (S0013): arguments as the compiler put them in the slots
     # The services that allocate may collect (D1): they read reference operands from their slots
