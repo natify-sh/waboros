@@ -13,6 +13,7 @@ entitlement refuses the mapping. x86-64 needs none of this."""
 
 import ctypes
 import errno
+import gc
 import mmap
 import os
 import platform
@@ -24,13 +25,30 @@ from typing import Any
 ARM64 = platform.machine().lower() in ("aarch64", "arm64")
 
 
+def _retry(fn: Callable[..., Any], *args: Any) -> Any:
+    """Call `fn`; when it fails for lack of memory (ENOMEM, Windows' ERROR_NOT_ENOUGH_MEMORY 8 and
+    ERROR_COMMITMENT_LIMIT 1455, MemoryError), collect once and call it once more: a dropped store
+    waits in reference cycles for the collector (LESSONS 135), most of all on free-threaded
+    builds. Frees only unreachable objects, so a live store is safe; every caller runs on the
+    thread of its store, outside signal handlers, holding no lock a finalizer takes."""
+    try:
+        return fn(*args)
+    except (MemoryError, OSError) as e:
+        if not isinstance(e, MemoryError) and (
+            e.errno != errno.ENOMEM and getattr(e, "winerror", None) not in (8, 1455)
+        ):
+            raise
+    gc.collect()
+    return fn(*args)
+
+
 class ExecMem:
     """A code area of `size` bytes (rounded up to pages): `write` while read-write, then `seal`."""
 
     def __init__(self, size: int) -> None:
         page = mmap.PAGESIZE
         self.size = max(page, (size + page - 1) // page * page)
-        self.addr = _alloc(self.size)
+        self.addr = _retry(_alloc, self.size)
         self.sealed = False
         # unmapped when unreachable: records cross only within a store, which keeps its
         # instances (and so their code areas) alive while any of its code can run
@@ -70,7 +88,7 @@ class Reservation:
             raise OSError(errno.ENOMEM, f"reservation of {size} bytes")
         self.size = size
         self.committed = 0
-        self.addr = _reserve(size)
+        self.addr = _retry(_reserve, size)
         self._release: weakref.finalize[..., Any] = weakref.finalize(self, _free, self.addr, size)
         self._release.atexit = False  # a daemon thread may still use this memory at exit
         self.commit(commit)
@@ -82,7 +100,7 @@ class Reservation:
             raise ValueError(f"commit of {nbytes} bytes outside a {self.size}-byte reservation")
         nbytes = (nbytes + page - 1) // page * page
         if nbytes > self.committed:
-            _commit(self.addr + self.committed, nbytes - self.committed)
+            _retry(_commit, self.addr + self.committed, nbytes - self.committed)
             self.committed = nbytes
 
     def free(self) -> None:

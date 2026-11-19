@@ -173,3 +173,97 @@ def test_write_protect_toggle_is_restored_when_the_copy_raises(
     with pytest.raises(MemoryError):
         execmem.write_toggled(calls.append, ctypes.addressof(buf), b"wxyz")
     assert calls == [0, 1]
+
+
+def _cycle_garbage() -> list[bool]:
+    """Unreachable cycle whose finalizer sets a flag: stands for a dropped store (LESSONS 135)."""
+    freed = [False]
+
+    class Cell:
+        def __init__(self) -> None:
+            self.me = self
+
+        def __del__(self) -> None:
+            freed[0] = True
+
+    Cell()
+    return freed
+
+
+@pytest.mark.parametrize("what", ["alloc", "reserve", "commit"])
+def test_out_of_memory_collects_and_retries_once(
+    what: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reservation or commit that fails for lack of memory collects dropped stores and retries
+    once (ROADMAP "Memory of dropped stores" (a)); a second failure propagates unchanged."""
+    gc.disable()  # only the retry may collect here
+    try:
+        freed = _cycle_garbage()
+        real = getattr(execmem, f"_{what}")
+        calls: list[bool] = []
+
+        def flaky(*args: Any) -> Any:
+            calls.append(freed[0])
+            if len(calls) == 1:
+                raise OSError(12, "no memory")  # ENOMEM
+            return real(*args)
+
+        monkeypatch.setattr(execmem, f"_{what}", flaky)
+        if what == "alloc":
+            ExecMem(1).free()
+        else:
+            execmem.Reservation(1 << 20, 1 << 16).free()
+        assert calls == [False, True]  # the second call came after the collection
+
+        calls.clear()
+
+        def fail(*args: Any) -> Any:
+            raise MemoryError("x")
+
+        monkeypatch.setattr(execmem, f"_{what}", fail)
+        with pytest.raises(MemoryError):
+            execmem.Reservation(1 << 20, 1 << 16) if what != "alloc" else ExecMem(1)
+    finally:
+        gc.enable()
+
+
+def test_other_errors_are_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[int] = []
+
+    def deny(size: int) -> int:
+        calls.append(size)
+        raise OSError(13, "denied")  # EACCES
+
+    monkeypatch.setattr(execmem, "_alloc", deny)
+    with pytest.raises(OSError):
+        ExecMem(1)
+    assert len(calls) == 1
+
+
+_LIMITED = """
+import gc, resource, sys
+resource.setrlimit(resource.RLIMIT_DATA, (1 << 30, 1 << 30))
+gc.disable()  # as a free-threaded build, which collects rarely (LESSONS 135)
+from waboros.targets.jit.common import execmem
+if sys.argv[1] == "off":
+    execmem._retry = lambda f, *a: f(*a)
+class Dropped:
+    def __init__(self):
+        self.res, self.me = execmem.Reservation(1 << 28, 1 << 28), self
+for _ in range(40):
+    Dropped()
+"""
+
+
+@pytest.mark.skipif(not hasattr(os, "fork") or platform.system() != "Linux", reason="RLIMIT_DATA")
+def test_dropped_stores_do_not_exhaust_the_data_limit() -> None:
+    """40 dropped cycles of 256 MiB committed under a 1 GiB RLIMIT_DATA: fails with the retry
+    switched off, passes with it."""
+    import subprocess
+    import sys
+
+    def run(arg: str) -> int:
+        return subprocess.run([sys.executable, "-c", _LIMITED, arg], capture_output=True).returncode
+
+    assert run("off") != 0
+    assert run("on") == 0

@@ -1074,4 +1074,6 @@ What went wrong or surprised us while building the PoC, so it is not found again
     per run at both commits, 3.15 with the GIL none. Rule: the tests collect garbage after every test
     on a free-threaded build (`tests/conftest.py`); the runtime's part is planned (ROADMAP "Memory of
     dropped stores": collect and retry on failure, lazy commit of the heap's service areas,
-    `Store.close()` in phase 6). Found: CI run 44421319412 (Windows x64), 2026-11-19.
+    `Store.close()` in phase 6). Item (a) is done 2026-11-19: `execmem._retry` collects and retries once
+    around every reservation, commit and executable mapping (so linear memories, the GC heap and the
+    value stack too; `tests/jit/test_execmem.py`). Found: CI run 44421319412 (Windows x64), 2026-11-19.
