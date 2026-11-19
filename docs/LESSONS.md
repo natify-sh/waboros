@@ -1086,4 +1086,10 @@ What went wrong or surprised us while building the PoC, so it is not found again
     validator 2026-11-19 (`validate._const`; the binary parser did not recurse; `jit-x86_64`,
     direct and through the artifact file, takes the module: `tests/test_deep_const.py`). Still open:
     `pyc`'s `ModGen.val` (`targets/pyc/codegen.py`) recurses on a global's initializer
-    (`RecursionError` at depth ~1000; on Pyodide the JS stack overflows first, a fatal error; the test is `xfail(strict)`, skipped on Pyodide). Found: S0014 step 3, 2026-11-19.
+    (`RecursionError` at depth ~1000; the test is `xfail(strict)`). **Also open, and deeper: the
+    tree itself.** The parser keeps a constant expression as nested tuples, and freeing a deep one
+    recurses in C: on CPython 3.13 a 10 000-deep tuple chain segfaults when freed in a thread with a
+    256 KiB stack (3.12 and 3.14 survive; the main thread's 8 MiB survives 3 000 000). Pyodide's
+    stack is small, so the deep test kills its interpreter ("Maximum call stack size exceeded",
+    CI on d9ae6e9 and b243c9e); `tests/test_deep_const.py` is skipped there. Found: S0014 step 3,
+    2026-11-19.

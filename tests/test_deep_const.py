@@ -14,6 +14,12 @@ from waboros.targets import base
 
 N = 300_000
 
+# Freeing the parser's 300 000-deep tuple tree overflows a small C stack on CPython 3.13 (the
+# trashcan does not hold there); Pyodide's stack is small, so the interpreter dies (LESSONS 136).
+pytestmark = pytest.mark.skipif(
+    sys.platform == "emscripten", reason="a deep tuple tree is fatal to free on Pyodide"
+)
+
 
 def _leb(n: int) -> bytes:
     out = bytearray()
@@ -66,10 +72,6 @@ PYC = pytest.param(
             strict=True,
             raises=RecursionError,
             reason="pyc codegen `ModGen.val` recurses (LESSONS 136)",
-        ),
-        pytest.mark.skipif(
-            sys.platform == "emscripten",
-            reason="on Pyodide the recursion overflows the JS stack: a fatal error (LESSONS 136)",
         ),
     ],
 )
