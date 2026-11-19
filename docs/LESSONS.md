@@ -1062,7 +1062,7 @@ What went wrong or surprised us while building the PoC, so it is not found again
     failed on `prev == 0`. A process started after our install would replace ours the same way
     (`guard.broken()` then refuses guard calls). Rule: no child processes in the Android test app
     (`tests/conftest.py` skips them); that an app which starts a process loses the guard handler is
-    an open question for S0006 (not decided). Found: CI run 44421319412 (Android x86_64), 2026-11-19.
+    a documented limitation (S0006, Android: refused with an error naming explicit bounds). Found: CI run 44421319412 (Android x86_64), 2026-11-19.
 135. **A dropped JIT store holds its committed memory until the cyclic GC, which does not see it.**
     A store and its instances form reference cycles, so their memory goes when the cyclic GC runs;
     each GC heap commits 66 MiB on its first allocation. A free-threaded build collects far less often
