@@ -616,7 +616,7 @@ def test_broken_checks_every_signal_we_take(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(guard, "_handler", {"addr": 0x1000, "sigaction": query, "py": py})
     assert guard.broken() is None
     acts[signal.SIGBUS] = 0  # SIG_DFL
-    assert guard.broken() == "SIGBUS reset to SIG_DFL/SIG_IGN"
+    assert (guard.broken() or "").startswith("SIGBUS reset to SIG_DFL/SIG_IGN")  # Android: + a hint
     acts[signal.SIGBUS] = 0x2000
     with monkeypatch.context() as m:
         m.setattr(guard.signal, "getsignal", lambda s: print if s == signal.SIGBUS else py[s])  # pyright: ignore[reportUnknownLambdaType]
