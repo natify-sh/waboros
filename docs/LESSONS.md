@@ -1051,3 +1051,26 @@ What went wrong or surprised us while building the PoC, so it is not found again
     `exec` of generated code whose speed matters; a test pins the namespace, since correctness tests
     cannot. Found: the maintainer, comparing the package with the PoC on PyPy, 2026-11-19.
 
+134. **On Android, a child process started by CPython resets the app's signal chain.** CPython's
+    `subprocess` starts a child with `vfork()`; before `exec` the child sets every handled signal to
+    `SIG_DFL` (`_posixsubprocess.c`, `reset_signal_handlers`), through `sigaction`, which in an app
+    process is ART's libsigchain. For a signal ART has claimed (SIGSEGV) libsigchain does not call
+    the kernel: it writes the action into its table, and a `vfork` child writes the parent's memory.
+    After one `subprocess.run(["readelf", ...])` (the first test that started a real process in the
+    testbed app) faulthandler's SIGSEGV action in the chain was `SIG_DFL`, our handler, installed
+    later, saved that as its previous action, and `test_guard_faults_reach_us_through_libsigchain`
+    failed on `prev == 0`. A process started after our install would replace ours the same way
+    (`guard.broken()` then refuses guard calls). Rule: no child processes in the Android test app
+    (`tests/conftest.py` skips them); that an app which starts a process loses the guard handler is
+    an open question for S0006 (not decided). Found: CI run 44421319412 (Android x86_64), 2026-11-19.
+135. **A dropped JIT store holds its committed memory until the cyclic GC, which does not see it.**
+    A store and its instances form reference cycles, so their memory goes when the cyclic GC runs;
+    each GC heap commits 66 MiB on its first allocation. A free-threaded build collects far less often
+    (`tests/jit/test_exceptions.py` in one process: up to 40 heaps alive at once on 3.15t, 12 with
+    the GIL), and with four xdist workers the Windows x64 cp315t cell ran out of commit charge:
+    `failed to reserve` skips already at 64da5a4, then 26 failures and a worker's `MemoryError` in
+    `ast.parse` once new tests moved the schedule. Reproduced on Linux with `prlimit --data=6000 MiB`
+    (`mprotect` to read-write counts against RLIMIT_DATA like a Windows commit): 3.15t 1-31 failures
+    per run at both commits, 3.15 with the GIL none. Rule: the tests collect garbage after every test
+    on a free-threaded build (`tests/conftest.py`); whether the runtime should collect under commit
+    pressure itself is open. Found: CI run 44421319412 (Windows x64), 2026-11-19.
