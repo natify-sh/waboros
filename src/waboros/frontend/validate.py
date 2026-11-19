@@ -323,15 +323,33 @@ def _frefs(e: tuple):
 
 
 def _const(c: _Ctx, e: tuple, nglobals: int):
-    """Type of a constant expression (parser tuples); only globals below `nglobals` are visible."""
+    """Type of a constant expression (parser tuples); only globals below `nglobals` are visible.
+    `add`/`sub`/`mul` nest as deep as the binary is long: an explicit stack, operands left to
+    right, the first mismatch raised as soon as an operand is known (LESSONS 136)."""
+    stack = []  # (node, its type, 0 while the left operand is open, 1 for the right one)
+    while True:
+        while e[0] in ("add", "sub", "mul"):
+            stack.append((e, I32 if e[1] == "i32" else I64, 0))
+            e = e[2]
+        v = _leaf(c, e, nglobals)
+        while stack:
+            n, t, side = stack.pop()
+            if v != t:
+                raise Invalid("type mismatch")
+            if side == 0:
+                stack.append((n, t, 1))
+                e = n[3]
+                break
+            v = t
+        else:
+            return v
+
+
+def _leaf(c: _Ctx, e: tuple, nglobals: int):
+    """Type of a constant expression that is not an arithmetic node."""
     k = e[0]
     if k == "bad":
         raise Invalid("type mismatch")
-    if k in ("add", "sub", "mul"):
-        t = I32 if e[1] == "i32" else I64
-        if _const(c, e[2], nglobals) != t or _const(c, e[3], nglobals) != t:
-            raise Invalid("type mismatch")
-        return t
     if k == "i32":
         return I32
     if k == "i64":

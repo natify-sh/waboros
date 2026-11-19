@@ -874,3 +874,7 @@ When approved and implemented (step 7 unless noted):
   (`tests/artifact/test_instantiate.py` puts such a tree into a compiled module). The validator is
   outside this spec. (4) Under `WABOROS_JIT_ARTIFACT=1` the file's `module_sha256` is the SHA-256 of
   the code (the target does not see the wasm); a test switch only.
+* 2026-11-19: the front end's validator no longer recurses on a constant expression
+  (`validate._const` uses an explicit stack, same errors in the same order), so point (3) above is
+  closed: a 300 000-deep `i32.add` chain in a real binary validates and `jit-x86_64` instantiates it,
+  direct and through the file (`tests/test_deep_const.py`). `pyc` codegen still recurses on it.

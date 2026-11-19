@@ -1079,8 +1079,11 @@ What went wrong or surprised us while building the PoC, so it is not found again
     value stack too; `tests/jit/test_execmem.py`). Found: CI run 44421319412 (Windows x64), 2026-11-19.
 136. **A depth the wasm module chooses must never become Python recursion.** Constant expressions
     nest without limit (extended constants: an `i32.add` chain of any length). The JIT instance's
-    `_const` recursed on `add`/`sub`/`mul` and the validator's `validate._const` still does: a
-    300 000-deep chain raises `RecursionError` (a Python exception, not a crash, but not the
+    `_const` recursed on `add`/`sub`/`mul`, and so did the validator's `validate._const`: a
+    300 000-deep chain raised `RecursionError` (a Python exception, not a crash, but not the
     validator's verdict either). Rule: walk trees the input shapes with an explicit stack, as the
-    artifact's writer and reader and, since S0014 step 3, the instance do; the validator's case is
-    open (S0014 Changes, 2026-11-19). Found: S0014 step 3, 2026-11-19.
+    artifact's writer and reader and, since S0014 step 3, the instance do. Closed for the
+    validator 2026-11-19 (`validate._const`; the binary parser did not recurse; `jit-x86_64`,
+    direct and through the artifact file, takes the module: `tests/test_deep_const.py`). Still open:
+    `pyc`'s `ModGen.val` (`targets/pyc/codegen.py`) recurses on a global's initializer
+    (`RecursionError` at depth ~1000; the test is `xfail(strict)`). Found: S0014 step 3, 2026-11-19.

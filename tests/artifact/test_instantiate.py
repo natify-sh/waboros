@@ -79,9 +79,8 @@ def test_instantiate_from_view(via: str, monkeypatch: pytest.MonkeyPatch) -> Non
 
 @pytest.mark.parametrize("via", ["direct", "file"])
 def test_deep_constant(via: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A 300 000-deep `i32.add` chain: the front end's validator recurses on it (a limit of its
-    own), so the tree is put into the compiled module's global; the writer, the reader and the
-    instance never recurse."""
+    """A 300 000-deep `i32.add` chain put into the compiled module's global: the writer, the
+    reader and the instance never recurse (the front end's part: `tests/test_deep_const.py`)."""
     n = 300_000
     t, m, c = _compile(wat('(module (global (export "g") i32 (i32.const 0)))'))
     e: Any = ("i32", 1)
