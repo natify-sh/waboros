@@ -1086,4 +1086,4 @@ What went wrong or surprised us while building the PoC, so it is not found again
     validator 2026-11-19 (`validate._const`; the binary parser did not recurse; `jit-x86_64`,
     direct and through the artifact file, takes the module: `tests/test_deep_const.py`). Still open:
     `pyc`'s `ModGen.val` (`targets/pyc/codegen.py`) recurses on a global's initializer
-    (`RecursionError` at depth ~1000; the test is `xfail(strict)`). Found: S0014 step 3, 2026-11-19.
+    (`RecursionError` at depth ~1000; on Pyodide the JS stack overflows first, a fatal error; the test is `xfail(strict)`, skipped on Pyodide). Found: S0014 step 3, 2026-11-19.

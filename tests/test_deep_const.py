@@ -1,11 +1,13 @@
 """A constant expression nests as deep as the binary is long (LESSONS 136): the validator, the
 parser and the targets take a 300 000-deep `i32.add` chain without Python recursion."""
 
+import sys
+
 import pytest
 
 from tests.jit import native, native_jit
-from waboros.frontend.binary import parse
-from waboros.frontend.validate import Invalid, validate
+from waboros.frontend.binary import parse  # pyright: ignore[reportUnknownVariableType]
+from waboros.frontend.validate import Invalid, validate  # pyright: ignore[reportUnknownVariableType]
 from waboros.runtime import link
 from waboros.runtime.store import StoreState
 from waboros.targets import base
@@ -59,9 +61,17 @@ def _global(name: str, monkeypatch: pytest.MonkeyPatch) -> int:
 
 PYC = pytest.param(
     "pyc",
-    marks=pytest.mark.xfail(
-        strict=True, raises=RecursionError, reason="pyc codegen `ModGen.val` recurses (LESSONS 136)"
-    ),
+    marks=[
+        pytest.mark.xfail(
+            strict=True,
+            raises=RecursionError,
+            reason="pyc codegen `ModGen.val` recurses (LESSONS 136)",
+        ),
+        pytest.mark.skipif(
+            sys.platform == "emscripten",
+            reason="on Pyodide the recursion overflows the JS stack: a fatal error (LESSONS 136)",
+        ),
+    ],
 )
 
 
