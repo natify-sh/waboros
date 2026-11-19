@@ -4,6 +4,7 @@ import ctypes
 import gc
 import os
 import platform
+import sys
 from pathlib import Path
 from typing import Any, cast
 
@@ -190,6 +191,7 @@ def _cycle_garbage() -> list[bool]:
     return freed
 
 
+@pytest.mark.skipif(sys.platform == "emscripten", reason="no executable memory (Pyodide)")
 @pytest.mark.parametrize("what", ["alloc", "reserve", "commit"])
 def test_out_of_memory_collects_and_retries_once(
     what: str, monkeypatch: pytest.MonkeyPatch
