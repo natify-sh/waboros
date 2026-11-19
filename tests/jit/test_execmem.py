@@ -244,9 +244,12 @@ def test_other_errors_are_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:
 
 _LIMITED = """
 import gc, resource, sys
-resource.setrlimit(resource.RLIMIT_DATA, (1 << 30, 1 << 30))
-gc.disable()  # as a free-threaded build, which collects rarely (LESSONS 135)
 from waboros.targets.jit.common import execmem
+# the limit counts from what this interpreter already uses: a free-threaded build's allocator
+# (mimalloc) reserves so much that it cannot import ctypes under a fixed 1 GiB limit
+used = next(int(l.split()[1]) for l in open("/proc/self/status") if l.startswith("VmData:")) << 10
+resource.setrlimit(resource.RLIMIT_DATA, (used + (640 << 20), resource.RLIM_INFINITY))
+gc.disable()  # as a free-threaded build, which collects rarely (LESSONS 135)
 if sys.argv[1] == "off":
     execmem._retry = lambda f, *a: f(*a)
 class Dropped:
@@ -259,8 +262,8 @@ for _ in range(40):
 
 @pytest.mark.skipif(not hasattr(os, "fork") or platform.system() != "Linux", reason="RLIMIT_DATA")
 def test_dropped_stores_do_not_exhaust_the_data_limit() -> None:
-    """40 dropped cycles of 256 MiB committed under a 1 GiB RLIMIT_DATA: fails with the retry
-    switched off, passes with it."""
+    """40 dropped cycles of 256 MiB committed under RLIMIT_DATA of what the interpreter uses plus
+    640 MiB: fails with the retry switched off, passes with it."""
     import subprocess
     import sys
 
