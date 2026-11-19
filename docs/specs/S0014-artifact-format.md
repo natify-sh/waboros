@@ -614,6 +614,7 @@ Each step stops and reports if it needs more than its size.
 | 0 | D58: the libcall block is 10 words (6 used, 4 zero) on both JITs; part 3 and S0003 updated | jit-engineer | spec suite on both JITs, both bounds modes, at parity with before; ISA gate; D35 lists regenerated and the cross-compiled identity holds; CoreMark alternated within the spread | src ~20, tests ~20 |
 | 1 | The canonical type key in bytes (`frontend/types.py`), keys stored as 32 bytes | implementer | the type-key test; `linking`, `type-*` and `gc/` unchanged on `pyc` and both JITs; code bytes unchanged (D35 lists) | src ~80, tests ~60 |
 | 2 | Writer and reader: the ELF container and every payload, the module view, `cexpr` both ways | implementer | round trip on every spec module and CoreMark, both JITs, both modes; written twice, identical | src ~550, tests ~250 |
+| 2.1 | The reader strict at the container and constant-expression level: layout exactly the writer's (`.waboros.*` flags and symbol contents not read, D62), value types of `cexpr` against their use; pinned section headers, symbols, `config_sha256` | implementer | the writer's files write back to the same bytes, every other accepted file to its canonical form (byte-flip loop, 0 bad); the round trip on the spec suite unchanged | src ~100, tests ~100 |
 | 3 | Instantiate from the read form: the instance takes the module view and `subtype` from the artifact; the `WABOROS_JIT_ARTIFACT=1` switch | jit-engineer | the spec suite through files at parity, both JITs, both modes, walk check and GC switches; CoreMark through a file; timings recorded | src ~120, tests ~80 |
 | 4 | Loader rules: the checks in order, fat fallback, the refusal tests, the committed v1 files | implementer | the refusal and old-artifact tests; `pytest -q` | src ~120, tests ~300 |
 | 5 | Trampolines in every artifact (Q2): the blobs in `.text`, `.waboros.trampolines`, the symbols, the store's identity check in the loader | jit-engineer | the trampoline tests (equal to `abi.assemble`, mismatch refused or regenerated, the store rule); the round trip and the spec suite through files still at parity; D35 identity of files | src ~90, tests ~80 |
@@ -777,6 +778,13 @@ When approved and implemented (step 7 unless noted):
   70 952 (guard), aarch64 49 456 / 69 000 and 46 720 / 66 264 ([BENCHMARKS](../BENCHMARKS.md),
   "Artifact size"). Not yet: `.waboros.trampolines`, the trampoline symbols (step 5), the loader's
   compatibility checks (step 4), instantiation from a view (step 3).
+* Step 2.1 done (2026-11-18): `read` checks the container's layout against the one the writer
+  produces (offsets, gaps, header fields, order, section names) and the value type of every
+  constant expression against its use. `tests/artifact/test_strict.py` pins the section header
+  table, the symbols and `config_sha256`, one refusal per rule, what the reader ignores, and a
+  byte-flip loop (3 000 flips each on CoreMark, a GC module and a small module, `pytest -k
+  byte_flips -s` prints the classes: accepted flips are `exact`, `ignored`, `unwritable` (a header
+  `flags` field that `write` refuses) or `unknown` (renamed section); `bad` is 0).
 
 ## Changes
 * 2026-11-17: created (draft).
@@ -808,11 +816,38 @@ When approved and implemented (step 7 unless noted):
   plus a SHA-256 of the compiler-side sources (`frontend/`, `jit/`), computed once per process, so
   the string is deterministic and changes with the code. Implemented in step 4 (the loader rules
   that compare the string), with a test that two copies of one tree write identical files.
-* 2026-11-18: deferred from the step-2 review to step 3: constant expressions are evaluated without
-  recursion (a 300 000-deep `i32.add` chain reads fine and would overflow `_const`), and their
-  value types are checked against the global, table or offset they initialise. To step 4: the
-  container's strictness (overlapping sections, sections over the ELF or section headers, bytes
-  after the section header table, `SHT_NOBITS` for a required section, non-zero padding and null
-  header, `.shstrtab`'s type), so that every accepted file writes back to the same bytes; the
-  header's `flags`, `isa_level`, `ctx_abi_version` checks; pinned section headers, symbols and
-  `config_sha256` in the tests.
+* 2026-11-18: the maintainer moved the container strictness, the cexpr value types and the pinned
+  tests from steps 3 and 4 to a new step 2.1, done before step 3. Decisions: the reader checks each
+  section's header against the expected one (offset from the running position and the alignment,
+  type, address, link, entry size, name offset) and rebuilds `.shstrtab` from the section names,
+  rather than calling `write` and comparing: the messages name the section, and the check does
+  not depend on the writer's compiler string (a file of another waboros version still reads).
+  **What is not checked (D62)**: `sh_flags` of `.waboros.*` sections, `sh_info` of `.symtab`, and
+  the contents of `.symtab` and `.strtab` (only their presence, types, entry size, `sh_link` and
+  place): no loader reads them, a later amendment may set flags, add symbols or prefix names.
+  **Unknown sections are skipped**, and so is `.waboros.trampolines` until step 5. `.text` is
+  section 2 (the spec's table), so an unknown section may sit anywhere after `.text` and before
+  `.shstrtab` (`e_shstrndx` is the last section); known ones keep their order. Its header must
+  have the canonical name offset, address 0, a power-of-two alignment (0 and 1: none) that its
+  offset respects, an offset at or after the previous section's end with zero gap bytes, and its
+  bytes inside the file before the section headers (no overlap with other sections, the ELF
+  header or the section header table). Whatever its type, it takes file space (`SHT_NOBITS` with a
+  size above 0 is refused as one that runs past its place, as step 3 of "Semantics: the loader"
+  requires); type, flags, link, info and bytes are not interpreted and are not kept in the view.
+  `.symtab`, `.strtab` and `.shstrtab` are required. **The round-trip property**: (i) for every
+  file this writer writes, `write(read(b)) == b`; (ii) the reader accepts a superset: files that
+  differ only in `.waboros.*` flags, `.symtab` `sh_info`, symbol or string contents, the header
+  fields `write` regenerates (`config_sha256` to `compiler`, until step 4 checks them) or
+  unknown sections; for those, `write(read(b))` is the canonical form, which reads back to an
+  equal view, except a header `flags` value `write` refuses (`ValueError`) until step 4 checks it on
+  read (the test compares views without the regenerated header fields). Constant
+  expressions read only immutable globals (`global.get` of a mutable one is refused), and a
+  table's initial value reads imported globals only (as the validator, Wasm). A table of a
+  non-nullable type needs an initial value. `ref.null` has no heap type in the file, so its value
+  type fits any nullable reference. An element segment of items 1 whose items are all `ref.func`
+  (or none) is refused, as the writer writes items 0 for it; an active element segment's type
+  must fit its table's.
+* 2026-11-18: still to do. Step 3: constant expressions are evaluated without recursion (a
+  300 000-deep `i32.add` chain reads fine and would overflow `_const`). Step 4: the header's
+  `flags`, `isa_level`, `ctx_abi_version` checks, which the round trip does not yet cover
+  (`config_sha256`, `isa_level`, the compiler string and the features are regenerated by `write`).

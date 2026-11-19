@@ -6,6 +6,7 @@ import hashlib
 import shutil
 import struct
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -109,13 +110,16 @@ OPS = [0x41, 0x42, 0x43, 0x44, 0xFD0C, 0x23, 0xD2, 0xD0, 0x6A, 0x6B, 0x6C, 0x7C,
 def test_every_constant_expression_operation() -> None:
     m: dict[str, Any] = parse(wat(CEXPR))
     validate(m)
-    env = A._Env(m["tdefs"], len(m["tdefs"]), nfuncs=1, nglobals=len(m["globals"]) + 2, records=[0])
+    gt = [0x7F, 0x7E, *(t for t, _, _ in m["globals"])]  # two imported globals, then the defined
+    env = A._Env(m["tdefs"], len(m["tdefs"]), nfuncs=1, nglobals=len(gt), records=[0], gtypes=gt)
+    env.ftidx = m["funcs"]
+    env.gmut = [0] * len(gt)
     seen: set[int] = set()
-    for _, _, e in m["globals"]:
+    for t, _, e in m["globals"]:
         b = A._cexpr(e)
         assert struct.unpack_from("<I", b)[0] == len(b) - 4
         r = A._R(b, "test")
-        assert norm(A._cexpr_r(r, env)) == norm(e)
+        assert norm(A._cexpr_r(r, env, t)) == norm(e)  # and the type is the global's
         r.done()
         ops, p = [], 4  # the operation codes: walk the postfix bytes by their immediates
         while p < len(b):
@@ -185,14 +189,28 @@ def test_every_prefix_is_refused() -> None:
             A.read(blob[:n])
 
 
-def test_trailing_bytes_in_each_payload() -> None:
-    blob = small(wasm=True)
-    for name, (head, _, size) in secs(blob).items():
-        if not name.startswith(".waboros.") or name in (".waboros.wasm", ".waboros.text"):
+def emits(sections: dict[str, bytes]) -> Callable[..., dict[str, bytes]]:
+    """A stand-in for `A._sections` that makes the writer lay out `sections`."""
+
+    def f(*_: Any) -> dict[str, bytes]:
+        return sections
+
+    return f
+
+
+def test_trailing_bytes_in_each_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A payload one byte longer, in a file laid out as the writer would (the writer is made to
+    emit it), is refused naming the section."""
+    m = parse(SMALL)
+    validate(m)
+    c = base.TARGETS["jit-x86_64"]().compile(m)
+    good = A._sections(c, SMALL)
+    for name in good:
+        if name in ("wasm", "text", "header"):
             continue
-        grown = put(blob, head + 32, struct.pack("<Q", size + 1))  # sh_size, into the padding
-        with pytest.raises(A.ArtifactError, match=name):
-            A.read(grown)
+        monkeypatch.setattr(A, "_sections", emits({**good, name: good[name] + b"\0"}))
+        with pytest.raises(A.ArtifactError, match=f"waboros.{name}"):
+            A.read(A.write(c, target="jit-x86_64", wasm=SMALL))
 
 
 @pytest.mark.parametrize(
@@ -243,7 +261,8 @@ def test_container_refusals() -> None:
     with pytest.raises(A.ArtifactError, match="twice"):  # the name of .waboros.types for tags
         A.read(put(blob, sh, blob[s[".waboros.types"][0] : s[".waboros.types"][0] + 4]))
     at = names + blob[names:].index(b".strtab")
-    assert A.read(put(blob, at, b".future")).module["funcs"] == [0]  # an unknown section is skipped
+    with pytest.raises(A.ArtifactError, match="missing: strtab"):  # renamed: now an unknown one
+        A.read(put(blob, at, b".future"))
     wasm_at = secs(fat)[".waboros.wasm"][1]
     with pytest.raises(A.ArtifactError, match="SHA-256"):
         A.read(put(fat, wasm_at + 9, b"\xff"))

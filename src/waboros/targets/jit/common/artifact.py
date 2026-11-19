@@ -13,11 +13,14 @@ import hashlib
 import os
 import struct
 from dataclasses import dataclass
+from dataclasses import field as dc_field
+from types import SimpleNamespace
 from typing import Any
 
 from waboros import __version__
 from waboros.frontend import types as T
 from waboros.frontend.binary import NULLABLE
+from waboros.frontend.validate import Invalid, _conv, _gcsig
 from waboros.targets import base
 from waboros.targets.jit.common import gc
 from waboros.targets.jit.common.context import GC_SERVICES, Layout
@@ -38,6 +41,11 @@ BIN_NAME = {v: k for k, v in BIN.items()}
 GC_NONE, GC_TYPE = (0xFB1A, 0xFB1B, 0xFB1C), (0xFB00, 0xFB01, 0xFB06, 0xFB07)  # immediates
 GC_POPS = {0xFB06: 2, 0xFB07: 1, 0xFB01: 0}  # operands; struct.new takes one per field
 M32, M64 = 0xFFFFFFFF, (1 << 64) - 1
+# the type of `ref.null`: the file has no heap type for it, so it fits any nullable reference
+NULLREF = "nullref"
+# section names in file order (S0014 "File layout"); no `.waboros.trampolines` until step 5
+NAMES = [".text" if n == "text" else f".waboros.{n}" for n in ORDER if n != "trampolines"]
+NAMES += [".symtab", ".strtab", ".shstrtab"]
 
 
 class ArtifactError(ValueError):
@@ -249,6 +257,13 @@ def _strtab(names: list[str]) -> tuple[bytes, dict[str, int]]:
     return bytes(tab), off
 
 
+def _symtab(c: Any, mach: int, nimp: int) -> tuple[bytes, bytes]:
+    """The `.symtab` and `.strtab` payloads the file of `c` must have."""
+    syms = _symbols(c, mach, nimp)
+    strtab, so = _strtab([n for n, *_ in syms])
+    return bytes(24) + b"".join(_u("IBBHQQ", so[n], i, 0, 2, v, z) for n, v, z, i in syms), strtab
+
+
 def write(
     c: Any,
     *,
@@ -282,12 +297,10 @@ def write(
     secs = _sections(c, wasm)
     secs["header"], secs["text"] = hdr, bytes(c.code)
     nimp = sum(k == "func" for k, *_ in c.module["imports"])
-    syms = _symbols(c, mach, nimp)
-    strtab, so = _strtab([n for n, *_ in syms])
-    symtab = bytes(24) + b"".join(_u("IBBHQQ", so[n], i, 0, 2, v, z) for n, v, z, i in syms)
+    symtab, strtab = _symtab(c, mach, nimp)
     parts = [(".text" if n == "text" else f".waboros.{n}", 1, 6 * (n == "text"), secs[n],
               4096 if n == "text" else 8, 0, 0, 0) for n in ORDER if n in secs]  # fmt: skip
-    parts += [(".symtab", 2, 0, symtab, 8, len(parts) + 2, 1 + len(syms), 24),
+    parts += [(".symtab", 2, 0, symtab, 8, len(parts) + 2, len(symtab) // 24, 24),
               (".strtab", 3, 0, strtab, 1, 0, 0, 0)]  # fmt: skip
     shstr, sh = _strtab([p[0] for p in parts] + [".shstrtab"])
     parts.append((".shstrtab", 3, 0, shstr, 1, 0, 0, 0))
@@ -374,6 +387,18 @@ class _Env:
     gmax: int | None = None  # a global's initializer reads imported and earlier globals only
     ntags: int = 0
     records: list[int] | None = None
+    gtypes: list[Any] = dc_field(default_factory=list)  # value type of every global so far
+    gmut: list[int] = dc_field(default_factory=list)  # mutability of each
+    ftidx: list[int] = dc_field(default_factory=list)  # type index of every function so far
+
+    def __post_init__(self) -> None:
+        self.mod = {"tdefs": self.tdefs, "types": [()] * len(self.tdefs)}  # what typing reads
+        self.ns: Any = SimpleNamespace(mod=self.mod)  # stands in for the validator's context
+
+    def fits(self, t: Any, want: Any) -> bool:
+        if t == NULLREF:
+            return T.isref(want) and bool(T.nn(want)[0])
+        return T.match(self.mod, t, want)
 
     def func_ref(self, r: _R) -> int:
         """A function index that `ref.func` may name: in range and with a record."""
@@ -477,57 +502,88 @@ def _limits_r(r: _R, page: int) -> tuple[int, int | None, int]:
     return mn, mx if fl & 1 else None, I64 if fl & 2 else I32
 
 
-def _cexpr_r(r: _R, env: _Env) -> Any:
+def _cexpr_r(r: _R, env: _Env, want: Any = None) -> Any:
+    """One constant expression. Its value type must fit `want` (its use: a global's or table's
+    type, an address type; a reference type by subtyping) when given, and the operands of each
+    operation must fit its signature. The stack holds (expression, value type)."""
     n = r.count(1)
     sub = _R(r.b, r.what + " constant expression", r.p, r.p + n)
     r.p += n
-    st: list[Any] = []
+    st: list[tuple[Any, Any]] = []
 
-    def pop(n: int) -> list[Any]:
-        if len(st) < n:
+    def pop(*types: Any) -> list[Any]:
+        """The top operands, bottom first, whose types must fit `types`."""
+        k = len(types)
+        if len(st) < k:
             sub.fail("the operand stack underflows")
-        args = st[len(st) - n :]
-        del st[len(st) - n :]
-        return args
+        args = st[len(st) - k :]
+        del st[len(st) - k :]
+        if not all(env.fits(t, w) for (_, t), w in zip(args, types, strict=True)):
+            sub.fail("an operand has the wrong type")
+        return [a for a, _ in args]
 
-    while sub.p < sub.e:
-        op = sub.u(2)
-        if op in (0x41, 0x43):
-            st.append(("i32" if op == 0x41 else "f32", sub.u32()))
-        elif op in (0x42, 0x44):
-            st.append(("i64" if op == 0x42 else "f64", sub.u(8)))
-        elif op == 0xFD0C:
-            st.append(("v128", sub.u(16)))
-        elif op == 0x23:
-            st.append(
-                ("global", sub.index(env.nglobals if env.gmax is None else env.gmax, "global"))
-            )
-        elif op == 0xD2:
-            st.append(("func", env.func_ref(sub)))
-        elif op == 0xD0:
-            st.append(("null", None))  # the heap type is not written (no immediate)
-        elif op in BIN_NAME:
-            b, a = pop(1)[0], pop(1)[0]
-            st.append((BIN_NAME[op][0], BIN_NAME[op][1], a, b))
-        elif op in GC_NONE:
-            st.append(("gc", (op,), pop(1)))
-        elif op in GC_TYPE or op == 0xFB08:
-            ti = sub.index(env.ntypes, "type")
-            comp = env.tdefs[ti][0]
-            want = "struct" if op in (0xFB00, 0xFB01) else "array"
-            if comp[0] != want:
-                sub.fail(f"type {ti} is not a {want} type")
-            n = sub.u32() if op == 0xFB08 else GC_POPS.get(op, len(comp[1]))
-            st.append(("gc", (op, ti, n) if op == 0xFB08 else (op, ti), pop(n)))
-        else:
-            sub.fail(f"unknown operation {op:#06x}")
+    try:
+        while sub.p < sub.e:
+            op = sub.u(2)
+            if op in (0x41, 0x43):
+                st.append(
+                    (("i32" if op == 0x41 else "f32", sub.u32()), I32 if op == 0x41 else 0x7D)
+                )
+            elif op in (0x42, 0x44):
+                st.append((("i64" if op == 0x42 else "f64", sub.u(8)), I64 if op == 0x42 else 0x7C))
+            elif op == 0xFD0C:
+                st.append((("v128", sub.u(16)), V128))
+            elif op == 0x23:
+                i = sub.index(env.nglobals if env.gmax is None else env.gmax, "global")
+                if env.gmut[i]:
+                    sub.fail(f"global {i} is mutable")
+                st.append((("global", i), env.gtypes[i]))
+            elif op == 0xD2:
+                i = env.func_ref(sub)
+                st.append((("func", i), (0, env.ftidx[i])))
+            elif op == 0xD0:
+                st.append((("null", None), NULLREF))  # the heap type is not written (no immediate)
+            elif op in BIN_NAME:
+                t = I32 if BIN_NAME[op][1] == "i32" else I64
+                a, b = pop(t, t)
+                st.append(((BIN_NAME[op][0], BIN_NAME[op][1], a, b), t))
+            elif op == 0xFB1C:
+                st.append((("gc", (op,), pop(I32)), (0, T.I31)))
+            elif op in GC_NONE:  # any.convert_extern, extern.convert_any: the nullability is kept
+                if not st:
+                    sub.fail("the operand stack underflows")
+                a, x = st.pop()
+                dst = T.ANY if op == 0xFB1A else T.EXTERN
+                res = NULLABLE[dst] if x == NULLREF else _conv(env.mod, op - 0xFB00, x)
+                st.append((("gc", (op,), [a]), res))
+            elif op in GC_TYPE or op == 0xFB08:
+                ti = sub.index(env.ntypes, "type")
+                comp = env.tdefs[ti][0]
+                want_kind = "struct" if op in (0xFB00, 0xFB01) else "array"
+                if comp[0] != want_kind:
+                    sub.fail(f"type {ti} is not a {want_kind} type")
+                n = sub.u32() if op == 0xFB08 else GC_POPS.get(op, len(comp[1]))
+                if n > len(st):
+                    sub.fail("the operand stack underflows")
+                ins = (op, ti, n) if op == 0xFB08 else (op, ti)
+                pops, res = _gcsig(env.ns, ins, n)
+                st.append((("gc", ins, pop(*pops)), res[0]))
+            else:
+                sub.fail(f"unknown operation {op:#06x}")
+    except Invalid as e:
+        sub.fail(f"type mismatch: {e}")
     if len(st) != 1:
         sub.fail("a constant expression must leave exactly one value")
-    return st[0]
+    if want is not None and not env.fits(st[0][1], want):
+        sub.fail("the type of the value does not fit its use")
+    return st[0][0]
 
 
 def _sections_r(b: bytes) -> tuple[dict[str, bytes], int, int]:
-    """The ELF container's checks; (payload by section name, e_machine, format version)."""
+    """The ELF container's checks; (payload by section name, e_machine, format version). The
+    layout must be the writer's: sections in the order of the format, each at the next multiple of
+    its alignment, zero gaps, the section header table at the next multiple of 8 and the end of
+    the file, every header field as in the table of "File layout"."""
     if len(b) < 64 or b[:4] != b"\x7fELF" or b[4:7] != b"\x02\x01\x01" or b[7] != OSABI:
         raise ArtifactError("not a waboros artifact (ELF64 little-endian with OS/ABI 0xCB)")
     if b[8] != FORMAT_VERSION:
@@ -543,29 +599,74 @@ def _sections_r(b: bytes) -> tuple[dict[str, bytes], int, int]:
         raise ArtifactError(f"ELF header: unknown machine {mach}")
     if shn < 2 or shx != shn - 1 or shoff + 64 * shn > len(b) or shoff % 8:
         raise ArtifactError("ELF header: the section header table is not inside the file")
+    if shoff + 64 * shn < len(b):
+        raise ArtifactError("bytes after the section header table")
     heads = [struct.unpack_from("<IIQQQQIIQQ", b, shoff + 64 * i) for i in range(shn)]
+    if any(heads[0]):
+        raise ArtifactError("the null section header is not zero")
     for h in heads[1:]:
         if h[1] in (4, 9):
             raise ArtifactError("a relocation section: v1 has none")
     for h in heads[1:]:
-        if h[4] + h[5] > len(b):
-            raise ArtifactError("a section is not inside the file")
+        if h[4] + h[5] > shoff:
+            raise ArtifactError("a section is not inside the file before the section headers")
     names = b[heads[shx][4] : heads[shx][4] + heads[shx][5]]
-    secs: dict[str, bytes] = {}
+    order: list[str] = []
     for h in heads[1:]:
         end = names.find(b"\0", h[0])
         if end < 0:
             raise ArtifactError("a section name is not terminated")
         n = names[h[0] : end].decode("utf-8", "replace")
-        if n in secs:
+        if n in order:
             raise ArtifactError(f"section {n} appears twice")
-        secs[n] = b[h[4] : h[4] + h[5]]
+        order.append(n)
+    need = [".text" if n == "text" else f".waboros.{n}" for n in REQUIRED] + NAMES[-3:]
+    if missing := [n for n in need if n not in order]:
+        short = [n.lstrip(".").removeprefix("waboros.") for n in missing]
+        raise ArtifactError(f"required sections missing: {', '.join(short)}")
+    known = [n for n in order if n in NAMES]
+    if (
+        known != [n for n in NAMES if n in known]
+        or order[:2] != NAMES[:2]
+        or order[-1] != NAMES[-1]
+    ):
+        raise ArtifactError("the sections are not in the order of the format")
+    shstr, so = _strtab(order)
+    if names != shstr:
+        raise ArtifactError(".shstrtab: not the names of the sections in order")
+    pos, secs = 64, {}
+    for n, h in zip(order, heads[1:], strict=True):
+        text, plain = n == ".text", n.startswith(".waboros.")
+        if n not in NAMES:  # unknown (or not yet known: trampolines): skipped, never read (D62)
+            al = h[8] or 1
+            if (h[0], h[3], h[4] % al) != (so[n], 0, 0) or al & (al - 1) or h[4] < pos:
+                raise ArtifactError(f"{n}: unknown section with a bad name, address, alignment"
+                                    " or offset")  # fmt: skip
+            if any(b[pos : h[4]]):
+                raise ArtifactError(f"{n}: the padding before it is not zero")
+            pos = h[4] + h[5]
+            continue
+        # `.waboros.*` flags and the symbol table's `sh_info` are not read (D62: a later amendment
+        # may set them); no loader reads the symbols, so their contents are not checked either
+        typ, fl, al, link, info, ent = (
+            (1, 6, 4096, 0, 0, 0) if text else (1, h[2], 8, 0, 0, 0) if plain
+            else (2, 0, 8, order.index(".strtab") + 1, h[7], 24) if n == ".symtab"
+            else (3, 0, 1, 0, 0, 0)
+        )  # fmt: skip
+        at = pos + -pos % al
+        if (h[:5], h[6:]) != ((so[n], typ, fl, 0, at), (link, info, al, ent)):
+            raise ArtifactError(f"{n}: its header (name, type, flags, address, offset, link, info,"
+                                f" alignment or entry size) is not the format's")  # fmt: skip
+        if any(b[pos:at]):
+            raise ArtifactError(f"{n}: the padding before it is not zero")
+        if n == ".symtab" and h[5] % 24:
+            raise ArtifactError(".symtab: the size is not a multiple of 24")
+        pos = at + h[5]
+        secs[n] = b[at:pos]
+    if pos > shoff or any(b[pos:shoff]) or shoff != pos + -pos % 8:
+        raise ArtifactError("the section header table does not follow the last section")
     out = {n[9:]: d for n, d in secs.items() if n.startswith(".waboros.")}
-    out["text"] = secs.get(".text", b"")
-    if ".text" not in secs:
-        raise ArtifactError("required sections missing: text")
-    if missing := [n for n in REQUIRED if n not in out]:
-        raise ArtifactError(f"required sections missing: {', '.join(missing)}")
+    out["text"], out["symtab"], out["strtab"] = secs[".text"], secs[".symtab"], secs[".strtab"]
     return out, mach, b[8]
 
 
@@ -599,6 +700,7 @@ def read(b: bytes) -> ModuleView:
         k = KINDS[kind]
         if k in ("func", "tag"):
             d = env.ftype(r)
+            env.ftidx += [d] * (k == "func")
         elif k == "table":
             mod["ttypes"].append(_vt_r(r, nt, pend, True))
             mn, mx, a = _limits_r(r, 0)
@@ -612,6 +714,8 @@ def read(b: bytes) -> ModuleView:
             d = (_vt_r(r, nt, pend), r.u8())
             if d[1] > 1:
                 r.fail("mutability is not 0 or 1")
+            env.gtypes.append(d[0])
+            env.gmut.append(d[1])
         mod["imports"].append((k, m, n, d))
         env.nfuncs += k == "func"
         env.ntables += k == "table"
@@ -636,6 +740,7 @@ def read(b: bytes) -> ModuleView:
         funcs.append((o, len(td[t][0][2]) + td[t][0][2].count(V128)))
     r.done()
     env.nfuncs += len(funcs)
+    env.ftidx += mod["funcs"]
     if start != NO_START and start >= env.nfuncs:
         r.fail(f"start function {start} out of range")
     mod["start"] = None if start == NO_START else start
@@ -673,6 +778,7 @@ def read(b: bytes) -> ModuleView:
     env.records = records
     # tables, memories, globals
     r = _R(s["tables"], ".waboros.tables")
+    env.gmax = nimpg  # a table's initial value reads imported globals only
     for _ in range(r.count(26)):
         mod["ttypes"].append(_vt_r(r, nt, pend, True))
         mn, mx, a = _limits_r(r, 0)
@@ -681,8 +787,11 @@ def read(b: bytes) -> ModuleView:
         has = r.u8()
         if has > 1:
             r.fail("has_init is not 0 or 1")
-        mod["tinit"].append(_cexpr_r(r, env) if has else None)
+        if not has and not T.nn(mod["ttypes"][-1])[0]:
+            r.fail("a table of a non-nullable type needs an initial value")
+        mod["tinit"].append(_cexpr_r(r, env, mod["ttypes"][-1]) if has else None)
     r.done()
+    env.gmax = None
     env.ntables += len(mod["tables"])
     r = _R(s["memories"], ".waboros.memories")
     for _ in range(r.count(20)):
@@ -692,7 +801,6 @@ def read(b: bytes) -> ModuleView:
     r.done()
     env.nmems += len(mod["mems"])
     r = _R(s["globals"], ".waboros.globals")
-    gtypes = [d[0] for k, _, _, d in mod["imports"] if k == "global"]
     n = r.count(6)
     env.nglobals += n
     for k in range(n):
@@ -700,8 +808,9 @@ def read(b: bytes) -> ModuleView:
         t, m = _vt_r(r, nt, pend), r.u8()
         if m > 1:
             r.fail("mutability is not 0 or 1")
-        mod["globals"].append((t, m, _cexpr_r(r, env)))
-        gtypes.append(t)
+        mod["globals"].append((t, m, _cexpr_r(r, env, t)))
+        env.gtypes.append(t)
+        env.gmut.append(m)
     env.gmax = None
     r.done()
     r = _R(s["exports"], ".waboros.exports")
@@ -721,15 +830,21 @@ def read(b: bytes) -> ModuleView:
         rt = _vt_r(r, nt, pend, True)
         ti, off = (r.index(env.ntables, "table"), None) if m == 0 else (None, None)
         if m == 0:
-            off = _cexpr_r(r, env)
+            if not env.fits(rt, mod["ttypes"][ti]):
+                r.fail("the element type does not fit its table")
+            off = _cexpr_r(r, env, mod["taddr"][ti])
         kind = r.u8()
         if kind > 1:
             r.fail("items is not 0 or 1")
         n = r.count(4 if kind == 0 else 6)
         if kind == 0:
             items = [("func", env.func_ref(r)) for _ in range(n)]
+            if any(not env.fits((0, env.ftidx[i]), rt) for _, i in items):
+                r.fail("a function does not fit the element type")
         else:
-            items = [_cexpr_r(r, env) for _ in range(n)]
+            items = [_cexpr_r(r, env, rt) for _ in range(n)]
+            if all(e[0] == "func" for e in items):
+                r.fail("items 1 for function indices only: the writer uses items 0")
         mod["elem_info"].append((ti, off, rt, items))
         mod["elem_mode"].append(("active", "passive", "declarative")[m])
     for _ in range(r.count(5)):
@@ -738,7 +853,7 @@ def read(b: bytes) -> ModuleView:
             r.fail(f"bad data segment mode {m}")
         mi, off = (r.index(env.nmems, "memory"), None) if m == 0 else (None, None)
         if m == 0:
-            off = _cexpr_r(r, env)
+            off = _cexpr_r(r, env, mod["maddr"][mi])
         mod["datas"].append((off, r.take(r.u32())))
         mod["data_mem"].append(mi)
     r.done()
