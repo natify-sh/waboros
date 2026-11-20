@@ -174,7 +174,7 @@ unchanged). Everything else may change with `format_version`.
 | 80 | u64 | `isa_features`: features above `isa_level` (D24, D33); the registry per architecture is empty in v1, so v1 writers write 0 |
 | 88 | u64 | `features_required`: format amendments a loader must understand (D66; registry empty in v1) |
 | 96 | u64 | `features_optional`: format amendments a loader may ignore (registry empty in v1) |
-| 104 | `str` | `compiler`: `waboros <version> <target> <target version>`, four tokens separated by one space, ASCII, e.g. `waboros 0.0.0 jit-x86_64 0`; `<version>` is the package version, `<target>` the compiler target that D64 keys the part-3 "Per architecture" table by, `<target version>` the target's `version` |
+| 104 | `str` | `compiler`: `waboros <version> <target> <target version>`, four tokens separated by one space, ASCII, e.g. `waboros 1.2.3 jit-x86_64 0` or, in a development build, `waboros 0.0.1.dev207-b9515381851a1c6b jit-x86_64 0`; `<version>` is the package version of a release, verbatim; a development build (a local part `+...`, a `.devN`, or the fallback `0.0.0`) writes the version without its local part, `-` and the first 16 hex digits of a SHA-256 over its compiler sources (Changes, 2026-11-20), `<target>` the compiler target that D64 keys the part-3 "Per architecture" table by, `<target version>` the target's `version` |
 
 The payload ends after `compiler`.
 
@@ -616,7 +616,9 @@ Each step stops and reports if it needs more than its size.
 | 2 | Writer and reader: the ELF container and every payload, the module view, `cexpr` both ways | implementer | round trip on every spec module and CoreMark, both JITs, both modes; written twice, identical | src ~550, tests ~250 |
 | 2.1 | The reader strict at the container and constant-expression level: layout exactly the writer's (`.waboros.*` flags and symbol contents not read, D62), value types of `cexpr` against their use; pinned section headers, symbols, `config_sha256` | implementer | the writer's files write back to the same bytes, every other accepted file to its canonical form (byte-flip loop, 0 bad); the round trip on the spec suite unchanged | src ~100, tests ~100 |
 | 3 | Instantiate from the read form: the instance takes the module view and `subtype` from the artifact; the `WABOROS_JIT_ARTIFACT=1` switch | jit-engineer | the spec suite through files at parity, both JITs, both modes, walk check and GC switches; CoreMark through a file; timings recorded | src ~120, tests ~80 |
-| 4 | Loader rules: the checks in order, fat fallback, the refusal tests, the committed v1 files | implementer | the refusal and old-artifact tests; `pytest -q` | src ~120, tests ~300 |
+| 4.1 | Loader rules: `artifact.load` (the checks in order, fat regeneration), the compiler string by option (c), `WABOROS_JIT_ARTIFACT=1` through `load`, the refusal tests | implementer | `tests/artifact/test_refuse.py`; the spec suite through files at parity; D35 lists unchanged | src ~150, tests ~300 |
+| 4.2 | The GC heap's lazy commit | jit-engineer | (to be written when started) | — |
+| 4.3 | The committed v1 files and their test, after step 5 (which adds a required section) | implementer | the old-artifact test; `pytest -q` | tests ~60 |
 | 5 | Trampolines in every artifact (Q2): the blobs in `.text`, `.waboros.trampolines`, the symbols, the store's identity check in the loader | jit-engineer | the trampoline tests (equal to `abi.assemble`, mismatch refused or regenerated, the store rule); the round trip and the spec suite through files still at parity; D35 identity of files | src ~90, tests ~80 |
 | 6 | D35 on files and the independent readers in CI; `isa_all.py` over files | runner | the CI jobs green; the identity holds on the arm64 runner | tools and CI ~120 |
 | 7 | Docs ("Docs this changes"), DECISIONS entry | orchestrator | `python3 tools/check_docs.py` | — |
@@ -799,6 +801,15 @@ When approved and implemented (step 7 unless noted):
   file runs at the direct path's speed ([BENCHMARKS](../BENCHMARKS.md), "Instantiation from an
   artifact"). Code bytes and the format are unchanged.
 
+* Step 4.1 done (2026-11-20): `artifact.load(b, *, target)` (identification, `read`, compatibility
+  in the order of step 5, then fat regeneration) and `artifact.compiler_string(target)`, which
+  `write` and `load` share; `JitTarget.instantiate` under `WABOROS_JIT_ARTIFACT=1` goes through
+  `load`. `tests/artifact/test_refuse.py`: every refusal of the Test plan's list that is about the
+  header, thin (refused, message names the field and both values) and fat (regenerated, an export
+  called). Spec suite through files 64 229 pass, 0 fail, both bounds modes; without the switch
+  unchanged; D35 lists unchanged on both JITs. Left: 4.2 (GC heap lazy commit) and 4.3 (committed
+  v1 files, after step 5); the trampoline rule of step 6 is step 5's.
+
 ## Changes
 * 2026-11-17: created (draft).
 * 2026-11-17: the maintainer's answers: Q1, Q3, Q4, Q6-Q12 decided as recommended; Q2 decided (b),
@@ -894,3 +905,31 @@ When approved and implemented (step 7 unless noted):
   instantiates on `pyc` and `jit-x86_64` (direct and through the file) inside a 256 KiB thread stack
   (`tests/test_deep_const.py`). The earlier "tree" wording in steps 2 and 3 above describes the form
   before this entry.
+* 2026-11-20: step 4.1, the rules as implemented. `<version>` of the compiler string
+  (`artifact.compiler_string`): the package version verbatim when it is a release; when it contains
+  a local part (`+...`), a `.dev`, or is the fallback `0.0.0` of an uninstalled tree, it is the
+  version without its local part, `-`, and the first 16 hex digits of SHA-256 over
+  `src/waboros/frontend/**/*.py` and `src/waboros/targets/jit/**/*.py` (sorted by path relative to
+  the package directory, each as path, NUL, bytes), computed once per process; so a source edit
+  changes the string. `load` order: not ours (refused even fat) -> a fat file's wasm hashed against
+  `module_sha256` (mismatch: refused, "corrupt", even if everything else is wrong too) -> the
+  container and the header (order steps 3-4, `_head`) -> the compatibility checks on the header's
+  fields (step 5) -> `read`, the payloads (step 6). The checks: `e_machine` is the running architecture -> `ctx_abi_version` 1 -> `compiler` equals this
+  process's string for the loader's target -> `isa_level` 1 -> `isa_features` 0 -> `flags` known
+  and `BOUNDS_GUARD` with `GUARD_LOG2` set together -> `BOUNDS_GUARD`: `GUARD_LOG2` at most the
+  host's, the target has a guard mode, `guard.install` succeeds, `guard.broken()` is None ->
+  `features_required` 0. `features_optional` is accepted. A fat file whose wasm is findable (through
+  the ELF header, the section header table and the names only) and fails any of `read`, these
+  checks, is compiled by this process with its own options (the normal `compile`; the bounds mode
+  is the process's, not the file's). `isa_level` 3 is refused as unknown (this loader runs level 1
+  only); a level above 1 takes a registry row when one is written.
+  The `e_machine` check also refuses where the host's target cannot run in this process
+  (`foreign()`: a 32-bit Python on a 64-bit kernel). A fat file is regenerated for any `Exception`
+  in steps 2-6 (a `MemoryError` from the handler's installation included); a thin file's
+  unexpected non-`ArtifactError` is wrapped as `ArtifactError` with the cause; a regeneration that
+  fails (a wasm whose hash matches but does not parse, validate or compile) raises `ArtifactError`
+  chained from the cause. `load` raises `ArtifactError` and nothing else for a bad file.
+* 2026-11-20: step 4 is split into 4.1 (loader rules), 4.2 (the GC heap's lazy commit) and 4.3
+  (the committed v1 files). 4.3 moves after step 5 because step 5 adds a required section
+  (`.waboros.trampolines`), so a v1 file committed earlier would be refused by the final reader
+  and would have to be regenerated.

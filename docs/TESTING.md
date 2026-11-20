@@ -84,8 +84,8 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   (`tests/jit/test_abi*.py`, no stack-map table) are never checked. CI runs one spec run per
   architecture with it (below); `tests/jit/test_walk.py` sets it itself.
 * **Through files** (`WABOROS_JIT_ARTIFACT=1`, both JITs, S0014 step 3; read at each
-  instantiation): every compiled module is written as a thin artifact, read back and instantiated
-  from the read form (`artifact.ModuleView`, no `ValidModule` behind it). `WABOROS_JIT_ARTIFACT=1
+  instantiation): every compiled module is written as a thin artifact, loaded back with `artifact.load` (its
+  compatibility checks included) and instantiated from the read form (`artifact.ModuleView`, no `ValidModule` behind it). `WABOROS_JIT_ARTIFACT=1
   uv run python -m tests.spec.run --engine jit-x86_64` (both bounds modes, and `jit-aarch64` under
   QEMU) must give the same results as without it (`tools/spec_diff.py` both ways: no difference),
   also with the walk check and the GC switches on `gc exceptions`. It cannot be combined with the

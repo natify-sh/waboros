@@ -6,14 +6,17 @@ only, no host code (ctypes, mmap): the micro-compilers (D60) port this file's sh
 The module view carries the keys of the ValidModule that instantiation reads (S0014 "What
 instantiation reads: inventory"), as the front end builds them, so `JitInstance` has one path for a
 compiled and a loaded module: `module_view` gives `Compiled` the same keys (step 3). Not here yet:
-`.waboros.trampolines` (step 5), the loader's compatibility checks (step 4).
+`.waboros.trampolines` (step 5). `load` is the loader's rules (S0014 "Semantics: the loader").
 """
 
+import functools
 import hashlib
 import os
+import platform
 import struct
 from dataclasses import dataclass
 from dataclasses import field as dc_field
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -100,6 +103,37 @@ def module_view(mod: dict[str, Any]) -> dict[str, Any]:
 
 
 # ------------------------------------------------------------------------------------- writer
+def _source_digest(root: Path) -> str:
+    """The first 16 hex digits of SHA-256 over the compiler-side sources under `root` (the package
+    directory): the front end and the JIT, sorted by relative path, each as path, NUL, bytes."""
+    h = hashlib.sha256()
+    files = [
+        f
+        for d in ("frontend", "targets/jit")
+        for f in (root / d).rglob("*.py")
+        if not f.name.startswith(".") and f.is_file()  # not an editor's lock (a dangling link)
+    ]
+    for f in sorted(files, key=lambda f: f.relative_to(root).as_posix()):
+        h.update(f.relative_to(root).as_posix().encode() + b"\0" + f.read_bytes())
+    return h.hexdigest()[:16]
+
+
+@functools.cache
+def _own_digest() -> str:
+    return _source_digest(Path(__file__).parents[3])
+
+
+def compiler_string(target: str) -> str:
+    """`waboros <version> <target> <target version>` as this process writes it and the loader
+    requires it (Q3). A release writes its version; a development build (a setuptools-scm local
+    part `+g...`, a `.devN`, or the fallback 0.0.0 of an uninstalled tree) writes the version
+    without its local part, `-` and `_own_digest()`, so an edit to a compiler source changes it."""
+    v = __version__
+    if "+" in v or ".dev" in v or v == "0.0.0":
+        v = f"{v.split('+')[0]}-{_own_digest()}"
+    return f"waboros {v} {target} {base.TARGETS[target]().version}"
+
+
 def _u(fmt: str, *a: int) -> bytes:
     return struct.pack("<" + fmt, *a)
 
@@ -298,8 +332,7 @@ def write(
         raise ValueError(f"invalid artifact flags {c.flags:#x}")
     cfg = f"bounds={'guard' if guard else 'explicit'}\nguard_log2={c.flags >> 8 & 0xFF}\n"
     cfg += f"isa={isa}\ntarget={target}\n"
-    version = base.TARGETS[target]().version  # the compiler target's own, not a caller's guess
-    compiler = f"waboros {__version__} {target} {version}"
+    compiler = compiler_string(target)
     hdr = module_sha256 + hashlib.sha256(cfg.encode()).digest()
     hdr += _u("HHHHIIQQQ", 1, 0, 1, 0, c.flags, 0, 0, 0, 0) + _str(compiler)
     secs = _sections(c, wasm)
@@ -597,13 +630,17 @@ def _cexpr_r(r: _R, env: _Env, want: Any = None) -> Any:
     return tuple(out)
 
 
+def _ident(b: bytes) -> None:
+    if len(b) < 64 or b[:4] != b"\x7fELF" or b[4:7] != b"\x02\x01\x01" or b[7] != OSABI:
+        raise ArtifactError("not a waboros artifact (ELF64 little-endian with OS/ABI 0xCB)")
+
+
 def _sections_r(b: bytes) -> tuple[dict[str, bytes], int, int]:
     """The ELF container's checks; (payload by section name, e_machine, format version). The
     layout must be the writer's: sections in the order of the format, each at the next multiple of
     its alignment, zero gaps, the section header table at the next multiple of 8 and the end of
     the file, every header field as in the table of "File layout"."""
-    if len(b) < 64 or b[:4] != b"\x7fELF" or b[4:7] != b"\x02\x01\x01" or b[7] != OSABI:
-        raise ArtifactError("not a waboros artifact (ELF64 little-endian with OS/ABI 0xCB)")
+    _ident(b)
     if b[8] != FORMAT_VERSION:
         raise ArtifactError(f"unsupported format version {b[8]} (this reader reads 1)")
     if any(b[9:16]):
@@ -688,9 +725,10 @@ def _sections_r(b: bytes) -> tuple[dict[str, bytes], int, int]:
     return out, mach, b[8]
 
 
-def read(b: bytes) -> ModuleView:
-    """Parse an artifact exactly; raises `ArtifactError` (a ValueError) naming the reason."""
-    s, mach, _ = _sections_r(bytes(b))
+def _head(b: bytes) -> tuple[dict[str, bytes], SimpleNamespace]:
+    """Order steps 1-4: the container's checks and the header parsed exactly. The payloads by
+    name, and the header's fields under the names of `ModuleView`."""
+    s, mach, _ = _sections_r(b)
     h = _R(s["header"], ".waboros.header")
     msha, csha = h.take(32), h.take(32)
     abi, _, isa, _, flags, _ = h.u(2), h.zero(2), h.u(2), h.zero(2), h.u(4), h.zero(4)
@@ -702,6 +740,19 @@ def read(b: bytes) -> ModuleView:
         h.fail("the compiler string is not 'waboros <version> <target> <target version>'")
     if TARGETS.get(parts[2], (0,))[0] != mach:
         h.fail(f"compiler target {parts[2]} does not match the ELF machine {mach}")
+    return s, SimpleNamespace(
+        target=parts[2], target_version=int(parts[3]), compiler=compiler, machine=mach,
+        module_sha256=msha, config_sha256=csha, ctx_abi_version=abi, isa_level=isa, flags=flags,
+        isa_features=feats[0], features_required=feats[1], features_optional=feats[2],
+    )  # fmt: skip
+
+
+def read(b: bytes) -> ModuleView:
+    """Parse an artifact exactly; raises `ArtifactError` (a ValueError) naming the reason."""
+    s, hd = _head(bytes(b))
+    mach, msha, csha, abi, isa, flags = (hd.machine, hd.module_sha256, hd.config_sha256,
+        hd.ctx_abi_version, hd.isa_level, hd.flags)  # fmt: skip
+    feats = hd.isa_features, hd.features_required, hd.features_optional
     mod, _ = _parse_types(_R(s["types"], ".waboros.types"))
     env = _Env(mod["tdefs"], len(mod["tdefs"]))
     td, nt = env.tdefs, env.ntypes
@@ -898,7 +949,107 @@ def read(b: bytes) -> ModuleView:
         gcsvc=GC_SERVICES if heap else 0,
     )  # fmt: skip
     return ModuleView(
-        parts[2], int(parts[3]), compiler, mach, msha, csha, abi, isa, *feats, flags, mod, code,
-        data_start, funcs, layout, records, sigs, dict(enumerate(thunks)), rtts, thrown,
+        hd.target, hd.target_version, hd.compiler, mach, msha, csha, abi, isa, *feats, flags, mod,
+        code, data_start, funcs, layout, records, sigs, dict(enumerate(thunks)), rtts, thrown,
         bool(heap), bool(sub), faults, s["stackmaps"], wasm,
     )  # fmt: skip
+
+
+# ------------------------------------------------------------------------------------- loader
+def _frozen(b: bytes) -> tuple[bytes, bytes | None] | None:
+    """(module_sha256, wasm or None) found as any format version would: through the ELF header,
+    the section header table and the names (D62), without the layout rules of `read`; None where
+    the file has no findable header section."""
+    try:
+        shoff = struct.unpack_from("<Q", b, 40)[0]
+        shn, shx = struct.unpack_from("<HH", b, 60)
+        if shoff + 64 * shn > len(b):
+            return None
+        heads = [struct.unpack_from("<IIQQQQIIQQ", b, shoff + 64 * i) for i in range(shn)]
+        if any(h[4] + h[5] > len(b) for h in heads[1:]):
+            return None
+        names = b[heads[shx][4] : heads[shx][4] + heads[shx][5]]
+        found: dict[bytes, bytes] = {}
+        for h in heads[1:]:
+            n = names[h[0] : names.index(b"\0", h[0])]
+            if n in (b".waboros.header", b".waboros.wasm"):
+                found[n] = b[h[4] : h[4] + h[5]]
+        return found[b".waboros.header"][:32], found.get(b".waboros.wasm")
+    except (struct.error, ValueError, KeyError, IndexError):
+        return None
+
+
+def _no(field: str, got: object, want: str) -> Any:
+    raise ArtifactError(f".waboros.header: {field} is {got}, this loader {want}")
+
+
+def _compatible(v: Any, target: str) -> None:
+    """Order step 5 (S0014): the first failing check raises, naming the field and both values."""
+    from waboros.targets.jit.common import guard
+
+    t: Any = base.TARGETS[target]()
+    mine: list[Any] = [base.TARGETS[n]() for n in TARGETS]  # the target of this host's machine
+    mine = [x for x in mine if platform.machine().lower() in x.machines]
+    if not mine or TARGETS[mine[0].name][0] != v.machine:
+        _no(
+            "e_machine", v.machine, f"runs {TARGETS[mine[0].name][0] if mine else 'no JIT machine'}"
+        )
+    if why := mine[0].foreign():  # a 32-bit process on a 64-bit kernel
+        _no("e_machine", v.machine, f"cannot run it in this process ({why})")
+    if v.ctx_abi_version != 1:
+        _no("ctx_abi_version", v.ctx_abi_version, "reads 1")
+    if v.compiler != compiler_string(target):
+        _no("compiler", repr(v.compiler), f"requires {compiler_string(target)!r}")
+    if v.isa_level != 1:
+        _no("isa_level", v.isa_level, f"runs level 1 ({TARGETS[target][1]})")
+    if v.isa_features:
+        _no("isa_features", hex(v.isa_features), "knows none")
+    log2 = v.flags >> 8 & 0xFF
+    if v.flags & ~0xFF01 or bool(v.flags & 1) != bool(log2):
+        _no("flags", hex(v.flags), "knows bit 0 and GUARD_LOG2 in bits 8-15 only, set together")
+    if v.flags & guard.BOUNDS_GUARD:
+        if log2 > guard.GUARD_LOG2:
+            _no("GUARD_LOG2", log2, f"has a guard of 2^{guard.GUARD_LOG2} at most")
+        if not t.guard_rows:
+            _no("flags BOUNDS_GUARD", "set", f"has no guard mode for {target}")
+        try:
+            guard.install(t)
+        except (RuntimeError, OSError) as e:
+            _no("flags BOUNDS_GUARD", "set", f"cannot run guard code here ({e})")
+        why = guard.broken()
+        if why:
+            _no("flags BOUNDS_GUARD", "set", f"cannot run guard code here ({why})")
+    if v.features_required:
+        _no("features_required", hex(v.features_required), "knows none")
+
+
+def load(b: bytes, *, target: str) -> Any:
+    """What `JitTarget.instantiate` takes, from the file `b` for the compiler `target`: the
+    module view when every rule of "Semantics: the loader" holds, else, for a fat file (D18), the
+    wasm compiled by this process; a thin file is refused with `ArtifactError`. A file that is not
+    ours is refused either way, and so is a fat file whose wasm is not `module_sha256`."""
+    if target not in TARGETS:
+        raise ValueError(f"unknown target {target!r}")
+    b = bytes(b)
+    _ident(b)
+    msha, wasm = _frozen(b) or (b"", None)
+    if wasm is not None and hashlib.sha256(wasm).digest() != msha:
+        raise ArtifactError(".waboros.wasm: its SHA-256 is not module_sha256 (corrupt file)")
+    try:
+        hd = _head(b)[1]
+        _compatible(hd, target)
+        return read(b)
+    except Exception as e:  # a fat file is never refused for these steps (D18)
+        if wasm is None:
+            if isinstance(e, ArtifactError):
+                raise
+            raise ArtifactError(f"cannot load: {e!r}") from e
+    from waboros.frontend.binary import parse
+    from waboros.frontend.validate import validate
+
+    try:
+        m = parse(wasm)
+        validate(m)
+        return base.TARGETS[target]().compile(m)
+    except Exception as e:
+        raise ArtifactError(f".waboros.wasm: cannot be compiled by this process: {e}") from e

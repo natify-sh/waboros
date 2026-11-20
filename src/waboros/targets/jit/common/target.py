@@ -8,7 +8,8 @@ is verified (`verified`: `auto` picks guard only there).
 Test-only: `WABOROS_JIT_DUMP=<dir>` writes each compiled module's code as `<dir>/<sha1>.<data>.bin`,
 where `<data>` is the offset of its data area (for tools/isa_check.py `--data`).
 `WABOROS_JIT_ARTIFACT=1` instantiates every module from its artifact (S0014 step 3): written thin,
-read back, the instance built from the read form only."""
+loaded back (`artifact.load`, the rules of S0014 "Semantics: the loader"), the instance built from
+the loaded form only."""
 
 import ctypes
 import hashlib
@@ -129,7 +130,9 @@ class JitTarget:
             from waboros.targets.jit.common import artifact
 
             sha = hashlib.sha256(cast(Compiled, compiled).code).digest()  # (no wasm here)
-            compiled = artifact.read(artifact.write(compiled, target=self.name, module_sha256=sha))
+            compiled = artifact.load(
+                artifact.write(compiled, target=self.name, module_sha256=sha), target=self.name
+            )
         if cast(Compiled, compiled).flags & guard.BOUNDS_GUARD:
             guard.install(self)  # before anything of the instance exists; raises where none
         took = store.claim()  # binds to memories no other thread may grow meanwhile (S0009)
