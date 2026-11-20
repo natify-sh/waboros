@@ -82,10 +82,15 @@ def test_deep_gc_validates() -> None:
 def test_deep_in_a_small_stack(target: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """Parse, validate, instantiate and free, all inside a thread with a 256 KiB stack: a nested
     tree overflows the C stack there when it is freed (CPython 3.13, Pyodide: LESSONS 136)."""
+    if target != "pyc":
+        native(target.removesuffix("-file"))  # a skip raised inside the thread would be lost
     out: list[object] = []
 
     def run() -> None:
-        out.append(_global(target, monkeypatch))
+        try:
+            out.append(_global(target, monkeypatch))
+        except BaseException as e:  # the thread's error is the test's
+            out.append(e)
 
     old = threading.stack_size(256 * 1024)
     try:
@@ -94,4 +99,6 @@ def test_deep_in_a_small_stack(target: str, monkeypatch: pytest.MonkeyPatch) -> 
         t.join()
     finally:
         threading.stack_size(old)
+    if out and isinstance(out[0], BaseException):
+        raise out[0]
     assert out == [N + 1]
