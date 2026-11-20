@@ -1,10 +1,12 @@
 """The GC heap of a store on the JIT targets (docs/specs/S0013, "JIT: the GC heap"): one per store,
 an i32 `Memory` (4 GiB + 32 MiB reserved, never moves) bound into every instance that needs it as a
-hidden memory after its declared memories. It is committed from its start, in 64 KiB pages: the
-header page at creation, the type-info area as records are written, the objects at the first
-allocation (with the rest of the type-info area below them) and as the heap grows. So every byte
-below the size the contexts see is read-write: an explicit bounds check that passes never reaches
-an uncommitted page (S0013 3b.1 review).
+hidden memory after its declared memories. Three regions are committed apart, each from its start
+in whole 64 KiB pages and before anything is written there (D69, superseding D57's "committed from
+its start"): the header page at creation and the type-info area after it as records are written;
+the whole tid map with the first function-type record; the objects at the first allocation and as
+the heap grows. The size the contexts see is the highest committed end; the gaps below it (the
+unused type area, the tid map before a function-type record) are read by no code, so only a
+corrupt reference reaches them: a bounds trap in guard mode, a crash in explicit mode (S0013 Q8).
 
 Objects live in two adjacent semispaces `[OBJ, OBJ + cap/2)` and `[OBJ + cap/2, OBJ + cap)`, both
 committed, whose boundary moves when the heap grows (Wasmtime's scheme, D61): the active space is
@@ -50,6 +52,7 @@ class GcHeap:
         self.cap, self.lo, self.end = 0, gc.OBJ, gc.OBJ  # both halves; the active space [lo, end)
         self.collector: Any = None  # (instance, export indices) of collector.wasm (collect.py)
         self.collections = 0
+        self.tid_map = False  # [TID_MAP, OBJ) committed (with the first function-type record)
         self.poison = os.environ.get("WABOROS_JIT_GC_POISON") == "1"
         self.stress = os.environ.get("WABOROS_JIT_GC_STRESS") == "1"
         self.verify = os.environ.get("WABOROS_JIT_GC_VERIFY") == "1"
@@ -60,12 +63,16 @@ class GcHeap:
             w.value = v
         return w.value
 
-    def _commit(self, end: int) -> None:
-        """Commit up to `end` (rounded up to 64 KiB, so whole pages on every OS) and publish it as
-        the memory's size to every context, after the commit (explicit checks compare with it)."""
+    def _commit(self, at: int, end: int) -> None:
+        """Commit [at, end) (`end` rounded up to 64 KiB, so whole pages on every OS; `at` 0: the
+        low region up to `end`) and publish the highest committed end as the memory's size to
+        every context, after the commit (explicit checks compare with it); it never shrinks."""
         end = -(-end // PAGE) * PAGE
-        if end > self.mem.pages * PAGE:
+        if at:
+            self.mem.res.commit_range(at, end)
+        else:
             self.mem.res.commit(end)
+        if end > self.mem.pages * PAGE:
             self.mem.pages = end // PAGE
             for ctx, word in self.mem.users:
                 ctx[word + 1] = end
@@ -106,7 +113,10 @@ class GcHeap:
         off, n = self.types, -(-4 * len(words) // 8) * 8
         if off + n > gc.TID_MAP:
             raise MemoryError("GC type area exhausted")
-        self._commit(gc.OBJ if tid else off + n)  # the whole map: is_subtype reads any entry
+        self._commit(0, off + n)  # the record's own page first (LESSONS 137)
+        if tid and not self.tid_map:  # the whole map: is_subtype reads any entry (D69)
+            self._commit(gc.TID_MAP, gc.OBJ)
+            self.tid_map = True
         buf = (ctypes.c_char * n).from_address(self.base + off)
         struct.pack_into(f"<{len(words)}I", buf, 0, *words)
         self.types += n
@@ -158,11 +168,16 @@ class GcHeap:
         cap = min(gc.CAP_MAX, -(-cap // HALVES) * HALVES)
         if cur + r > gc.OBJ + cap // 2:
             raise MemoryError("GC heap out of memory")
-        old = max(gc.OBJ, self.mem.pages * PAGE)
-        self._commit(gc.OBJ + cap)
+        old = gc.OBJ + self.cap
+        self._commit(old, gc.OBJ + cap)
         if self.poison and gc.OBJ + cap > old:
             ctypes.memset(self.base + old, POISON, gc.OBJ + cap - old)
         self.cap, self.end = cap, gc.OBJ + cap // 2
+
+    @property
+    def committed(self) -> int:
+        """Bytes committed: the low region, the tid map, the objects."""
+        return self.mem.res.committed + self.tid_map * (gc.OBJ - gc.TID_MAP) + self.cap
 
     @property
     def cursor(self) -> int:

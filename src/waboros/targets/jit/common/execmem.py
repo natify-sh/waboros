@@ -81,7 +81,8 @@ class ExecMem:
 class Reservation:
     """Address space reserved up front (no access), committed read-write from its start on demand;
     it never moves (LESSONS 7: an i64 memory that outgrows it gets a new one, S0009). Linear
-    memories (4 GiB + 32 MiB for an i32 one, Wasmtime's 64-bit defaults) and value stacks."""
+    memories (4 GiB + 32 MiB for an i32 one, Wasmtime's 64-bit defaults) and value stacks; the GC
+    heap also commits ranges apart (`commit_range`, D69)."""
 
     def __init__(self, size: int, commit: int = 0) -> None:
         if not 0 <= size < 1 << 63:  # ctypes would truncate it for c_size_t silently (LESSONS 77)
@@ -102,6 +103,15 @@ class Reservation:
         if nbytes > self.committed:
             _retry(_commit, self.addr + self.committed, nbytes - self.committed)
             self.committed = nbytes
+
+    def commit_range(self, lo: int, hi: int) -> None:
+        """Make [addr + lo, addr + hi) read-write, both page-aligned, apart from `committed` (the
+        GC heap's regions, D69); new pages read as zero."""
+        page = mmap.PAGESIZE
+        if lo % page or hi % page or not 0 <= lo <= hi <= self.size:
+            raise ValueError(f"commit of [{lo}, {hi}) in a {self.size}-byte reservation")
+        if hi > lo:
+            _retry(_commit, self.addr + lo, hi - lo)
 
     def free(self) -> None:
         self.addr = 0

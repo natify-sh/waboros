@@ -107,7 +107,10 @@ def test_a_real_image_from_a_jit_store() -> None:
     n1 = h.new_struct(m, 0, [1, 0])
     n2 = h.new_struct(m, 0, [2, n1])
     arr = h.new_array(m, 1, 3, vals=[n2, 5 << 1 | 1, 0])
-    image, roots = ctypes.string_at(h.base, h.cursor), [arr, n1]
+    low = h.mem.res.committed  # the regions committed apart (D69): the gap reads as zeros
+    image = ctypes.string_at(h.base, low) + bytes(gc.OBJ - low)
+    image += ctypes.string_at(h.base + gc.OBJ, h.cursor - gc.OBJ)
+    roots = [arr, n1]
     check(image, h.offsets, gc.OBJ, h.cursor, roots, set())
     assert digest(image, h.offsets, roots) == digest(image, h.offsets, roots)
     assert digest(image, h.offsets, roots[::-1]) != digest(image, h.offsets, roots)

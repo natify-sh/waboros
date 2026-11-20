@@ -402,6 +402,7 @@ def test_tables_are_roots_in_batches_and_funcref_tables_are_not(
     fn(t, "setup")
     st.heap.stress = True  # from here: one collection in `check`, with 8 000 table roots
     st.heap.u32(gc.LIMIT, st.heap.cursor)
+    low = st.heap.mem.res.committed  # header (ROOTS in it) and type area: no growth (D69)
     sent: list[int] = []
     real = inst_.Instance.call
 
@@ -417,6 +418,7 @@ def test_tables_are_roots_in_batches_and_funcref_tables_are_not(
     monkeypatch.setattr(inst_.Instance, "call", spy)
     assert fn(t, "check") == [8000 * 7999 // 2 + 1 + 77]
     assert len(sent) == 2 and sent[0] == collect.NROOTS and 8000 < sum(sent) < 2 * collect.NROOTS
+    assert st.heap.mem.res.committed == low
 
 
 def test_too_little_value_stack_traps_before_anything_moves(

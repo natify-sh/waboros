@@ -120,7 +120,8 @@ def test_allocation_commits_and_grows(monkeypatch: pytest.MonkeyPatch, poison: b
 
 def test_function_records_and_the_tid_map(monkeypatch: pytest.MonkeyPatch) -> None:
     """A function type's record (kind 3, its supertype's first) is entered in the tid map, which
-    is committed whole; it is no object's record. Past the cap of 2**20 ids: exhausted (5.6)."""
+    is committed whole with the first one (D69); it is no object's record. Past the cap of 2**20
+    ids: exhausted (5.6)."""
     m = mod("(module (type $t (sub (func))) (type $u (sub final $t (func))))")
     h = heap(StoreState())
     ru = h.rtt(m, 1)
@@ -128,6 +129,8 @@ def test_function_records_and_the_tid_map(monkeypatch: pytest.MonkeyPatch) -> No
     assert h.u32(gc.TID_MAP + 4 * type_id(m, 1)) == ru and u32s(h, rt, 5) == [3, 0, 0, 0, rt]
     assert u32s(h, ru, 6) == [3 | 1 << 8, 1, 0, 0, rt, ru] and ru not in h.offsets
     assert h.mem.pages << 16 == gc.OBJ and gc.TYPES <= rt < ru < gc.TID_MAP
+    assert h.committed == (128 << 10) + gc.OBJ - gc.TID_MAP  # header, a type page, the map
+    assert h.u32(gc.OBJ - 4) == 0  # the map's last entry is readable
     monkeypatch.setattr(gc, "TIDS", 1)
     with pytest.raises(MemoryError, match="GC type area exhausted"):
         heap(StoreState()).rtt(m, 0)
@@ -151,8 +154,9 @@ def test_object_words_for_the_walk_check() -> None:
 
 def test_records_across_many_pages() -> None:
     """2 000 records of 184 bytes, about 360 KiB: the type area grows by whole 64 KiB pages, on
-    every OS page size; then the first object commits everything below it (no hole under the size
-    the contexts see: an explicit bounds check that passes reaches a committed page)."""
+    every OS page size, committed before each record is written (LESSONS 137) and not beyond; the
+    first object commits the semispaces only (D69: the rest of the type area and the tid map stay
+    uncommitted below the size the contexts see)."""
     fields = "(field anyref) " * 40
     m = mod(
         "(module "
@@ -165,15 +169,15 @@ def test_records_across_many_pages() -> None:
     h = heap(StoreState())
     offs = [h.rtt(m, i) for i in range(2000)]
     assert offs[-1] - offs[0] > 5 * 64 << 10 and h.mem.pages << 16 >= h.types
+    low = -(-h.types // (64 << 10)) * (64 << 10)
+    assert h.mem.res.committed == low == h.mem.pages << 16 == h.committed
     for i in (0, 1, 999, 1999):
         assert u32s(h, offs[i], 6)[3:6] == [40, offs[i], 12]  # 40 traced fields, the first at 12
     h.alloc(8)
     end = h.mem.pages << 16
-    assert end == gc.OBJ + (2 << 20)  # both halves
-    for at in range(
-        0, end, mmap.PAGESIZE
-    ):  # every page below the size is readable (a fault: crash)
-        ctypes.c_uint8.from_address(h.base + at).value  # noqa: B018
+    assert end == gc.OBJ + (2 << 20) and h.committed == low + (2 << 20)  # both halves
+    for at in (*range(0, low, mmap.PAGESIZE), *range(gc.OBJ, end, mmap.PAGESIZE)):
+        ctypes.c_uint8.from_address(h.base + at).value  # noqa: B018  (a fault: crash)
 
 
 def test_layout_words() -> None:
@@ -271,9 +275,10 @@ def test_gc_results_cross_to_the_host(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_heap_accesses_below_the_size_work_and_past_it_trap(
     monkeypatch: pytest.MonkeyPatch, bounds: str
 ) -> None:
-    """Compiled code reads and writes a word on every OS page below the heap's published size; a
-    corrupt reference past it, or far past it, traps (MEMORY_OUT_OF_BOUNDS) instead of crashing, in
-    both bounds modes (S0013 3b.1 review: no uncommitted page below the size)."""
+    """Compiled code reads and writes a word on every OS page of the heap's committed regions; a
+    corrupt reference past the published size, or far past it, traps (MEMORY_OUT_OF_BOUNDS)
+    instead of crashing, in both bounds modes. One into the uncommitted gap below the size traps
+    in guard mode; in explicit mode it would crash (D69, as S0013 Q8 accepted)."""
     t, store = gc_jit(monkeypatch, bounds), StoreState()
     m = mod("""(module (type $t (struct (field (mut i32))))
       (func (export "get") (param (ref null $t)) (result i32) (struct.get $t 0 (local.get 0)))
@@ -282,11 +287,17 @@ def test_heap_accesses_below_the_size_work_and_past_it_trap(
     inst = t.instantiate(t.compile(m), [], store)
     inst.call(2, [])  # the first object: the type area and the first chunk committed
     raw = Instance.call  # raw words, past the host boundary's checks
-    end = _stacks(store).heap.mem.pages << 16
-    for w in range(gc.TYPES, end, mmap.PAGESIZE):  # the field at w + 8 on every page
+    h = _stacks(store).heap
+    end = h.mem.pages << 16
+    pages = (
+        *range(gc.TYPES, h.mem.res.committed, mmap.PAGESIZE),
+        *range(gc.OBJ, end, mmap.PAGESIZE),
+    )
+    for w in pages:  # the field at w + 8 on every page
         raw(inst, 1, [w])
         assert raw(inst, 0, [w]) == [7]
-    for w in (end - 8, end, 0xFFFFFFF8):
+    gap = (h.mem.res.committed, gc.TID_MAP) if bounds == "guard" else ()
+    for w in (*gap, end - 8, end, 0xFFFFFFF8):
         for f in (0, 1):
             with pytest.raises(Trap) as e:
                 raw(inst, f, [w])

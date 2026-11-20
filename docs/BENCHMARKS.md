@@ -2036,3 +2036,38 @@ Checked by the orchestrator (dev VM, `taskset -c 2`, PyPy 3.11.17, rounds altern
 `pyc` in this file (S0010 step 0, the switch VM) measured the plain dict and are low by about that
 factor; the PoC rows were right.
 
+
+## GC heap: committed bytes (S0014 step 4.2, 2026-11-20)
+
+D69 commits the GC heap's regions apart (the header page and the type area as records are written,
+the whole tid map with the first function-type record, the semispaces) instead of from its start.
+This section measures what a store commits, before and after.
+
+Conditions: the dev VM (Intel Xeon @ 2.10 GHz, 4 vCPU, Linux 6.18), CPython 3.13.17, `jit-x86_64`,
+the GC switches unset. **before**: the working tree just before the change; **after**: with it;
+one session. Committed bytes are deterministic (no timing), so the builds were not alternated.
+Linux counts what `mprotect` makes read-write in `VmData` (and against RLIMIT_DATA), as Windows
+counts `MEM_COMMIT` against the commit charge; RssAnon does not move (the pages are not touched).
+The heap's own figure is `GcHeap.committed` (after) or the reservation's contiguous commit (before).
+Scratch drivers, not committed: a store per row built through `tests.jit.test_compiler.build`,
+`VmData` read from `/proc/self/status` around the instantiation and the first call (each row's
+second run, after a warm-up).
+
+| case (`VmData` growth) | before | after |
+|---|---|---|
+| a module without GC, instantiation (its value stack; no heap) | +1.0 MiB | +1.0 MiB |
+| a struct type, no allocation: instantiation | +1.125 MiB | +1.125 MiB |
+| a non-final function type with `call_indirect`, no allocation: instantiation | +65.0 MiB | +5.125 MiB |
+| one `struct.new`: the first call | +65.875 MiB | +2.0 MiB |
+| the heap of a store with one struct (`committed`) | 66.0 MiB | 2.125 MiB |
+
+Per spec file of `gc/` and `exceptions/` (the largest heap a file makes; each makes one, `tag` and
+`binary-gc` none): before 67 584 KiB for each file that allocates, 65 536 KiB for
+`gc/type-subtyping` (function-type records, no object), 64 KiB for `gc/i31`; after 2 176 KiB,
+4 224 KiB (the tid map is 4 MiB of it) and 64 KiB. Sum over the 22 files: 1 282 112 KiB before,
+43 456 KiB after.
+
+A commit limit (the mechanism of LESSONS 135): RLIMIT_DATA set to the current `VmData` + 256 MiB,
+then live stores each allocating one struct. Before: four stores fit and the fifth failed (`OSError` ENOMEM,
+`VmData` +202 MiB; `execmem._retry` freed the dropped warm-up store once); after: all 16 fit, `VmData` +47 MiB. The test is
+`tests/jit/test_gc_commit.py::test_live_stores_fit_under_a_commit_limit` (Linux).

@@ -617,7 +617,7 @@ Each step stops and reports if it needs more than its size.
 | 2.1 | The reader strict at the container and constant-expression level: layout exactly the writer's (`.waboros.*` flags and symbol contents not read, D62), value types of `cexpr` against their use; pinned section headers, symbols, `config_sha256` | implementer | the writer's files write back to the same bytes, every other accepted file to its canonical form (byte-flip loop, 0 bad); the round trip on the spec suite unchanged | src ~100, tests ~100 |
 | 3 | Instantiate from the read form: the instance takes the module view and `subtype` from the artifact; the `WABOROS_JIT_ARTIFACT=1` switch | jit-engineer | the spec suite through files at parity, both JITs, both modes, walk check and GC switches; CoreMark through a file; timings recorded | src ~120, tests ~80 |
 | 4.1 | Loader rules: `artifact.load` (the checks in order, fat regeneration), the compiler string by option (c), `WABOROS_JIT_ARTIFACT=1` through `load`, the refusal tests | implementer | `tests/artifact/test_refuse.py`; the spec suite through files at parity; D35 lists unchanged | src ~150, tests ~300 |
-| 4.2 | The GC heap's lazy commit | jit-engineer | (to be written when started) | — |
+| 4.2 | The GC heap's lazy commit (D69): the header and type area, the tid map (whole, with the first function-type record) and the semispaces committed apart; layout, `collector.wat` and code unchanged | jit-engineer | `pytest -q`; `gc` and `exceptions` with the GC switches and the walk check in both bounds modes, both JITs; the spec suite at parity; D35 lists unchanged; committed bytes before/after in BENCHMARKS.md | src ~50, tests ~100 |
 | 4.3 | The committed v1 files and their test, after step 5 (which adds a required section) | implementer | the old-artifact test; `pytest -q` | tests ~60 |
 | 5 | Trampolines in every artifact (Q2): the blobs in `.text`, `.waboros.trampolines`, the symbols, the store's identity check in the loader | jit-engineer | the trampoline tests (equal to `abi.assemble`, mismatch refused or regenerated, the store rule); the round trip and the spec suite through files still at parity; D35 identity of files | src ~90, tests ~80 |
 | 6 | D35 on files and the independent readers in CI; `isa_all.py` over files | runner | the CI jobs green; the identity holds on the arm64 runner | tools and CI ~120 |
@@ -933,3 +933,11 @@ When approved and implemented (step 7 unless noted):
   (the committed v1 files). 4.3 moves after step 5 because step 5 adds a required section
   (`.waboros.trampolines`), so a v1 file committed earlier would be refused by the final reader
   and would have to be regenerated.
+* 2026-11-20: step 4.2 done (D69, superseding D57's "committed from its start"; no format, context
+  word or code change, so no version bump). `Reservation.commit_range`; `GcHeap` commits the
+  header page and the type area as records are written, the whole 4 MiB tid map with the first
+  function-type record, and the semispaces, apart; `size_bytes` is the highest committed end. A
+  store with one struct commits 2.1 MiB instead of 66 MiB; the 20 GC-using spec files of `gc/`
+  and `exceptions/` 43 456 KiB instead of 1 282 112 (BENCHMARKS.md, "GC heap: committed bytes").
+  Spec suite 64 229 pass, 0 fail; `gc` and `exceptions` 905 pass with stress, poison, verify and
+  the walk check in both bounds modes; D35 lists unchanged on both JITs. Left: 4.3.

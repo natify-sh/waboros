@@ -1076,7 +1076,10 @@ What went wrong or surprised us while building the PoC, so it is not found again
     dropped stores": collect and retry on failure, lazy commit of the heap's service areas,
     `Store.close()` in phase 6). Item (a) is done 2026-11-19: `execmem._retry` collects and retries once
     around every reservation, commit and executable mapping (so linear memories, the GC heap and the
-    value stack too; `tests/jit/test_execmem.py`). Found: CI run 44421319412 (Windows x64), 2026-11-19.
+    value stack too; `tests/jit/test_execmem.py`). Item (b) is done 2026-11-20 (D69): the heap's
+    regions are committed apart, so a store with one struct commits 2.1 MiB, and 16 live ones fit
+    under RLIMIT_DATA + 256 MiB where before the fifth failed (`tests/jit/test_gc_commit.py`). Found: CI
+    run 44421319412 (Windows x64), 2026-11-19.
 136. **A depth the wasm module chooses must never become Python recursion.** Constant expressions
     nest without limit (extended constants: an `i32.add` chain of any length). The JIT instance's
     `_const` recursed on `add`/`sub`/`mul`, and so did the validator's `validate._const`: a
@@ -1094,3 +1097,11 @@ What went wrong or surprised us while building the PoC, so it is not found again
     and `jit-x86_64`, direct and through the file, in a 256 KiB thread). Rule: a structure the input
     shapes is never nested, in a tree, a closure or a generated source line. Found: S0014 step 3,
     2026-11-19.
+137. **Commit each region before writing to it.** With the GC heap's regions committed apart
+    (D69), a function type's record lies in the type area but its tid-map entry in another region;
+    a prototype that committed only the map for such a record wrote the record into a PROT_NONE
+    page (SIGSEGV), as the S0013 3b.1 review's 64 KiB rounding did. Rule: every write commits the
+    pages of its own region first, in whole 64 KiB pages; a test reads every page of every
+    committed region and nothing else (`test_records_across_many_pages`). Host-side test code
+    that copied the whole image (`string_at(base, cursor)`) also crossed the gap: copy the
+    committed regions only. Found: S0014 step 4.2, 2026-11-20.

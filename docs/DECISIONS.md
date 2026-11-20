@@ -1062,6 +1062,8 @@ Status: accepted (maintainer, 2026-11-10 and 2026-11-13: S0013 Q1, Q5, Q8, Q9, Q
   its first object; no RSS. Step 5's semispace B, above A's uncommitted tail, brings such a hole
   back; Q8 accepted it there, and step 5's plan decides. Closed by D3 of S0013's "Step 5
   decisions" (D61): the two halves are adjacent and both committed, so there is no hole.
+  Superseded by D69 (2026-11-20): the regions are committed apart again, `size_bytes` the highest
+  committed end.
 * **Lowered once.** The GC instructions are lowered in the shared core (`jit/common/gc.py`) on D39
   methods only (Q9 (a)); a backend only lists the opcodes in its `supported` set. Allocation is a
   bump in code with a cold call to a service when full; casts compare the record (final) or the
@@ -1483,3 +1485,34 @@ Status: accepted (maintainer, 2026-11-17) · Date: 2026-11-17 · Supersedes: the
 * The Python backends stay: they are the reference behaviour, `pyc`'s fallback partners and the
   targets of the Python package until JIT-AS-WASM's decision (after the artifact format).
 
+
+### D69. The GC heap's regions are committed apart; `size_bytes` is the highest committed end
+Status: accepted (maintainer, 2026-11-20) · Date: 2026-11-20 · Supersedes: D57's "Committed from its start" bullet; amends ARTIFACT.md part 3 (the GC heap's `size_bytes`) without a version bump · Evidence: S0014 step 4.2, BENCHMARKS.md "GC heap: committed bytes"; LESSONS 135
+
+* The store's GC heap commits three regions apart, each from its start in whole 64 KiB pages and
+  before anything is written there: the header page (with `ROOTS`) at creation and the type-info
+  area after it as records are written; the whole tid map ([60 MiB, 64 MiB), 4 MiB) with the first
+  function-type record; the semispaces as today (D61). `Reservation.commit_range` commits a range
+  apart from a reservation's contiguous high-water mark.
+* The hidden memory's `size_bytes` is the highest committed end and never shrinks; the gaps below
+  it (the unused type area, the tid map before a function-type record) are uncommitted. Code is
+  unchanged (D35 lists identical on both JITs): it addresses the header, records it reached through
+  an object or an RTT word, the tid map only once committed, and objects, never a gap.
+* **Why:** a heap committed 66 MiB at its first allocation (64 MiB of it the type area and the tid
+  map, using one 64 KiB page in practice); a dropped store waits for the cyclic GC (LESSONS 135),
+  and Windows x64 cp315t ran out of commit charge. Now a store with one struct commits 2.1 MiB; 16
+  live such stores fit under RLIMIT_DATA + 256 MiB, where before four fit and the fifth failed (with
+  `execmem._retry` freeing a dropped store's 66 MiB).
+* **Cost:** the hole D57 closed comes back, as S0013 Q8 accepted it for semispace B: a corrupt
+  reference (a broken invariant; no wasm program can forge one) into a gap is a bounds trap in guard
+  mode and a crash in explicit mode, where before it read or wrote committed garbage. CI's explicit
+  stress run of `gc` and `exceptions` turns any missed commit into a crash, not a disguised trap.
+  Two defensive checks lose their trap in explicit mode: the collector's `$size` accepts any record
+  offset in the type area and `gcverify` (`WABOROS_JIT_GC_VERIFY=1`) reads a root word unchecked,
+  so a corrupt header or root into a gap crashes there instead of trapping "GC heap lost" or
+  raising `HeapError`.
+* **Tid map whole, not by ids (maintainer):** committing only the entries of ids assigned so far
+  would need every function record to be made at instantiation, and phase 6's API makes host
+  functions outside it; 4 MiB per heap with a function-type record is the price.
+* Context ABI v1 amended without a bump (as D34, D50, D52, D56, D57): no word moves, no code
+  changes, an older artifact's code addresses only committed bytes.

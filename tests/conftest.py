@@ -84,9 +84,10 @@ def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
 
 @pytest.fixture(autouse=True)
 def _collect_garbage() -> Iterator[None]:
-    """Free-threaded builds: a dropped JIT store is a reference cycle whose committed memory (66 MiB
-    per GC heap) waits for the cyclic GC, which runs too rarely to see it; collected after every
-    test, a worker does not exhaust Windows' commit limit (LESSONS 135)."""
+    """Free-threaded builds: a dropped JIT store is a reference cycle whose committed memory (a
+    value stack, and 2.1 MiB or more per GC heap since D69; 66 MiB before) waits for the cyclic GC,
+    which runs too rarely to see it; collected after every test, a worker does not exhaust Windows'
+    commit limit (LESSONS 135)."""
     yield
     if not getattr(sys, "_is_gil_enabled", lambda: True)():
         gc.collect()

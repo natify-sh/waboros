@@ -110,7 +110,9 @@ def on_wasmtime(hp: Heap, roots: list[int], plan: Plan) -> Result:
     wt = pytest.importorskip("wasmtime")
     store, h = wt.Store(), hp.h
     mem = wt.Memory(store, wt.MemoryType(wt.Limits(h.mem.pages, None)))
-    mem.write(store, ctypes.string_at(h.base, h.types), 0)  # header and records
+    mem.write(store, ctypes.string_at(h.base, h.mem.res.committed), 0)  # header and records
+    if h.tid_map:  # committed apart (D69)
+        mem.write(store, ctypes.string_at(h.base + gc.TID_MAP, gc.OBJ - gc.TID_MAP), gc.TID_MAP)
     mem.write(store, ctypes.string_at(h.base + gc.OBJ, h.limit - gc.OBJ), gc.OBJ)
     ex = wt.Instance(store, wt.Module(store.engine, WASM), [mem]).exports(store)
 
@@ -233,6 +235,8 @@ def test_a_malformed_heap_traps(bad: str) -> None:
     batches: list[list[int] | int] = [list(range(8))]
     if bad in SOLO:
         where = {"rec_below": 0x40, "rec_align": h.types + 4, "rec_map": gc.TID_MAP}.get(bad)
+        if bad == "rec_map":  # a function-type record commits the tid map (D69)
+            h.rtt(mod("(module (type (sub (func))))"), 0)
         h.u32(a, record(hp, *SOLO[bad], at=where))
         h.put(a + 8, 16, 0)
         batches = [[1]]
@@ -282,7 +286,8 @@ FUNCS = """(module (type $t (sub (func))) (type $u (sub $t (func))) (type $w (su
 
 def subtype_both(h: Any, st: Any, pairs: list[tuple[int, int]]) -> list[int | str]:
     """is_subtype(q, t) for each pair on the JIT (the heap's memory imported), after Wasmtime's
-    on a copy of [0, 64 MiB) when wasmtime is installed; a trap gives its code's name."""
+    on a copy of [0, 64 MiB) (its committed parts, D69) when wasmtime is installed; a trap gives
+    its code's name."""
     t, m = base.TARGETS[native_jit()](), cast(Any, parse(WASM))
     validate(m)
     k = next(i for n, _, i in m["exports"] if n == "is_subtype")
@@ -299,7 +304,8 @@ def subtype_both(h: Any, st: Any, pairs: list[tuple[int, int]]) -> list[int | st
         return out
     store = wt.Store()
     mem = wt.Memory(store, wt.MemoryType(wt.Limits(gc.OBJ >> 16, None)))
-    mem.write(store, ctypes.string_at(h.base, gc.OBJ), 0)
+    mem.write(store, ctypes.string_at(h.base, h.mem.res.committed), 0)
+    mem.write(store, ctypes.string_at(h.base + gc.TID_MAP, gc.OBJ - gc.TID_MAP), gc.TID_MAP)
     f = wt.Instance(store, wt.Module(store.engine, WASM), [mem]).exports(store)["is_subtype"]
     ref: list[int | str] = []
     for q, r in pairs:

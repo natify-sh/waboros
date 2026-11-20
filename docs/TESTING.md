@@ -180,6 +180,9 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   the context was copied or added into (x86-64 `mov`/`lea`/`add`, aarch64 `mov`/`add`); a context
   address loaded from memory, and Python-side reads, are not seen. The 6.3 review's mutants (an
   aarch64 `add` into another register, an x86-64 copy of r15, a bridge read of word 11) fail it.
+  `tests/jit/test_gc_commit.py` (D69): the committed bytes of a one-struct heap and of a
+  function-subtype site, and 16 live stores under RLIMIT_DATA + 256 MiB in a subprocess (Linux
+  only; skipped under QEMU and on Android).
   `tests/jit/test_gc_memory.py` (native only, the GC switches cleared, about 5 s on CPython 3.11 and
   3.13; it runs in every `pytest` of the CI matrix and in the native arm64 `tests/jit` job, no
   marker) is the memory test: after a warm-up the heap's capacity and committed pages do not move under 576 MB of dropped structs and
