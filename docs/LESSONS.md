@@ -1083,13 +1083,14 @@ What went wrong or surprised us while building the PoC, so it is not found again
     300 000-deep chain raised `RecursionError` (a Python exception, not a crash, but not the
     validator's verdict either). Rule: walk trees the input shapes with an explicit stack, as the
     artifact's writer and reader and, since S0014 step 3, the instance do. Closed for the
-    validator 2026-11-19 (`validate._const`; the binary parser did not recurse; `jit-x86_64`,
-    direct and through the artifact file, takes the module: `tests/test_deep_const.py`). Still open:
-    `pyc`'s `ModGen.val` (`targets/pyc/codegen.py`) recurses on a global's initializer
-    (`RecursionError` at depth ~1000; the test is `xfail(strict)`). **Also open, and deeper: the
-    tree itself.** The parser keeps a constant expression as nested tuples, and freeing a deep one
+    validator 2026-11-19 (`validate._const`; the binary parser did not recurse). **The tree itself was
+    the deeper trap**: the parser kept a constant expression as nested tuples, and freeing a deep one
     recurses in C: on CPython 3.13 a 10 000-deep tuple chain segfaults when freed in a thread with a
-    256 KiB stack (3.12 and 3.14 survive; the main thread's 8 MiB survives 3 000 000). Pyodide's
-    stack is small, so the deep test kills its interpreter ("Maximum call stack size exceeded",
-    CI on d9ae6e9 and b243c9e); `tests/test_deep_const.py` is skipped there. Found: S0014 step 3,
+    256 KiB stack (3.12 and 3.14 survive; the main thread's 8 MiB survives 3 000 000); Pyodide's stack
+    is small, so its interpreter died (CI on d9ae6e9 and b243c9e). Closed 2026-11-20: a constant
+    expression is a flat postfix tuple of nodes (S0014, Changes), every consumer (validator, `pyc`
+    codegen, the JIT instance, the artifact writer and reader) a loop over a value stack; `pyc`
+    emits one statement per operation. Test: `tests/test_deep_const.py` (300 000-deep chain on `pyc`
+    and `jit-x86_64`, direct and through the file, in a 256 KiB thread). Rule: a structure the input
+    shapes is never nested, in a tree, a closure or a generated source line. Found: S0014 step 3,
     2026-11-19.

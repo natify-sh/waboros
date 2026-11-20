@@ -148,3 +148,37 @@ def test_tags_are_validated() -> None:
     ):
         with pytest.raises(Invalid):
             check(data)
+
+
+_S_I32 = b"\x5f\x01\x7f\x00"  # (struct (field i32))
+_S_PAIR = b"\x5f\x02\x7f\x00\x63\x00\x00"  # (struct (field i32) (field (ref null 0)))
+
+
+@pytest.mark.parametrize(
+    ("types", "globs", "want"),
+    [  # the first failing node in binary order wins; each `want` is Wasmtime's error class
+        ([], [I32 + b"\x00\x42\x00\x23\x63\x6a\x0b"], "unknown global"),  # i64 + global 99
+        ([], [I32 + b"\x00\x42\x00\xd2\x05\x6a\x0b"], "unknown function"),  # i64 + ref.func 5
+        ([], [I32 + b"\x00\x42\x00\x41\x00\x6a\x23\x63\x6a\x0b"], "type mismatch"),
+        (
+            [_S_I32, _S_PAIR],  # pair(global 99, s(i64))
+            [b"\x63\x01\x00\x23\x63\x42\x00\xfb\x00\x00\xfb\x00\x01\x0b"],
+            "unknown global",
+        ),
+        ([_S_I32], [b"\x63\x00\x00\x42\x00\x23\x63\x6a\xfb\x00\x00\x0b"], "unknown global"),
+        (
+            [_S_I32, _S_PAIR],  # pair(s(i64), global 99)
+            [b"\x63\x01\x00\x42\x00\xfb\x00\x00\x23\x63\xfb\x00\x01\x0b"],
+            "type mismatch",
+        ),
+    ],
+)
+def test_constant_expression_first_error(types: list[bytes], globs: list[bytes], want: str) -> None:
+    """Which error a constant expression with two faults reports (checked against Wasmtime when the
+    flat form replaced the tree, LESSONS 136)."""
+    m = b"\0asm\1\0\0\0"
+    if types:
+        m += sec(1, bytes([len(types)]) + b"".join(types))
+    m += sec(6, bytes([len(globs)]) + b"".join(globs))
+    with pytest.raises(Invalid, match=want):
+        validate(parse(m))

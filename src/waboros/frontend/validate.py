@@ -13,6 +13,8 @@ step 3b).
 Basic pyright mode: the module dict and the instruction tuples are untyped data of the reader.
 """
 
+from typing import Any
+
 from waboros.frontend import simd
 from waboros.frontend.binary import NULLABLE, decode
 from waboros.frontend.types import (
@@ -311,42 +313,47 @@ def _gcsig(c: _Ctx, ins: tuple, room: int):
 
 
 def _frefs(e: tuple):
-    """The function indices a constant expression names (spec: C.refs); no recursion, an
-    allocating expression may nest as deep as the binary is long."""
-    stack = [e]
-    while stack:
-        n = stack.pop()
-        if n[0] == "func":
-            yield n[1]
-        elif n[0] == "gc":
-            stack.extend(n[2])
+    """The function indices a constant expression names (spec: C.refs)."""
+    return (n[1] for n in e if n[0] == "func")
 
 
 def _const(c: _Ctx, e: tuple, nglobals: int):
-    """Type of a constant expression (parser tuples); only globals below `nglobals` are visible.
-    `add`/`sub`/`mul` nest as deep as the binary is long: an explicit stack, operands left to
-    right, the first mismatch raised as soon as an operand is known (LESSONS 136)."""
-    stack = []  # (node, its type, 0 while the left operand is open, 1 for the right one)
-    while True:
-        while e[0] in ("add", "sub", "mul"):
-            stack.append((e, I32 if e[1] == "i32" else I64, 0))
-            e = e[2]
-        v = _leaf(c, e, nglobals)
-        while stack:
-            n, t, side = stack.pop()
-            if v != t:
-                raise Invalid("type mismatch")
-            if side == 0:
-                stack.append((n, t, 1))
-                e = n[3]
-                break
-            v = t
+    """Type of a constant expression (the parser's postfix nodes); only globals below `nglobals`
+    are visible. The first failing node in binary order raises, as in Wasmtime (LESSONS 136)."""
+    st: list[Any] = []
+    for n in e:
+        k = n[0]
+        if k in ("add", "sub", "mul", "gc"):
+            if k == "gc":
+                c.mod["gc"] = True  # evaluated by `pyc` only until S0013 step 3b
+            m = n[2] if k == "gc" else 2
+            ts = st[len(st) - m :]
+            del st[len(st) - m :]
+            st.append(_node(c, n, ts))
         else:
-            return v
+            st.append(_leaf(c, n, nglobals))
+    return st[0]
+
+
+def _node(c: _Ctx, n: tuple, ts: list):
+    """Type of an arithmetic or allocating node whose operands have the types `ts`."""
+    if n[0] != "gc":
+        t = I32 if n[1] == "i32" else I64
+        if ts[0] != t or ts[1] != t:
+            raise Invalid("type mismatch")
+        return t
+    sub = n[1][0] - 0xFB00
+    if sub in (26, 27):
+        return _conv(c.mod, sub, ts[0])
+    pops, res = _gcsig(c, n[1], n[2])
+    for t, want in zip(ts, pops, strict=True):
+        if not match(c.mod, t, want):
+            raise Invalid("type mismatch")
+    return res[0]
 
 
 def _leaf(c: _Ctx, e: tuple, nglobals: int):
-    """Type of a constant expression that is not an arithmetic node."""
+    """Type of a leaf of a constant expression."""
     k = e[0]
     if k == "bad":
         raise Invalid("type mismatch")
@@ -366,30 +373,6 @@ def _leaf(c: _Ctx, e: tuple, nglobals: int):
         return (0, c.ftidx[e[1]])
     if k == "null":
         return _ref(c, e[1])
-    if k == "gc":  # struct.new .. extern.convert_any; the reader took the operands
-        c.mod["gc"] = (
-            True  # evaluated by `pyc` only until S0013 step 3b: the JITs refuse the module
-        )
-        types: dict[int, object] = {}  # type of each allocating node by id, operands first
-        stack = [e]
-        while stack:  # no recursion per nesting level
-            n = stack[-1]
-            todo = [a for a in n[2] if a[0] == "gc" and id(a) not in types]
-            if todo:
-                stack.extend(reversed(todo))
-                continue
-            stack.pop()
-            ts = [types[id(a)] if a[0] == "gc" else _const(c, a, nglobals) for a in n[2]]
-            sub = n[1][0] - 0xFB00
-            if sub in (26, 27):
-                types[id(n)] = _conv(c.mod, sub, ts[0])
-                continue
-            pops, res = _gcsig(c, n[1], len(n[2]))
-            for t, want in zip(ts, pops, strict=True):
-                if not match(c.mod, t, want):
-                    raise Invalid("type mismatch")
-            types[id(n)] = res[0]
-        return types[id(e)]
     if e[1] >= nglobals:
         raise Invalid("unknown global")
     if c.gmut[e[1]]:

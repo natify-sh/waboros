@@ -219,29 +219,41 @@ def parse(data):
         return mn, mx
 
     def initexpr():
-        st = []  # operand stack of expression trees; add / sub / mul nodes are (name, type, a, b)
+        # a constant expression is its nodes in the order of the binary (postfix): leaves as
+        # ("i32", v) ..., ("add" | "sub" | "mul", type) pops two values, ("gc", ins, n) pops n;
+        # a non-constant expression is (("bad",),). No nesting: a chain may be as long as the binary.
+        out: list[Any] = []
+        depth = 0  # values on the operand stack
         bad = False
         while True:
             op = r.u8()
             if op == 0x0B:
                 break
             if op == 0x41:
-                st.append(("i32", r.s(32) & M32))
+                out.append(("i32", r.s(32) & M32))
+                depth += 1
             elif op == 0x42:
-                st.append(("i64", r.s(64) & M64))
+                out.append(("i64", r.s(64) & M64))
+                depth += 1
             elif op == 0x43:
-                st.append(("f32", int.from_bytes(r.bytes(4), "little")))
+                out.append(("f32", int.from_bytes(r.bytes(4), "little")))
+                depth += 1
             elif op == 0x44:
-                st.append(("f64", int.from_bytes(r.bytes(8), "little")))
+                out.append(("f64", int.from_bytes(r.bytes(8), "little")))
+                depth += 1
             elif op == 0x23:
-                st.append(("global", r.u()))
+                out.append(("global", r.u()))
+                depth += 1
             elif op == 0xD2:
-                st.append(("func", r.u()))
+                out.append(("func", r.u()))
+                depth += 1
             elif op == 0xD0:
-                st.append(("null", r.ht()))
+                out.append(("null", r.ht()))
+                depth += 1
             elif op == 0xFD:
-                st.append(simd.const(r))
-            elif op == 0xFB:  # GC: ("gc", instruction, operand expressions) or not constant
+                out.append(simd.const(r))
+                depth += 1
+            elif op == 0xFB:  # GC: ("gc", instruction, operand count) or not constant
                 ins: Any = _gc(r, r.u())
                 sub = ins[0] - 0xFB00
                 n = {1: 0, 6: 2, 7: 1, 26: 1, 27: 1, 28: 1}.get(sub, -1)  # operands it takes
@@ -251,22 +263,21 @@ def parse(data):
                     tdefs: Any = mod["tdefs"]
                     comp: Any = tdefs[ins[1]][0] if ins[1] < len(tdefs) else ()
                     n = len(comp[1]) if comp[:1] == ("struct",) else -1
-                if 0 <= n <= len(st):
-                    args = st[len(st) - n :]
-                    del st[len(st) - n :]
-                    st.append(("gc", ins, args))
+                if 0 <= n <= depth:
+                    out.append(("gc", ins, n))
+                    depth += 1 - n
                 else:  # not a constant instruction, or the type does not exist
                     bad = True
             elif op in (0x6A, 0x6B, 0x6C, 0x7C, 0x7D, 0x7E):  # extended constant expressions
-                if len(st) < 2:
+                if depth < 2:
                     bad = True
                     continue
-                b2, a2 = st.pop(), st.pop()
+                depth -= 1
                 name = ("add", "sub", "mul")[(op - 0x6A) if op < 0x70 else (op - 0x7C)]
-                st.append((name, "i32" if op < 0x70 else "i64", a2, b2))
+                out.append((name, "i32" if op < 0x70 else "i64"))
             else:
                 _illegal(op)
-        return st[0] if len(st) == 1 and not bad else ("bad",)
+        return tuple(out) if depth == 1 and not bad else (("bad",),)
 
     while r.p < len(data):
         sid = r.u8()
@@ -394,7 +405,7 @@ def parse(data):
                 if fl & 4:
                     items = [initexpr() for _ in range(r.u())]
                 else:
-                    items = [("func", r.u()) for _ in range(r.u())]
+                    items = [(("func", r.u()),) for _ in range(r.u())]
                 mod["elem_info"].append((None if fl & 1 else ti, off, rt, items))
                 mod["elem_mode"].append(
                     "active" if not fl & 1 else "declarative" if fl & 2 else "passive"

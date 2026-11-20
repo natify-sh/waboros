@@ -2,6 +2,7 @@
 parser and the targets take a 300 000-deep `i32.add` chain without Python recursion."""
 
 import sys
+import threading
 
 import pytest
 
@@ -13,12 +14,6 @@ from waboros.runtime.store import StoreState
 from waboros.targets import base
 
 N = 300_000
-
-# Freeing the parser's 300 000-deep tuple tree overflows a small C stack on CPython 3.13 (the
-# trashcan does not hold there); Pyodide's stack is small, so the interpreter dies (LESSONS 136).
-pytestmark = pytest.mark.skipif(
-    sys.platform == "emscripten", reason="a deep tuple tree is fatal to free on Pyodide"
-)
 
 
 def _leb(n: int) -> bytes:
@@ -65,18 +60,38 @@ def _global(name: str, monkeypatch: pytest.MonkeyPatch) -> int:
     return inst.global_get(0)
 
 
-PYC = pytest.param(
-    "pyc",
-    marks=[
-        pytest.mark.xfail(
-            strict=True,
-            raises=RecursionError,
-            reason="pyc codegen `ModGen.val` recurses (LESSONS 136)",
-        ),
-    ],
-)
-
-
-@pytest.mark.parametrize("target", [PYC, native_jit(), native_jit() + "-file"])
+@pytest.mark.parametrize("target", ["pyc", native_jit(), native_jit() + "-file"])
 def test_deep_end_to_end(target: str, monkeypatch: pytest.MonkeyPatch) -> None:
     assert _global(target, monkeypatch) == N + 1
+
+
+def _gc_chain() -> bytes:
+    """`global (ref null $s)` = N times `struct.new $s` around a `ref.null $s`, $s = struct (field
+    (ref null $s))."""
+    expr = b"\xd0\x00" + b"\xfb\x00\x00" * N + b"\x0b"
+    ty = _sec(1, b"\x01\x5f\x01\x63\x00\x00")
+    return b"\0asm\1\0\0\0" + ty + _sec(6, b"\x01\x63\x00\x00" + expr)
+
+
+def test_deep_gc_validates() -> None:
+    validate(parse(_gc_chain()))
+
+
+@pytest.mark.skipif(sys.platform == "emscripten", reason="no threads")
+@pytest.mark.parametrize("target", ["pyc", native_jit(), native_jit() + "-file"])
+def test_deep_in_a_small_stack(target: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Parse, validate, instantiate and free, all inside a thread with a 256 KiB stack: a nested
+    tree overflows the C stack there when it is freed (CPython 3.13, Pyodide: LESSONS 136)."""
+    out: list[object] = []
+
+    def run() -> None:
+        out.append(_global(target, monkeypatch))
+
+    old = threading.stack_size(256 * 1024)
+    try:
+        t = threading.Thread(target=run)
+        t.start()
+        t.join()
+    finally:
+        threading.stack_size(old)
+    assert out == [N + 1]

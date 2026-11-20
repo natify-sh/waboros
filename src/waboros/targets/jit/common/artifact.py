@@ -131,16 +131,11 @@ def _limits(mn: int, mx: int | None, a64: bool, log2: int) -> bytes:
 
 
 def _cexpr(e: Any) -> bytes:
-    """An expression tree as operations in postfix order, without recursion."""
+    """A constant expression: its nodes, already in postfix order, as operations."""
     out = bytearray()
-    todo: list[tuple[Any, bool]] = [(e, False)]
-    while todo:
-        n, done = todo.pop()
+    for n in e:
         k = n[0]
-        kids = n[2:4] if k in ("add", "sub", "mul") else n[2] if k == "gc" else ()
-        if kids and not done:
-            todo += [(n, True), *((x, False) for x in reversed(kids))]
-        elif k in ("i32", "f32"):
+        if k in ("i32", "f32"):
             out += _u("HI", 0x41 if k == "i32" else 0x43, n[1])
         elif k in ("i64", "f64"):
             out += _u("HQ", 0x42 if k == "i64" else 0x44, n[1])
@@ -225,9 +220,9 @@ def _sections(c: Any, wasm: bytes | None) -> dict[str, bytes]:
         sg.append(bytes((m,)) + _vt(rt))
         if m == 0:
             sg.append(_u("I", ti) + _cexpr(off))
-        funcs = all(e[0] == "func" for e in items)
+        funcs = all(e[-1][0] == "func" for e in items)
         sg.append(bytes((not funcs,)) + _u("I", len(items)))
-        sg += [_u("I", e[1]) for e in items] if funcs else [_cexpr(e) for e in items]
+        sg += [_u("I", e[0][1]) for e in items] if funcs else [_cexpr(e) for e in items]
     sg.append(_u("I", len(mod["datas"])))
     for (off, data), mi in zip(mod["datas"], mod["data_mem"], strict=True):
         sg.append(b"\1" if mi is None else b"\0" + _u("I", mi) + _cexpr(off))
@@ -518,57 +513,66 @@ def _limits_r(r: _R, page: int) -> tuple[int, int | None, int]:
 def _cexpr_r(r: _R, env: _Env, want: Any = None) -> Any:
     """One constant expression. Its value type must fit `want` (its use: a global's or table's
     type, an address type; a reference type by subtyping) when given, and the operands of each
-    operation must fit its signature. The stack holds (expression, value type)."""
+    operation must fit its signature. The result is the nodes in the order written (flat, as the
+    front end's); the stack holds the value types."""
     n = r.count(1)
     sub = _R(r.b, r.what + " constant expression", r.p, r.p + n)
     r.p += n
-    st: list[tuple[Any, Any]] = []
+    st: list[Any] = []
+    out: list[Any] = []
 
-    def pop(*types: Any) -> list[Any]:
-        """The top operands, bottom first, whose types must fit `types`."""
+    def pop(*types: Any) -> int:
+        """Take the top operands, bottom first, whose types must fit `types`; how many."""
         k = len(types)
         if len(st) < k:
             sub.fail("the operand stack underflows")
         args = st[len(st) - k :]
         del st[len(st) - k :]
-        if not all(env.fits(t, w) for (_, t), w in zip(args, types, strict=True)):
+        if not all(env.fits(t, w) for t, w in zip(args, types, strict=True)):
             sub.fail("an operand has the wrong type")
-        return [a for a, _ in args]
+        return k
 
     try:
         while sub.p < sub.e:
             op = sub.u(2)
             if op in (0x41, 0x43):
-                st.append(
-                    (("i32" if op == 0x41 else "f32", sub.u32()), I32 if op == 0x41 else 0x7D)
-                )
+                out.append(("i32" if op == 0x41 else "f32", sub.u32()))
+                st.append(I32 if op == 0x41 else 0x7D)
             elif op in (0x42, 0x44):
-                st.append((("i64" if op == 0x42 else "f64", sub.u(8)), I64 if op == 0x42 else 0x7C))
+                out.append(("i64" if op == 0x42 else "f64", sub.u(8)))
+                st.append(I64 if op == 0x42 else 0x7C)
             elif op == 0xFD0C:
-                st.append((("v128", sub.u(16)), V128))
+                out.append(("v128", sub.u(16)))
+                st.append(V128)
             elif op == 0x23:
                 i = sub.index(env.nglobals if env.gmax is None else env.gmax, "global")
                 if env.gmut[i]:
                     sub.fail(f"global {i} is mutable")
-                st.append((("global", i), env.gtypes[i]))
+                out.append(("global", i))
+                st.append(env.gtypes[i])
             elif op == 0xD2:
                 i = env.func_ref(sub)
-                st.append((("func", i), (0, env.ftidx[i])))
+                out.append(("func", i))
+                st.append((0, env.ftidx[i]))
             elif op == 0xD0:
-                st.append((("null", None), NULLREF))  # the heap type is not written (no immediate)
+                out.append(("null", None))
+                st.append(NULLREF)  # the heap type is not written (no immediate)
             elif op in BIN_NAME:
                 t = I32 if BIN_NAME[op][1] == "i32" else I64
-                a, b = pop(t, t)
-                st.append(((BIN_NAME[op][0], BIN_NAME[op][1], a, b), t))
+                pop(t, t)
+                out.append(BIN_NAME[op])
+                st.append(t)
             elif op == 0xFB1C:
-                st.append((("gc", (op,), pop(I32)), (0, T.I31)))
+                out.append(("gc", (op,), pop(I32)))
+                st.append((0, T.I31))
             elif op in GC_NONE:  # any.convert_extern, extern.convert_any: the nullability is kept
                 if not st:
                     sub.fail("the operand stack underflows")
-                a, x = st.pop()
+                x = st.pop()
                 dst = T.ANY if op == 0xFB1A else T.EXTERN
                 res = NULLABLE[dst] if x == NULLREF else _conv(env.mod, op - 0xFB00, x)
-                st.append((("gc", (op,), [a]), res))
+                out.append(("gc", (op,), 1))
+                st.append(res)
             elif op in GC_TYPE or op == 0xFB08:
                 ti = sub.index(env.ntypes, "type")
                 comp = env.tdefs[ti][0]
@@ -580,16 +584,17 @@ def _cexpr_r(r: _R, env: _Env, want: Any = None) -> Any:
                     sub.fail("the operand stack underflows")
                 ins = (op, ti, n) if op == 0xFB08 else (op, ti)
                 pops, res = _gcsig(env.ns, ins, n)
-                st.append((("gc", ins, pop(*pops)), res[0]))
+                out.append(("gc", ins, pop(*pops)))
+                st.append(res[0])
             else:
                 sub.fail(f"unknown operation {op:#06x}")
     except Invalid as e:
         sub.fail(f"type mismatch: {e}")
     if len(st) != 1:
         sub.fail("a constant expression must leave exactly one value")
-    if want is not None and not env.fits(st[0][1], want):
+    if want is not None and not env.fits(st[0], want):
         sub.fail("the type of the value does not fit its use")
-    return st[0][0]
+    return tuple(out)
 
 
 def _sections_r(b: bytes) -> tuple[dict[str, bytes], int, int]:
@@ -851,12 +856,12 @@ def read(b: bytes) -> ModuleView:
             r.fail("items is not 0 or 1")
         n = r.count(4 if kind == 0 else 6)
         if kind == 0:
-            items = [("func", env.func_ref(r)) for _ in range(n)]
-            if any(not env.fits((0, env.ftidx[i]), rt) for _, i in items):
+            items = [(("func", env.func_ref(r)),) for _ in range(n)]
+            if any(not env.fits((0, env.ftidx[i]), rt) for ((_, i),) in items):
                 r.fail("a function does not fit the element type")
         else:
             items = [_cexpr_r(r, env, rt) for _ in range(n)]
-            if all(e[0] == "func" for e in items):
+            if all(e[-1][0] == "func" for e in items):
                 r.fail("items 1 for function indices only: the writer uses items 0")
         mod["elem_info"].append((ti, off, rt, items))
         mod["elem_mode"].append(("active", "passive", "declarative")[m])

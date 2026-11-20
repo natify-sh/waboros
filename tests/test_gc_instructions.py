@@ -103,7 +103,7 @@ def test_constant_expressions_allocate() -> None:
       (table 1 (ref null $s) (struct.new_default $sub))
       (elem $x (ref any) (item (ref.i31 (i32.const 1))) (item (struct.new_default $s)))""")
     assert m["gc"] and m["validated"] and len(m["globals"]) == 7
-    assert m["globals"][1][2][:2] == ("gc", (0xFB00, 0))
+    assert m["globals"][1][2][-1][:2] == ("gc", (0xFB00, 0))
 
 
 @pytest.mark.parametrize(

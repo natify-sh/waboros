@@ -129,10 +129,12 @@ def test_every_constant_expression_operation() -> None:
                       0xFB01: 4, 0xFB06: 4, 0xFB07: 4, 0xFB08: 8}.get(op, 0)  # fmt: skip
         seen |= set(ops)
     assert seen == set(OPS)
-    assert A._cexpr(("i32", 7)) == u32(6) + b"\x41\0" + u32(7)
-    assert A._cexpr(("v128", 1)) == u32(18) + b"\x0c\xfd" + b"\1" + bytes(15)
-    assert A._cexpr(("gc", (0xFB08, 2, 3), [("i32", 1)] * 3)).endswith(b"\x08\xfb" + u32(2, 3))
-    assert A._cexpr(("null", -16)) == u32(2) + b"\xd0\0"
+    assert A._cexpr((("i32", 7),)) == u32(6) + b"\x41\0" + u32(7)
+    assert A._cexpr((("v128", 1),)) == u32(18) + b"\x0c\xfd" + b"\1" + bytes(15)
+    assert A._cexpr((*[("i32", 1)] * 3, ("gc", (0xFB08, 2, 3), 3))).endswith(
+        b"\x08\xfb" + u32(2, 3)
+    )
+    assert A._cexpr((("null", -16),)) == u32(2) + b"\xd0\0"
 
 
 def test_constant_expression_checks() -> None:

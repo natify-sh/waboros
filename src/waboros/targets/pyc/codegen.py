@@ -2030,7 +2030,7 @@ class ModGen:
         }
         s.gtypes = [i[3][0] for i in s.gimports] + [g[0] for g in mod["globals"]]
         s.gmut = [i[3][1] for i in s.gimports] + [g[1] for g in mod["globals"]]
-        s.ginit = [("i32", 0)] * len(s.gimports) + [g[2] for g in mod["globals"]]
+        s.ginit = [(("i32", 0),)] * len(s.gimports) + [g[2] for g in mod["globals"]]
         # a mutable global that is imported or exported is a shared cell `C<i>`; others stay plain `G<i>`
         s.cells = {
             i for i, m in enumerate(s.gmut) if m and (i < len(s.gimports) or s.exported(3, i))
@@ -2092,36 +2092,39 @@ class ModGen:
         )
         return "_aalloc(RT%d, %s, %s, %d)" % (ty, v, a[-1], gc_size(st))
 
-    def val(s, init):
-        if init[0] in ("add", "sub", "mul"):
-            o = {"add": "+", "sub": "-", "mul": "*"}[init[0]]
-            return "((%s %s %s) & %#x)" % (
-                s.val(init[2]),
-                o,
-                s.val(init[3]),
-                M32 if init[1] == "i32" else M64,
-            )
-        if init[0] == "global":
-            return s.gname(init[1])
-        if init[0] == "func":
-            return s.fname(init[1])
-        if init[0] == "gc":  # S0013: statements into `s.pre` (a nest of any depth), a name back
-            names: dict[int, str] = {}
-            stack = [init]
-            while stack:  # operands first, in order; no recursion per nesting level
-                n = stack[-1]
-                todo = [a for a in n[2] if a[0] == "gc" and id(a) not in names]
-                if todo:
-                    stack.extend(reversed(todo))
-                    continue
-                stack.pop()
-                a = [names[id(e)] if e[0] == "gc" else s.val(e) for e in n[2]]
-                names[id(n)] = "t%d" % len(s.pre)
-                s.pre.append("    %s = %s" % (names[id(n)], s.gcnode(n[1], a)))
-            return names[id(init)]
-        if init[0] in ("f32", "f64"):
-            return flit(init[1], s.fb, 32 if init[0] == "f32" else 64)
-        return "None" if init[0] == "null" else repr(init[1])
+    def val(s, e):
+        """A constant expression's value as an expression of Python: the nodes in order, a
+        value stack of names, one statement into `s.pre` per operation (S0013), so a chain of any
+        depth stays flat. The caller emits `s.pre` before the line that uses the result."""
+        st: list[str] = []
+        for n in e:
+            k = n[0]
+            if k in ("add", "sub", "mul"):
+                y, x = st.pop(), st.pop()
+                name = "t%d" % len(s.pre)
+                o = {"add": "+", "sub": "-", "mul": "*"}[k]
+                m = M32 if n[1] == "i32" else M64
+                s.pre.append("    %s = ((%s %s %s) & %#x)" % (name, x, o, y, m))
+                st.append(name)
+            elif k == "gc":
+                a = st[len(st) - n[2] :]
+                del st[len(st) - n[2] :]
+                name = "t%d" % len(s.pre)
+                s.pre.append("    %s = %s" % (name, s.gcnode(n[1], a)))
+                st.append(name)
+            elif k == "global":
+                st.append(s.gname(n[1]))
+            elif k == "func":
+                st.append(s.fname(n[1]))
+            elif k in ("f32", "f64"):
+                st.append(flit(n[1], s.fb, 32 if k == "f32" else 64))
+            else:
+                st.append("None" if k == "null" else repr(n[1]))
+        return st[0]
+
+    def flush_pre(s, out):
+        out.extend(s.pre)
+        s.pre.clear()
 
     def gen(s):
         mod = s.mod
@@ -2168,7 +2171,7 @@ class ModGen:
                 )
                 gl.append("C%d" % i if i in s.cells else "G%d" % i)
                 continue
-            first = init[0] not in ("global", "func", "add", "sub", "mul", "gc")
+            first = len(init) == 1 and init[0][0] not in ("global", "func", "gc")
             if i in s.cells:
                 out.append("C%d = _Cell(%s)" % (i, s.val(init) if first else "0"))
             else:
@@ -2177,8 +2180,7 @@ class ModGen:
                     gl.append("G%d" % i)
             if not first:
                 v = s.val(init)
-                gi.extend(s.pre)
-                s.pre.clear()
+                s.flush_pre(gi)
                 gi.append("    %s = %s" % (s.gname(i), v))
         for j in range(len(s.tagimports), len(s.tagtypes)):
             out.append("TG%d = _Tag(%r)" % (j, tuple(mod["types"][s.tagtypes[j]][0])))
@@ -2220,18 +2222,16 @@ class ModGen:
             if init is not None:
                 k = len(s.timports) + ti
                 v = s.val(init)
-                L.extend(s.pre)
-                s.pre.clear()
+                s.flush_pre(L)
                 L.append("    T%d[:] = [%s] * len(T%d)" % (k, v, k))
         # an item that allocates may trap: every segment's items come before the first active
         # write (spec, instantiation; the other items cannot trap, so their code is as before)
-        early = any(e[0] == "gc" for info in mod["elem_info"] for e in info[3])
+        early = any(e[-1][0] == "gc" for info in mod["elem_info"] for e in info[3])
         for i, (info, mode) in enumerate(zip(mod["elem_info"], mod["elem_mode"], strict=True)):
             gl.append("ES%d" % i)
             if early:
                 items = [s.val(e) for e in info[3]]
-                L.extend(s.pre)
-                s.pre.clear()
+                s.flush_pre(L)
                 L.append("    ES%d = [%s]" % (i, ", ".join(items)))
         for i, ((ti, off, _, items), mode) in enumerate(
             zip(mod["elem_info"], mod["elem_mode"], strict=True)
@@ -2239,9 +2239,10 @@ class ModGen:
             if not early:
                 L.append("    ES%d = [%s]" % (i, ", ".join(s.val(e) for e in items)))
             if mode == "active":
+                v = s.val(off)
+                s.flush_pre(L)
                 L.append(
-                    "    _eseg%s(T%d, %s, ES%d)"
-                    % ("64" if s.taddr[ti] == I64 else "", ti, s.val(off), i)
+                    "    _eseg%s(T%d, %s, ES%d)" % ("64" if s.taddr[ti] == I64 else "", ti, v, i)
                 )
             if mode != "passive":
                 L.append("    ES%d = []" % i)
@@ -2251,9 +2252,11 @@ class ModGen:
         for i, (off, d) in enumerate(mod["datas"]):
             if off is not None:
                 mi = mod["data_mem"][i]
+                v = s.val(off)
+                s.flush_pre(L)
                 L.append(
                     "    _dseg%s(%s, %s, %r)"
-                    % ("64" if s.maddr[mi] == I64 else "", s.mname(mi), s.val(off), d)
+                    % ("64" if s.maddr[mi] == I64 else "", s.mname(mi), v, d)
                 )
             if i in s.dused:
                 dg.append("D%d" % i)

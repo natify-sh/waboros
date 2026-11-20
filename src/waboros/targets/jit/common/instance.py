@@ -1130,18 +1130,12 @@ class JitInstance(Instance):
             self.call(mod["start"], [])
 
     def _const(self, e: tuple[Any, ...]) -> int:
-        """A constant expression's value, operands first, of any depth without recursion (S0014
-        "Constant expressions"): a tree of the front end or of the artifact reader."""
+        """A constant expression's value: its nodes in order over a value stack, of any length
+        (S0014 "Constant expressions"): the front end's nodes or the artifact reader's."""
         vals: list[int] = []
-        todo: list[tuple[Any, bool]] = [(e, False)]
-        while todo:
-            n, done = todo.pop()
+        for n in e:
             k = n[0]
-            kids = n[2:4] if k in ("add", "sub", "mul") else n[2] if k == "gc" else ()
-            if kids and not done:
-                todo.append((n, True))
-                todo += [(x, False) for x in reversed(kids)]
-            elif k in ("i32", "i64", "f32", "f64", "v128"):
+            if k in ("i32", "i64", "f32", "f64", "v128"):
                 vals.append(n[1])
             elif k == "global":
                 vals.append(self._read_global(n[1]))
@@ -1150,8 +1144,8 @@ class JitInstance(Instance):
             elif k == "null":
                 vals.append(0)
             elif k == "gc":
-                a = vals[len(vals) - len(kids) :]
-                del vals[len(vals) - len(kids) :]
+                a = vals[len(vals) - n[2] :]
+                del vals[len(vals) - n[2] :]
                 vals.append(self._gc_op(n[1], a))
             else:
                 y, x, m = vals.pop(), vals.pop(), M32 if n[1] == "i32" else M64

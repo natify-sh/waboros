@@ -322,8 +322,8 @@ def test_items_1_with_only_function_indices_is_refused(monkeypatch: pytest.Monke
     validate(m)
     c = base.TARGETS["jit-x86_64"]().compile(m)
     good = A._sections(c, None)
-    seg = u32(1) + b"\0" + FUNC_T + u32(0) + A._cexpr(("i32", 0)) + b"\1" + u32(1)
-    seg += A._cexpr(("func", 0)) + u32(0)
+    seg = u32(1) + b"\0" + FUNC_T + u32(0) + A._cexpr((("i32", 0),)) + b"\1" + u32(1)
+    seg += A._cexpr((("func", 0),)) + u32(0)
     assert good["segments"] != seg
     monkeypatch.setattr(A, "_sections", emits({**good, "segments": seg}))
     with pytest.raises(A.ArtifactError, match="writer uses items 0"):

@@ -83,9 +83,7 @@ def test_deep_constant(via: str, monkeypatch: pytest.MonkeyPatch) -> None:
     reader and the instance never recurse (the front end's part: `tests/test_deep_const.py`)."""
     n = 300_000
     t, m, c = _compile(wat('(module (global (export "g") i32 (i32.const 0)))'))
-    e: Any = ("i32", 1)
-    for _ in range(n):
-        e = ("add", "i32", e, ("i32", 1))
+    e: Any = (("i32", 1), *(("i32", 1), ("add", "i32")) * n)
     c.module["globals"][0] = (0x7F, 0, e)
     if via == "file":
         monkeypatch.setenv("WABOROS_JIT_ARTIFACT", "1")

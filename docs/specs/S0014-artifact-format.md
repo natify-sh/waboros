@@ -878,3 +878,19 @@ When approved and implemented (step 7 unless noted):
   (`validate._const` uses an explicit stack, same errors in the same order), so point (3) above is
   closed: a 300 000-deep `i32.add` chain in a real binary validates and `jit-x86_64` instantiates it,
   direct and through the file (`tests/test_deep_const.py`). `pyc` codegen still recurses on it.
+* 2026-11-20: a constant expression is held as a flat tuple of nodes in postfix order, the order of
+  the wasm binary and of the file's `cexpr`, nowhere as a nested structure (LESSONS 136: freeing a
+  deep tuple tree crashes CPython 3.13 in a small stack, and Pyodide). Leaves as before
+  (`("i32", v)`, `("global", i)`, ...); `("add" | "sub" | "mul", "i32" | "i64")` pops two values;
+  `("gc", ins, n)` pops `n`; a non-constant expression is `(("bad",),)`. The writer is a loop over
+  the nodes, the reader produces the same flat form, `JitInstance._const` and `pyc`'s `ModGen.val`
+  are loops over a value stack. The artifact bytes did not change: `artifact.write` of all 2 525
+  spec modules that compile gives the same SHA-256 before and after, and read-then-write gives the
+  same bytes (reviewer's comparison; `tools/jit_dump.py` lists, which hash code and tables, not the
+  constant expressions, also identical). The validator now reports the first failing node in binary
+  order, as Wasmtime does; the old tree walk reported a left operand's type mismatch before an
+  unknown global or function on its right (the 2026-11-19 entry's "same errors in the same order"
+  no longer holds; `tests/test_validate.py::test_constant_expression_first_error`). A 300 000-deep `i32.add` chain now parses, validates and
+  instantiates on `pyc` and `jit-x86_64` (direct and through the file) inside a 256 KiB thread stack
+  (`tests/test_deep_const.py`). The earlier "tree" wording in steps 2 and 3 above describes the form
+  before this entry.

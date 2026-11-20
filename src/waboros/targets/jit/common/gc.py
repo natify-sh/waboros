@@ -199,16 +199,14 @@ def depth(mod: Any, ti: int) -> int:
 
 
 def consts(mod: Any) -> list[Any]:
-    """Every constant expression of the module (globals, table initializers, element items) and
-    every one nested in an allocating one, without recursion."""
+    """Every node of every constant expression of the module (globals, table initializers,
+    element items), the allocating ones included."""
     out: list[Any] = []
-    todo = [g[2] for g in mod["globals"]] + [e for e in mod["tinit"] if e is not None]
-    todo += [e for _, _, _, items in mod["elem_info"] for e in items]
-    while todo:
-        e = todo.pop()
-        out.append(e)
-        if e[0] == "gc":
-            todo += e[2]
+    for e in [g[2] for g in mod["globals"]] + [e for e in mod["tinit"] if e is not None]:
+        out += e
+    for _, _, _, items in mod["elem_info"]:
+        for e in items:
+            out += e
     return out
 
 
