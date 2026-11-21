@@ -1550,6 +1550,15 @@ compatibility between architectures is asked for.
   through the compiler's `tail_switch`. A later hop starts in a body whose return address is its
   own module's C entry: that frame is unwound and the foreign C entry is jumped to (a C sibling
   call). Every compiler must do this; a conformance test checks it.
+  *Amended (2026-11-21, S0015 re-review):* the requirement is a property: cross-boundary tail
+  chains in any mix of compilers run in constant native stack, and every return matches its call
+  (CET shadow stacks, Arm GCS). Two forms meet it (S0015, "Tail calls across the boundary"):
+  (2a) a direct C sibling jump to the record's C entry, for a compiler whose functions are their
+  C entries or whose internals keep only registers the boundary keeps (sljit's
+  `SLJIT_CALL_RETURN`); (2b) the first hop through the compiler's `tail_switch`, then later hops
+  in which the body *returns* to its own C entry with a private hop status and the C entry jumps
+  to the foreign C entry. The "unwound and jumped" wording above describes the prototype, which
+  discarded a return address a shadow stack still holds; it is not the required form.
 * **Compatibility rule.** S0014 Q3's exact `compiler` string stays the cache key, but it is not
   the compatibility rule. Compatibility follows the architecture, `format_version` and
   `ctx_abi_version`. A loader accepts other compiler versions and other compilers of the same

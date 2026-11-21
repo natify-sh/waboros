@@ -76,16 +76,16 @@ compiler's bridge.
 | caller-saved (a C entry may clobber) | `rax rcx rdx rsi rdi r8`–`r11`, every xmm/ymm/zmm, the status flags | `x0`–`x17`, `x30`, `v0`–`v7`, `v16`–`v31`, the high halves of `v8`–`v15`, NZCV |
 | never touched | — | `x18` (the platform register: Apple, Windows TEB; D23) |
 | direction flag | DF = 0 at entry and at exit | — |
-| FP control | MXCSR control bits (rounding RN, FTZ = 0, DAZ = 0, every exception masked: `0x1F80` with any sticky status) at entry and exit; a C entry that changes them restores them | FPCR at entry and exit: RMode = RN, FZ = 0, FZ16 = 0, DN = 0, no trap enabled; a C entry that changes it restores it |
+| FP control | MXCSR control bits (rounding RN, FTZ = 0, DAZ = 0, every exception masked: `0x1F80` with any sticky status) at entry and exit; a C entry that changes them restores them | FPCR at entry and exit: RMode = RN, FZ = 0, FZ16 = 0, DN = 0, AH = FIZ = NEP = 0 (FEAT_AFP), no trap enabled; a C entry that changes it restores it. PSTATE.SM = 0 and ZA off at entry and exit (SME) |
 | x87 | control word preserved; x87 register stack empty at entry and exit | — |
 | upper vector state | `vzeroupper` before any return or jump out of a C entry whose code used VEX or EVEX (above the baseline, ISA levels v3 and up) | — |
 | stack at entry | `rsp` ≡ 8 (mod 16), i.e. 16-aligned at the `call` | `sp` 16-aligned at all times |
 | red zone | **none on any OS**: nothing is kept below `rsp` (the Windows vectored handler of S0006 writes below it) | **none on any OS**: nothing is kept below `sp` (Apple's 128 bytes are not used) |
 | frame record | — | `x29` is preserved. A C entry that makes a frame pushes a frame record `{x29, x30}` and points `x29` at it before any call (Apple and Windows require a valid chain); the walk does not read it |
 | landing pad | `endbr64` first (CET IBT, R2) | `bti jc` first: accepts `blr` and `br` through any register (Q5). A C entry that signs its return address puts `paciasp` after the `bti jc`: `paciasp` alone is only an implicit `bti c` and refuses `br` through a register other than `x16`/`x17` |
-| reached by | `call`, or `jmp` with the stack as at a `call` (a sibling call, "Tail calls") | `blr`, or `br` with `x30` as at a `blr` |
+| reached by | `call`, or `jmp` with the stack as at a `call` (a sibling call, "Tail calls") | `blr`, or `br` with `x30` as at a `blr`: at a sibling `br`, `x30` holds the plain (unsigned, already authenticated) return address |
 | return | `ret` to its own `call` (CET shadow stack) | `ret` to `x30` (Arm GCS) |
-| native frames | each below one page, or the compiler emits its own stack probes (Windows): a compiler duty | the same |
+| native frames | the part allocated before the first `NSTACK_LIMIT` check stays within the headroom rule (about 768 bytes, with room for the saves around it); larger frames are allocated after the check, below one page per step or with the compiler's own stack probes (Windows): a compiler duty | the same |
 
 ### Arguments and the context
 ```c
@@ -110,11 +110,12 @@ int32_t f(uint64_t *ctx, uint64_t *frame);
   * Words 10 (`EXCEPTION`) and 14 (`EXIT_RECORD`) point to the store's pending word and exit
     record.
 * **Stack headroom.** A C entry checks `NSTACK_LIMIT` and `VSTACK_LIMIT` itself, in its body's
-  prologue, as every function does today. Between one such check and the next, the pushes that
-  happen before the next check may add at most **1 KiB** below the stack pointer of the last
-  check. This covers a caller's saves around a C call, a restore frame, a C entry's frame and the
-  next body's pushes before its check. So every frame lies above `nlimit − 4096`, the lowest
-  address the walk reads (D56). The prototype's worst case is 224 bytes on x86-64.
+  prologue, as every function does today. The rule: **no wasm code runs with the stack pointer
+  below `NSTACK_LIMIT − 1 KiB`, except a bridge's call into the host.** It covers every decrease
+  of the stack pointer before the next check: a caller's saves around a C call, a restore frame,
+  a C entry's frame, and the next body's pushes and frame allocation. So every frame lies above
+  `nlimit − 4096`, the lowest address the walk reads (D56). The prototype's worst case before a
+  check is 224 bytes on x86-64.
 
 ### The status and the private range
 * The return value is `0` or a **public** status of part 3: a trap code, `INTERRUPT` (12),
@@ -202,7 +203,8 @@ appendix "Reference listing of the runtime's `entry`".
   * preset `ctx[HOST_ERROR]` to 13, return the word as the status, and put back the enclosing
     preset (part 3, D34): the scratch gate's sljit bridge did both;
   * the rest of part 3's host-function contract, unchanged (the nested entry at
-    `slots + max(n, m)`).
+    `slots + max(n, m)`), with one sentence added: a host function writes only `0`, a public trap
+    code or `13` into `HOST_ERROR`, so no private status leaves through a bridge.
 
 ### The walk interface
 The GC's walk (D56, D65) and its check mode must cross frames of any compiler without knowing
@@ -228,7 +230,8 @@ their layout. The interface is:
    and **no value derived from one** (an interior or untagged pointer, a base plus offset) is in a
    register or anywhere but a value-stack slot that the map marks (`refs`, `live`, D65). The
    collector forwards and nulls only slots. A compiler without exact maps refuses (`Unsupported`)
-   every module that has reference-typed values.
+   every module with reference-typed values of the any, extern or exn hierarchy (funcrefs are
+   never marked: records live outside the heap).
 6. **Foreign frames are opaque:** the walk reads a frame only through its site numbers and its
    map. No frame-pointer chain, no unwind data, no compiler identity per frame.
 7. The walk knows the **set** of entry points (the runtime's, one per convention in the process)
@@ -293,8 +296,10 @@ return-then-jump form above keeps every `ret` balanced.
 From the scratch gate (x86-64; "Measurements") and SLJIT-BACKEND.md:
 * `ret_at` and `up` per site: a public frame-size API or a patch (walk interface item 2);
 * build with `SLJIT_CONFIG_X86_CET=1` (`endbr64` and shadow-stack-correct code);
-* frames below one page or stack probes (sljit's SysV build has no probes, also when its code runs
-  on Windows): enforced by the core;
+* a native frame of at most about 768 bytes before the first `NSTACK_LIMIT` check:
+  `sljit_emit_enter` allocates `local_size` before any code of ours runs, so a larger frame breaks
+  the headroom rule; and frames below one page or stack probes (sljit's SysV build has no probes,
+  also when its code runs on Windows), enforced by the core;
 * aarch64: a `bti jc` custom word at the start of every C entry (sljit emits no BTI); with Q5 (a)
   no change to the register `SLJIT_CALL_RETURN` jumps through (`x9`);
 * one sljit configuration for every OS (LESSONS 141), host calls only through the bridge.
@@ -337,7 +342,7 @@ From the scratch gate (x86-64; "Measurements") and SLJIT-BACKEND.md:
   * `restore_ret_at` is the number of bytes from the stack pointer at `tail_switch`'s call to the
     real return address; `restore_up` the same to the caller's stack pointer. Today's fixed values
     are 8 and 16; the prototype's are 56 and 64. Both are 0 when `tail_switch` is none.
-  * Every offset lies inside its blob.
+  * Every offset lies inside its blob, except `0xFFFFFFFF` (none).
 * **`.text`:** the code and data area as today, then each blob at the next multiple of 16 in record
   order, the gaps zero.
 * **Symbols:**
@@ -360,7 +365,8 @@ From the scratch gate (x86-64; "Measurements") and SLJIT-BACKEND.md:
   the reference listing; it sets up no register.
 * "Function records": `code` is a C entry, with the cases above.
 * "Tail calls": the property and the forms above, in place of the record-in-`rdx`/`x16` jump.
-* The trap-code table gains the **reserved private range** (bit 31 set).
+* The trap-code table gains the **reserved private range** (bit 31 set); "Host functions" says a
+  host writes only `0`, a public trap code or `13` into `HOST_ERROR`.
 * The **"Per architecture"** table splits:
   * **fixed per architecture:** the boundary convention, the exit record's meaning, the entry's
     saved block, landing pads, `CODE` alignment, the instruction cache;
@@ -407,9 +413,10 @@ written before this spec cannot run under it.
   * calls both ways, direct and through `call_indirect`;
   * traps, a host exception and a trap of a Python-JIT callee, back through sljit frames;
   * walks under `WABOROS_JIT_WALK_CHECK=1` across sljit and Python-JIT frames, sljit site
-    `ret_at` 24 / `up` 32;
-  * 10⁵ cross-compiler tail hops by `SLJIT_CALL_RETURN` in a 256 KiB thread, where a control that
-    calls instead of tail-calling ends in `STACK_OVERFLOW`, as it must;
+    `ret_at` 24 / `up` 32 (the walk-check run covered calls, traps, the walk and GC);
+  * 10⁵ cross-compiler tail hops by `SLJIT_CALL_RETURN` in a 256 KiB thread, run **without** the
+    walk check, where a control that calls instead of tail-calling ends in `STACK_OVERFLOW`, as it
+    must;
   * collections with a reference live in a sljit frame, through the Python side and through
     sljit's own bridge, forwarded correctly.
   Not tested there: interrupts and fuel, status 14 through sljit, a walk inside a hop chain,
@@ -605,26 +612,40 @@ When approved and implemented:
 
 ## Appendix: reference listing of the runtime's `entry`
 A listing for the C loader and for review, not the waboros runtime's bytes. `EXIT` is
-`8 · EXIT_RECORD`, `TRAP` is `8 · TRAP_CODE`. Labels and register choices are free; the saved
-block's place and steps 1–5 of the contract are not.
+`8 · EXIT_RECORD` (112) and `TRAP` is `8 · TRAP_CODE` (8). Labels and register choices are free;
+the saved block's place and steps 1–5 of the contract are not. The x86-64 listings are GNU as
+syntax with `.intel_syntax noprefix`, one instruction per line, comments after `#`.
 
-**x86-64, SysV host** (`rdi` ctx, `rsi` frame, `rdx` c_entry; rsp ≡ 8 mod 16 on entry):
+**Checked:**
+* the x86-64 SysV and aarch64 listings were assembled and run by the reviewer (2026-11-21, a C
+  harness on x86-64 and `llvm-mc` with `+bti` under QEMU for aarch64, scratch files, not
+  committed). Seen: the status, `TRAP_CODE`, the alignment the callee sees, the saved block's
+  frame word, the exit record put back, and a status with garbage in the upper half;
+* the Win64 listing was assembled only (GNU as 2.42); it has not been run on Windows.
+
+**x86-64, SysV host** (`rdi` ctx, `rsi` frame, `rdx` c_entry; `rsp` ≡ 8 mod 16 on entry):
 ```
 endbr64
-push rbx                      ; rbx keeps ctx across the call (boundary callee-saved)
-sub  rsp, 32                  ; rsp ≡ 0 mod 16; saved block at [rsp, rsp + 32)
+push rbx                       # rbx keeps ctx across the call (boundary callee-saved)
+sub  rsp, 32                   # rsp = 0 mod 16; the saved block is [rsp, rsp + 32)
 mov  rbx, rdi
-mov  rax, [rbx + EXIT]
-mov  rcx, [rax]      ; mov [rsp], rcx
-mov  rcx, [rax + 8]  ; mov [rsp + 8], rcx
-mov  rcx, [rax + 16] ; mov [rsp + 16], rcx
-mov  [rsp + 24], rsi
-call rdx                      ; c_entry(rdi = ctx, rsi = frame); return point = entry point
+mov  rax, [rbx + EXIT]         # the store's exit record
+mov  rcx, [rax]
+mov  [rsp], rcx
+mov  rcx, [rax + 8]
+mov  [rsp + 8], rcx
+mov  rcx, [rax + 16]
+mov  [rsp + 16], rcx
+mov  [rsp + 24], rsi           # the frame
+call rdx                       # c_entry(rdi = ctx, rsi = frame); return point = entry point
 mov  rcx, [rbx + EXIT]
-mov  rdx, [rsp]      ; mov [rcx], rdx
-mov  rdx, [rsp + 8]  ; mov [rcx + 8], rdx
-mov  rdx, [rsp + 16] ; mov [rcx + 16], rdx
-mov  eax, eax                 ; the status is 32 bits
+mov  rdx, [rsp]
+mov  [rcx], rdx
+mov  rdx, [rsp + 8]
+mov  [rcx + 8], rdx
+mov  rdx, [rsp + 16]
+mov  [rcx + 16], rdx
+mov  eax, eax                  # the status is 32 bits
 test eax, eax
 je   done
 mov  [rbx + TRAP], rax
@@ -633,26 +654,79 @@ add  rsp, 32
 pop  rbx
 ret
 ```
-**x86-64, Win64 host** (`rcx` ctx, `rdx` frame, `r8` c_entry): as SysV, with `push rbx; push rsi;
-push rdi` first, then `sub rsp, 192` (saved block at `[rsp, rsp + 32)`, `xmm6`–`xmm15` stored with
-`movdqa` at `[rsp + 32, rsp + 192)`), `mov rdi, rcx; mov rsi, rdx` before the call, `call r8`, the
-ten `movdqa` loads after it, and the matching `add rsp, 192; pop rdi; pop rsi; pop rbx`. No shadow
-space: the callee is SysV.
-
-**aarch64** (`x0` ctx, `x1` frame, `x2` c_entry):
+**x86-64, Win64 host** (`rcx` ctx, `rdx` frame, `r8` c_entry; `rsp` ≡ 8 mod 16 on entry). The
+callee is SysV, so no shadow space is allocated for it; the host's home area above the return
+address is not used:
+```
+endbr64
+push rbx                       # rbx keeps ctx across the call
+push rsi                       # Win64 callee-saved, SysV caller-saved
+push rdi                       # rsp = 0 mod 16
+mov  rdi, rcx                  # the SysV arguments, before anything uses rdi, rsi or rcx: ctx
+mov  rsi, rdx                  # frame
+sub  rsp, 192                  # the saved block is [rsp, rsp + 32); no shadow space for the SysV callee
+movdqa [rsp + 32], xmm6                # xmm6-xmm15 at [rsp + 32 + 16k]
+movdqa [rsp + 48], xmm7
+movdqa [rsp + 64], xmm8
+movdqa [rsp + 80], xmm9
+movdqa [rsp + 96], xmm10
+movdqa [rsp + 112], xmm11
+movdqa [rsp + 128], xmm12
+movdqa [rsp + 144], xmm13
+movdqa [rsp + 160], xmm14
+movdqa [rsp + 176], xmm15
+mov  rbx, rdi
+mov  rax, [rbx + EXIT]
+mov  rcx, [rax]
+mov  [rsp], rcx
+mov  rcx, [rax + 8]
+mov  [rsp + 8], rcx
+mov  rcx, [rax + 16]
+mov  [rsp + 16], rcx
+mov  [rsp + 24], rsi
+call r8                        # c_entry(rdi = ctx, rsi = frame); return point = entry point
+mov  rcx, [rbx + EXIT]
+mov  rdx, [rsp]
+mov  [rcx], rdx
+mov  rdx, [rsp + 8]
+mov  [rcx + 8], rdx
+mov  rdx, [rsp + 16]
+mov  [rcx + 16], rdx
+mov  eax, eax
+test eax, eax
+je   done
+mov  [rbx + TRAP], rax
+done:
+movdqa xmm6, [rsp + 32]
+movdqa xmm7, [rsp + 48]
+movdqa xmm8, [rsp + 64]
+movdqa xmm9, [rsp + 80]
+movdqa xmm10, [rsp + 96]
+movdqa xmm11, [rsp + 112]
+movdqa xmm12, [rsp + 128]
+movdqa xmm13, [rsp + 144]
+movdqa xmm14, [rsp + 160]
+movdqa xmm15, [rsp + 176]
+add  rsp, 192
+pop  rdi
+pop  rsi
+pop  rbx
+ret
+```
+**aarch64** (`x0` ctx, `x1` frame, `x2` c_entry; GNU as / `llvm-mc` syntax, comments after `//`):
 ```
 bti  c
 stp  x29, x30, [sp, #-128]!
 mov  x29, sp
-stp  x19, x20, [sp, #16]      ; x19 keeps ctx across the call
+stp  x19, x20, [sp, #16]  // x19 keeps ctx across the call
 mov  x19, x0
 ldr  x9, [x19, #EXIT]
 ldp  x10, x11, [x9]
 ldr  x12, [x9, #16]
-stp  x10, x11, [sp, #96]      ; saved block at [sp + 96, sp + 128)
+stp  x10, x11, [sp, #96]  // saved block at [sp + 96, sp + 128)
 stp  x12, x1, [sp, #112]
-blr  x2                       ; c_entry(x0 = ctx, x1 = frame); return point = entry point
-mov  w0, w0                   ; the status is 32 bits: zero-extend
+blr  x2  // c_entry(x0 = ctx, x1 = frame); return point = entry point
+mov  w0, w0  // the status is 32 bits: zero-extend
 ldr  x9, [x19, #EXIT]
 ldp  x10, x11, [sp, #96]
 ldr  x12, [sp, #112]
@@ -701,3 +775,14 @@ ret
 
   From the sljit gate: sibling-jump tail calls (case 2a), the `bti jc` choice (Q5), the sljit patch
   list, the bridge duties, and what the gate did not test.
+* 2026-11-21: after the re-review (nothing blocking):
+  * the appendix: listings one instruction per line in GNU as syntax, the Win64 listing written out
+    and assembled, which listings were run;
+  * the headroom rule as "no wasm code below `NSTACK_LIMIT − 1 KiB` but a bridge's host call", with
+    the 768-byte first-frame bound for sljit;
+  * `HOST_ERROR` takes only public values;
+  * the unsigned `x30` at a sibling `br`;
+  * FEAT_AFP and SME state;
+  * the any/extern/exn wording of walk item 5;
+  * the `0xFFFFFFFF` exception to the offset rule;
+  * the tail hops of the gate ran without the walk check.
