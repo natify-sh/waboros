@@ -2,7 +2,7 @@
 title: Lessons
 kind: log
 status: current
-updated: 2026-11-19
+updated: 2026-11-21
 ---
 
 # Lessons
@@ -1105,3 +1105,12 @@ What went wrong or surprised us while building the PoC, so it is not found again
     committed region and nothing else (`test_records_across_many_pages`). Host-side test code
     that copied the whole image (`string_at(base, cursor)`) also crossed the gap: copy the
     committed regions only. Found: S0014 step 4.2, 2026-11-20.
+138. **Aligning a section's start hides the end of what precedes it.** S0014 put the first
+    trampoline blob at the next multiple of 16 after the code and its data area, and also said the
+    two were "exactly the bytes `finish` returns": three quarters of x86-64 modules have code whose
+    length is not a multiple of 16, so a reader cannot tell the code's last byte from the padding
+    (a trailing zero is valid code or data), and the round trip `read(write(c)).code == c.code`
+    fails. Rule: when a format aligns what follows, the padding belongs to some field by
+    definition, and the writer applies that definition first (the code padded to 16 is the code
+    everywhere: `.text`, symbols, the view), so that `write(read(b)) == b`. Found: S0014 step 5
+    plan, 2026-11-21.

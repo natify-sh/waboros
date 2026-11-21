@@ -1,9 +1,10 @@
-# pyright: reportUnknownVariableType=false, reportUnknownArgumentType=false, reportUnknownMemberType=false, reportArgumentType=false
+# pyright: reportUnknownVariableType=false, reportUnknownArgumentType=false, reportUnknownMemberType=false, reportArgumentType=false, reportPrivateUsage=false
 """S0014 step 2: `read(write(c))` has every field the instance reads (the inventory), and
 `write(read(b)) == b`, on every module of the pinned spec suite that a JIT compiles (both targets,
 both bounds modes), on CoreMark and on hand-written modules; thin and fat."""
 
 import hashlib
+import struct
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +34,18 @@ def norm(x: Any) -> Any:
     return x
 
 
+def tramps(blob: bytes) -> dict[str, tuple[bytes, tuple[int, ...], int]]:
+    """Each convention's blob, offsets from its start and `saved`, decoded from the file itself."""
+    s, out = artifact._sections_r(blob)[0], {}
+    name = {v: k for k, v in artifact.CONVENTIONS.items()}
+    for k in range(struct.unpack_from("<I", s["trampolines"])[0]):
+        cid, start, size, *offs, saved = struct.unpack_from(
+            "<B3xIIIIIIIII", s["trampolines"], 4 + 40 * k
+        )
+        out[name[cid]] = (s["text"][start : start + size], tuple(o - start for o in offs), saved)
+    return out
+
+
 def compile_for(wasm: bytes, target: str, mode: str, monkeypatch: pytest.MonkeyPatch) -> Any:
     monkeypatch.setenv("WABOROS_JIT_BOUNDS", mode)
     m = parse(wasm)
@@ -55,7 +68,7 @@ def roundtrip(c: Any, wasm: bytes, target: str) -> bytes:
             assert norm(v.module[k]) == norm(mod[k]), k
         assert v.module["tkeys"] == {i: key(mod, i) for i in range(len(mod["tdefs"]))}
         assert (v.code, v.data_start, v.funcs, v.layout) == (
-            c.code,
+            c.code + bytes(-len(c.code) % 16),  # the padding belongs to the data area (S0014)
             c.data_start,
             c.funcs,
             c.layout,
@@ -65,6 +78,7 @@ def roundtrip(c: Any, wasm: bytes, target: str) -> bytes:
         assert v.stackmaps == c.stackmaps and v.wasm == w
         assert v.heap == c.layout.heap and v.subtype == c.subtype
         assert v.target == target and v.module_sha256 == hashlib.sha256(wasm).digest()
+        assert tramps(blob) == artifact._conventions(target)  # every convention, on any host
         again = artifact.write(v, target=v.target, module_sha256=v.module_sha256, wasm=v.wasm)
         assert again == blob
     return fat

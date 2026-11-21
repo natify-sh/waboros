@@ -112,9 +112,7 @@ def test_section_header_table_pinned() -> None:
     blob = small(wasm=True)
     h = heads(blob)
     s, _, _ = A._sections_r(blob)
-    names = [".waboros.header", ".text"] + [
-        f".waboros.{n}" for n in A.ORDER[2:] if n != "trampolines"
-    ]
+    names = [".waboros.header", ".text"] + [f".waboros.{n}" for n in A.ORDER[2:]]
     names += [".symtab", ".strtab", ".shstrtab"]
     assert len(h) == len(names) + 1 and h[0] == (0,) * 10
     shstr = blob[h[-1][4] : h[-1][4] + h[-1][5]]
@@ -124,8 +122,8 @@ def test_section_header_table_pinned() -> None:
         typ, fl, al, link, info, ent = (1, 0, 8, 0, 0, 0)
         if n == ".text":
             typ, fl, al = 1, 2 | 4, 4096  # SHF_ALLOC | SHF_EXECINSTR
-        if n == ".symtab":  # null + wasm[0]; link = .strtab
-            typ, link, info, ent = 2, i + 1, 2, 24
+        if n == ".symtab":  # null, wasm[0], 3 trampolines x 2 conventions; link = .strtab
+            typ, link, info, ent = 2, i + 1, 8, 24
         if n in (".strtab", ".shstrtab"):
             typ, al = 3, 1
         pos += -pos % al
@@ -164,11 +162,26 @@ def test_symbols_pinned() -> None:
         (f"wasm[{1 + i}]", 2, 0, 2, o, ends[ends.index(o) + 1] - o) for i, o in enumerate(code)
     ]
     want += [("thunk[0]", 2, 0, 2, thunk, ends[ends.index(thunk) + 1] - thunk)]
-    assert symbols(imp) == want
-    a = symbols(small("jit-aarch64"))  # the mapping symbols of AAELF64: $x at 0, $d at data_start
-    assert [x[0] for x in a] == ["", "wasm[0]", "$x"] + ["$d"] * (len(a) == 4)
-    assert a[2] == ("$x", 0, 0, 2, 0, 0)
-    assert [x[0] for x in symbols(small())] == ["", "wasm[0]"]
+    entries = []
+    for k, conv in enumerate(("sysv", "win64")):  # the trampolines, in `.waboros.trampolines` order
+        start, size, *offs = struct.unpack_from("<8I", s["trampolines"], 4 + 40 * k + 4)[:6]
+        cuts = [*offs[:4], start + size]
+        kinds = ("entry", "bridge", "sp_stub", "tail_switch")
+        tr = [
+            (f"__waboros_{n}_{conv}", a, b - a)
+            for n, a, b in zip(kinds, cuts, cuts[1:], strict=False)
+        ]
+        assert offs[0] == start and start % 16 == 0
+        want += [(n, 2, 0, 2, v, z) for n, v, z in tr[1:]]
+        entries.append((tr[0][0], 0x12, 0, 2, tr[0][1], tr[0][2]))  # STB_GLOBAL, STT_FUNC
+    assert symbols(imp) == want + entries
+    # the mapping symbols of AAELF64: $x at 0, $d at data_start, $x at the first trampoline
+    a64 = small("jit-aarch64")
+    a, first = symbols(a64), struct.unpack_from("<I", A._sections_r(a64)[0]["trampolines"], 8)[0]
+    tr = ["__waboros_bridge_aapcs64", "__waboros_sp_stub_aapcs64", "__waboros_tail_switch_aapcs64"]
+    assert [x[0] for x in a] == ["", "wasm[0]", *tr, "$x", "$d", "$x", "__waboros_entry_aapcs64"]
+    assert a[5] == ("$x", 0, 0, 2, 0, 0) and a[7] == ("$x", 0, 0, 2, first, 0)
+    assert [x[0] for x in symbols(small())][:2] == ["", "wasm[0]"]
 
 
 def test_config_sha256_is_the_specs_definition(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -265,9 +278,9 @@ def test_what_the_reader_ignores_is_accepted(monkeypatch: pytest.MonkeyPatch) ->
     assert canonical(patch(blob, ".symtab", "info", 1)) == blob  # first non-local symbol
     extra = A._symtab
 
-    def more(c: Any, mach: int, nimp: int) -> tuple[bytes, bytes]:  # one more symbol, and a name
-        sym, tab = extra(c, mach, nimp)
-        return sym + struct.pack("<IBBHQQ", len(tab), 0x12, 0, 2, 0, 0), tab + b"added\0"
+    def more(c: Any, mach: int, nimp: int, target: str) -> tuple[bytes, bytes, int]:
+        sym, tab, first = extra(c, mach, nimp, target)  # one more symbol, and a name
+        return sym + struct.pack("<IBBHQQ", len(tab), 0x12, 0, 2, 0, 0), tab + b"added\0", first
 
     monkeypatch.setattr(A, "_symtab", more)
     longer = small(wasm=True)
@@ -321,7 +334,7 @@ def test_items_1_with_only_function_indices_is_refused(monkeypatch: pytest.Monke
     m = parse(wat("(module (table 1 funcref) (func $f) (elem (i32.const 0) $f))"))
     validate(m)
     c = base.TARGETS["jit-x86_64"]().compile(m)
-    good = A._sections(c, None)
+    good = A._sections(c, None, "jit-x86_64")
     seg = u32(1) + b"\0" + FUNC_T + u32(0) + A._cexpr((("i32", 0),)) + b"\1" + u32(1)
     seg += A._cexpr((("func", 0),)) + u32(0)
     assert good["segments"] != seg

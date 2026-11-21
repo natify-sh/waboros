@@ -5,8 +5,8 @@ only, no host code (ctypes, mmap): the micro-compilers (D60) port this file's sh
 
 The module view carries the keys of the ValidModule that instantiation reads (S0014 "What
 instantiation reads: inventory"), as the front end builds them, so `JitInstance` has one path for a
-compiled and a loaded module: `module_view` gives `Compiled` the same keys (step 3). Not here yet:
-`.waboros.trampolines` (step 5). `load` is the loader's rules (S0014 "Semantics: the loader").
+compiled and a loaded module: `module_view` gives `Compiled` the same keys (step 3). `load` is the
+loader's rules (S0014 "Semantics: the loader").
 """
 
 import functools
@@ -37,7 +37,8 @@ TARGETS = {"jit-x86_64": (62, "x86-64-v1"), "jit-aarch64": (183, "armv8.0-a")}
 SWITCHES = ("WABOROS_JIT_NOPIN", "WABOROS_JIT_NOLIVE", "WABOROS_JIT_PAD", "WABOROS_JIT_LOOP_ALIGN")
 ORDER = ("header", "text", "types", "imports", "funcs", "tables", "memories", "globals", "tags",
          "exports", "segments", "context", "stackmaps", "traps", "trampolines", "wasm")  # fmt: skip
-REQUIRED = tuple(n for n in ORDER if n not in ("trampolines", "wasm"))  # until step 5
+REQUIRED = tuple(n for n in ORDER if n != "wasm")
+CONVENTIONS = {"sysv": 1, "win64": 2, "aapcs64": 3}  # ids in `.waboros.trampolines`
 BIN = {("add", "i32"): 0x6A, ("sub", "i32"): 0x6B, ("mul", "i32"): 0x6C,
        ("add", "i64"): 0x7C, ("sub", "i64"): 0x7D, ("mul", "i64"): 0x7E}  # fmt: skip
 BIN_NAME = {v: k for k, v in BIN.items()}
@@ -46,8 +47,8 @@ GC_POPS = {0xFB06: 2, 0xFB07: 1, 0xFB01: 0}  # operands; struct.new takes one pe
 M32, M64 = 0xFFFFFFFF, (1 << 64) - 1
 # the type of `ref.null`: the file has no heap type for it, so it fits any nullable reference
 NULLREF = "nullref"
-# section names in file order (S0014 "File layout"); no `.waboros.trampolines` until step 5
-NAMES = [".text" if n == "text" else f".waboros.{n}" for n in ORDER if n != "trampolines"]
+# section names in file order (S0014 "File layout")
+NAMES = [".text" if n == "text" else f".waboros.{n}" for n in ORDER]
 NAMES += [".symtab", ".strtab", ".shstrtab"]
 # the module keys instantiation reads (S0014 "What instantiation reads: inventory"): no bodies
 INVENTORY = ("tdefs", "types", "tkeys", "imports", "ttypes", "taddr", "maddr", "mems", "funcs",
@@ -208,11 +209,34 @@ def _types(mod: Any) -> bytes:
     return b"".join(out) + _u("I", len(td)) + b"".join(T.key(mod, i) for i in range(len(td)))
 
 
-def _sections(c: Any, wasm: bytes | None) -> dict[str, bytes]:
+def _conventions(target: str) -> dict[str, tuple[bytes, list[int], int]]:
+    """The target's conventions in file order: (blob, offsets, ENTRY_SAVED) from abi.assemble."""
+    t: Any = base.TARGETS[target]()
+    return t.conventions()
+
+
+def _text(c: Any, target: str) -> tuple[bytes, bytes, list[tuple[str, int, list[int], int]]]:
+    """`.text`: the code and data area padded with zeros to a multiple of 16 (the padding is part
+    of the data area), then each convention's blob, as abi.assemble gives it, at the next multiple
+    of 16; `.waboros.trampolines`; and (convention, start, offsets, size) per blob."""
+    convs = _conventions(target)
+    text, pay, at = bytearray(c.code), [_u("I", len(convs))], []
+    for name, (blob, offs, saved) in convs.items():
+        text += bytes(-len(text) % 16)
+        o = len(text)
+        text += blob
+        pay.append(_u("BBHII", CONVENTIONS[name], 0, 0, o, len(blob)))
+        pay.append(_u("7I", *(o + x for x in offs), saved))
+        at.append((name, o, offs, len(blob)))
+    return bytes(text), b"".join(pay), at
+
+
+def _sections(c: Any, wasm: bytes | None, target: str) -> dict[str, bytes]:
     mod = c.module
     imps = mod["imports"]
     tt, mt = iter(range(len(mod["ttypes"]))), iter(range(len(mod["maddr"])))
     s: dict[str, bytes] = {"types": _types(mod)}
+    s["text"], s["trampolines"], _ = _text(c, target)
     b = [_u("I", len(imps))]
     for k, m, n, d in imps:
         b.append(_str(m) + _str(n) + bytes((KINDS.index(k),)))
@@ -277,17 +301,29 @@ def _sections(c: Any, wasm: bytes | None) -> dict[str, bytes]:
     return s
 
 
-def _symbols(c: Any, mach: int, nimp: int) -> list[tuple[str, int, int, int]]:
-    """(name, value, size, info): the locals only (no trampolines yet, step 5)."""
+def _symbols(c: Any, mach: int, nimp: int, target: str) -> list[tuple[str, int, int, int]]:
+    """(name, value, size, info): the locals, then the global entry symbols (S0014 "Symbols")."""
     starts = [(o, f"wasm[{nimp + k}]") for k, (o, _) in enumerate(c.funcs)]
     starts += [(o, f"thunk[{i}]") for i, o in sorted(c.thunks.items())]
     ends = sorted({o for o, _ in starts} | {c.data_start})
     out = [(n, o, ends[ends.index(o) + 1] - o, 2) for o, n in starts]
+    at = _text(c, target)[2]
+    entries = []
+    for conv, o, offs, size in at:
+        cuts = [o + x for x in offs[:4]] + [o + size]
+        names = ("entry", "bridge", "sp_stub", "tail_switch")
+        tramp = [
+            (f"__waboros_{n}_{conv}", a, b - a)
+            for n, a, b in zip(names, cuts, cuts[1:], strict=False)
+        ]
+        out += [(n, a, z, 2) for n, a, z in tramp[1:]]
+        entries.append((*tramp[0], 0x12))  # STB_GLOBAL, STT_FUNC
     if mach == 183:
         out.append(("$x", 0, 0, 0))
-        if len(c.code) > c.data_start:
+        if at[0][1] > c.data_start:  # the data area (its padding included) is not empty
             out.append(("$d", c.data_start, 0, 0))
-    return out
+        out.append(("$x", at[0][1], 0, 0))
+    return out + entries
 
 
 def _strtab(names: list[str]) -> tuple[bytes, dict[str, int]]:
@@ -299,11 +335,12 @@ def _strtab(names: list[str]) -> tuple[bytes, dict[str, int]]:
     return bytes(tab), off
 
 
-def _symtab(c: Any, mach: int, nimp: int) -> tuple[bytes, bytes]:
-    """The `.symtab` and `.strtab` payloads the file of `c` must have."""
-    syms = _symbols(c, mach, nimp)
+def _symtab(c: Any, mach: int, nimp: int, target: str) -> tuple[bytes, bytes, int]:
+    """The `.symtab` and `.strtab` payloads the file of `c` must have, and the first global."""
+    syms = _symbols(c, mach, nimp, target)
     strtab, so = _strtab([n for n, *_ in syms])
-    return bytes(24) + b"".join(_u("IBBHQQ", so[n], i, 0, 2, v, z) for n, v, z, i in syms), strtab
+    tab = bytes(24) + b"".join(_u("IBBHQQ", so[n], i, 0, 2, v, z) for n, v, z, i in syms)
+    return tab, strtab, 1 + sum(i >> 4 == 0 for *_, i in syms)
 
 
 def write(
@@ -335,13 +372,13 @@ def write(
     compiler = compiler_string(target)
     hdr = module_sha256 + hashlib.sha256(cfg.encode()).digest()
     hdr += _u("HHHHIIQQQ", 1, 0, 1, 0, c.flags, 0, 0, 0, 0) + _str(compiler)
-    secs = _sections(c, wasm)
-    secs["header"], secs["text"] = hdr, bytes(c.code)
+    secs = _sections(c, wasm, target)
+    secs["header"] = hdr
     nimp = sum(k == "func" for k, *_ in c.module["imports"])
-    symtab, strtab = _symtab(c, mach, nimp)
+    symtab, strtab, first = _symtab(c, mach, nimp, target)
     parts = [(".text" if n == "text" else f".waboros.{n}", 1, 6 * (n == "text"), secs[n],
               4096 if n == "text" else 8, 0, 0, 0) for n in ORDER if n in secs]  # fmt: skip
-    parts += [(".symtab", 2, 0, symtab, 8, len(parts) + 2, len(symtab) // 24, 24),
+    parts += [(".symtab", 2, 0, symtab, 8, len(parts) + 2, first, 24),
               (".strtab", 3, 0, strtab, 1, 0, 0, 0)]  # fmt: skip
     shstr, sh = _strtab([p[0] for p in parts] + [".shstrtab"])
     parts.append((".shstrtab", 3, 0, shstr, 1, 0, 0, 0))
@@ -630,6 +667,37 @@ def _cexpr_r(r: _R, env: _Env, want: Any = None) -> Any:
     return tuple(out)
 
 
+def _trampolines(text: bytes, b: bytes, target: str) -> bytes:
+    """The code and data area of `.text` (up to the first blob), after the blobs are checked: laid
+    out as the writer lays them out, and every convention's record and blob equal to what its
+    abi.assemble gives (S0014, Q4 (b): on any host, as `compiler` is this process's anyway)."""
+    r = _R(b, ".waboros.trampolines")
+    convs = _conventions(target)
+    if r.u32() != len(convs):
+        r.fail(f"not one record per convention of {target} ({', '.join(convs)})")
+    first = pos = -1
+    for name, (blob, offs, saved) in convs.items():
+        cid = r.u8()
+        r.zero(3)
+        start, size, *rest = (r.u32() for _ in range(9))
+        if cid != CONVENTIONS[name]:
+            r.fail(f"convention {cid} where the format has {name} ({CONVENTIONS[name]})")
+        if first < 0:
+            first = start
+            if start % 16 or start > len(text):
+                r.fail("the first blob is not at a multiple of 16 inside .text")
+        elif start != pos + -pos % 16 or any(text[pos:start]):
+            r.fail(f"the {name} blob is not at the next multiple of 16, after zero bytes")
+        got = (size, text[start : start + size], tuple(x - start for x in rest[:6]), rest[6])
+        if got != (len(blob), blob, offs, saved):
+            r.fail(f"the {name} trampolines are not this compiler's (corrupt or forged file)")
+        pos = start + size
+    r.done()
+    if pos != len(text):
+        r.fail("bytes in .text after the last trampoline")
+    return text[:first]
+
+
 def _ident(b: bytes) -> None:
     if len(b) < 64 or b[:4] != b"\x7fELF" or b[4:7] != b"\x02\x01\x01" or b[7] != OSABI:
         raise ArtifactError("not a waboros artifact (ELF64 little-endian with OS/ABI 0xCB)")
@@ -692,7 +760,7 @@ def _sections_r(b: bytes) -> tuple[dict[str, bytes], int, int]:
     pos, secs = 64, {}
     for n, h in zip(order, heads[1:], strict=True):
         text, plain = n == ".text", n.startswith(".waboros.")
-        if n not in NAMES:  # unknown (or not yet known: trampolines): skipped, never read (D62)
+        if n not in NAMES:  # unknown: skipped, never read (D62)
             al = h[8] or 1
             if (h[0], h[3], h[4] % al) != (so[n], 0, 0) or al & (al - 1) or h[4] < pos:
                 raise ArtifactError(f"{n}: unknown section with a bad name, address, alignment"
@@ -796,7 +864,7 @@ def read(b: bytes) -> ModuleView:
     # funcs
     r = _R(s["funcs"], ".waboros.funcs")
     data_start, start = r.u32(), r.u32()
-    code = s["text"]
+    code = _trampolines(s["text"], s["trampolines"], hd.target)
     if data_start > len(code):
         r.fail("data_start is past the end of .text")
     funcs, last = [], -1

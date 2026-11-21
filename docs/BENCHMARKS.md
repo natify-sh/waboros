@@ -2,7 +2,7 @@
 title: Benchmarks
 kind: log
 status: current
-updated: 2026-11-19
+updated: 2026-11-21
 ---
 
 # Benchmarks
@@ -213,23 +213,28 @@ measure speed. The Linux leg stays: native CoreMark, guard against explicit, bel
 | `mpy`: import of source / of `.mpy` | 59 ms / 2 ms (`.mpy` 37 KB bytecode; native `.mpy` 285–312 KB) |
 | JIT `w2jit` / `w2jit2` | ~28–31 ms (3.13), ~50 ms (3.8); 71 KB / 39 KB of x86-64 |
 
-## Artifact size (S0014 step 2, 2026-11-18)
+## Artifact size (S0014 step 2, 2026-11-18; trampolines from step 5, 2026-11-21)
 
 CoreMark (`poc/in/core.wasm`, 19 463 bytes of wasm) written by `artifact.write` as an ELF64 file
-(the package's `gc` branch, no trampolines yet: step 5 adds about 0.6 KB per x86-64 file and 0.3 KB
-per aarch64 one). Thin = no `.waboros.wasm`, fat = with it.
+(the package's `gc` branch). Thin = no `.waboros.wasm`, fat = with it. Step 5 added the trampolines
+of every convention (blobs, padding, `.waboros.trampolines`, their symbols and section header):
++1 208 bytes per x86-64 file (`sysv` 308 and `win64` 314 bytes of code), +688 (explicit) and +680
+(guard) per aarch64 one (316 bytes of code); the before column is step 4.2's commit, measured in
+the same session (it equals step 2's numbers).
 
-| target, bounds mode | thin (bytes) | fat (bytes) |
-|---|---|---|
-| `jit-x86_64`, explicit | 55 048 | 74 592 |
-| `jit-x86_64`, guard | 51 408 | 70 952 |
-| `jit-aarch64`, explicit | 49 456 | 69 000 |
-| `jit-aarch64`, guard | 46 720 | 66 264 |
+| target, bounds mode | thin (bytes) | fat (bytes) | thin, fat before step 5 |
+|---|---|---|---|
+| `jit-x86_64`, explicit | 56 256 | 75 792 | 55 048, 74 592 |
+| `jit-x86_64`, guard | 52 616 | 72 152 | 51 408, 70 952 |
+| `jit-aarch64`, explicit | 50 144 | 69 688 | 49 456, 69 000 |
+| `jit-aarch64`, guard | 47 400 | 66 944 | 46 720, 66 264 |
 
-The spec's estimate (about 51 KB thin, 70 KB fat, x86-64 guard) holds: 51 408 and 70 952 plus the
-missing trampolines. Wasmtime's `.cwasm` of the same module is 53 608 bytes. Times on one run of
-CPython 3.13 (best of 7, type keys already cached): `write` 0.2 ms (explicit) and 0.4 ms (guard,
-669 fault points), `read` 0.3 ms and 0.8 ms; the instantiation time through a file is step 3's.
+The spec's estimate (about 51 KB thin, 70 KB fat, x86-64 guard) holds: 52 616 and 72 152. Step 5's
+`write` and `read` times (CPython 3.13, `taskset -c 2`, best of 7, alternated with step 4.2 twice,
+the second pair): `write` 0.18 against 0.15 ms (explicit) and 0.37 against 0.32 ms (guard), `read`
+0.33 against 0.32 ms and 0.76 against 0.78 ms (step 2's single run gave about the same: `write`
+0.2 and 0.4 ms, `read` 0.3 and 0.8 ms, 669 fault points in guard mode). Wasmtime's `.cwasm` of the
+same module is 53 608 bytes. The instantiation time through a file is step 3's.
 
 ## Instantiation from an artifact (S0014 step 3, 2026-11-19)
 

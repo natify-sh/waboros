@@ -86,7 +86,7 @@ Wasmtime does; see [ARTIFACT-CONTAINER.md](ARTIFACT-CONTAINER.md) (maintainer's 
 | id | section | content |
 |---|---|---|
 | 1 | `CODE` | the machine code, position-independent: internal branches relative, everything absolute through the context register |
-| 2 | `ENTRIES` | entry trampolines, one per host calling convention: `{sysv: offset, win64: offset}` on x86-64; `{aapcs64: offset, win-arm64: offset}` on aarch64. The host picks its own |
+| 2 | `ENTRIES` | entry trampolines, one per host calling convention: `{sysv: offset, win64: offset}` on x86-64; `{aapcs64: offset}` on aarch64 (one convention on Linux, macOS and Windows; S0014 `.waboros.trampolines`). The host picks its own |
 | 3 | `FUNCS` | per defined function: code offset, type index, frame size (slots), name (if any) |
 | 4 | `TYPES` | function types (param/result value types) |
 | 5 | `IMPORTS` | function imports: module, name, type index, context slot; memory/table/global imports with their types |

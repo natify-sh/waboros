@@ -35,6 +35,11 @@ class JitX86_64Target(JitTarget):
     def trampolines(self) -> "Trampolines":
         return trampolines()
 
+    def conventions(self) -> dict[str, tuple[bytes, tuple[int, ...], int]]:
+        return conventions()
+
+    convention = "win64" if sys.platform == "win32" else "sysv"
+
     # S0006 steps 1, 3, 4, 5 and musl
     guard_rows = frozenset({"linux-glibc", "linux-musl", "darwin", "win32", "android"})
     # `auto` gives guard here (D44; CI `jit`, glibc and musl;
@@ -69,9 +74,18 @@ class JitX86_64Target(JitTarget):
 
 
 @cache
+def conventions() -> dict[str, tuple[bytes, tuple[int, ...], int]]:
+    """Every convention's blob, offsets and ENTRY_SAVED, as abi.assemble gives them on any host:
+    what an artifact carries (S0014 `.waboros.trampolines`) and what this process runs."""
+    from waboros.targets.jit.x86_64.abi import ENTRY_SAVED, assemble
+
+    s, w = assemble(False), assemble(True)  # offsets as tuples: the cached value is shared
+    return {"sysv": (s[0], tuple(s[1]), ENTRY_SAVED), "win64": (w[0], tuple(w[1]), ENTRY_SAVED)}
+
+
+@cache
 def trampolines() -> "Trampolines":
     """This process's trampolines, assembled by abi.py and sealed once by the host side."""
     from waboros.targets.jit.common.instance import load_trampolines
-    from waboros.targets.jit.x86_64.abi import ENTRY_SAVED, assemble
 
-    return load_trampolines(*assemble(sys.platform == "win32"), ENTRY_SAVED)
+    return load_trampolines(*conventions()[JitX86_64Target.convention])

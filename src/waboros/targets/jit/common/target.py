@@ -46,6 +46,13 @@ class JitTarget:
     def trampolines(self) -> "Trampolines":
         raise NotImplementedError
 
+    convention: str  # the host convention this process runs (S0014 `.waboros.trampolines`)
+
+    def conventions(self) -> dict[str, tuple[bytes, tuple[int, ...], int]]:
+        """Per convention of the architecture, in file order: (blob, [entry, bridge, sp_stub,
+        tail_switch, entry_ret, restore], ENTRY_SAVED) as its abi.assemble gives them."""
+        raise NotImplementedError
+
     def guard_backend(self) -> Any:
         """The backend in guard mode (S0006); only where `guard_rows` is not empty."""
         raise NotImplementedError

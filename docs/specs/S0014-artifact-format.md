@@ -6,7 +6,7 @@ status: approved
 superseded_by:
 related: [D18, D23, D24, D29, D33, D35, D36, D44, D48, D54, D58, D59, D60, D61, D62, D63, D64, D65, D66, R2, R3, R6, S0003, S0006, S0013]
 owner: maintainer
-updated: 2026-11-19
+updated: 2026-11-21
 ---
 
 # S0014 JIT artifact format v1 in the ELF64 container
@@ -196,8 +196,10 @@ option's default is omitted, so existing hashes do not change.
 ### `.text`
 The machine code of the module, then its data area (jump tables of 32-bit relative offsets, never
 executed) from `data_start` (`.waboros.funcs`) to the first trampoline: together exactly the bytes
-the backend's `finish` returns. Then the trampoline blob of each convention (`.waboros.trampolines`),
-each at the next offset that is a multiple of 16, the gaps zero bytes; each blob is exactly what
+the backend's `finish` returns, then zero bytes to the next multiple of 16 (part of the data area; written as zero, not checked
+by a reader, which cannot tell them from data-area bytes).
+Then the trampoline blob of each convention (`.waboros.trampolines`), each at the next offset that
+is a multiple of 16, the gaps zero bytes; each blob is exactly what
 the architecture's `abi.assemble` returns for that convention. Position-independent: branches are
 relative (the trampolines' too: aarch64's `tail_switch` uses `adr` within its blob) and everything
 absolute is reached through the context register (part 3). A loader copies it into executable memory whose
@@ -427,8 +429,8 @@ n x convention:  u8 id (1 sysv, 2 win64, 3 aapcs64), u8 0, u16 0,
 x86-64 writes `sysv` then `win64`; aarch64 writes `aapcs64` (one convention on Linux, macOS and
 Windows); riscv64 defines its own with its baseline. Every offset lies inside its blob; `start` of
 the first blob is the end of the data area. Sizes today (2026-11-17, `abi.assemble`): x86-64 308
-bytes (`sysv`) and 314 (`win64`), aarch64 316, so about 0.6 KB per x86-64 artifact and 0.3 KB per
-aarch64 one. A loader finds them only through this payload, never through a symbol (D62).
+bytes (`sysv`) and 314 (`win64`), aarch64 316; with the padding, the payload and the symbols a CoreMark file grows by 1 208 bytes
+on x86-64 and 680-688 on aarch64 (BENCHMARKS.md, "Artifact size"). A loader finds them only through this payload, never through a symbol (D62).
 
 **One copy per store.** The frame walk recognises the entry's return point and `tail_switch`'s
 `restore` by address, and `tail_switch` checks for its own `restore`, so every instance of a store
@@ -439,14 +441,22 @@ Every later artifact's blob for that convention, and its `entry_ret`, `restore` 
 relative to the blob's `start`, **must be byte-identical** to the store's copy. The loader checks
 this (a compare of about 300 bytes), and does not rely on the `compiler` check alone: equal
 `compiler` strings are the writer's promise, the compare is the proof, and its failure means a
-corrupt or forged file. A mismatch is a refusal (thin) or a regeneration (fat). The other
-conventions' blobs are checked for being well-formed (offsets inside the blob), not compared.
+corrupt or forged file. A mismatch is a refusal (thin) or a regeneration (fat). Two rules, by who
+loads:
 
-**The waboros runtime** keeps assembling its trampolines in the process (`target.trampolines()`,
-one per process and architecture) and runs every store on them; it never executes an artifact's
-copy. Its check is the one above with its own copy as the store's: each artifact's blob for the
-running convention must equal the bytes `abi.assemble` gives, so the in-process and the file copies
-cannot drift. The writer writes exactly `abi.assemble`'s bytes for every convention.
+* **A foreign host** (no compiler, D36): the store's copy is the first artifact's; every later
+  artifact's record and blob for the running convention are compared with it as above, and the
+  other conventions are checked for being well-formed only (every offset but `saved`, a stack
+  displacement, inside its blob), not compared: such a host cannot make them.
+* **The waboros runtime** keeps assembling its trampolines in the process (`target.trampolines()`,
+  one per process and architecture) and runs every store on them; it never executes an
+  artifact's copy. As it can assemble every convention on any host, and requires its own exact
+  `compiler` string anyway (Q3), `read` compares **every** convention's record (`size`, `entry`,
+  `bridge`, `sp_stub`, `tail_switch`, `entry_ret`, `restore` relative to `start`, and `saved` as
+  is) and blob with what that architecture's `abi.assemble` gives: a mismatch in any is a corrupt
+  or forged file, refused thin and regenerated fat; the in-process and the file copies cannot
+  drift; and every file `read` accepts is the writer's, `write(read(b)) == b`. The writer writes
+  exactly `abi.assemble`'s bytes for every convention.
 
 The collector module (D61) is an ordinary module artifact compiled from
 `runtime/gc/collector.wasm`.
@@ -507,8 +517,8 @@ fat file is regenerated, below):
    and present on the CPU (part 1; the message names the missing features); every `flags` bit is
    known; `BOUNDS_GUARD` only where this host can run guard code (S0006: a handler for its row,
    installed and ours, and a guard at least `2^GUARD_LOG2`); every `features_required` bit is known.
-6. Every payload parses exactly with its checks; the trampolines of the host's convention equal
-   the store's copy ("`.waboros.trampolines`").
+6. Every payload parses exactly with its checks; the trampolines equal the store's copy (the
+   waboros runtime: every convention equals `abi.assemble`'s; "`.waboros.trampolines`").
 7. Instantiation, in the order of the wasm specification's instantiation: imports matched (kind,
    type by key and declared subtyping, limits and address type, as `link.py`); the context written
    (part 3); type-info records when `heap`; records, signature words, tags; globals in order
@@ -560,8 +570,8 @@ authoritative (D18).
   `c`'s, and `write(read(b)) == b`; with `wasm=` the same plus the fat section.
 * **Trampolines**: in every written artifact, each convention's blob and offsets equal
   `abi.assemble`'s for that convention (both x86-64 conventions on any host); an instance loaded
-  from a file runs on the process's copy, and a file whose running-convention blob differs by one
-  byte (or whose `restore` is moved) is refused thin and regenerated fat; in a C-style test of the
+  from a file runs on the process's copy, and a file whose blob of any convention differs by one
+  byte (or whose `restore` or `saved` is moved) is refused thin and regenerated fat; in a C-style test of the
   store rule, two artifacts loaded into one store share the first one's copy and a cross-instance
   tail call and a walk across both work.
 * **The spec suite through files**: `WABOROS_JIT_ARTIFACT=1 uv run python -m tests.spec.run
@@ -646,6 +656,14 @@ bytes); step 2 measures it.
 * **A separate trampoline artifact per compiler** (one file for foreign hosts, none in module
   artifacts) and **no trampolines in any artifact** (foreign hosts write their own from part 3):
   rejected in Q2.
+* **The trampolines are the runtime's, and no artifact carries them** (Q2 (c), seen from the
+  runtime's side; considered again and rejected 2026-11-21): the trampolines belong to the
+  compiler, not the runtime. D64 has one compiler per store and part 3's register table is per
+  compiler (a sljit micro-compiler keeps the context in another register), and a runtime may run
+  code from compilers it does not know (D60: micro-compilers of other architectures shipped as
+  `.wasm`; cross-compilation), so whoever produces the code must produce its trampolines. The
+  symbol collision of static linking is answered by per-artifact name prefixes, which D62
+  already reserves.
 * **wasm constant-expression bytes as they are**, or **precomputed values only**: see Q9.
 * **A `.waboros.data` section aligned to 4096** for copy-on-write memory images (Wasmtime's
   `.rodata.wasm`): no measurement asks for it; a later writer may align the data differently
@@ -666,7 +684,9 @@ bytes); step 2 measures it.
    tables: no file, but every host language reimplements the trampolines. Recommendation was (a).
    **Decided (maintainer, 2026-11-17): (b), in every module artifact** (part 2's `ENTRIES`, D59's
    symbols): `.waboros.trampolines` and the blobs in `.text`; a store runs on one copy, and the
-   loader checks every later artifact's copy byte for byte against it.
+   loader checks every later artifact's copy byte for byte against it. (c) was considered again
+   on 2026-11-21 as "the trampolines are the runtime's" and rejected: they are the compiler's
+   (D64, D60; "Alternatives considered").
 3. **Which versions the waboros runtime accepts in a thin file.** (a) Only its own `compiler`
    string, exactly (D18 as written; Wasmtime's default): a new waboros release refuses older thin
    files, the cache recompiles. (b) Any file whose `format_version`, `ctx_abi_version`, target and
@@ -933,6 +953,14 @@ When approved and implemented (step 7 unless noted):
   (the committed v1 files). 4.3 moves after step 5 because step 5 adds a required section
   (`.waboros.trampolines`), so a v1 file committed earlier would be refused by the final reader
   and would have to be regenerated.
+* Step 5 done (2026-11-21): every artifact carries the trampolines of every convention of its
+  architecture (`sysv` and `win64` on x86-64, `aapcs64` on aarch64) at the end of `.text`, the
+  `.waboros.trampolines` payload (now required) and their symbols; `read` requires every
+  convention's record and blob to be `abi.assemble`'s (Changes, 2026-11-21). The targets give
+  `conventions()` and `convention` (the running one), from which `trampolines()` seals the
+  process's copy. `tests/artifact/test_trampolines.py`. CoreMark files grow by 1 208 bytes
+  (x86-64) and 680-688 (aarch64) ([BENCHMARKS](../BENCHMARKS.md), "Artifact size"). Code bytes and
+  the D35 lists are unchanged.
 * 2026-11-20: step 4.2 done (D69, superseding D57's "committed from its start"; no format, context
   word or code change, so no version bump). `Reservation.commit_range`; `GcHeap` commits the
   header page and the type area as records are written, the whole 4 MiB tid map with the first
@@ -941,3 +969,20 @@ When approved and implemented (step 7 unless noted):
   and `exceptions/` 43 456 KiB instead of 1 282 112 (BENCHMARKS.md, "GC heap: committed bytes").
   Spec suite 64 229 pass, 0 fail; `gc` and `exceptions` 905 pass with stress, poison, verify and
   the walk check in both bounds modes; D35 lists unchanged on both JITs. Left: 4.3.
+* 2026-11-21: step 5 implemented. Points the code needed and the maintainer's answers (2026-11-21):
+  (1) **The padding before the first blob is part of the data area** (the `.text` paragraph said
+  "exactly the bytes the backend's `finish` returns" while `.waboros.funcs` and
+  `.waboros.trampolines` put the first blob at the end of the data area, its zero padding
+  included; about three quarters of x86-64 modules have code whose length is not a multiple of
+  16). The writer pads the code to 16 and uses that everywhere: `.text`, the aarch64 `$d` symbol
+  (emitted when the padded area is not empty) and the read view's `code`, which is the compiled
+  code plus 0-15 zero bytes. (2) `saved` is a stack displacement, not a `.text` offset: compared as
+  is, never range-checked. (3) The compare covers the whole record relative to `start` (`size`,
+  the six offsets, `saved`) and the blob, not only `entry_ret`, `restore` and `saved`. (4) The
+  waboros runtime compares every convention in `read`, a foreign host the running one
+  ("`.waboros.trampolines`", the two rules); so a flip in any blob is refused (thin) or
+  regenerated (fat) and every accepted file writes back to its own bytes. (5) The store rule's
+  test runs both instances of a store on a copy sealed from the first file's blob, the only place
+  a file's copy is executed. No version bump: the section is in the approved v1 table and no v1
+  file has been committed (step 4.3 follows). `.symtab`'s `sh_info` is the first global (the
+  entry symbols).

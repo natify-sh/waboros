@@ -206,7 +206,7 @@ def test_trailing_bytes_in_each_payload(monkeypatch: pytest.MonkeyPatch) -> None
     m = parse(SMALL)
     validate(m)
     c = base.TARGETS["jit-x86_64"]().compile(m)
-    good = A._sections(c, SMALL)
+    good = A._sections(c, SMALL, "jit-x86_64")
     for name in good:
         if name in ("wasm", "text", "header"):
             continue
