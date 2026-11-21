@@ -281,3 +281,9 @@ weights itself until then.
   A tag `Extern`'s `value` is `(exporting instance, tag index)` from `link.resolve`, each target
   resolves it to its own tag; `TargetInstance.export` of a tag returns the target's tag; a tag of
   another target is a `LinkError`.
+* 2026-11-11 (S0013 step 1a): `runtime/link.py` checks an import's type by the GC rules: a function
+  if the exported function's type is a subtype of the declared one, an immutable global
+  covariantly, a mutable global, a table's element type and a tag by type equivalence. Type identity
+  is `frontend.types.key(mod, i)`, the iso-recursive canonical key (rec group, position), which
+  replaces `functype_key`; the JITs' type ids (`jit/common/instance.type_id(mod, ti)`) use it too.
+  A module with GC types is refused by `pyc` and the JITs (`supports()`) until each claims `gc`.

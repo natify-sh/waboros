@@ -2,7 +2,7 @@
 title: Testing
 kind: reference
 status: current
-updated: 2026-11-05
+updated: 2026-11-21
 ---
 
 # Testing
@@ -29,6 +29,7 @@ When the pinned wasmtime / wasmtime-py version moves, the API-surface diff and t
 show what is new; the spec commit moves the same way, in small steps.
 
 `FEATURES.md` is generated from the expected-failures files (feature × target) by `tools/features.py`.
+The D25 parity test (`tests/spec/test_runner.py`) requires every JIT to fail what `pyc` fails in the directories both claim, with no exemption: since S0013 step 4 both JITs claim `gc`, and no target has an expected failure left (the "GC types" exemption of steps 2-3b is removed).
 
 ## Development dependencies (never runtime)
 
@@ -61,6 +62,141 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   of our validator.
 * Expected failures are listed per target in a file in the repo (feature not implemented yet), so
   progress is visible and regressions fail.
+* **The walk check** (`WABOROS_JIT_WALK_CHECK=1`, both JITs, S0013 step 3a): every JIT instance
+  created while it is set serves each of its host calls and libcalls only after walking the store's
+  whole native stack (`jit/common/walk.py`); a `throw` allocates through `ALLOC`, checked as every
+  service (S0013 step 6.2; the exception arena's refill service, removed in step 6.3, was checked
+  only when the store's first instance had the switch). The exit
+  record must be written, every return address must be a recorded call site, every stack word read
+  must lie between the store's native limit and the thread's stack top, the walk must cross exactly
+  the active entries and end each segment at the frame the runtime gave that entry; the walk then
+  writes null into the dead reference slots of every frame (the map's `refs` slots that its `live`
+  map does not mark, as a collection does; S0013 step 7, D65: since step 7.2 a whole-suite run nulls
+  every dead set of the suite at every host call; `tests/jit/test_walk.py` also tests it with a
+  forged table, through check mode and through a collection), and every slot of `refs` must hold a reference word: 0, a host value `(h << 2) | 2` with a live handle,
+  and, only in a store with a GC heap, an i31 below 2³² or the offset of a heap object (allocated,
+  8-aligned, its header a type-info record; S0013 step 3b; an exception object too, as exnref
+  slots are marked from step 6.2). That last test cannot see a wrongly
+  marked i32 slot holding a small integer, nor a missing mark (nothing moves before the
+  collector, S0013 step 5). A failure is a `RuntimeError` raised by the
+  call, so a broken frame layout or table shows up as a spec failure. Off by default: the
+  instances then use the same host callbacks as without the switch. Hand-assembled instances
+  (`tests/jit/test_abi*.py`, no stack-map table) are never checked. CI runs one spec run per
+  architecture with it (below); `tests/jit/test_walk.py` sets it itself.
+* **Through files** (`WABOROS_JIT_ARTIFACT=1`, both JITs, S0014 step 3; read at each
+  instantiation): every compiled module is written as a thin artifact, loaded back with `artifact.load` (its
+  compatibility checks included) and instantiated from the read form (`artifact.ModuleView`, no `ValidModule` behind it). `WABOROS_JIT_ARTIFACT=1
+  uv run python -m tests.spec.run --engine jit-x86_64` (both bounds modes, and `jit-aarch64` under
+  QEMU) must give the same results as without it (`tools/spec_diff.py` both ways: no difference),
+  also with the walk check and the GC switches on `gc exceptions`. It cannot be combined with the
+  switches that change code (`WABOROS_JIT_NOPIN`, `NOLIVE`, `PAD`, `LOOP_ALIGN`: `write` refuses).
+  `tests/artifact/test_instantiate.py` instantiates from the read form directly and checks that
+  `Compiled.module` and the read module have only the inventory's keys.
+  `tests/artifact/test_trampolines.py` (S0014 step 5): the instance of a loaded file runs on the
+  process's trampolines; a blob byte, a moved `restore` or `saved` of any convention is refused
+  thin and regenerated fat; the payload's layout rules; and the store rule of a foreign host (two
+  instances on one copy sealed from the first file's blob, a cross-instance tail call walked). The
+  round trip checks every convention's blob and offsets against `abi.assemble` on every module.
+* **The GC switches** (both JITs, S0013 step 5.3, D61; read when a store's heap is created, so a
+  test sets them with `monkeypatch.setenv` before instantiating): `WABOROS_JIT_GC_STRESS=1` makes
+  every allocation that may collect (in wasm code and the array services; never instantiation)
+  collect, so every object moves at every allocation; `WABOROS_JIT_GC_POISON=1` fills newly
+  committed object space, the from-space after each collection and the free part of the new
+  active space with 0xA5, so a stale reference or an unwritten field reads garbage;
+  `WABOROS_JIT_GC_VERIFY=1` checks the new space after each collection with `gcverify.check` (every
+  root and reference field null, an i31, a live host handle or an object start) and compares
+  `gcverify.digest` of the graph before and after; a failure loses the store (`RuntimeError`).
+  They are used together: `WABOROS_JIT_GC_STRESS=1 WABOROS_JIT_GC_POISON=1 WABOROS_JIT_GC_VERIFY=1
+  uv run python -m tests.spec.run --engine jit-x86_64 gc exceptions` (also with
+  `WABOROS_JIT_BOUNDS=explicit`, and on `jit-aarch64` under QEMU) must give 0 fail. The walk
+  check's "nothing moves before the collector" no longer holds under stress: a missing mark now
+  shows up as a stale or poisoned reference.
+  `tests/jit/test_gc_moving.py` runs them on, case by case, against `pyc` as the oracle;
+  `tests/jit/test_gc_roots.py` holds one reference in one place (imported global, shared table,
+  another instance's frame, a thunk or restore frame, a failed instantiation) under them.
+  `tests/jit/test_gc_subtype.py` (S0013 5.6) runs function-subtype sites (`call_indirect`,
+  `return_call_indirect`, `ref.test`, `ref.cast`, `br_on_cast(_fail)`, final and non-final targets)
+  on the functions of another module against `pyc`, shows that equality and final targets make no
+  call, and checks that no compiled module uses GC group word 7.
+  `tests/jit/test_stackmaps.py` (S0013 7.1, D65) checks the two-bitmap `STACKMAPS` encoding (round
+  trip, pool sharing on `(nslots, refs, live)`), that a map-less table is the same bytes in step
+  3a's form, and that a step-3a table with a map and forged tables (a `live` bit outside `refs`, a
+  bit past `nslots`, an empty map, a map index past the pool, trailing or missing bytes) raise
+  `ValueError`; `tests/jit/test_walk.py` refuses the step-3a table at instantiation.
+  `tests/jit/test_liveness.py` (S0013 7.2, D65; the plan's t1-t14, compile only, both JITs) checks
+  the exact `live` set of every site of small functions, one per edge kind: straight code, `tee`,
+  `br_if`/`br_on_null`/`br_on_non_null` (label and fall-through), `br_table`, nested loops (and the
+  pass count of `common/liveness.py`: 3 for that case), `return`/`unreachable`/`return_call` with
+  dead code after them, `try_table` clauses (each kind, a loop label, a `throw`), nested
+  `try_table`s, `if`/`else`, slots behind v128s, the sites inside `br_on_cast`,
+  `return_call_indirect` and `struct.new`, a parameter and an `exnref` local; the gate and
+  `WABOROS_JIT_NOLIVE`; and on the spec cache (skipped without it) `live` equal to `refs` above the
+  locals. The spec suite alone does not exercise the loop fixpoint: no spec function with a
+  reference local and a call site has a loop (every run takes one pass). **`WABOROS_JIT_NOLIVE=all`**
+  or `=<function indices>` (test only, read at compile time, shaped like `WABOROS_JIT_NOPIN`) gives
+  those functions `live = refs`, the maps of step 7.1, without changing a code byte: the switch to
+  bisect a liveness bug per function (D65).
+  The behaviour of the live sets (S0013 7.3, the plan's t16-t26) is in `tests/jit/test_gc_roots.py`,
+  under stress, poison and verify on the machine's JIT (both bounds modes on x86-64; QEMU for
+  aarch64): per edge kind (a loop's back edge, a `catch` and a `throw` to a handler, an enclosing
+  `try_table`'s handler, `br_if`, `br_table`, `if`/`else`, the then-arm continuing after the end, a
+  loop in a `try_table` body, a site before a `try_table`, slots behind v128s) a struct kept in one
+  local and read only on that path survives one collection between the write and the read; a
+  mutant that drops the edge nulls the slot and the read traps. t16 reads a frame's slots from a host
+  function through `walk.walk`: after a collection the dead local is 0 and the live one in the next
+  slot holds its moved struct; in check mode the dead `externref` slot is 0 at a host call. t24 and
+  t25 show the feature: a 16 MiB array and a host value held only by dead locals are not kept by
+  the next collection (with `WABOROS_JIT_NOLIVE=all` they are). t26 is the shape that "no nulling,
+  full maps at allocations" breaks (a dead slot left stale, marked again at the next allocation).
+  `tests/jit/test_walk.py` forges a map whose `nslots` reaches past the value stack: the collection's
+  gatherer raises before it writes (a forged shift alone is refused earlier, by the walk's check of
+  each segment's entry base). The mutation table is in S0013 Changes 7.3.
+  `tests/jit/test_exceptions.py` (S0013 6.1) checks which exception modules get the heap (a
+  `throw` or a `catch` clause: 128 KiB committed, no object space; only `throw_ref` and `catch_all`:
+  none) and a thrown tag type's exception record (kind 1, its offsets and size, its key apart from
+  the type's kind-3 record). From 6.2 (exceptions in the heap) it also checks that the first
+  throw commits the semispaces, that a full heap at `throw` ("GC heap out of memory", the
+  semispace cap lowered to 2 MiB with live exceptions in an exnref table) is not caught by an
+  enclosing `catch_all`, that `throw_ref` of null traps before the pending word changes, and that
+  an object whose identity a probe forged in the high or the low half matches no `catch $t`;
+  after the 6.2 review also an exnref whose only type is an inline block result across
+  collections, a missed clause that keeps a value under the outer label (the pad's scratch
+  slot), and a pad read past the heap through a forged handle (`MEMORY_OUT_OF_BOUNDS`, both bounds
+  modes). `test_a_throw_runs_no_python` and the full-heap test skip under
+  `WABOROS_JIT_GC_STRESS=1`, where every throw collects.
+  `test_gc_collect.py`'s table test (`TABLES`) keeps an exception only in an exnref table, with the
+  pending word naming another one, and reads it after one collection (S0013 6.5: before, it
+  passed with exnref tables not roots, LESSONS 122).
+  `test_gc_collect.py`, `test_gc_roots.py`, `test_walk.py` and `test_stackmaps.py` hold exception
+  payloads, exnref locals, globals and tables across collections and the throw's ALLOC site in
+  place of the arena. Step 6.4 adds the plan's t-list (`docs/plans/S0013-6-plan.md`, section 6),
+  each test setting the three switches itself: the object's bytes and its record (t1), a throw
+  whose allocation collects, caught one and three frames up with pins live (t2), an exnref in
+  every place it can be kept, rethrown after collections (t3, `test_gc_roots.py`), an exnref
+  array of 1 000 exceptions with `array.new_fixed`, `array.copy` and `array.fill` (t4), the
+  imported-tag aliases (t6), an uncaught payload read by the host after collections (t7), an
+  `ExnRef` kept by the host and forged ones (t8), pads that miss to the enclosing and the
+  caller's pad with an i32 payload zero-extended (t9), a tag type that also has a kind-3 record
+  (t10). t11 (`test_no_module_uses_the_reserved_words`, steps 6.3-6.4) checks that context words
+  11-13 are zero in every context and that no code names them, cross-compiled for both
+  architectures in both bounds modes: the spec's `exceptions/` and `gc/` modules, CoreMark and the
+  collector, and the trampolines and fault handlers assembled again under the spies. It sees a
+  word as a backend call's word, as a displacement off the context register, or off a register
+  the context was copied or added into (x86-64 `mov`/`lea`/`add`, aarch64 `mov`/`add`); a context
+  address loaded from memory, and Python-side reads, are not seen. The 6.3 review's mutants (an
+  aarch64 `add` into another register, an x86-64 copy of r15, a bridge read of word 11) fail it.
+  `tests/jit/test_gc_commit.py` (D69): the committed bytes of a one-struct heap and of a
+  function-subtype site, and 16 live stores under RLIMIT_DATA + 256 MiB in a subprocess (Linux
+  only; skipped under QEMU and on Android).
+  `tests/jit/test_gc_memory.py` (native only, the GC switches cleared, about 5 s on CPython 3.11 and
+  3.13; it runs in every `pytest` of the CI matrix and in the native arm64 `tests/jit` job, no
+  marker) is the memory test: after a warm-up the heap's capacity and committed pages do not move under 576 MB of dropped structs and
+  cycles, a live set over half the lowered cap raises "GC heap out of memory", the peak RSS
+  of a subprocess grows by under 8 MiB (Linux), and 10 M thrown and dropped exceptions leave the
+  committed pages and the capacity where 1 M left them (t12 of S0013 step 6, 0.1 s). The mutation
+  lists (S0013 Changes 5.5 and 6.4) are scratch scripts, not in the tree: each mutant a
+  `git archive` copy run with `PYTHONPATH` set to it (LESSONS 121), a process group killed on
+  timeout.
 
 ## Differential testing
 
@@ -91,7 +227,7 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   `return_call`, `unreachable`. It draws `BRTREE` from {0, 1, 2, 4} per module and also compares
   `sink` and `dse` alone; the rules change 0.9 % of smith modules (8 of 938) and 40 % of `--gen` modules (4 045 of 10 000). `--fbits` runs it
   with `WABOROS_PYC_FBITS=1` (D46).
-* `tools/fuzz.py --targets pyc,jit,wasmtime [--minutes M] [--seed S] [--gen] [--out DIR]` compares
+* `tools/fuzz.py --targets pyc,jit,wasmtime [--minutes M] [--seed S] [--gen] [--refs] [--out DIR]` compares
   `pyc`, `jit-x86_64` in guard and in explicit mode (`WABOROS_JIT_BOUNDS` set per module, in process)
   and Wasmtime (the spec runner's engines, so the same config switches) for `M` minutes. Per export
   call (three random argument sets with edge values, or the 28 fixed pairs with `--gen`) it compares
@@ -104,10 +240,35 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   export, the arguments, each side's outcome and which differ from Wasmtime) into `--out`
   (default `fuzz-out`). The exit status is always 0; the last line is the summary (modules, skips
   per target, timeouts, divergences). The workflow `fuzz-nightly.yml` (cron, and `workflow_dispatch`
-  with the minutes) runs smith and `--gen` for 45 minutes each outside `ci` and `platforms`, never
+  with the minutes) runs smith, `--gen` and `--refs` for 45 minutes each outside `ci` and `platforms`, never
   blocks, puts the counts and the descriptions in the job summary and keeps the artifact `fuzz-out`
   (the modules, the descriptions, the logs) for 14 days; a divergence is triaged later (above), not
-  fixed at once.
+  fixed at once. `--refs` (S0013 step 7, D65) also turns on smith's reference types and GC
+  (exceptions are always on in this mode), passes null for a nullable reference parameter (an
+  export with a non-nullable one is not called; a reference result compares as null or not) and
+  runs each engine in a process of its own (a fork per engine and module, one after the other; the
+  parent keeps no engine), each with the whole 8 GiB data limit (`DATA_LIMIT`) and its own alarm.
+  Smith's constant expressions allocate arrays of up to 2³² elements, which `pyc` holds as Python
+  lists, and without the limit the OOM killer ends the run (LESSONS 126); since the engines no
+  longer share one process's memory, a failure to allocate is that engine's own: the JIT's "GC
+  heap out of memory" (the documented 2 GiB limit, S0013), or `pyc`'s lists past 8 GiB, is the
+  divergence that remains, and a rerun alone gives the same answer. A child that is killed from outside or crashes shows as
+  `inst:ChildDied <code>`; one that exceeds its alarm makes the module count as a timeout, not as a
+  divergence. The alarm is 20 s per engine, 400 s when `WABOROS_JIT_GC_VERIFY=1` (every collection
+  digests the reachable graph before and after: a module with a large heap took 297 s there, S0013
+  Changes 7.3). With the GC switches (`WABOROS_JIT_GC_STRESS/POISON/VERIFY/WALK_CHECK=1`) the run
+  exercises the live sets of smith's reference locals at every allocation and host call. The
+  oracle's wrapper returns a non-null `exnref` result as an opaque "exn" reference, so such an
+  export compares as non-null on every engine. Without `--refs` the engines still share one
+  process and one alarm per module (the mode is unchanged). The nightly workflow runs
+  `--refs` as its third mode (`fuzz-out/refs`, the same minutes; the job's limit is 180 minutes);
+  one child can take up to 8 GiB, so one fuzz run at a time (LESSONS 128). Class A divergences
+  (the heap limit, about 1 % of modules) are kept in the artifact and triaged, not filtered.
+  Wasmtime has its own limits that look the same from here: its GC heap (about 4 GiB, cumulative:
+  a `LinkError` "GC heap out of memory: no capacity for allocation of N bytes" while instantiating,
+  where `pyc` still allocates), and a `table.grow` of a 64-bit table by a huge delta (2^32 and up)
+  that raises an out-of-memory `WasmtimeError` instead of returning -1 (class E, S0013 Changes,
+  step 8 triage); both are Wasmtime's behaviour, not ours.
 * Triage of the first runs (2026-11-05, 43 divergent modules from seeds 319-4020, 50204-50544, 70475-71186,
   90086-93499 and 900223-908219; the reduced cases are in `tests/test_pyc_trap_order.py`): in all of them only `pyc` differed, in
   five causes, all fixed and covered by `tests/test_pyc_trap_order.py` with the reduced modules. Four
@@ -121,6 +282,10 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   closed (2026-11-05: every divergence was a `pyc` defect outside the exception code, now fixed; a
   3-minute run found none). Later runs: triage them before the GC spec and phase 5 close
   (ROADMAP.md, "Next").
+* `src/waboros/targets/jit/common/gcverify.py` (S0013 step 5.1) is a test-only verifier of a JIT GC
+  heap image (form check, relocation-independent digest), tested by `tests/test_gcverify.py`; the
+  collector (step 5.3) will call it after each collection under `WABOROS_JIT_GC_VERIFY=1`, which does
+  not exist yet.
 
 ## Programs and benchmarks
 
@@ -175,7 +340,10 @@ explicitly (guard pages, S0006; the same two in a `python:3.13-alpine` container
 x86-64, `MUSL_GUARD`; the test file runs on the JIT of the machine and skips
 on other hosts, but fails under
 `WABOROS_JIT_REQUIRE=1` when `auto` does not give guard pages), so a regression in the
-verified-row check cannot silently turn guard pages off;
+verified-row check cannot silently turn guard pages off (that `jit-x86_64` guard run, the
+explicit `jit-aarch64` run under QEMU and the guard run of the `arm64` job also set
+`WABOROS_JIT_WALK_CHECK=1`; the `jit` job also runs `gc exceptions` on `jit-x86_64` with the three
+GC switches, explicit bounds, S0013 5.3);
 then both ISA gates and the D35 lists of both targets in both bounds modes, named on both hosts);
 `spec` (the spec run on `wasmtime`, `pyc` (also with `WABOROS_PYC_FBITS=1`), `jit-x86_64` in the default mode and with
 `WABOROS_JIT_BOUNDS=explicit`, then `auto` under `no_exec.py`); `arm64`
@@ -214,8 +382,10 @@ child processes in parallel (`--jobs`, default the CPU count); with `--in-proces
 Measured on GitHub runners, one run each (2026-11-09; serial: `ci` run 42715354410, `platforms` 42715354559;
 parallel: 42723969981, 42723969854): `spec` 3:11 → 1:30, `test` 3.13 2:39 → 1:38 (the other CPython cells
 −27…−43 %, PyPy 0:53 → 0:56), `arm64` 6:43 → 4:38, coverage 3:15 → 2:07, cibuildwheel cells −26…−58 %
-(Android and Pyodide, serial: −7 % and −4 %); `jit` 10:48 → 16:28, all of it in its QEMU steps, which did
-not change (runner variance).
+(Android and Pyodide, serial: −7 % and −4 %); `jit` 10:48 → 16:28 and 17:52 (`main` run 42730778821
+with the caches): its native pytest step got faster (0:54 → 0:40), but every QEMU step and both
+`isa_all.py` runs, none of which changed, took about 1.5-1.8× as long in both later runs. Cause not
+established (the runner's CPU is not logged); probably the runner, not the change.
 
 `tests/jit/test_fault_handler.py` checks the emitted fault handlers off their OS: the Darwin and
 Windows offsets against ctypes mirrors of xnu's and the Windows SDK's headers, the Darwin and Windows
@@ -230,8 +400,8 @@ of guard mode; the child is the base interpreter, not the venv launcher, and the
 where `IsUserCetAvailableInEnvironment` says the machine has no user CET (with CET, a policy read back as off
 fails).
 
-Packaging workflows (D40): `.github/workflows/coverage.yml` runs `pytest --cov` on Python 3.13 and keeps
-`coverage.xml` as an artifact and to Codecov (OIDC; informational, `codecov.yml`: its statuses and upload errors never fail CI); `publish.yml` runs on a `v*` tag, builds the sdist and the wheel,
+Packaging workflows (D40): `.github/workflows/coverage.yml` runs `pytest --cov` on Python 3.13, on x86-64 and on native arm64, and keeps
+combines the two data files (`coverage combine`) into one `coverage.xml`, kept as an artifact and sent to Codecov (OIDC; informational, `codecov.yml`: its statuses and upload errors never fail CI); `publish.yml` runs on a `v*` tag, builds the sdist and the wheel,
 smoke-tests the wheel in a clean environment, and publishes to PyPI (trusted publishing) and as a GitHub
 release. `.github/dependabot.yml` updates the `uv` lock file and the pinned actions weekly.
 
@@ -268,7 +438,8 @@ ARMv8.0-A and the `bti` HINTs only (tests: `tests/jit/test_isa_aarch64.py`, plan
 HINT words must fail).
 
 Cross-compilation (D35): `tools/jit_dump.py --target T OUT` writes a sha256 list of the code of every
-spec module and CoreMark. The `jit` job uploads its lists for both targets (artifact `jit-dump-x86`);
+spec module and CoreMark, and from S0013 step 3a a fourth column, the sha256 of its stack maps
+(`STACKMAPS`; code bytes and maps are compared as separate columns). The `jit` job uploads its lists for both targets (artifact `jit-dump-x86`);
 the `arm64` job (Linux) compiles the same modules and `diff`s its lists with them, so code compiled on
 x86-64 and on arm64 is the same bytes both ways.
 

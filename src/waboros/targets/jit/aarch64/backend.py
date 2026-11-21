@@ -33,14 +33,11 @@ from waboros.targets.jit.aarch64.encoder import (
     bitmask,
     invert,
 )
-from waboros.targets.jit.common import lower
+from waboros.targets.jit.common import gc, lower
 from waboros.targets.jit.common.backend import SWAP, AddK, Dst, Imm, Operand, Reg, Slot
 from waboros.targets.jit.common.compiler import EXN, SUPPORTED, WIDEOPS
 from waboros.targets.jit.common.context import (
-    ARENA_CURSOR,
-    ARENA_LIMIT,
     EXCEPTION,
-    EXN_REFILL,
     HOST_BRIDGE,
     INTERRUPT,
     NSTACK_LIMIT,
@@ -77,7 +74,7 @@ class Frame:
 class Backend:
     pool = POOL
     tos = 0
-    supported = SUPPORTED | v128.SUPPORTED | frozenset(WIDEOPS) | EXN
+    supported = SUPPORTED | v128.SUPPORTED | frozenset(WIDEOPS) | EXN | gc.OPS  # GC: S0013
 
     def __init__(self, *, guard: bool = False) -> None:
         self.a = Asm()
@@ -87,6 +84,9 @@ class Backend:
         self.faults: list[tuple[int, int]] = []  # (fault offset, resume offset), by `finish`
         self._faults: list[tuple[int, Label]] = []
         self._oob: Label | None = None  # the stub of the unchecked access `_bounds` just formed
+        # (ret, ret_at, up) per call (S0013 3a): the return address's offset; this frame's own
+        # return address (x30 in its frame record) and the caller's sp, from sp at the call
+        self.sites: list[tuple[int, int, int]] = []
         self.align = int(os.environ.get("WABOROS_JIT_LOOP_ALIGN") or 0)  # placement study only
         self.a.pad_here(int(os.environ.get("WABOROS_JIT_PAD") or 0))  # (tools/placement_sweep.py)
 
@@ -166,6 +166,7 @@ class Backend:
         self.a.rewind(pos)
         self.tables = [t for t in self.tables if t[2] < pos]
         self._faults = [x for x in self._faults if x[0] < pos]
+        self.sites = [x for x in self.sites if x[0] < pos]
 
     def finish(self) -> tuple[bytes, int]:
         """The code, then the data area: jump tables of 32-bit offsets of their pads from the
@@ -229,13 +230,14 @@ class Backend:
         if shift_slots:
             self._add_k(FRAME, FRAME, 8 * shift_slots)
         self.a.bl(label)
+        self.sites.append((len(self.a.buf), 8, f.size))
         if shift_slots:
             self._add_k(FRAME, FRAME, -8 * shift_slots)
         self._cbz(0, f.error, wide=False, nz=True)
 
     def host_thunk(self, word: int) -> int:
         at = len(self.a.buf)
-        abi.host_thunk(self.a, word)
+        self.sites.append((abi.host_thunk(self.a, word), 8, 16))
         return at
 
     def call_host(self, f: Frame, word: int, slot: int) -> None:
@@ -246,6 +248,7 @@ class Backend:
         a.mov_imm(0, word, wide=False)
         a.ld(16, CTX, 8 * HOST_BRIDGE)
         a.blr(16)
+        self.sites.append((len(a.buf), 8, f.size))
         abi.reload_memory(a)  # memory.grow may have run
         self._cbz(0, f.error, wide=False, nz=True)
 
@@ -256,12 +259,12 @@ class Backend:
         if shift_slots:
             self._add_k(FRAME, FRAME, 8 * shift_slots)
         self._add_k(16, CTX, 8 * word)
-        self._enter_record(16)
+        self._enter_record(f, 16)
         if shift_slots:
             self._add_k(FRAME, FRAME, -8 * shift_slots)
         self._cbz(0, f.error, wide=False, nz=True)
 
-    def _enter_record(self, r: int) -> None:
+    def _enter_record(self, f: Frame, r: int) -> None:
         """Call the function record at x<r> on its context (x28 saved in a 16-byte frame)."""
         a = self.a
         a.pair(False, CTX, ZR, SP, -16, "pre")
@@ -269,6 +272,7 @@ class Backend:
         abi.reload_memory(a)
         a.ld(17, r)
         a.blr(17)
+        self.sites.append((len(a.buf), 24, f.size + 16))
         a.pair(True, CTX, ZR, SP, 16, "post")
         abi.reload_memory(a)
 
@@ -703,6 +707,10 @@ class Backend:
         """dst = the address of context word `word` (a function record: `ref.func`)."""
         self._add_k(dst.id, CTX, 8 * word)
 
+    def func_type(self, dst: Reg, rec: Operand) -> None:
+        """dst = the canonical type id of the function record `rec` (its word 1; S0013 5.6)."""
+        self.a.ld(dst.id, self._r(rec, dst.id, True, zr=False), 8)  # never xzr: base 31 is sp
+
     # ---------------------------------------------------------------- floats
     # Values stay bit patterns in x registers and slots; v0/v1 are scratch inside one method, so
     # no v register is live across a call (v8-v15 never touched: AAPCS64 callee-saved). FP and
@@ -943,7 +951,7 @@ class Backend:
     def _call_x15(self, f: Frame, shift_slots: int) -> None:
         if shift_slots:
             self._add_k(FRAME, FRAME, 8 * shift_slots)  # x16 at most: the record is in x15
-        self._enter_record(15)
+        self._enter_record(f, 15)
         if shift_slots:
             self._add_k(FRAME, FRAME, -8 * shift_slots)
         self._cbz(0, f.error, wide=False, nz=True)
@@ -1013,66 +1021,13 @@ class Backend:
 
     # ---------------------------------------------------------------- exceptions (S0012)
     # As x86-64 (D52): at a landing pad the status is in w0 and only pins are live (every
-    # exception arrives at a call site); these use x9-x12 (x16/x17 through _word/_add_k for
-    # offsets no immediate takes) and keep w0. Only `landing`/`exn_match`/`throw` write the
-    # flags, each right before its b.cond (LESSONS 1). Pads are reached by direct branches only:
-    # no BTI pad.
+    # exception arrives at a call site); `landing` keeps w0 and writes the flags right before its
+    # b.cond (LESSONS 1). `throw` and the clauses are lowered in the core (D63). Pads are reached
+    # by direct branches only: no BTI pad.
     def landing(self, f: Frame, pad: Label, outer: Label) -> None:
         self.a.bind(pad)
         self.a.addsub_imm("subs", ZR, 0, STATUS_EXCEPTION, False)
         self._bcc("ne", outer)
-
-    def _exn(self) -> None:
-        """x9 = the pending object: {tag identity, payload words...}."""
-        self.a.ld(9, CTX, 8 * EXCEPTION)
-        self.a.ld(9, 9)
-
-    def exn_load(self, dst: Slot) -> None:
-        self._exn()
-        self._word(False, 9, FRAME, 8 * dst.k)
-
-    def exn_match(self, word: int, miss: Label) -> None:
-        self._exn()
-        self.a.ld(9, 9)
-        self._word(True, 10, CTX, 8 * word)
-        self.a.cmp(9, 10)
-        self._bcc("ne", miss)
-
-    def exn_field(self, dst: Slot, k: int) -> None:
-        self._exn()
-        self._word(True, 10, 9, 8 + 8 * k)
-        self._word(False, 10, FRAME, 8 * dst.k)
-
-    def throw(self, f: Frame, word: int, base: int, n: int) -> None:
-        """A new object {tag identity (context word `word`), slots base..base+n} bumped from the
-        store's arena chunk, made the pending exception: status 14 to `f.error`, no Python. A full
-        chunk: the refill service through the bridge (slot base+n = the words needed), then
-        again. Writes x0, x1, x9-x12, x16, x17."""
-        a = self.a
-        again, refill = a.label(), a.label()
-        a.bind(again)
-        a.ld(9, CTX, 8 * ARENA_CURSOR)  # the cursor's address
-        a.ld(10, 9)  # the object
-        self._add_k(11, 10, 8 * (1 + n))
-        a.ld(12, CTX, 8 * ARENA_LIMIT)
-        a.ld(12, 12)
-        a.cmp(11, 12)
-        self._bcc("hi", refill)
-        a.st(11, 9)
-        self._word(True, 12, CTX, 8 * word)
-        a.st(12, 10)
-        for k in range(n):  # word for word: a v128 is its two slots, low half first
-            self._word(True, 12, FRAME, 8 * (base + k))
-            self._word(False, 12, 10, 8 + 8 * k)
-        a.ld(9, CTX, 8 * EXCEPTION)
-        a.st(10, 9)
-        a.mov_imm(0, STATUS_EXCEPTION, wide=False)
-        a.b(f.error)
-        a.bind(refill)  # after a b: no fall-through path runs this
-        a.mov_imm(9, 1 + n)
-        self._word(False, 9, FRAME, 8 * (base + n))
-        self.call_host(f, EXN_REFILL, base + n)
-        a.b(again)
 
     def throw_ref(self, f: Frame, x: Operand) -> None:
         """Null traps (NULL_REFERENCE, not catchable); else the object becomes the one in flight.

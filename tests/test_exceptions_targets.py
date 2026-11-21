@@ -128,3 +128,20 @@ def test_wasmtime_start_function_throw_is_uncaught_exception() -> None:
     with pytest.raises(SpecTrap) as e:
         eng.instantiate(m, {})
     assert e.value.code is SpecCode.UNCAUGHT_EXCEPTION
+
+
+def test_wasmtime_returns_a_non_null_exnref_as_an_opaque_one() -> None:
+    """The fuzzer compares such a result as non-null (S0013 7.4; it raised `LookupError`)."""
+    pytest.importorskip("wasmtime")
+    from tests.spec.engine import OpaqueRef
+    from tests.spec.wasmtime_engine import WasmtimeEngine
+
+    eng = WasmtimeEngine()
+    wat = """(module (tag $t)
+      (func (export "some") (result exnref)
+        (block $b (result exnref) (try_table (catch_all_ref $b) (throw $t)) (unreachable)))
+      (func (export "none") (result exnref) (ref.null exn)))"""
+    inst = eng.instantiate(eng.load(wat2wasm(wat)), {})
+    for _ in range(2):  # the reference is unrooted each time
+        assert eng.call(inst, "some", []) == [OpaqueRef("exn")]
+        assert eng.call(inst, "none", []) == [None]

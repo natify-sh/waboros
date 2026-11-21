@@ -129,7 +129,15 @@ implement the wasm semantics itself: `common/lower.py` writes them once over the
 `ll_*` methods of each backend. The group is the bounds checks, the bulk end checks with the order and
 widths of their operands, and the table element check. The low layer names the machine registers and
 fits immediates to the encodings, under the contract S0011 states. It sits inside the backend side of
-D39, is never serialized and is not part of D39's frozen interface. GC is to be written on it as well.
+D39, is never serialized and is not part of D39's frozen interface.
+
+**GC is lowered once, in the shared core (S0013 Q9, D57).** `common/gc.py` lowers every GC
+instruction (allocation, struct and array access, casts, i31, the bulk array operators) onto D39
+methods only: the heap is a hidden i32 memory, so a field access is a `load` or `store` and S0011's
+bounds checks and guard fault points apply unchanged; a backend only lists the opcodes in its
+`supported` set. The same file builds the stack maps of every call site (D56), with the live sets
+of `common/liveness.py`, a backward pass over the structured body (S0013 step 7, D65). aarch64 gets GC by
+claiming the opcodes (S0013 step 4); no GC semantics is written per architecture.
 
 **Why structured, not a CFG of basic blocks**: Python (and Lua 5.1) has no `goto`, so `pyc`/`mpy` need
 structure; a JIT lowers structure to labels trivially. **Why not SSA**: phi nodes buy GVN/LICM-class
@@ -141,7 +149,8 @@ ones (TARGETS.md).
 
 * value bounds and wrap state of integer expressions (when a `& 0xFFFFFFFF` or compare-and-adjust is
   needed — worth ~15 % in `pyc`);
-* local use weights by loop depth (which locals to pin in registers), liveness where it helps;
+* local use weights by loop depth (which locals to pin in registers), liveness where it helps
+  (today the JIT's reference locals at call sites, for the stack maps: `jit/common/liveness.py`, D65);
 * side-effect order (memory, globals, calls, traps): when a tree may stay lazy and when it must be
   materialised;
 * branch targets with arities; trap points with wasm byte offsets (for `TRAPMAP` and `Trap.frames`);
@@ -386,7 +395,7 @@ Like Wasmtime's cache (and `Module.serialize`), compiled artifacts are kept on d
 ## Targets and architectures (D48)
 
 Native JIT targets exist for x86-64 and aarch64 and are planned for riscv64 (the first
-micro-compiler after `arm64.wasm`, MICRO-COMPILERS.md); the JIT artifact is independent of the
+micro-compiler after `aarch64.wasm`, MICRO-COMPILERS.md); the JIT artifact is independent of the
 operating system (D23). Every other architecture (s390x, i686 and 32-bit Windows, armv7, ppc64le,
 loongarch64, …) runs `pyc` (optionally, later, a sljit backend under our core: D48 amendment), with the D31 warning from `auto`. Pyodide is a track of its
 own (PYODIDE.md), not a JIT target. `mpy` is separate from this list (D48).
@@ -400,6 +409,38 @@ loaded and run on aarch64 only, the loader refusing another architecture or a mi
 Only explicit levels are valid for another target (`"native"` is the compiling CPU, D33). Artifact
 files come in phase 5; from phase 4 CI compares the aarch64 artifact made on x86-64 with the one made
 on the arm64 runner byte for byte. `pyc`/`mpy` artifacts belong to an interpreter version, not a CPU.
+
+## The kernel and runtime modules
+
+The direction (maintainer, 2026-11-10): a small native **kernel** that can do almost nothing, and
+everything else as wasm modules that run inside it and cannot reach past the memory they are given.
+The kernel is what cannot be done otherwise: allocate memory, run machine code, catch a trap, call
+the host (the context ABI, a few services, the bridge and the entry trampolines). The rest is
+runtime modules under D54 ([RUNTIME-MODULES.md](RUNTIME-MODULES.md)): the GC collector first (S0013),
+then instantiation and the segment libcalls, the decoder and validator, later the compilers
+themselves ([JIT-AS-WASM.md](JIT-AS-WASM.md)) and WASI's computing part. A new host (the C loader of
+D36, MicroPython, a host in another language) implements only the kernel; every capability comes
+as bytes, the same for all, written and tested once.
+
+What keeps it honest:
+* **The trusted base is the kernel and the machine-code generator**, not the kernel alone. A module
+  cannot reach outside its memory only if the code it was compiled to is correct; a JIT bug (a wrong
+  bounds check, a clobbered register) breaks isolation for every module at once. The spec suite, the
+  differential fuzz, the byte-identity lists (D35) and the ISA gates are therefore the safety
+  foundation, not only a quality measure. That stays true once the compiler is itself a module.
+* **Bootstrap is a required link**: modules need a compiler, and the compiler becomes a module. The
+  seed is an AOT artifact of the compiler in the wheel ([MICRO-COMPILERS-SHIPPING.md](MICRO-COMPILERS-SHIPPING.md)),
+  with `pyc` as the slowest path that is always there.
+* **The kernel boundary is described and frozen**: the context ABI v1 and the runtime services
+  specification (D36), fixed with the artifact format (ROADMAP "Next" item 6). The whole design
+  rests on that boundary being stable, which is why item 6 comes right after GC.
+* **Hot paths stay inline**: a call into a module costs a few ns, so whatever runs per instruction or
+  per memory access stays in the generated code (RUNTIME-MODULES.md, the criterion).
+
+Prior art for parts of it: RLBox in Firefox (C libraries sandboxed by compiling them to wasm),
+Wasmtime's `wasi_snapshot_preview1` adapter shipped as a wasm module, and self-hosting systems that
+grow from a small core (Forth, Smalltalk). A wasm runtime that grows itself this way from a kernel
+that ports by implementing only its ABI and services is not known to us.
 
 ## Versioned contracts
 

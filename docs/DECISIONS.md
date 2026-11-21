@@ -2,7 +2,7 @@
 title: Decisions
 kind: log
 status: current
-updated: 2026-11-05
+updated: 2026-11-18
 ---
 
 # Decisions
@@ -558,7 +558,7 @@ the opcode sets out of `common/compiler.py`. Measured for that decision (S0004 4
 abi ~930 code lines on aarch64 (integer core) vs ~1490 on x86-64 (full); compile 0.19–0.22 vs
 0.14–0.18 ms per module.
 
-Amended four times: S0005 (D41) added the `simd` method and the meaning of a v128 operand, in both backends, approved by the maintainer; then S0005 (D39 amendment item 5, Changes of 2026-11-02) added `move_v128`, which moves a v128 slot pair or writes a 128-bit constant as one 16-byte store (the store-forwarding fix, LESSONS 44), in both backends, approved by the maintainer. S0007 (amendment A, step 3) added the operand kind `AddK` (a pinned i32 plus a constant mod 2³²), accepted only by `move` and as the `load`/`store` address, in both backends, approved by the maintainer with x86-64 byte identity waived (amendment F). S0009 (amendment B, step 2a, 2026-11-04; maintainer, Q3 (b)) gave every method that addresses a memory or a table a **required keyword-only** `a64` (the i64 address type; a `(dst, src)` pair for `memory_copy`/`table_copy`), and `load`, `store` and `simd` a required keyword-only `lo` (an i64 memory's declared minimum in bytes, a lower bound of its size at run time; 0 for an i32 memory or a non-memory operator), neither with a default, so a forgotten argument is a `TypeError`, never i32 checks for an i64 memory. With `a64` the address or index operand is a full 64-bit value (a copy's `n` only when both sides are i64) and no `AddK` is passed; with `a64` false the method emits exactly the earlier code. In both backends; the code of every module without an i64 memory is unchanged on both JITs, guard and explicit (D35 lists; CoreMark included). The table methods assert `not a64` until S0009 step 3.
+Amended six times: S0005 (D41) added the `simd` method and the meaning of a v128 operand, in both backends, approved by the maintainer; then S0005 (D39 amendment item 5, Changes of 2026-11-02) added `move_v128`, which moves a v128 slot pair or writes a 128-bit constant as one 16-byte store (the store-forwarding fix, LESSONS 44), in both backends, approved by the maintainer. S0007 (amendment A, step 3) added the operand kind `AddK` (a pinned i32 plus a constant mod 2³²), accepted only by `move` and as the `load`/`store` address, in both backends, approved by the maintainer with x86-64 byte identity waived (amendment F). S0009 (amendment B, step 2a, 2026-11-04; maintainer, Q3 (b)) gave every method that addresses a memory or a table a **required keyword-only** `a64` (the i64 address type; a `(dst, src)` pair for `memory_copy`/`table_copy`), and `load`, `store` and `simd` a required keyword-only `lo` (an i64 memory's declared minimum in bytes, a lower bound of its size at run time; 0 for an i32 memory or a non-memory operator), neither with a default, so a forgotten argument is a `TypeError`, never i32 checks for an i64 memory. With `a64` the address or index operand is a full 64-bit value (a copy's `n` only when both sides are i64) and no `AddK` is passed; with `a64` false the method emits exactly the earlier code. In both backends; the code of every module without an i64 memory is unchanged on both JITs, guard and explicit (D35 lists; CoreMark included). The table methods assert `not a64` until S0009 step 3. S0013 step 3a (2026-11-11, maintainer's Q9 decision of 2026-11-06): every method that emits a call (`call_direct`, `call_record`, `call_indirect`, `call_ref`, `call_host`, `host_thunk`, and `throw` through its refill call) appends a site record `(ret, ret_at, up)` to `Backend.sites`, in both backends; no operand or instruction changes, code byte-identical on both JITs in both bounds modes (D56). S0013 step 5.6 (2026-11-16, maintainer's D6 of S0013 "Step 5 decisions", item (i) of the plan): `func_type(dst: Reg, rec: Operand)` loads word 1 (the canonical type id) of the function record at address `rec` (x86-64 `mov dst, [rec + 8]`, aarch64 `ldr dst, [rec, #8]`; a slot or an immediate goes through `dst` first, never `xzr` as a base), writes only `dst`, no flags; in both backends, tested against llvm-mc; only the code of modules with a function-subtype site changes (D35 lists: the 12 `gc/type-subtyping` modules 29-40, on both JITs and in both bounds modes).
 
 Added without an amendment (the rule above: a method only a new opcode reaches): S0008 (Q2 (a), step 3) added `wide(op, dst: Slot, args)` for the four wide-arithmetic opcodes `0xFC13`-`0xFC16`, in both backends: the low and high 64 bits into slots `dst.k`, `dst.k + 1` (the first operand's slots, each operand read before its slot is written), may write `tos` (the core spills it first), no flags live afterwards, no trap; read by a `reviewer` (S0008 step 4). The code of every module without these opcodes is unchanged on both JITs (D35 lists).
 
@@ -756,7 +756,7 @@ decide differently there.
 
 1. **Architectures.** A JIT target exists only for x86-64, aarch64 and riscv64: three of
    Cranelift's four 64-bit architectures (x86-64, aarch64, riscv64, s390x). x86-64 and aarch64 are
-   done; riscv64 is planned, the first micro-compiler after `arm64.wasm`
+   done; riscv64 is planned, the first micro-compiler after `aarch64.wasm`
    ([MICRO-COMPILERS.md](MICRO-COMPILERS.md)); ROADMAP phase 8.
    **s390x is excluded by the maintainer** and runs `pyc` (IBM mainframes only). Reasons, recorded, not a plan: the host
    is big-endian and wasm memory is little-endian, so every load and store would byte-swap (s390x
@@ -795,7 +795,7 @@ amendment of that track). Proposal, proof of concept and measurements:
 Consequences (for the hand-written JITs): there is no big-endian JIT host, so the backend interface (D39) never needs
 byte-reversed loads and stores and SIMD lanes stay in host order on every JIT target; the JIT CI stays
 on native runners (x86-64, arm64) plus QEMU for riscv64 when it comes. The micro-compilers are
-`x64.wasm`, `arm64.wasm` and `riscv64.wasm`.
+`x86_64.wasm`, `aarch64.wasm` and `riscv64.wasm`.
 
 ### D49. Relaxed SIMD: the deterministic profile of Wasm 3.0 for 16 operators, madd/nmadd native per target as Wasmtime; each target lowers all 20 itself
 Status: accepted (maintainer, 2026-11-04) · Date: 2026-11-04 · Supersedes: — · Evidence: [S0008](specs/S0008-relaxed-simd-wide-arithmetic.md) (Semantics: Wasmtime 50.0.1 measured 2026-11-04, its deterministic switch fuses madd/nmadd on every host and equals the 3.0 profile on the other 16 operators; without the switch 23 928 of 60 000 calls differ from the profile)
@@ -872,7 +872,7 @@ restore in a `finally` (for example reset when the outermost entry finds no JIT 
 item in ROADMAP.md, phase 5.
 
 ### D52. JIT exceptions: status 14 through frames, objects bumped from a store arena in code, context ABI v1 amended
-Status: accepted (maintainer, 2026-11-05) · Date: 2026-11-05 · Supersedes: — · Evidence: S0012 steps 3-4; `tests/jit/test_exceptions.py`; BENCHMARKS.md "Exceptions: throw cost"
+Status: accepted (maintainer, 2026-11-05) · Date: 2026-11-05 · Supersedes: — · Superseded in part by: D63 (the arena, words 11-13, the object and `exnref` encoding, the methods `exn_*` and `throw`; status 14 propagation stays) · Evidence: S0012 steps 3-4; `tests/jit/test_exceptions.py`; BENCHMARKS.md "Exceptions: throw cost"
 
 An exception crosses JIT frames as status 14 (`UNCAUGHT_EXCEPTION`), as traps do (S0012 Q1 A): each
 call site's existing `test eax, eax; jnz` goes to the frame's `error` label, which is the epilogue
@@ -908,7 +908,7 @@ every pool register may be a pin, so each method re-reads the pending word (main
 since S0012 step 3; aarch64 completes the amendment in step 4 (maintainer, Q-F), with the same
 shapes in AArch64 (`cmp w0, #14; b.ne` at a pad, `cbnz w0` after every call to `error`, x9-x12
 scratch); its code without exception instructions is unchanged (D35 list), and both JITs claim
-`exceptions/`, so the D25 parity test needs no exemption any more. Not done: a `throw` caught in the same function as a plain jump. Two tags of
+`exceptions/`, so the D25 parity test needs no exemption any more (from S0013 step 2 it ignores exactly the JITs' `unsupported: GC types` lines until they claim `gc`, steps 3b-4). Not done: a `throw` caught in the same function as a plain jump. Two tags of
 different indices are the same tag when both are imports of one export, so the first matching
 clause is not always known at compile time. Nothing measured asks for it.
 
@@ -944,3 +944,575 @@ reorder. Compile time is within the +5 % bound (S0011). The trap code stays at e
 plug point, which creates the stub, so the shared layer never sees a frame (S0011 Q5).
 `WABOROS_JIT_TWOLEVEL` and the per-backend bodies are removed (Q3). GC is to be written on this
 layer.
+
+### D54. Runtime modules written in wasm ship as source and bytes, tied by a test
+Status: accepted (maintainer, 2026-11-10) · Date: 2026-11-10 · Supersedes: — · Evidence: S0013 Q4 (revised 2026-11-10); the review of 2026-11-10 and the proposal GC-COLLECTOR-WAT
+
+A small module the runtime itself runs as wasm (the first is S0013's collector) is kept in the
+package as its source and its committed `.wasm` side by side; the `.wasm` ships as package data.
+The source is in one of two languages, chosen in the step's plan before the code:
+* **WAT** (`.wat`), the default for a small module. A test assembles it with the development tools
+  (wasmtime-py's `wat2wasm`, directly or through `tests/watcache.py`; the same bytes on every OS,
+  S0013 step 5.2).
+* **C** (`.c`), when the module is too large or too intricate to keep in WAT (maintainer). A test
+  rebuilds it with a pinned toolchain (the PyPI `ziglang` wheel at a fixed version and hash, as
+  `poc/bench/corpus/build.sh` does, or a pinned wasi-sdk) and fixed flags that keep the output
+  reproducible (no debug info, fixed paths, a fixed target CPU and feature set). The same file is
+  also built natively with sanitizers (address, undefined behaviour) and run on the same inputs as
+  the wasm build, so memory errors are found in C, not in the JIT. The module's own data and stack
+  live inside the memory it is given; where (for S0013, a region of the hidden memory's reservation
+  outside every object) is fixed in the step's plan. The C code reaches its memory through a base plus
+  u32 offsets, not pointers, so the native and the wasm builds run the same code. Whether the
+  pinned toolchain gives the same bytes on every OS is proven once, or the byte-match test runs on
+  Linux only.
+
+The same for both:
+* the test fails unless the bytes it builds equal the committed `.wasm`;
+* a test decodes the module and fails on any instruction outside an allowed list (the core features
+  the JITs support; nothing that would need a newer proposal or the GC itself), and checks its
+  structure: the imports and exports its spec names, every data segment (and, for C, the stack)
+  inside the region the spec gives it, no `memory.grow` unless the spec allows it;
+* the module uses core wasm only, has no host import beyond what its spec names, is deterministic
+  (D35), and traps on malformed input instead of writing outside its memory;
+* nothing is built at install or at import (D1): the toolchains are development tools, and the
+  package compiles the bytes with its own JIT, as it compiles any module.
+
+The `.wasm` is the module's single portable form, the same shape as the micro-compilers
+(MICRO-COMPILERS.md, JIT-AS-WASM.md): compiled by the JIT at load today, and, once the artifact
+format exists (ROADMAP "Next" item 6), it may also ship as a per-architecture AOT artifact made from
+those bytes, as the compilers will. The source and the match test stay the source of truth either
+way. Another source language needs an amendment of its own (a pinned toolchain, reproducible
+output).
+
+Why: a module written once runs on every JIT architecture and ports to JIT-AS-WASM.md unchanged,
+and the source is reviewable rather than a binary built elsewhere; the test keeps the two from
+drifting. Rejected: building the module at run time (needs a parser or a compiler in the package,
+D1); bytes without a source in the tree (unreviewable).
+
+### D55. `pyc` on a small C stack: freeing a long chain of GC objects may crash the host (accepted)
+Status: accepted (maintainer, 2026-11-11) · Date: 2026-11-11 · Supersedes: — · Evidence: LESSONS 103; S0013 step 2 CI (Pyodide)
+
+CPython frees a chain of lists recursively in C, and its trashcan bounds that recursion too late for
+a small C stack: on Pyodide (or Linux with `ulimit -s 128`) a chain of about 1 000 `pyc` structs
+crashes the host when it is freed; on the default 8 MiB stack 3 million is fine. This is a
+deliberate exception to "never crash the interpreter", accepted as a platform limitation instead of
+a `pyc` object representation that is not nested (one object store per store and integer
+references, as the JIT heap), which would rewrite S0013 step 2 and slow `pyc`. Recorded in TARGETS.md
+(the Pyodide row); revisited if a real program on Pyodide needs long linked structures.
+
+
+### D56. JIT roots: a return-address walk from an exit record, a site table in every module; context ABI v1 amended
+Status: accepted (maintainer, 2026-11-06 and 2026-11-10: S0013 Q3, Q5, Q9, Q13) · Date: 2026-11-11 · Supersedes: — · Evidence: S0013 step 3a (Changes 3a.1-3a.4); the whole spec suite with `WABOROS_JIT_WALK_CHECK=1` on both JITs, both bounds modes; BENCHMARKS.md, "GC safepoints (S0013 step 3a)"
+
+The JIT's copying collector (S0013) needs precise roots on the native stack, so every frame of a
+store must be found without frame pointers or per-call stores:
+* **Site records.** Every call site of every module is a safepoint, whatever its types. Each
+  backend records per call site the code offset of the return address and two native numbers,
+  `ret_at` (where this frame's own return address is) and `up` (where the caller's stack pointer
+  is), both from the stack pointer at the call; the shared core adds the slot shift to the callee
+  and a bitmap of the frame's reference slots (from the validator's `refmasks` and `v128masks`:
+  value positions, which the core turns into slots, a v128 taking two). They form the artifact's
+  `STACKMAPS` section (ARTIFACT.md part 2, id 15; two bitmaps per map since S0013 step 7, D65).
+  Machine code does not change: the D39 amendment
+  is an output of the call methods (`Backend.sites`), not an instruction.
+* **Exit record.** Context word 14 (`EXIT_RECORD`) holds, in every context of a store, the address
+  of the store's `{sp, pc, frame}`; the bridge writes it before every host call and clears `sp`
+  after; every entry keeps the enclosing record and its frame on the native stack while it runs
+  and puts the record back. The walk starts there and crosses nested entries by those saved
+  blocks and `tail_switch` restore frames by fixed numbers. Cost: about 1 ns per host call (8
+  instructions on x86-64, 6 on aarch64) and about 15 (x86-64) or 10 (aarch64) instructions per
+  entry, nothing on a call between wasm functions; not measurable on host calls, entries or
+  CoreMark.
+* **Checked, not trusted.** The walk validates every return address against the store's site
+  tables and reads only between the store's native limit and the thread's stack top; an
+  inconsistency is a `RuntimeError`, never a guess. `WABOROS_JIT_WALK_CHECK=1` walks at every host
+  call and compares the walk with the runtime's own record of its entries; CI runs one spec run
+  per architecture with it.
+* **ABI v1 amended without a bump** (S0013 Q5, as D34, D50 and D52): no artifact file has been
+  written, the trampolines are the runtime's own, word 14 was reserved, and module code is
+  byte-identical. The hard rule's test is that a compiled module without its site table is
+  refused at instantiation (`ValueError`).
+
+Rejected (S0013 "Alternatives considered"): a frame-pointer chain on x86-64 (a pool register and two
+instructions per frame), frame records written on the value stack at each call (stores on every
+call, every module's code changes), a shadow stack of references, and a conservative scan (a
+collector cannot rewrite a word it is not sure is a reference). Cost accepted: native debuggers and
+profilers cannot unwind through JIT frames (ROADMAP.md, phase 6). The bridge's clearing of `sp` is
+not observable by any walk while every entry restores the record (LESSONS 105); it is kept as a
+defence.
+
+### D57. The JIT GC heap: a hidden i32 memory per store, u32 references; host values type-checked; context ABI v1 amended
+Status: accepted (maintainer, 2026-11-10 and 2026-11-13: S0013 Q1, Q5, Q8, Q9, Q10, Q11 and the step-3b plan) · Date: 2026-11-15 · Supersedes: — · Superseded in part by: D61 · Evidence: S0013 step 3b (Changes 3b.1-3b.4); spec `jit-x86_64` 64 229 pass, 0 expected failures, as `pyc`, guard and explicit, with the walk check and with poison; BENCHMARKS.md, "GC (S0013 step 3b)"
+
+* **The heap.** Each store has one GC heap, an i32 `Memory` (4 GiB + 32 MiB reserved, never moves)
+  bound into every instance that uses GC as the memory after its declared ones (two context words;
+  `memory.size`, `memory.grow` and the libcall immediates do not count it, and a module without a
+  memory of its own has it in memory 0's registers). Every heap access is an ordinary `load`,
+  `store` or `simd` on it, so S0011's bounds checks and guard fault points cover it unchanged (Q8
+  (a)). A reference of the any or extern hierarchy is a u32 word: 0 null, `(v << 1) | 1` an i31,
+  `(h << 2) | 2` a host value, otherwise an object's offset (a multiple of 8). The heap's header
+  holds the bump cursor and limit; type-info records (kind, final, depth, display, traced fields)
+  sit in a permanent area, one per canonical type and store; objects start with their record's
+  offset (ARTIFACT.md part 3). Until the collector (S0013 step 5) the heap only grows; superseded
+  by D61: since step 5.3 it is collected.
+* **Committed from its start** (S0013 3b.1 review, reversing the plan's decision D to commit its
+  regions apart): every byte below the size the contexts see is committed, so an explicit bounds
+  check that passes never reaches an uncommitted page. Cost: the type-info area's 64 MiB counts
+  against a commit limit (Windows' paging file, Linux in strict overcommit) once a store allocates
+  its first object; no RSS. Step 5's semispace B, above A's uncommitted tail, brings such a hole
+  back; Q8 accepted it there, and step 5's plan decides. Closed by D3 of S0013's "Step 5
+  decisions" (D61): the two halves are adjacent and both committed, so there is no hole.
+  Superseded by D69 (2026-11-20): the regions are committed apart again, `size_bytes` the highest
+  committed end.
+* **Lowered once.** The GC instructions are lowered in the shared core (`jit/common/gc.py`) on D39
+  methods only (Q9 (a)); a backend only lists the opcodes in its `supported` set. Allocation is a
+  bump in code with a cold call to a service when full; casts compare the record (final) or the
+  display entry at the target's depth (non-final). Context ABI v1 is amended without a bump (Q5, as
+  D34, D50, D52, D56): the heap's two words, then after the tags the GC group (8 service words and
+  one RTT word per struct or array type the code allocates or casts to), only in a module that
+  uses GC; every other module's words and code are unchanged (D35 lists).
+* **Deviation from D25, until step 5**: the subtype test of a function type that is not final
+  (`call_indirect`, `return_call_indirect`, a cast to a concrete function type) is a Python
+  service, `FUNC_SUBTYPE`, a computation D25 does not let the JIT hand to Python. It ends at step 5,
+  when JIT code calls the collector module's `is_subtype` with type-info records for function
+  types (Q11, S0013 step 5's acceptance). **Closed** in S0013 step 5.6 (D61, "Function subtyping"):
+  JIT code tests equality inline, a final target stops there, and otherwise calls `is_subtype`;
+  GC group word 7 is reserved.
+* **Host values are type-checked** (S0013 3b.2 review, revising the plan's decision O, which had
+  left it to phase 6 as memory-safe: it was not, a wrong word corrupted the heap): a value the host
+  gives for a reference parameter, or returns from a host function, must match the type, as
+  Wasmtime checks, else `TypeError` before anything runs, on every target. `pyc` checks the same
+  types; one difference remains: a value of another store (a GC object, a function or an
+  exception) is a `TypeError` on the JIT but passes on `pyc`, whose Python objects belong to no
+  store.
+* **Handles kept until the store is dropped** (Q10, decision F of the step-3b plan): a GC object
+  given to the host is a `GcRef`, an entry of the store's handle table (index, word, one entry per
+  object); there is no release, generation count or free list before phase 6, so the table grows
+  with the distinct objects a store hands out. A deviation from Wasmtime's scoped roots, recorded
+  here as Q10 asked.
+* **Not collected yet**: until step 5 an unreachable object is never reclaimed (the heap grows up to
+  2 GiB − 32 MiB, then "GC heap out of memory", a host error). Superseded by D61: collected since
+  step 5.3, with a live limit of 2 GiB − 32 MiB − 64 KiB.
+
+Rejected (S0013 "Alternatives considered"): references as 64-bit addresses into store chunks (no
+containment, no reuse of S0011's checks, a collector that could not be a wasm module); GC as
+backend methods (the semantics written twice); a frame-pointer chain for the roots (D56).
+
+### D58. Threads after the artifact format; what they need in the context ABI reserved before it
+Status: accepted (maintainer, 2026-11-15: the direction and option (a)) · Date: 2026-11-15 · Supersedes: — · Evidence: ROADMAP "Next" items (6) and (7); ARTIFACT.md part 3 (the libcall block, word layout, code 15 `HEAP_MISALIGNED`, `MEMORIES.shared`); D50; the libcall reservation implemented by S0014 step 0 (2026-11-18, `context.LIBCALL_WORDS`, `tests/jit/test_tables.py`)
+
+Threads (shared memory, the atomic instructions, `memory.atomic.wait32/64`, `memory.atomic.notify`)
+come after the artifact format is fixed, as ROADMAP orders them. So that they arrive as an amendment
+of context ABI version 1 and not as version 2 (which would refuse every artifact written by then),
+the format fixes three things for them:
+
+* **The model: one store per thread**, as in Wasmtime. Each thread instantiates the module in its own
+  store and imports the shared memory; only the memory is shared. Everything per store today stays
+  as it is (the context, words 10 and 14, the GC heap, the value stack, `TRAP_CODE`, `HOST_ERROR`),
+  and CLAUDE.md's "one thread per store" holds as written; what changes is that several stores share
+  one memory. A store used by several threads at once (shared-everything threads) would make words
+  10 and 14 per thread: that is version 2, out of scope.
+* **The libcall block gets reserved space**: 10 words, the 6 used today and 4 zero, so `wait32`,
+  `wait64` and `notify` (operands in slots, as every libcall) go in without moving any word after the
+  block. Rejected: the number of libcall words recorded in the artifact (option (b)): every loader,
+  the C reference loader (D36) included, would lay out a variable block for four words' saving.
+* **A shared memory's size may change at any time** (another thread's `memory.grow`), not only during
+  a host call or libcall as D50 says for i64 memories: code never keeps it in a register; explicit
+  bounds read `size_bytes` at every access (an acquire load where the architecture needs one; an
+  aligned 64-bit load on x86-64 needs nothing more); the base never moves (the S0006 reservation);
+  guard mode is unchanged.
+
+Needs no reservation: the atomic operations and `atomic.fence` (code generation; aarch64
+`ldaxr`/`stlxr` loops at the ARMv8.0 baseline, LSE as an ISA variant, D42), the misaligned-atomic
+trap (code 15 exists), `MEMORIES.shared` (exists), a shared memory's `memory.grow` (libcall 0, with
+the size rule above).
+
+When: the four libcall words shift every context offset after the block, so the code bytes of
+every module whose code names such a word change (D35; 217 of 2 527 compiled modules, S0014 step 0); they go in with the artifact-format spec, after S0013 step 8 (step 6 changes
+words 10-13 anyway), and ARTIFACT.md part 3 states the reservation and the size rule then, not
+before the code does. Cost: Wasmtime 50 enables threads by default, so a gap from its defaults stays
+until threads are done; toolchains emit threads only on request (`-pthread`, wasi-threads).
+
+### D59. The artifact container is ELF64
+Status: accepted (maintainer, 2026-11-15) · Date: 2026-11-15 · Supersedes: — · Evidence: ARTIFACT-CONTAINER.md (option (b)); the prototype `poc/artifact/elf64.py` (standard library only), read back by `readelf`, `objdump`/`llvm-objdump`, `llvm-readobj` and pyelftools 0.32 with no warning; Wasmtime's `.cwasm` is an ELF on every OS
+
+The artifact container of format v1 is ELF64: `ET_REL`, a private `EI_OSABI`, no program headers,
+the code in `.text` (file offset aligned to 4096, so a loader may map it and aarch64's `adrp` rule
+holds), each payload of ARTIFACT.md part 2 as a `.waboros.<name>` section aligned to 8 in a fixed
+order, and `.symtab` with one local `STT_FUNC` per function and the entry trampolines as globals
+(`__waboros_entry_sysv`, `_win64`, `_aapcs64`). `e_machine` replaces `arch`; ELF's ident and the
+OS/ABI replace the magic. Deterministic (fixed order, no timestamps, string tables in first-use
+order), so D35's identity holds for the files. The question of ARTIFACT-CONTAINER.md is closed:
+options (a), our own container, and (c), our own plus an ELF exporter, are dropped.
+
+Unchanged (ARTIFACT-CONTAINER.md, "What does not change"): our own loader, `mmap` and W^X, no OS
+loader and no file needed; thin and fat files (D18); the header fields; the context ABI (part 3);
+the ISA policy (part 1); a loader refuses what it does not know.
+
+The package keeps no dependency: its own writer and reader on `struct` (about 200-300 lines with
+every section). pyelftools, `readelf`, `llvm-readobj`, `llvm-objdump` and `eu-elflint` are test and
+CI tools only, as independent checks of the writer.
+
+Left to the artifact-format spec (ROADMAP "Next" (6)), each to decide there: the `EI_OSABI` value
+(64 or above, not Wasmtime's `0xC8`, not 97 or 255); whether `EI_ABIVERSION` or `.waboros.header`
+carries `format_version` (one source of truth); little-endian and ELF64 only (D48); the header split
+(`format_version`, `ctx_abi_version`, `isa_level`, `isa_features`, the S0006 flags, `compiler`,
+`module_sha256`, `config_sha256` in `.waboros.header`; D18's frozen part becomes the ELF header, the
+section headers, `.waboros.header` and `.waboros.wasm`); `CHECKSUM` as `.waboros.checksum` or
+dropped; `RELOCS` empty (`SHT_RELA` only if ever needed); `pyc`/`mpy` artifacts (`EM_NONE` in the
+same container or outside ELF); the file extension (D18's working `.w2a`); S0006 step 6 (the
+`BOUNDS_GUARD` flag and the fault map in `.waboros.traps`, the C loader's fault handler).
+
+Consequences: `objdump`, `readelf`, `nm`, `perf` and `gdb` read every artifact with function names;
+the C reference loader (D36) reads a fixed ELF64 subset (header, section headers, `.symtab`, its
+known sections by name, unknown ones skipped); hosts in other languages and the micro-compilers
+(JIT-AS-WASM.md) use a container every language can read; D35 tests gain "written twice and
+cross-compiled, byte-identical ELF". Order: after S0013 steps 5-8 and the D58 reservation.
+
+### D60. Micro-compilers and the native runtime in C; a native runtime embeds its own architecture's compiler, the others ship as wasm
+Status: accepted (maintainer, 2026-11-15) · Date: 2026-11-15 · Supersedes: — · Evidence: MICRO-COMPILERS.md ("Language choice"), JIT-AS-WASM.md ("Language of the port"), MICRO-COMPILERS-SHIPPING.md, D36, D48
+
+* **Language: C**, for the micro-compilers (the ports of the JIT compilers) and for the native
+  runtime and loader (D36). Not Zig, not Rust: C embeds anywhere (every host language has a C FFI,
+  every platform a C compiler) and is the language of the C reference loader and of sljit (D48).
+  The toolchain that builds it is a separate question (D54's pinned `ziglang` wheel as a C compiler
+  stays possible); the source is C.
+* **Shipping:** a native runtime built for architecture X embeds the micro-compiler for X compiled
+  ahead of time, so it compiles and runs wasm with no wasm engine of its own. It is embedded as
+  data: the ELF64 artifact's bytes (D59) carried inside the runtime binary (a byte array or
+  `.incbin`), not linked, and loaded by the runtime's own loader like any other artifact. Rejected:
+  linking the artifact into the binary with the system linker. It works (the maintainer checked
+  on the prototype, 2026-11-15: `ld.bfd`, `ld.gold`, `ld.lld` on x86-64 and `ld.lld` on aarch64
+  accept the private `EI_OSABI`, and a C call through `__waboros_entry_sysv` reaches the code), but
+  it would need per-artifact global symbol names (two artifacts collide on the trampoline names),
+  `SHF_ALLOC` metadata sections with symbols, and `.note.GNU-stack` in every artifact, for nothing
+  the embedded-bytes form lacks. The bytes sit in `.rodata` and the loader copies the code into
+  executable memory, so the block's alignment does not matter; to map code straight from the
+  binary's image one day, embed it 4096-aligned (`.balign 4096` before `.incbin`), since `.text`
+  inside the artifact is 4096-aligned only relative to the file's start.
+* The micro-compilers of the other architectures are shipped as `.wasm`, optional, for
+  cross-compilation (D35): the runtime compiles such a `.wasm` with its own embedded
+  compiler, then runs it to produce artifacts for that target. The Python package keeps its
+  shipping as MICRO-COMPILERS-SHIPPING.md describes; this decision fixes the language and the shape
+  of the native runtime, not the Python side.
+* Unchanged: the Python JIT stays the byte oracle of each hand-written port (MICRO-COMPILERS.md).
+  A port whose code generation is sljit cannot match it byte for byte; its oracle is behaviour:
+  the spec suite, `spec_diff` both ways against the Python JIT of the same architecture, the walk
+  check and poison, as the `poc/sljit/sljit-be/` prototype is checked (maintainer, 2026-11-17;
+  D64 item 4); whether a port
+  replaces its Python backend is still the JIT-AS-WASM decision taken after the artifact format
+  (ROADMAP "Next" (6)).
+
+### D61. The JIT GC heap collects: a copying collector in wasm, Wasmtime's semispaces
+Status: accepted (maintainer, 2026-11-15: S0013 "Step 5 decisions" D1-D4 and D6, the step-5.3 design note); written in S0013 step 5.3, function subtyping in step 5.6, closed in step 5.7 (the order measured) · Date: 2026-11-15 · Supersedes: S0013's fixed semispaces A and B · Evidence: S0013 Changes 5.3 and 5.6; spec `gc` and `exceptions` with `WABOROS_JIT_GC_STRESS=1 WABOROS_JIT_GC_POISON=1 WABOROS_JIT_GC_VERIFY=1` on both JITs (0 fail); `tests/jit/test_gc_collect.py`; the Kotlin program runs 100 times in one store at 32 MiB of object space, where it ran out of heap at the 19th run before
+
+* **The collector** is `runtime/gc/collector.wasm` (Cheney, S0013 step 5.2), compiled by the
+  store's JIT once per process and run as a **nested JIT entry** from the allocating service, its
+  frame above the service's slots (ARTIFACT.md "Host functions", B1). Python gathers the roots
+  (`jit/common/collect.py`: frames by the walk, reference globals, any- and extern-hierarchy tables
+  (exn too from step 6), passive element segments, GC handles, the exception arena's payloads
+  until step 6, then the pending-exception word, D63) and writes the forwarded words back. The
+  collector's instance is kept out of `store.instances`, so
+  `store.interrupt()` never cuts a collection in half.
+* **Semispaces as Wasmtime's**: two adjacent halves `[OBJ, OBJ + C/2)` and `[OBJ + C/2, OBJ + C)`,
+  both committed, their boundary moving with growth; growing while the upper half is active
+  collects first. **Growth**: the first allocation commits 2 MiB; after a collection that leaves
+  more than half of a semispace live, `C` becomes `max(2C, 4·(live + request))`; never shrinks.
+  **Live limit**: `S_max` = 2 GiB − 32 MiB − 64 KiB (the heap's end stays below 2³², the
+  collector's bounds being u32); beyond it "GC heap out of memory", Wasmtime's text.
+* **Every allocation that may run out of room collects** (the inline slow path and the array
+  services), and services read reference operands and segment items after it.
+* **Deviations from Wasmtime**: instantiation and constant expressions never collect (they grow;
+  observable only as an earlier "GC heap out of memory"); an allocation with less than 4 KiB of
+  value stack left traps `STACK_OVERFLOW` before collecting; a collector trap, a failed
+  verification or an exception (KeyboardInterrupt) inside a collection loses the store
+  (`RuntimeError`): the heap may be half moved, so nothing runs on it. A lost store refuses every
+  entry, instantiation and host access to globals and tables, and a host function that returns
+  normally on a lost store (one that caught the error) fails its call, so wasm already running
+  does not resume.
+* **Host values of `externref`** that a collection did not meet are freed, unless the collector's
+  report overflowed (a live handle at or above 16 384); freed numbers are reused lowest first, so
+  the table stays flat under churn. `GcRef` handles stay until the store is dropped (phase 6).
+* **Function subtyping** (S0013 step 5.6, D6 of "Step 5 decisions", Wasmtime's shape): a
+  function-subtype site compares the record's type id with the signature word inline (D39
+  amendment `func_type`); a final target stops there, with no call; a non-final one calls the
+  collector module's `is_subtype(q, t)` through the `IS_SUBTYPE` record appended after the RTT
+  words (ARTIFACT.md part 3; the context ABI v1 amended without a bump, no word moves; GC group word
+  7, `FUNC_SUBTYPE`, reserved and zero). `is_subtype` finds both records through a direct map from
+  the process-wide type id, `[60 MiB, 64 MiB)` of the heap, and does the display test; an id at or
+  past the cap of 2²⁰, or without an entry, answers 0. Records are written for the function types
+  that have a supertype or are not final (the only ones a non-equal test can match), not for every
+  function type as the plan said, so a GC module with only final function types commits no map.
+  Process-wide type ids are never reused (`_TYPE_IDS` only grows), so a map entry never goes stale;
+  the cost is the cap, a deviation from Wasmtime (which reuses ids after unregistration and has no
+  such cap): the 2²⁰-th distinct function type the JIT sees in the process (in any module, GC or not) makes
+  a later GC module that needs its record fail its instantiation
+  with "GC type area exhausted". The collector instance is made at the instantiation of the first
+  module with a function-subtype site; outside `store.instances`, its native stack limit is set to the store's at every outermost entry (a collection lowers it) and its interrupt word cleared when it is made (LESSONS 117).
+* **The work-list order: Cheney** (S0013 step 5.7, measured as Q2 says; BENCHMARKS.md, "GC collector
+  (S0013 step 5)"). A depth-first build (an explicit stack of field addresses in the free end of
+  to-space, a pre-order copy; correct under stress, poison and verify on `gc` and `exceptions`) was
+  alternated with Cheney on a linked list, a binary tree and a reference array (about 10⁶ live
+  objects each; mutator walk and pause separately, both bounds modes) and on the Kotlin program,
+  with a second Cheney run as the control. It gains on none beyond the spread between rounds (the
+  tree walk is 8.5 against 10.2 ns in explicit mode and 10.1 against 7.3 in guard mode; the tree
+  pause is 36 % longer in guard; the Kotlin program is equal or slower), and it needs a stack in
+  the free end of to-space that Cheney does not. Only Cheney's `collector.wasm` is committed. The
+  pause is 25-45 ns per live object; the collector compiles in 5-9 ms once per process and bounds
+  mode and instantiates in about 0.3 ms per store; CoreMark is unchanged.
+
+### D62. Statically linked AOT artifacts and static builds: after threads or WASI; three rules in format v1 now
+Status: accepted (maintainer, 2026-11-16) · Date: 2026-11-16 · Supersedes: — · Evidence: STATIC-BUILDS.md; the ELF64 prototype checks of D59 and D60 (2026-11-15)
+
+User modules compiled ahead of time are linked into a native binary with the system linker (a
+**static build**: the C loader-runtime, C host functions with WASI, and the artifacts, one ordinary
+executable or library, as a wasm2c build is), for the platforms where executable memory cannot be
+had at run time (an iOS app, strict W^X, firmware). It is **not part of format v1**: it comes after
+threads (D58), or after WASI, as an amendment. No extra optimising compiler tier is planned: a
+static build uses the code the micro-compiler emits for JIT and AOT, so it brings cheap host calls
+and those platforms, not faster compute code (STATIC-BUILDS.md has the expectations and the
+measurements). D60's rejection of linking stays for the embedded micro-compiler only.
+
+So that the linked form is an amendment and not a version 2, format v1 keeps three rules: a loader
+ignores the `sh_flags` of `.waboros.*` sections and finds them by name (D59); a loader never
+depends on global symbol names and finds the entry trampolines through a `.waboros.*` payload
+(offsets, as `ENTRIES`), so names can take a per-artifact prefix later (`.symtab` is for tools and
+a future linker); unknown sections are skipped (D59), so `.note.GNU-stack` and a future descriptor
+section need no version change.
+
+### D63. JIT exceptions in the GC heap: a throw allocates, pads read through the heap, `exnref` a u32 reference
+Status: accepted (maintainer, 2026-11-16: the step-6 plan's D1 (b), D2-D5 (a), D6 (b), D7 (a) and the three additions from Wasmtime) · Date: 2026-11-16 · Supersedes: D52 in part (the arena, words 11-13, the object and `exnref` encoding, the D39 methods `exn_match`, `exn_field`, `exn_load` and `throw`) · Evidence: S0013 Changes 6.1, 6.2 and 6.3; spec `gc` and `exceptions` with `WABOROS_JIT_GC_STRESS=1 WABOROS_JIT_GC_POISON=1 WABOROS_JIT_GC_VERIFY=1` on both JITs, both bounds modes (905 pass, 0 fail); `tests/jit/test_exceptions.py`; BENCHMARKS.md "Exceptions in the GC heap (S0013 step 6)" (step 6.5: a throw caught one frame up 14 ns in guard mode against the arena's 15 and Wasmtime's 242; 10⁷ throws grow RSS by 2.1 MiB against the arena's 153 MiB; 1 000 instantiations 271 µs against 385 µs)
+
+S0013 Q7 (b), as Wasmtime: an exception object is an object of the store's GC heap, and an
+`exnref` is its u32 offset, a reference like any other (S0013 step 6, `docs/plans/S0013-6-plan.md`).
+Status 14 propagation (D52) is unchanged.
+
+* **The object** (D2 (a), D3 (a)): a struct of the u64 tag identity at 8 and the tag's parameters
+  at their natural alignment (`gc.exn_layout`), with a kind-1 (struct) record per canonical tag
+  type, final, depth 0, keyed `"exn " + types.key`, apart from the type's kind-3 record. The
+  collector module and the verifier need no new kind. The identity stays the process-wide u64;
+  an imported tag has its exporter's.
+* **Which modules get the heap** (D4 (a), D6 (b)): a `throw`, or a `try_table` with a `catch` or
+  `catch_ref` clause, gives the module the heap's words and the full GC group, with one RTT word
+  per tag it throws; a module with only `throw_ref` and `catch_all(_ref)` reads the pending word
+  alone and keeps its layout and code.
+* **`throw`** is lowered in the core as `struct.new` is: a bump, a cold `ALLOC` call when it does
+  not fit (a safepoint whose map covers the payload, read from its slots after the call, B1), then
+  the identity, the pending word and status 14. It runs no Python unless the space is full.
+  **A full heap at `throw`** (after collecting and growing to the limit) is "GC heap out of
+  memory", status 13: an embedder error no pad catches, never a wasm exception (Wasmtime's
+  `GcHeapOutOfMemory`). Under stress every throw collects, so with less than 4 KiB of value stack
+  left a throw traps `STACK_OVERFLOW` (D61's deviation now covers `throw`).
+* **Landing pads** (D1 (b)) are lowered in the core from existing D39 methods (`ctx_load`,
+  checked `load`/`simd` on the hidden memory, `cmp_branch`): every read of the object is bounds
+  checked or a guard fault point, as S0013 Q8 (a) asks, and aarch64 is at parity by construction.
+  The identity is compared in 64 bits, so a forged or stale identity matches no tag and is never a
+  wrong pad. The status register, used as `tos` at the pad, is made 14 again before the jump to
+  the enclosing pad. D39 amendment: `exn_match`, `exn_field`, `exn_load` and `throw` leave the
+  interface (no code calls them from step 6.2; step 6.3 deleted them from both backends and the
+  protocol); `landing` and `throw_ref` stay. `throw_ref` of null traps `NULL_REFERENCE` before anything is stored, as Wasmtime.
+* **`exnref` everywhere** is a reference the collector finds: `validate._root` covers the exn
+  hierarchy, so exnref slots are in the stack maps, exnref globals and tables are roots, and
+  struct fields and array elements of `exnref` are 4 bytes and traced. The validator decides
+  whether a module gets masks after its bodies: an exnref needs no declared type (a
+  `catch_all_ref` into a block whose `(result exnref)` is inline), so a body that names one turns
+  the masks on and the bodies are walked again (review of 6.2). An any- or extern-hierarchy value
+  needed no such rule before: without a declared type of those hierarchies a body can only make
+  null or an i31, which never move. **The pending word** (word
+  10's target) holds 0 or the last exception thrown and is a root (D7 (a)): a defence, since no
+  collection happens between a `throw` and its pad or entry; it retains at most one dead object.
+* **The host** (D5 (a)): `ExnRef(index, store)` is an entry of the store's handle table shared
+  with `GcRef` (re-keyed after every collection); a forged handle or one of another store is a
+  `TypeError`. An uncaught exception's payload is read from the object at the entry, before any
+  wasm or collection runs, and its references become handles.
+* **ABI**: context ABI v1 amended without a bump under S0013 Q5's approval (no artifact file
+  exists): word 10's target holds a u32 offset; words 11-13 are reserved and zero since step 6.3,
+  which removed the arena, its chunks and its refill service (module code byte-identical, D35).
+  A test (t11, `tests/jit/test_exceptions.py`) checks the words are zero in every context and that
+  no compiled `exceptions/` module names them in a backend call or addresses them off the context
+  register, on both architectures.
+
+### D64. One compiler per Store; nothing shared between Stores; part 3's register table is per compiler
+Status: accepted (maintainer, 2026-11-16) · Date: 2026-11-16 · Supersedes: the advice of the first sljit package (freeze part 3's per-architecture table to sljit's registers, or decide hand-written against sljit before freezing part 3) · Evidence: SLJIT-BACKEND.md (sljit keeps the context in rbx and the frame in r15 on x86-64, `jit-x86_64` in r15 and r12)
+
+* **A Store uses exactly one compiler.** If the runtime picks a compiler (for example a sljit
+  micro-compiler on x86-64), every module, instance and runtime module of that Store goes through
+  it; mixing compilers inside a Store is not allowed.
+* **Nothing is shared between Stores**: no functions, contexts or trampolines, so Stores with
+  different compilers live in one process without conflict.
+* Why: two compilers give the same module different machine code and register roles. Calls between
+  instances of one Store are direct (a function record with a context switch, `tail_switch`, the
+  shared bridge and entry) and need one set of boundary conventions; with one compiler per Store
+  that holds by construction, and no table has to be common to all compilers.
+
+Consequences:
+1. **ARTIFACT.md part 3's "Per architecture" table belongs to a compiler**, keyed by the target in
+   the header's `compiler` field. The present table is `jit-x86_64`'s and `jit-aarch64`'s; a sljit
+   micro-compiler brings its own. A host that provides the bridge or `tail_switch` follows the table
+   of its Store's compiler.
+2. **A loader refuses, never guesses**: a thin artifact whose compiler target differs from the
+   Store's compiler is refused, like an `arch` or ISA mismatch; a fat artifact is regenerated from
+   its wasm, as for another target today. The AOT cache key already holds `compiler` and
+   `config_sha256`.
+3. **Runtime modules** (the collector, D61, and the other D54 modules) are compiled by the Store's
+   compiler.
+4. **The oracle between compilers is behaviour**: the spec suite, `spec_diff` both ways, the walk
+   check, poison. D35 (byte identity, cross-compilation) holds within one compiler, not across.
+5. **Static builds (D62)**: trampolines may be one set per compiler (they hold no state), shared by
+   Stores of that compiler; state lives in each Store's context.
+
+Rejected: mixing compilers inside a Store; one register table per architecture common to every
+compiler (it would force the Python JIT onto sljit's register roles or the reverse, for no gain
+once Stores do not mix).
+
+Still open, unaffected: the sljit backend embeds libm and libc addresses as 64-bit immediates
+(`_ccall`, `_cmem` in `poc/sljit/sljit-be/`), invalid in a cached or cross-compiled artifact; it is
+fixed (inline sequences through `sljit_emit_op_custom`, or calls through context words) before a
+sljit micro-compiler emits AOT artifacts (SLJIT-BACKEND.md, check 3).
+
+### D65. JIT liveness maps and the nulling walk
+Status: accepted (maintainer, 2026-11-16: S0013 step 7 plan, D1-D9; D1, D2, D7 built in step 7.1, D3-D6 and D8 in step 7.2, D9 in step 7.3; measured in step 7.4) · Date: 2026-11-16 · Supersedes: S0013's "per function, the bitmap of its reference-typed local slots" (never built); narrows S0013 Q3 "Operands" (D3 below) · Evidence: S0013 Changes 7.1, 7.2, 7.3 (the mutation table) and 7.4 (the measurements: BENCHMARKS.md "Liveness (S0013 step 7)": the pass is 0.4-3 % of a GC compile, the nulling 1.2-2.1 µs per frame, a 16 MiB dead local freed; the cost of D2's eager decode: instantiation +34 %); `tests/jit/test_stackmaps.py`, `tests/jit/test_walk.py`, `tests/jit/test_liveness.py`, `tests/jit/test_gc_roots.py` (7.3); the whole spec suite with `WABOROS_JIT_WALK_CHECK=1` on both JITs, both bounds modes, and with the GC switches as well (7.2)
+
+S0013 Q3 has the walk null the reference slots a site does not mark live, so a dead slot never
+keeps an offset into the old space. The walk cannot find a site's function, so a per-function
+bitmap of reference slots cannot tell it which unmarked slots to null:
+* **Two bitmaps per pool map** (plan D1 (a)): `refs`, every reference slot of the frame at the
+  site (the full map of steps 3a-6), and `live ⊆ refs`. The 16-byte site record is unchanged;
+  reference-free modules keep byte-identical tables (no map). A collection forwards `live` and
+  writes 0 into `refs ∖ live` while gathering the roots (the world is stopped; only slots
+  `[0, nslots)` of a frame, never a callee's parameters, B1). Before it forwards or nulls a
+  frame's slots the gatherer checks that `[base, base + 8·nslots)` lies inside the value stack and
+  raises otherwise, as check mode does (step 7.3, a defence against a forged table: a forged shift
+  alone is already refused by the walk's entry-base check).
+* **Version 1 amended without a bump** (plan D2 (a), as `STACKMAPS` itself, D56, S0013 Q5): no
+  artifact file exists. Instantiation decodes the table once, with checks that raise
+  `ValueError` (exact length, map index within the pool, no empty map, no bit past `nslots`,
+  `live ⊆ refs`), so a step-3a table with a map is refused in the shapes tested (not guaranteed: the table has no
+  version field and a parsing 3a table exists, 7.2 review; versioning is left to the artifact
+  format's `format_version`) and one without a map runs.
+  The decode was done in every instantiation; measured in step 7.4 (BENCHMARKS.md): +125 µs
+  (+34 %) for CoreMark, +2.4 ms (+34 %) for the Kotlin program and +19 / +174 KiB per instance.
+  Step 7.5 shares it: once per `Compiled` (and per replaced `stackmaps`), the cost is gone
+  (S0013 Changes 7.5).
+* **Check mode nulls** (plan D7 (a)): `WABOROS_JIT_WALK_CHECK=1` writes 0 into the dead slots at
+  every host call and libcall, then validates every `refs` slot, so the whole-suite walk-check
+  runs exercise every dead set, modules that never collect included.
+* **Operands keep the validator's mask** (plan D3 (b)), **a deviation from S0013 Q3**, whose
+  "Operands" rule makes an operand below a call dead when its only consumer is `drop`: that needs
+  a stack simulation the core does not have. The cost is retention of a reference below a call
+  until its `drop` runs. Revisited only with a measurement that the retention hurts (maintainer).
+* **The pass** (plan D4 (a)): `jit/common/liveness.py`, called from the core's `_Func` beside
+  `choose_pins`, only for a function with a reference local and a site; it runs again on a
+  far-mode retry. Its result is `live` for the locals' slots; `refs` is unchanged.
+* **Loops** (plan D5 (a)): every loop's head set starts empty and the whole backward pass repeats
+  until no head set changes (the sets only grow); no CFG. The spec suite never needs a second
+  pass; the Kotlin corpus program needs at most 3 (S0013 Changes 7.2).
+* **Exception edges** (plan D6 (a)): every site in the body of a `try_table` joins the label sets
+  of the clauses of every enclosing `try_table` (a pad that misses jumps to the enclosing one),
+  services and `is_subtype` calls too, which cannot throw (retention only); `throw` and
+  `throw_ref` take the same set.
+* **Invariant I5** (S0013): after a site a reference local's slot is read only by a later wasm
+  `local.get`; asserted in the core where a site is recorded (every operand-stack entry is a slot)
+  and where an allocation's cold site is queued.
+* **A bisect switch** (plan D8 (a)): `WABOROS_JIT_NOLIVE=all|<function indices>` gives those
+  functions `live = refs` (the step-7.1 maps); no code byte changes.
+* **Fuzzing references** (plan D9 (a), widened by the maintainer): `tools/fuzz.py --refs` turns
+  on smith's reference types and GC in the cross-target mode (exceptions are on there already);
+  what the runner cannot drive (an export with a non-nullable reference parameter) is skipped and
+  said so in TESTING.md.
+
+Rejected: a second pool index per site (20-byte records, every module's table changes, CoreMark's
+included); a per-function table of reference slots with a function lookup per frame (a new
+section, a second search, operands never nullable); the `drop`-consumer rule for operands now
+(plan D3 (a): about +50 lines in the validator shared with `pyc`, or a stack-effect table in the
+core); the pass in the validator (a forward walk, then a backward one anyway, run for `pyc` too);
+per-loop iteration or a worklist over basic blocks (more code, a CFG the core does not build; the
+fallback if a module shows a pathological pass count); only call and throw sites joining only up
+to the first `catch_all` (a second list of "which sites throw" to keep in step with the
+lowering). Wasmtime's maps list only live slots and it never nulls (Cranelift reuses spill slots),
+which a fixed slot per local cannot copy.
+
+### D66. Artifact versioning: one `format_version` for the whole file; amendments by feature flags, no per-section versions
+Status: accepted (maintainer, 2026-11-17) · Date: 2026-11-17 · Supersedes: — · Evidence: the S0013 7.1/7.2 review (a step-3a `STACKMAPS` table can be built that the new decoder parses); ARTIFACT.md part 2
+
+* A change to the layout of any section (as `STACKMAPS` in S0013 7.1) is a change of the artifact
+  format: the whole file's `format_version` is bumped, and a loader refuses a version it does not
+  support (part 2). Sections carry **no version field of their own**: one versioning scheme.
+* An amendment inside a version (an optional section, a flag a newer writer may set and an older
+  loader can ignore or must refuse) is expressed by **feature flags** in the header, as ELF does;
+  the flag set and which flags a loader must understand are defined by the artifact-format spec
+  (ROADMAP "Next" (6)).
+* Rejected: a version per section. It lets an old loader skip one changed section, but adds a
+  second versioning scheme for a case that does not arise while waboros writes and reads its own
+  artifacts.
+* Until the format is frozen no artifact is written to disk, so the amendments of v1 made so far
+  (D56, D61, D63, D65) need no flag; the format spec starts from their final form.
+
+### D67. A pre-pass gives `func_begin` the function's needs, so the native frame is sized before the body
+Status: accepted (maintainer, 2026-11-17) · Date: 2026-11-17 · Supersedes: — · Evidence: `poc/sljit/sljit-be/SLJIT-BACKEND-RESULTS.md`, "Update 2026-11-16 (3)" (96-byte sljit frames against 32, recursion depth about 5 400 against 16 400 under the default budget)
+
+* A one-pass code generator (sljit, and the C micro-compilers of D60) fixes the frame size when the
+  function starts, before its body is generated; the hand-written backends size it after the body
+  (or retry in far mode).
+* The core therefore scans each function body once before `func_begin` and passes what it needs
+  (calls through a record or a host, `wide`/v128 values, bulk memory copies, the pins it uses);
+  `func_begin` takes these hints as a D39 amendment, and a backend may ignore them.
+* Implemented with the C core (D60), not before: the Python backends do not need it, and their
+  machine code must not change for it (D35).
+
+### D68. The micro-compilers are our core in C over sljit; no hand-written port
+Status: accepted (maintainer, 2026-11-17) · Date: 2026-11-17 · Supersedes: the hand-written-port plan of MICRO-COMPILERS.md ("First: `aarch64.wasm`, a port of the aarch64 backend") and the byte oracle for the ports (D60's "Unchanged" bullet, MICRO-COMPILERS.md); amends D48 · Evidence: `poc/sljit/sljit-be/SLJIT-BACKEND-RESULTS.md` (third update, 2026-11-16); the orchestrator's check on `gc` at 43114f2, 2026-11-17
+
+* The micro-compilers (D60: C, shipped as `x86_64.wasm`, `aarch64.wasm`, `riscv64.wasm` and
+  embedded in the native runtime for its own architecture) are the waboros core ported to C, with
+  code generation through sljit (D48's sljit backend), not hand-written ports of the Python
+  backends `jit-x86_64` and `jit-aarch64`.
+* **Oracle: behaviour, not bytes.** The spec suite on every claimed directory, `spec_diff` both
+  ways against the Python JIT of the same architecture, the walk check and poison, CoreMark's self
+  check; D35's byte identity holds within one compiler (deterministic output, cross-compilation),
+  not across compilers (D64 item 4).
+* **Why:** the prototype already covers every D39 method on x86-64 and aarch64 (QEMU). The
+  orchestrator's own check on 2026-11-17 (x86-64, `gc` at 43114f2, sljit 39c508d1):
+  * the whole spec suite with the walk check and poison: 64 229 pass, 0 fail, in guard and in
+    explicit mode, the same as `jit-x86_64`;
+  * CoreMark (`taskset -c 2`, two alternated rounds): `jit-sljit` 15 603 / 15 888, `jit-x86_64`
+    14 571 / 14 943 iterations/s, both self checks passed.
+  One code generator for three architectures (riscv64 for free) instead of three hand-written
+  backends; D63 already reduced the per-ISA part to SIMD custom words, `sqrt`, `tail_switch`, the
+  frame helper and fault-point guards.
+* **Left before the micro-compilers:** the frame size (D67's pre-pass), BTI landing pads on
+  aarch64, a sljit API for `ret_at` (read from sljit's internals today), native arm64 timings.
+* The Python backends stay: they are the reference behaviour, `pyc`'s fallback partners and the
+  targets of the Python package until JIT-AS-WASM's decision (after the artifact format).
+
+
+### D69. The GC heap's regions are committed apart; `size_bytes` is the highest committed end
+Status: accepted (maintainer, 2026-11-20) · Date: 2026-11-20 · Supersedes: D57's "Committed from its start" bullet; amends ARTIFACT.md part 3 (the GC heap's `size_bytes`) without a version bump · Evidence: S0014 step 4.2, BENCHMARKS.md "GC heap: committed bytes"; LESSONS 135
+
+* The store's GC heap commits three regions apart, each from its start in whole 64 KiB pages and
+  before anything is written there: the header page (with `ROOTS`) at creation and the type-info
+  area after it as records are written; the whole tid map ([60 MiB, 64 MiB), 4 MiB) with the first
+  function-type record; the semispaces as today (D61). `Reservation.commit_range` commits a range
+  apart from a reservation's contiguous high-water mark.
+* The hidden memory's `size_bytes` is the highest committed end and never shrinks; the gaps below
+  it (the unused type area, the tid map before a function-type record) are uncommitted. Code is
+  unchanged (D35 lists identical on both JITs): it addresses the header, records it reached through
+  an object or an RTT word, the tid map only once committed, and objects, never a gap.
+* **Why:** a heap committed 66 MiB at its first allocation (64 MiB of it the type area and the tid
+  map, using one 64 KiB page in practice); a dropped store waits for the cyclic GC (LESSONS 135),
+  and Windows x64 cp315t ran out of commit charge. Now a store with one struct commits 2.1 MiB; 16
+  live such stores fit under RLIMIT_DATA + 256 MiB, where before four fit and the fifth failed (with
+  `execmem._retry` freeing a dropped store's 66 MiB).
+* **Cost:** the hole D57 closed comes back, as S0013 Q8 accepted it for semispace B: a corrupt
+  reference (a broken invariant; no wasm program can forge one) into a gap is a bounds trap in guard
+  mode and a crash in explicit mode, where before it read or wrote committed garbage. CI's explicit
+  stress run of `gc` and `exceptions` turns any missed commit into a crash, not a disguised trap.
+  Two defensive checks lose their trap in explicit mode: the collector's `$size` accepts any record
+  offset in the type area and `gcverify` (`WABOROS_JIT_GC_VERIFY=1`) reads a root word unchecked,
+  so a corrupt header or root into a gap crashes there instead of trapping "GC heap lost" or
+  raising `HeapError`.
+* **Tid map whole, not by ids (maintainer):** committing only the entries of ids assigned so far
+  would need every function record to be made at instantiation, and phase 6's API makes host
+  functions outside it; 4 MiB per heap with a function-type record is the price.
+* Context ABI v1 amended without a bump (as D34, D50, D52, D56, D57): no word moves, no code
+  changes, an older artifact's code addresses only committed bytes.

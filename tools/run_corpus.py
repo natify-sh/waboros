@@ -47,6 +47,8 @@ def runner(target: str, wasm: bytes) -> Callable[..., int]:
 
         cfg = wasmtime.Config()
         cfg.wasm_exceptions = True  # the C++ module uses try_table / throw_ref
+        cfg.wasm_gc = True  # gc_kotlin
+        cfg.wasm_function_references = True
         eng = wasmtime.Engine(cfg)
         st = wasmtime.Store(eng)
         mdl = wasmtime.Module(eng, wasm)
@@ -138,6 +140,25 @@ def xchacha_poly_ref(key: bytes, nonce: bytes, pt: bytes) -> bytes:
     return mac + ct
 
 
+def gc_ref() -> int:
+    """What gc_kotlin.kt's work() returns, in plain Python (a Long, as unsigned)."""
+    t = 0
+    for d in range(4, 15, 2):  # trees of depth d: 2^(d+1)-1 nodes, 2^(18-d) of them
+        t = (t * 31 + (1 << (18 - d)) * ((1 << (d + 1)) - 1)) & M64
+    t = t * 31 + (1 << 15) - 1  # the long-lived tree
+    t = (t * 31 + sum(i * 7 % 1000 for i in range(200000))) & M64  # the list
+    m: dict[int, int] = {}
+    for i in range(50000):
+        k = i * 2654435761 % 10007
+        m[k] = m.get(k, 0) + i
+    t = (t * 31 + sum(k * 7 + v for k, v in m.items()) + len(m)) & M64
+    s = "".join(f"k{i}," for i in range(20000))
+    jh = 0
+    for ch in s:  # java.lang.String.hashCode, a signed Int added to a Long
+        jh = (jh * 31 + ord(ch)) & M32
+    return (t * 31 + len(s) + (jh - (jh >> 31 << 32))) & M64
+
+
 FNV_OFFSET, FNV_PRIME = 1469598103934665603, 1099511628211
 
 
@@ -214,6 +235,8 @@ def cases() -> list[Case]:
         "13fcffff30f8ffff630000007400000005000000"
     )
     out.append(("cxx_exc", "c++ throw/catch", {0: expr}, "exc_eval", (len(expr),), want))
+    # a Wasm GC program from Kotlin/Wasm (build_gc.sh): trees, a list, a HashMap, a StringBuilder
+    out.append(("gc_kotlin", "kotlin gc", {}, "run", (), gc_ref().to_bytes(8, "little")))
     return out
 
 
@@ -225,6 +248,10 @@ def run_case(call: Callable[..., int], case: Case, reps: int) -> tuple[bytes, fl
         for i in range(0, len(padded), 8):
             call("put", off + i, struct.unpack_from("<Q", padded, i)[0])
     t0 = time.perf_counter()
+    # `run` takes no reps (the JIT heap is not collected yet) and returns the checksum itself
+    if fn == "run":
+        res = call(fn, *args)
+        return res.to_bytes(8, "little"), (time.perf_counter() - t0) * 1e6
     size = call(fn, *args, reps) & M32
     dt = (time.perf_counter() - t0) * 1e6 / reps
     if size == M32:
@@ -245,7 +272,7 @@ def main() -> None:
     allcases = cases()
     wasms = {
         lib: (DIR / f"{lib}.wasm").read_bytes()
-        for lib in ("mono", "hash", "zip", "xxh", "qoi", "cxx_exc")
+        for lib in ("mono", "hash", "zip", "xxh", "qoi", "cxx_exc", "gc_kotlin")
     }
     bad = 0
     shared: dict[tuple[str, str], Callable[..., int]] = {}  # xxh: many vectors, one instance

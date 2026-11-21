@@ -35,6 +35,11 @@ the micro-compiler → wasm32 → runs on pyc / our JIT → compiles wasm (and i
 Not pwart, and not my prototype translator: those two are measurement points only (below). The
 code quality we want comes from **our core**; sljit only encodes instructions.
 
+**Precedent** (maintainer, 2026-11-15): Samsung's Walrus, a WebAssembly runtime whose JIT is built on
+sljit (REFERENCES.md): a reference for the operator mapping on five ISAs and for i64 on 32-bit
+targets. Its calls go through C++ helpers, its GC is conservative (bdwgc) and its code is absolute,
+so it says nothing about D56 or D59.
+
 ## What sljit is
 
 * A C library (zherczeg/sljit; the JIT behind PCRE2) with its own small abstract machine: about 60
@@ -143,10 +148,18 @@ pwart. **This is the claim to verify** (see "first step").
   register pairs (add/sub with carry, `mul` by parts, shifts by parts, libcalls for div/rem and
   float conversions). This is an amendment to D39 and the main cost of the 32-bit tail; 64-bit
   long-tail targets (ppc64le, loongarch64, mips64, s390x) do not need it.
+* **Which 32-bit Arm cores** (maintainer, 2026-11-15): sljit's 32-bit Arm backends are ARM (v6/v7)
+  and Thumb-2 (`sljitNativeARM_T2_32.c`), so the track covers Cortex-M3 and up (RP2350, Cortex-M33)
+  but not ARMv6-M (Cortex-M0/M0+, RP2040), which has only Thumb-1; RP2040 stays on `mpy`.
 * **f32/f64**: sljit has float registers and ops; NaN bit patterns must be checked per target
   against `pyc` (D46).
 * **SIMD**: sljit's SIMD API is small and not on every architecture; v128 goes to the frame and
-  lanes are done in scalar code (or a libcall), correct and slow. Acceptable for the tail.
+  lanes are done in scalar code (or a libcall), correct and slow. Acceptable for the tail. Walrus has full
+  v128 (and relaxed SIMD), but not through sljit's SIMD API: it encodes the arithmetic by hand per
+  ISA through `sljit_emit_op_custom` (about 1.5-2.5 kloc per ISA) and uses sljit only for moves and
+  lanes; it has no scalar fallback and builds only for x86, x64, ARM, AArch64 and riscv64. So the
+  scalar fallback is needed on every sljit target of ours unless we write such encoders (see the
+  findings below).
 * **Big-endian** (s390x, ppc32/64 BE, mips BE): loads and stores need byte reversal (sljit has
   `SLJIT_REV*` ops). D48's "no big-endian JIT host" holds for the hand-written JITs, not this track.
 * **Determinism**: the wasm build has no `cpuid` and fixed configuration, so its output depends
@@ -154,6 +167,154 @@ pwart. **This is the claim to verify** (see "first step").
   engines). D35 (byte-identical cross-compilation) then holds for sljit targets too.
 * **Cache flush and W^X** on the target are the loader's job, as for our backends.
 * **Licence**: sljit is BSD-2-Clause, compatible with MIT (D40).
+
+## Two checks before the first sljit step (maintainer, 2026-11-15)
+**Status (2026-11-16):** both done on x86-64 by the experiment in `poc/sljit/sljit-be/`
+(`SLJIT-BACKEND-RESULTS.md`, "Update 2026-11-16"): check 1 with site records from a label after each
+call and the frame size after `sljit_emit_enter` (read from sljit internals for now), under the walk
+check and poison; check 2 shown there on 2026-11-04. On aarch64 (QEMU, ARMv8.0, 2026-11-16, "Update
+2026-11-16 (2)") the same table at parity with `jit-aarch64` in both bounds modes, SIMD through our
+NEON lowering as custom words. Per-ISA findings: a fault point needs one instruction per access, and
+sljit splits some on aarch64 (`add` before `ldr`, `mov` before `str` of an immediate), so every new
+ISA is checked in guard mode; sljit emits no BTI landing pads, so `bti c`/`bti j` must come through
+`sljit_emit_op_custom` before a native arm64 run with BTI; a `sljit_emit_const` right after a jump
+asserts in `sljit_generate_code` on aarch64 (to report upstream); the frame helper is per ISA. Still
+open: native arm64 timings, BTI, exceptions; the other ISAs.
+This document predates D56 (precise roots) and D59 (ELF64 artifacts, no relocations); both add a
+requirement that sljit must meet, checked on every ISA of the track before any backend code:
+
+1. **Site records and stack maps (D56).** sljit builds the frame (`sljit_emit_enter`), not our
+   core. Every call needs its return-address offset, `ret_at` and `up`: sljit gives a label right
+   after each call and the frame size follows from `emit_enter`'s arguments, so it is probably
+   derivable; to be shown per architecture with the walk's check mode (`WABOROS_JIT_WALK_CHECK=1`).
+2. **Position independence (D59: `RELOCS` empty).** sljit emits code for the address it will run
+   at: some jumps and constants are absolute (`sljit_emit_const`, rewritable jumps,
+   `sljit_get_label_addr`), and a `br_table` through a table of label addresses is absolute too. A
+   micro-compiler generates code in its own memory and it runs elsewhere (AOT, cross-compilation,
+   D35). Options: (a) use only relative jumps and tables of offsets instead of addresses, and check
+   that sljit then emits position-independent code on each ISA (start here); (b) generate for the
+   final address (breaks AOT and D35); (c) real `SHT_RELA` relocations, which D59 keeps only as a
+   last resort.
+3. **No process address as an immediate** (maintainer, 2026-11-16). PIC is not only relative
+   jumps: the experiment `poc/sljit/sljit-be/` calls libm (`ceil`, `floor`, `trunc`, `sqrt`,
+   `nearbyint`) and libc (`memset`, `memmove`) at addresses taken through ctypes in the compiling
+   process and written into the code as `imm64`. That is right only in that process: wrong after
+   ASLR in the next one (AOT from a cache), wrong for another architecture (cross-compilation),
+   and meaningless when the micro-compiler is wasm (functions are indices there). Our hand-written
+   backends never do this: rounding is inline (SSE2 and NEON sequences) and bulk memory goes
+   through libcalls in context words the runtime fills at instantiation. The check therefore also
+   scans the generated code for immediates equal to a process address. Two ways for the sljit
+   backend, **to be agreed with the maintainer**: (a) inline, as the hand-written backends (the
+   rounding sequences of `x86_64/` and `aarch64/` through `sljit_emit_op_custom`); (b) through the
+   context (`ctx[libcall]`, an address the runtime puts there). The orchestrator's proposal: (a)
+   for rounding and `sqrt` (no call, the same bytes as our backends), (b) for `memory.fill` and
+   `memory.copy` (already libcalls in the context ABI). **Done in the third update (2026-11-16),
+   on x86-64 and aarch64:** rounding through the SSE2 sequence of D24 on every ISA, `sqrt` one
+   custom instruction per ISA, fill and copy as inline 8-byte loops (neither (a) nor (b) for bulk
+   memory: no call at all); the same module compiled in two processes gives identical bytes
+   (`poc/sljit/sljit-be/SLJIT-BACKEND-RESULTS.md`, "Update 2026-11-16 (3)").
+
+## sljit built for wasm32 per target (maintainer, 2026-11-15)
+Pinned sljit `39c508d` with the patch in `poc/sljit`, the full API exported (as `full_*.wasm` in
+`build.sh`), clang wasm32:
+
+| target | `-Os` | `-O2` | `-Os` + gzip -9 |
+|---|---|---|---|
+| X86_32 | 48.5 KB | 61.8 KB | 17.5 KB |
+| X86_64 | 43.7 KB | 59.3 KB | 16.3 KB |
+| ARM_64 | 36.8 KB | 59.5 KB | 14.4 KB |
+| PPC_32 | 40.5 KB | 56.1 KB | 13.0 KB |
+| MIPS_32 | 39.0 KB | 76.5 KB | 14.3 KB |
+| MIPS_64 | 41.1 KB | 81.6 KB | 15.4 KB |
+| RISCV_32 | 39.4 KB | 58.8 KB | 13.5 KB |
+| RISCV_64 | 44.4 KB | 65.3 KB | 15.4 KB |
+
+One target is 37-48 KB at `-Os`; the eight together 333 KB. One module holding several targets
+would share the generic part (`sljitLir.c`): estimated (not measured) 250-350 KB, about 100 KB
+gzipped, plus our core in C. sljit picks its target at build time and has no namespace, so such a
+module builds `sljitLir.c` once per `SLJIT_CONFIG_*` with prefixed symbols.
+
+Five targets do not build, all because sljit assumes the host is the target:
+* **ARM_V6, ARM_V7, ARM_THUMB2**: without hardware divide the code calls `__aeabi_uidivmod` /
+  `__aeabi_idivmod` and embeds the compiler process's address of them.
+* **PPC_64**: inline assembly in the backend.
+* **S390X, LoongArch64**: CPU features read with `getauxval` (`sys/auxv.h`) from the CPU it runs on.
+
+So two patches are needed beyond today's: helper calls through context words (as our libcalls),
+never an absolute address (the same class as position independence above); CPU features from the
+configuration (`isa_level`, `isa_features` of the artifact), not from the host, as the existing
+patch already does for x86, ARM64 and RISC-V.
+
+## Findings from the sljit and Walrus sources (2026-11-15)
+Read: sljit `23d64b71b8f5` (2026-11-07), Walrus `eb9f2fa304c2` (2026-11-13), which pins sljit
+`3907e69005ba` unpatched and `#include`s `sljitLir.c` with `SLJIT_CONFIG_STATIC`. Nothing built or
+run; line references were in the research report, the conclusions are here.
+
+* **Supported architectures** also include Alpha (new at sljit HEAD).
+* **SIMD:** sljit's SIMD API is moves, lanes, splats, extends and AND/OR/XOR/shuffle, almost no
+  arithmetic; on x86 it needs SSE4.1 (above the x86-64 baseline, so a declared ISA level), and there
+  is none on MIPS, PPC and Alpha. Our track uses scalar v128 everywhere; sljit's SIMD loads, stores
+  and splats can come later as an optimisation.
+* **Atomics:** `sljit_emit_atomic_load`/`_store` pairs (an LL/SC or CAS retry loop the caller
+  builds every read-modify-write from) and `SLJIT_MEMORY_BARRIER`. 8/16/32/64 bits on x86, arm64
+  and Thumb-2, only 32/64 on RISC-V, MIPS, PPC and s390x (8/16 by masking inside the aligned word,
+  as Walrus does); no 64-bit atomics on 32-bit targets (per-ISA `op_custom`, or a lock helper on
+  mips32/ppc32); the ordering is undocumented and relaxed on the weak-memory ISAs, so every atomic
+  op is wrapped in barriers; on x86-32 the barrier needs SSE2 detection, which the wasm host's
+  zeroed `cpuid` disables. Estimate about 300 lines. wait/notify are host calls.
+* **Traps and bounds:** explicit checks first (as Walrus); a label before each access gives its pc,
+  enough for a fault map and guard-page mode later.
+* **Frames (D56):** no unwind or CFI information. `ret_at` and `up` follow per ISA from the frame
+  `sljit_emit_enter` builds and the public `compiler->local_size` (x86-64: after the pushes and
+  the locals; arm64: SP+8 and SP+`local_size`; Thumb-2: the highest slot of the push; riscv64:
+  SP+F-8 and SP+F; ppc64 and s390x not checked); about 20 lines per ISA, reproducing sljit
+  internals, so tied to a pinned revision and checked with `WABOROS_JIT_WALK_CHECK`. Never emit
+  `SLJIT_DIV` on cores without hardware divide (sljit's own soft-divide pushes around a helper).
+* **Position independence (D59):** sljit takes the relative form of a jump when the distance fits
+  and falls back to absolute forms otherwise (and on x86-64 and arm64 also when the nominal address
+  is below 4 GiB); `sljit_emit_const`, rewritable jumps and calls to an immediate address are always
+  absolute, and on MIPS32 every `SLJIT_CALL`. The mechanism: `SLJIT_GENERATE_CODE_BUFFER` with an
+  `executable_offset` giving a high nominal address; direct calls as relative calls to labels in one
+  compiler per module; helpers through `sljit_emit_icall` on a context word; a check after
+  generation that refuses any absolute jump form; `br_table` as int32 offsets from a base label in
+  a read-only buffer (a compare tree as the fallback). About 150 lines. MIPS branches reach only
+  128 KiB: a patch for a relative long branch, or a function-size limit.
+* **Host equals target:** x86 (`cpuid`), LoongArch and s390x (`getauxval`), MIPS (`cfc1`) and PPC64
+  (inline asm) query the host; `__ARM_FEATURE_ATOMICS`, the IDIV macros, `__riscv_*`, `_CALL_ELF`
+  and `__ARCH__` are read at compile time and must be set for the wasm build (ppc64le needs
+  `-D_CALL_ELF=2`, else ELFv1 indirect calls). One `SLJIT_FIXED_CPU_FEATURES` patch (constants from
+  the configuration, as RISC-V already works) is about 80 lines; ARM's `__aeabi_*divmod` need dummy
+  symbols and a backend that never emits `SLJIT_DIV` without IDIV.
+* **Every libcall is native code** (i64 div/rem, float-i64 conversions, popcnt, i64 atomics): our
+  runtime has no C helpers, so they are emitted once per module with sljit as relative-call stubs
+  (about 400 lines). i64 on 32-bit targets in register pairs is about 1.5 kloc (Walrus's size).
+* **Tail calls** map onto `SLJIT_CALL_RETURN`, which every backend implements.
+* **One module for all ISAs:** sljit has no symbol prefix, but `SLJIT_CONFIG_STATIC` makes the API
+  `static`, so one translation unit per ISA (`SLJIT_CONFIG_<X>` + `STATIC` + `#include
+  sljitLir.c` + our D39 layer, compiled per configuration since register numbers are macros),
+  exported as a table of functions with fixed-width types. Size about the sum of the per-target
+  modules plus 10-20 KB of D39 layer per ISA; only our core is shared.
+
+## How the micro-compiler is built (maintainer, 2026-11-15)
+* **Statically linked by default:** one C build of our core plus sljit, one `.wasm`. sljit's API is
+  small and called for every emitted instruction (`sljit_emit_op2`, `sljit_emit_jump`, ...): in one
+  build with LTO those calls inline and the unused API is dropped (faster compiles, smaller module).
+  The core and sljit share pointers (`struct sljit_compiler *`, the code buffer), so separate modules
+  would need one imported memory and one allocator anyway: static linking with a hand-made ABI in
+  between. The same sources build natively for the encoder tests against `llvm-mc` (D60: plain
+  `cc core.c sljitLir.c`); AOT and determinism (D35, D54) are the same, one `.wasm` tied by a test.
+* **Separate modules joined with `wasm-merge` only for one case:** one micro-compiler for several
+  ISAs. sljit picks its target at build time and has no namespace, so a static build would need one
+  `sljitLir.c` per target with prefixed symbols (a generated header of
+  `#define sljit_emit_op2 x86_64_sljit_emit_op2 ...`); separate `sljit-x86_64.wasm` and
+  `sljit-aarch64.wasm` have their own namespaces and merge without renaming, and `wasm-opt` can
+  inline across the old boundary afterwards.
+* **The boundary in the code is `sljitLir.h` either way**: the core is written against it, so the
+  choice is a build decision, taken when a second ISA first goes into the same module.
+* **sljit is not forked**: our changes (helper calls through context words, position-independent
+  code, CPU features from the configuration) stay a small set of patches over a pinned upstream, as
+  `poc/sljit/sljit-wasm-host.patch` already is, so sljit updates from upstream with the patches on
+  top.
 
 ## Verification
 
@@ -166,7 +327,7 @@ pwart. **This is the claim to verify** (see "first step").
 
 ## Where it fits
 
-* After the micro-compilers exist (`x64.wasm`, `arm64.wasm`, then `riscv64.wasm`): the sljit
+* After the micro-compilers exist (`x86_64.wasm`, `aarch64.wasm`, then `riscv64.wasm`): the sljit
   backend is one more micro-compiler, `sljit-<arch>.wasm`, built from the same C sources with a
   different backend. Before that, nothing.
 * It does not touch the frozen API/ABI, the artifact format or the Python backends.

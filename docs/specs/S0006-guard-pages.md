@@ -6,7 +6,7 @@ status: implemented
 superseded_by:
 related: [D10, D23, D25, D29, D31, D33, D35, D36, D37, D39, D42, R2, R3, R6, S0003, S0004, S0005]
 owner: maintainer
-updated: 2026-11-04
+updated: 2026-11-19
 ---
 
 # S0006 Guard pages instead of explicit bounds checks on jit-x86_64 and jit-aarch64
@@ -221,6 +221,15 @@ trap).
   `sigaction` that `ctypes.CDLL(None)` finds (libsigchain's, which is linked `-z global`) is what keeps
   this working; a raw syscall would put ours in front of ART. `tests/jit/test_android.py` checks it in the
   Android cell of `platforms.yml` (Changes, step 5).
+  **Limitation (maintainer, 2026-11-19): a child process resets the chain.** CPython starts a child
+  with `vfork()`, and the child sets every handled signal to `SIG_DFL` through `sigaction` before
+  `exec`; in an app that is libsigchain writing its table, shared with the parent, so our entry
+  becomes `SIG_DFL` (LESSONS 134). Guard calls are then refused, not crashed: `guard.broken()` runs
+  before guard code is entered and after every host call, and the error names the cause and
+  `WABOROS_JIT_BOUNDS=explicit`. Not reinstalled (rule A: a broken chain is reported, not fought;
+  a deliberate `SIG_DFL` cannot be told apart) and no switch to explicit code at run time. Not
+  covered: another Python thread starting a process while wasm runs in guard mode; a fault before
+  the next check then ends the process. An app that starts processes uses explicit bounds.
 * **Partial stores**: Arm does not promise that a misaligned store crossing into a faulting page
   writes nothing (nor does RISC-V; Wasmtime issue 7237), and QEMU's TCG splits 16-byte x86 stores
   (LESSONS 50). On x86-64 this is accepted as in Wasmtime (D45: native faults are precise, emulators
@@ -862,3 +871,7 @@ reservation is a crash, not a trap: the explicit-mode tests and differential run
 * 2026-11-04 (S0009 step 2b): i64 memories are no longer registered with the guard registry (no
   fault point targets them, and they may move, D50); "never moves the base" holds for 32-bit
   memories, which keep their reservation and registration.
+* 2026-11-19: Android limitation recorded (maintainer): a child process started by CPython resets
+  libsigchain's entry for SIGSEGV to `SIG_DFL` (LESSONS 134); guard calls are refused with an
+  error naming `WABOROS_JIT_BOUNDS=explicit`; no reinstall, no fallback at run time; the race with
+  another thread starting a process is documented, not handled.

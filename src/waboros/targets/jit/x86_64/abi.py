@@ -7,7 +7,13 @@ Alignment (LESSONS 3): rsp is 8 mod 16 on entry to any of these; each pads to 0 
 `call`, so wasm code always starts with rsp = 8 mod 16, as a C function does.
 """
 
-from waboros.targets.jit.common.context import HOST_ERROR, STATUS_HOST_ERROR, TRAP_CODE, Layout
+from waboros.targets.jit.common.context import (
+    EXIT_RECORD,
+    HOST_ERROR,
+    STATUS_HOST_ERROR,
+    TRAP_CODE,
+    Layout,
+)
 from waboros.targets.jit.x86_64.encoder import (
     R8,
     R9,
@@ -30,33 +36,50 @@ from waboros.targets.jit.x86_64.encoder import (
 )
 
 MEM0 = 8 * Layout().memory(0)  # byte offset of memory 0's base word; its size word follows
+EXIT = 8 * EXIT_RECORD  # the store's exit record {sp, pc, frame} (S0013 3a)
+# where the entry keeps the enclosing exit record and its frame, from rsp at its `call`
+ENTRY_SAVED = 0
 
 
-def entry(a: Asm, win64: bool) -> None:
+def entry(a: Asm, win64: bool) -> int:
     """int32_t entry(uint64_t *ctx, uint64_t *frame, const void *code): save the registers the host
     convention calls callee-saved, set up r15/r12/r13/r14, call the code, keep a non-zero status
-    in ctx[TRAP_CODE]. Nothing else is stored in the context, so entries nest (LESSONS 4)."""
+    in ctx[TRAP_CODE]. Nothing else is stored in the context, so entries nest (LESSONS 4). The
+    store's exit record (word EXIT_RECORD) of the enclosing host call and our frame are kept at
+    [rsp + ENTRY_SAVED, +32) during the call and the record is put back after it (S0013 3a), so
+    a walk of the store's frames crosses nested entries. Returns the offset of the return point."""
     saved = [RBX, RBP, *((RSI, RDI) if win64 else ()), R12, R13, R14, R15]
     ctx, frame, code = (RCX, RDX, R8) if win64 else (RDI, RSI, RDX)
     a.endbr64()
     for r in saved:
         a.push(r)
-    a.alu_imm("sub", RSP, 8, w=True)  # 8 (return address) + 8 * even + 8 = 0 mod 16
+    a.alu_imm("sub", RSP, 40, w=True)  # 8 (return address) + 8 * even + 40 = 0 mod 16
     a.mov(R15, ctx, w=True)
     a.mov(R12, frame, w=True)
+    a.mov(RAX, Mem(R15, EXIT), w=True)  # rax, rcx: volatile in both conventions, not `code`
+    for i in range(3):
+        a.mov(RCX, Mem(RAX, 8 * i), w=True)
+        a.mov(Mem(RSP, ENTRY_SAVED + 8 * i), RCX, w=True)
+    a.mov(Mem(RSP, ENTRY_SAVED + 24), R12, w=True)
     a.mov(R13, Mem(R15, MEM0), w=True)
     a.mov(R14, Mem(R15, MEM0 + 8), w=True)
     a.call(code)
+    ret = len(a.buf)
+    a.mov(RCX, Mem(R15, EXIT), w=True)  # eax (the status) kept; movs only, before the test
+    for i in range(3):
+        a.mov(RDX, Mem(RSP, ENTRY_SAVED + 8 * i), w=True)
+        a.mov(Mem(RCX, 8 * i), RDX, w=True)
     a.mov(RAX, RAX)  # the status is 32-bit; a C host may leave the upper half undefined
     a.test(RAX, RAX)
     done = a.label()
     a.jcc("e", done, short=True)
     a.mov(Mem(R15, 8 * TRAP_CODE), RAX, w=True)
     a.bind(done)
-    a.alu_imm("add", RSP, 8, w=True)
+    a.alu_imm("add", RSP, 40, w=True)
     for r in reversed(saved):
         a.pop(r)
     a.ret()
+    return ret
 
 
 def bridge(a: Asm, win64: bool) -> None:
@@ -66,13 +89,22 @@ def bridge(a: Asm, win64: bool) -> None:
     it undefined when an exception escapes a callback, D34); the word's previous value is put
     back, so an outer host call still reads its own preset. Saves every pool register the
     convention lets the host clobber, for all frames above (LESSONS 2); the call site reloads
-    r13/r14. Win64 also reserves the 32-byte shadow space."""
+    r13/r14. Win64 also reserves the 32-byte shadow space. Before the host runs it writes the
+    store's exit record {the caller's rsp at its `call`, the return address, r12}, and clears
+    its sp after (S0013 3a)."""
     saved = [R8, R9, R10, R11] if win64 else [RSI, RDI, R8, R9, R10, R11]
     pad = (32 if win64 else 0) + 8 * (len(saved) % 2)  # 8 + 8 * (saved + 1) + pad = 0 mod 16
     status = Mem(R15, 8 * HOST_ERROR)
     a.endbr64()
     for r in saved:
         a.push(r)
+    n = 8 * len(saved)  # r8 and r9 are saved in both conventions: free until the host call
+    a.mov(R8, Mem(R15, EXIT), w=True)
+    a.lea(R9, Mem(RSP, n + 8))
+    a.mov(Mem(R8), R9, w=True)
+    a.mov(R9, Mem(RSP, n), w=True)
+    a.mov(Mem(R8, 8), R9, w=True)
+    a.mov(Mem(R8, 16), R12, w=True)
     a.mov(RCX, status, w=True)
     a.push(RCX)  # the enclosing host call's preset (nested entries share contexts)
     if pad:
@@ -86,6 +118,8 @@ def bridge(a: Asm, win64: bool) -> None:
     a.call(Mem(R15, 0, RAX, 8))
     if pad:
         a.alu_imm("add", RSP, pad, w=True)
+    a.mov(RCX, Mem(R15, EXIT), w=True)  # r15 is callee-saved for the host
+    a.mov_imm(Mem(RCX), 0, w=True)  # no wasm frame waits in a host call any more
     a.mov(RAX, status)  # 32-bit: zero-extended
     a.pop(RCX)
     a.mov(status, RCX, w=True)
@@ -102,7 +136,7 @@ def sp_stub(a: Asm) -> None:
     a.ret()
 
 
-def tail_switch(a: Asm) -> None:
+def tail_switch(a: Asm) -> int:
     """A tail call into a function record whose context is not the caller's (D30). Entered by
     `jmp [r15 + 8 * TAIL_SWITCH]` after the caller has torn down its frame: rdx = the record,
     the arguments at r12, [rsp] = the caller's return address (rsp = 8 mod 16).
@@ -125,6 +159,7 @@ def tail_switch(a: Asm) -> None:
     a.mov(R14, Mem(R15, MEM0 + 8), w=True)
     a.call(Mem(RDX))
     a.bind(restore)  # the status stays in eax
+    at = len(a.buf)
     a.pop(R15)
     a.mov(R13, Mem(R15, MEM0), w=True)
     a.mov(R14, Mem(R15, MEM0 + 8), w=True)
@@ -134,23 +169,23 @@ def tail_switch(a: Asm) -> None:
     a.mov(R13, Mem(R15, MEM0), w=True)
     a.mov(R14, Mem(R15, MEM0 + 8), w=True)
     a.jmp(Mem(RDX))
+    return at
 
 
 def assemble(win64: bool) -> tuple[bytes, list[int]]:
     """The four trampolines for one convention in one blob and their offsets (entry, bridge, sp
-    stub, tail_switch). Both conventions assemble everywhere (the encoder tests see both); loading
-    the blob is the host's (common/instance.py), so this module stays portable."""
+    stub, tail_switch), then the walk's table (S0013 3a): the entry's return point and
+    tail_switch's `restore`. Both conventions assemble everywhere (the encoder tests see both);
+    loading the blob is the host's (common/instance.py), so this module stays portable."""
     a = Asm()
-    offsets: list[int] = []
-    for emit in (
-        lambda: entry(a, win64),
-        lambda: bridge(a, win64),
-        lambda: sp_stub(a),
-        lambda: tail_switch(a),
-    ):
-        offsets.append(len(a.buf))
-        emit()
-    return a.finish(), offsets
+    ret = entry(a, win64)
+    offsets = [0, len(a.buf)]
+    bridge(a, win64)
+    offsets.append(len(a.buf))
+    sp_stub(a)
+    offsets.append(len(a.buf))
+    restore = tail_switch(a)
+    return a.finish(), [*offsets, ret, restore]
 
 
 # The S0006 fault handler, Linux x86-64: the kernel's siginfo_t and ucontext_t (the same for

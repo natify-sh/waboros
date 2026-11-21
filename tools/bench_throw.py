@@ -1,14 +1,16 @@
 """Throw cost (S0012; BENCHMARKS.md, "Exceptions: throw cost"): one `throw` caught D frames up.
 
     python tools/bench_throw.py [--targets jit-x86_64,pyc,wasmtime] [--frames 1,10,100]
-                                [--rounds 3] [--nothrow]
+                                [--rounds 3] [--nothrow] [--median]
 
 The module is built here (no WAT tool needed). `loop(n)` runs n iterations: `$f0` calls `$f1` ...
 `$f{D-1}`, which throws its i32 argument; a `try_table` in the loop catches it and adds it up. With
 `--nothrow` the last function returns instead (the cost of the call chain alone). Prints ns per
-iteration, the best of `--rounds` alternated rounds of 20 000 (5 000 from D = 100); fails if the
-targets' results differ. Wasmtime (optional) is wasmtime-py."""
+iteration, the best of `--rounds` alternated rounds of 20 000 (5 000 from D = 100), or with
+`--median` the median of them (one round per process, rotated by the caller, gives the spread);
+fails if the targets' results differ. Wasmtime (optional) is wasmtime-py."""
 
+import statistics
 import sys
 import time
 from collections.abc import Callable
@@ -83,20 +85,23 @@ def main() -> None:
     frames = [int(x) for x in arg("--frames", "1,10,100").split(",")]
     rounds = int(arg("--rounds", "3"))
     throw = "--nothrow" not in sys.argv
-    print(f"ns per {'throw-and-catch' if throw else 'call chain'}, best of {rounds} rounds")
+    med = "--median" in sys.argv
+    what = "throw-and-catch" if throw else "call chain"
+    print(f"ns per {what}, {'median' if med else 'best'} of {rounds} rounds")
     for d in frames:
         n = 20_000 if d < 100 else 5_000
         runs = {t: runner(t, module(d, throw)) for t in targets}
         got = {t: r(100) for t, r in runs.items()}
         if len(set(got.values())) != 1:
             sys.exit(f"results differ: {got}")
-        best = dict.fromkeys(targets, float("inf"))
+        times: dict[str, list[float]] = {t: [] for t in targets}
         for _ in range(rounds):  # alternated: every target once per round
             for t, r in runs.items():
                 t0 = time.perf_counter()
                 r(n)
-                best[t] = min(best[t], (time.perf_counter() - t0) / n * 1e9)
-        print(f"D={d:<4}" + "".join(f"  {t} {best[t]:8.0f}" for t in targets))
+                times[t].append((time.perf_counter() - t0) / n * 1e9)
+        pick = statistics.median if med else min
+        print(f"D={d:<4}" + "".join(f"  {t} {pick(times[t]):8.0f}" for t in targets))
 
 
 main()

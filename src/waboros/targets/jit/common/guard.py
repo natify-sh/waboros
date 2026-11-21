@@ -488,7 +488,10 @@ def _broken(sig: int) -> str | None:
     if h == _handler["addr"]:
         return None
     if h <= 1:
-        return f"{name} reset to SIG_DFL/SIG_IGN"
+        why = f"{name} reset to SIG_DFL/SIG_IGN"
+        if host_row() == "android":  # a child process's vfork resets libsigchain's table (S0006)
+            why += "; in an Android app a child process does this: use WABOROS_JIT_BOUNDS=explicit"
+        return why
     py = signal.getsignal(sig)
     if callable(py) and py is not _handler["py"][sig]:
         return f"a Python-level {name} handler set after ours"

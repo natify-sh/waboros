@@ -2,7 +2,7 @@
 title: Risks and possible solutions
 kind: log
 status: current
-updated: 2026-11-05
+updated: 2026-11-15
 ---
 
 # Risks and possible solutions
@@ -82,6 +82,33 @@ QEMU (`qemu64`) in CI; the independent final review of phase 3 is done (S0002 st
 steps are read by a `reviewer` one by one (S0005). Open: differential fuzzing against wasmtime
 (phase 5: `tools/fuzz.py` exists since S0010 step 0 for `pyc` against `pyc`; the JITs and Wasmtime, as a
 nightly non-blocking job, follow, ROADMAP "Next"). The review of the SIMD steps as a whole (S0005, 5f) found no correctness defect.
+
+**New trusted code since S0013 step 5.3 (D61): the frame walk (`jit/common/walk.py`), the root
+gatherer (`jit/common/collect.py`) and the collector module (`runtime/gc/collector.wasm`).** A missed
+root or a wrong forward is a dangling reference, not a wrong result in one function. Mitigations:
+the collector module checks every record, header, forwarding offset and bound before it trusts it
+and traps (`unreachable`) instead of writing outside the region it owns (5.2's containment checks,
+each with a malformed image that only it stops, and 35 scratch mutants, 34 caught, the last
+reachable only with a to-space of almost 4 GiB); a collector trap or any exception inside a
+collection loses the store, so nothing runs on a half-moved heap; `WABOROS_JIT_GC_VERIFY=1` checks
+the new space's form and a digest of the reachable graph after every collection, independently of
+the module; `WABOROS_JIT_GC_POISON=1` turns a stale reference into garbage; `WABOROS_JIT_GC_STRESS=1`
+moves every object at every allocation, and CI's `jit` job runs `gc` and `exceptions` with all
+three; the walk check (`WABOROS_JIT_WALK_CHECK=1`) validates every frame and marked slot at each
+host call; `tests/jit/test_gc_collect.py` has one test per root class and per check of a
+collection, each failing when its root or check is removed (the 5.3 review's mutant table).
+
+**New trusted code since S0013 step 7 (D65): the live sets (`jit/common/liveness.py`).** The walk
+and the gatherer null `refs ∖ live` at every collection and in check mode, so a wrong set is
+retention (a dead object kept) or a live local read as null (a `NULL_REFERENCE` trap or a cast
+failure), never a stale offset: a nulled slot is not forwarded, and the gatherer refuses a frame
+whose slots leave the value stack. Mitigations: exact sets per edge kind (`test_liveness.py`),
+behaviour tests that collect between the write and the read on each edge (`test_gc_roots.py`
+t16-t26, under stress, poison and verify), the step-7.3 mutation table and both
+reviews' own mutants (each caught or argued equivalent; a review still found four unsound
+mutants the tests missed, now caught: the tests cover the shapes tried, not every shape; S0013
+Changes 7.3 and its review), `WABOROS_JIT_NOLIVE` to bisect per function, and
+`tools/fuzz.py --refs` with the GC switches.
 
 **Risk.** Encoding mistakes, register-allocation mistakes and missed checks are not exceptions but
 wrong results or sandbox escapes. The PoC already met three silent bugs (LESSONS.md 1, 2, 5).

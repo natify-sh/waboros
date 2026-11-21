@@ -6,7 +6,7 @@ status: implemented
 superseded_by:
 related: [D19, D25, D30, D32, D34, D35, D39, D47, D51, R2, R3, S0001, S0002, S0003, S0004, S0011]
 owner: maintainer
-updated: 2026-11-05
+updated: 2026-11-16
 ---
 
 # S0012 Exception handling (exnref) on pyc, jit-x86_64 and jit-aarch64
@@ -86,8 +86,8 @@ Wasmtime.
 | word | name | direction | meaning |
 |---|---|---|---|
 | 10 | `EXCEPTION` | host → code | the address of the store's pending-exception word. The word holds the exnref of the exception in flight, valid only while status 14 propagates. One word per store, so an exception crosses contexts (a call through a function record, D32) |
-| 11 | `EXN_REFILL` | host → code | the arena refill service: a host function with the libcall signature (`int32_t f(ctx, slots)`), called through the bridge only when a throw finds the arena's chunk full (step 3, D52) |
-| 12, 13 | `ARENA_CURSOR`, `ARENA_LIMIT` | host → code | addresses of the store's arena cursor and limit (step 3, D52) |
+| 11 | `EXN_REFILL` | host → code | the arena refill service: a host function with the libcall signature (`int32_t f(ctx, slots)`), called through the bridge only when a throw finds the arena's chunk full (step 3, D52); reserved and zero since S0013 step 6.3 |
+| 12, 13 | `ARENA_CURSOR`, `ARENA_LIMIT` | host → code | addresses of the store's arena cursor and limit (step 3, D52); reserved and zero since S0013 step 6.3 |
 | … (after the function records) | per tag *t*: 1 word | host → code | the tag's identity: a non-zero value unique in the process, imported tags first. An imported tag has its exporter's value. |
 
 * The tag words are appended after the last group, so no existing offset moves.
@@ -108,6 +108,8 @@ Wasmtime.
   Trap stubs and the interrupt poll keep `f.unwind`: they cannot be caught.
 * `landing(f, pad: L, outer: L)`: bind `pad`, then branch to `outer` unless the status is 14.
   `outer` is the enclosing landing pad or `f.unwind`. The status register is preserved.
+* The next four methods were deleted in S0013 step 6.3 (D63): `throw` and the clauses are lowered
+  in the shared core since step 6.2.
 * `exn_load(dst: Slot)`: the exnref in flight, read through context word 10.
 * `exn_match(word: int, miss: L)`: branch to `miss` unless the pending object's tag word equals
   context word `word`. It preserves the status register and leaves no flags live.
@@ -120,7 +122,8 @@ Wasmtime.
 
 The catch semantics live once, in `common/compiler.py`: the order of the clauses, the branch with
 the payload (and with the exnref for the `_ref` forms), and the fall-through to `outer`. The
-backends implement the five encodings above, about 40-70 lines each. This is per backend, as
+backends implemented the five encodings above, about 40-70 lines each; since S0013 step 6.3 only
+`landing` and `throw_ref` remain, the rest lowered in the shared core (D63). This is per backend, as
 ROADMAP "Next" item 4 says. It does not use the S0011 low layer and does not wait for S0011
 step 4 (Q5).
 
@@ -479,3 +482,23 @@ in a comment (REFERENCES.md).
 * 2026-11-05: implemented. The fuzz findings were triaged before closing (ROADMAP): every
   divergence was a `pyc` evaluation-order or naming defect outside the exception code and is fixed
   (TESTING.md, LESSONS 95-96); a 3-minute cross-target run with exceptions enabled finds none.
+* 2026-11-16: superseded in part by S0013 step 6.2 (D63; S0013 Q7 (b)). On the JITs an exception
+  object is now an object of the store's GC heap (the u64 tag identity at 8, the payload as struct
+  fields at their natural alignment) and an `exnref` its zero-extended u32 offset, a reference
+  the collector finds in slots, globals, tables and fields. So the Interface text above is
+  history: **"`throw` runs no Python"** holds only while the heap's space has room (a full space
+  calls `ALLOC`, which may collect, and a full heap is "GC heap out of memory", status 13, which
+  no pad catches); "the exception object" and "an `exnref` value" (arena words, an address) are
+  replaced; the pending word holds 0 or the u32 offset of the last exception thrown and is a root;
+  context words 11-13 are no longer read (S0013 step 6.3 makes them reserved and zero). The D39
+  amendment shrinks: the landing pads are lowered in the shared core over checked heap loads
+  (`exn_match`, `exn_field`, `exn_load` and `throw` are no longer called; 6.3 deletes them), and
+  `landing`, `throw_ref` and the `error` label stay. Q3's (a) (objects kept until the store is
+  dropped) ends: unreachable exceptions are reclaimed, as with (c). Q2's amendment of v1 stands,
+  extended under S0013 Q5. `ExnRef` is a handle into the store's GC handle table. `pyc` is
+  unchanged.
+* 2026-11-16: S0013 step 6.3 (D63) removed the arena: its chunks, the refill service and the
+  writes of context words 11-13, which are reserved and zero in every context (an amendment of v1
+  without a bump, S0013 Q5). The backends' `exn_match`, `exn_field`, `exn_load` and `throw` are
+  deleted, so this spec's D39 amendment is `Frame.error`, `landing` and `throw_ref`. Module code
+  is byte-identical to step 6.2. `pyc` is unchanged.

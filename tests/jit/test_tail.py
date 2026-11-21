@@ -131,7 +131,9 @@ def test_tail_call_loop_polls_interrupt() -> None:
     t.start()
     start = time.monotonic()
     assert trap_of(jit, "spin") is TrapCode.INTERRUPT
-    assert time.monotonic() - start < 5
+    # a bound against a missed interrupt (the loop would spin for ever), not a timing: loaded CI
+    # runners under pytest -n auto took 5.1 s (macOS x86_64)
+    assert time.monotonic() - start < 60
 
 
 SHAPES = """(module

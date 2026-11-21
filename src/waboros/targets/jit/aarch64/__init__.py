@@ -34,6 +34,11 @@ class JitAarch64Target(JitTarget):
     def trampolines(self) -> "Trampolines":
         return trampolines()
 
+    def conventions(self) -> dict[str, tuple[bytes, tuple[int, ...], int]]:
+        return conventions()
+
+    convention = "aapcs64"  # Linux, macOS and Windows alike
+
     # S0006 steps 2, 3, 4
     guard_rows = frozenset({"linux-glibc", "darwin", "win32"})
     # `auto` gives guard here (D44; CI `arm64`, `jit`;
@@ -65,9 +70,17 @@ class JitAarch64Target(JitTarget):
 
 
 @cache
+def conventions() -> dict[str, tuple[bytes, tuple[int, ...], int]]:
+    """The one convention's blob, offsets and ENTRY_SAVED (S0014 `.waboros.trampolines`)."""
+    from waboros.targets.jit.aarch64.abi import ENTRY_SAVED, assemble
+
+    b, offs = assemble()
+    return {"aapcs64": (b, tuple(offs), ENTRY_SAVED)}  # tuples: the cached value is shared
+
+
+@cache
 def trampolines() -> "Trampolines":
     """This process's trampolines, assembled by abi.py and sealed once by the host side."""
-    from waboros.targets.jit.aarch64.abi import assemble
     from waboros.targets.jit.common.instance import load_trampolines
 
-    return load_trampolines(*assemble())
+    return load_trampolines(*conventions()["aapcs64"])

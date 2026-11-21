@@ -16,14 +16,11 @@ from dataclasses import dataclass, field
 from typing import cast
 
 from waboros.targets.base import TrapCode
-from waboros.targets.jit.common import lower
+from waboros.targets.jit.common import gc, lower
 from waboros.targets.jit.common.backend import NEGATE, SWAP, AddK, Dst, Imm, Operand, Reg, Slot
 from waboros.targets.jit.common.compiler import EXN, SUPPORTED, WIDEOPS
 from waboros.targets.jit.common.context import (
-    ARENA_CURSOR,
-    ARENA_LIMIT,
     EXCEPTION,
-    EXN_REFILL,
     HOST_BRIDGE,
     INTERRUPT,
     NSTACK_LIMIT,
@@ -89,7 +86,7 @@ def _imm32(o: Operand, wide: bool) -> int | None:
 class Backend:
     pool = POOL
     tos = RAX
-    supported = SUPPORTED | v128.SUPPORTED | frozenset(WIDEOPS) | EXN
+    supported = SUPPORTED | v128.SUPPORTED | frozenset(WIDEOPS) | EXN | gc.OPS  # GC: S0013
 
     def __init__(self, check_align: bool = False, *, guard: bool = False) -> None:
         self.a = Asm()
@@ -99,6 +96,7 @@ class Backend:
         self.faults: list[tuple[int, int]] = []  # (fault offset, resume offset), by `finish`
         self._faults: list[tuple[int, Label]] = []
         self._oob: Label | None = None  # the stub of the unchecked access `_bounds` just formed
+        self.sites: list[tuple[int, int, int]] = []  # (ret, ret_at, up) per call (S0013 3a)
 
     # ---------------------------------------------------------------- labels, frames, traps
     def new_label(self) -> Label:
@@ -988,6 +986,13 @@ class Backend:
         """dst = the address of context word `word` (a function record: `ref.func`)."""
         self.a.lea(dst.id, Mem(R15, 8 * word))
 
+    def func_type(self, dst: Reg, rec: Operand) -> None:
+        """dst = the canonical type id of the function record `rec` (its word 1; S0013 5.6)."""
+        if not isinstance(rec, Reg):
+            self.move(dst, rec, True)
+            rec = dst
+        self.a.mov(dst.id, Mem(rec.id, 8), w=True)
+
     def ctx_store(self, word: int, src: Operand, indirect: bool) -> None:
         r = self._rm(src, RDX, True)
         if not isinstance(r, int):
@@ -1146,6 +1151,11 @@ class Backend:
             self.a.jcc("ne", misaligned or self._stub(cast(Frame, f), STATUS_MISALIGNED))
         self.a.call(target)
 
+    def _site(self, ret_at: int) -> None:
+        """Record the call just emitted: the return address's offset, and where this frame's
+        own return address is (`ret_at`) and the caller's rsp (`up`), from rsp at the call."""
+        self.sites.append((len(self.a.buf), ret_at, ret_at + 8))
+
     def call_direct(self, f: Frame, label: Label, shift_slots: int) -> None:
         """The callee's frame starts `shift_slots` above ours (frame overlap: its arguments are
         our slots there). A non-zero status unwinds this frame too."""
@@ -1153,6 +1163,7 @@ class Backend:
         if shift_slots:
             a.lea(R12, Mem(R12, 8 * shift_slots))
         self._call(f, label)
+        self._site(8 * (len(f.pins) + f.pad))
         if shift_slots:
             a.lea(R12, Mem(R12, -8 * shift_slots))
         a.test(RAX, RAX)
@@ -1192,6 +1203,7 @@ class Backend:
         a.mov(R13, Mem(R15, MEM0), w=True)
         a.mov(R14, Mem(R15, MEM0 + 8), w=True)
         self._call(f, Mem(RDX))
+        self._site(8 * (len(f.pins) + f.pad) + 16)  # r15 and its pad
         a.alu_imm("add", RSP, 8, w=True)
         a.pop(R15)
         a.mov(R13, Mem(R15, MEM0), w=True)
@@ -1288,6 +1300,7 @@ class Backend:
         a.mov_imm(RAX, word)
         bad = a.label()  # no frame here: a misaligned call returns the status itself
         self._call(None, Mem(R15, 8 * HOST_BRIDGE), bad)
+        self._site(8)
         a.alu_imm("add", RSP, 8, w=True)
         a.mov(R13, Mem(R15, MEM0), w=True)  # as a tail-call target it returns to a caller that
         a.mov(R14, Mem(R15, MEM0 + 8), w=True)  # does not reload them (memory.grow may have run)
@@ -1306,6 +1319,7 @@ class Backend:
         a.lea(RDX, Mem(R12, 8 * slot))
         a.mov_imm(RAX, word)
         self._call(f, Mem(R15, 8 * HOST_BRIDGE))
+        self._site(8 * (len(f.pins) + f.pad))
         a.mov(R13, Mem(R15, MEM0), w=True)  # memory.grow may have run
         a.mov(R14, Mem(R15, MEM0 + 8), w=True)
         a.test(RAX, RAX)
@@ -1313,61 +1327,11 @@ class Backend:
 
     # ---------------------------------------------------------------- exceptions (S0012)
     # At a landing pad the status is in eax and only pins are live (every exception arrives at a
-    # call site); these use rcx/rdx and keep eax. The pending word is read again by each method
-    # (cold code): no register the core could name is free there.
+    # call site); `landing` keeps eax. `throw` and the clauses are lowered in the core (D63).
     def landing(self, f: Frame, pad: Label, outer: Label) -> None:
         self.a.bind(pad)
         self.a.alu_imm("cmp", RAX, STATUS_EXCEPTION)
         self.a.jcc("ne", outer)
-
-    def _exn(self) -> None:
-        self.a.mov(RCX, Mem(R15, 8 * EXCEPTION), w=True)
-        self.a.mov(RCX, Mem(RCX), w=True)  # the object: {tag identity, payload words...}
-
-    def exn_load(self, dst: Slot) -> None:
-        self._exn()
-        self.a.mov(_slot(dst.k), RCX, w=True)
-
-    def exn_match(self, word: int, miss: Label) -> None:
-        self._exn()
-        self.a.mov(RCX, Mem(RCX), w=True)
-        self.a.alu("cmp", RCX, Mem(R15, 8 * word), w=True)
-        self.a.jcc("ne", miss)
-
-    def exn_field(self, dst: Slot, k: int) -> None:
-        self._exn()
-        self.a.mov(RDX, Mem(RCX, 8 + 8 * k), w=True)
-        self.a.mov(_slot(dst.k), RDX, w=True)
-
-    def throw(self, f: Frame, word: int, base: int, n: int) -> None:
-        """A new object {tag identity (context word `word`), slots base..base+n} bumped from the
-        store's arena chunk, made the pending exception: status 14 to `f.error`, no Python. A full
-        chunk: the refill service through the bridge (slot base+n = the words needed), then
-        again. Writes rax, rcx, rdx."""
-        a, size = self.a, 8 * (1 + n)
-        again, refill = a.label(), a.label()
-        a.bind(again)
-        a.mov(RCX, Mem(R15, 8 * ARENA_CURSOR), w=True)
-        a.mov(RAX, Mem(RCX), w=True)  # the object
-        a.lea(RDX, Mem(RAX, size))
-        a.mov(RCX, Mem(R15, 8 * ARENA_LIMIT), w=True)
-        a.alu("cmp", RDX, Mem(RCX), w=True)
-        a.jcc("a", refill)
-        a.mov(RCX, Mem(R15, 8 * ARENA_CURSOR), w=True)
-        a.mov(Mem(RCX), RDX, w=True)
-        a.mov(RCX, Mem(R15, 8 * word), w=True)
-        a.mov(Mem(RAX), RCX, w=True)
-        for k in range(n):  # word for word: a v128 is its two slots, low half first
-            a.mov(RCX, _slot(base + k), w=True)
-            a.mov(Mem(RAX, 8 + 8 * k), RCX, w=True)
-        a.mov(RCX, Mem(R15, 8 * EXCEPTION), w=True)
-        a.mov(Mem(RCX), RAX, w=True)
-        a.mov_imm(RAX, STATUS_EXCEPTION)
-        a.jmp(f.error)
-        a.bind(refill)  # after a jmp: no fall-through path runs this
-        a.mov_imm(_slot(base + n), 1 + n, w=True)
-        self.call_host(f, EXN_REFILL, base + n)
-        a.jmp(again)
 
     def throw_ref(self, f: Frame, x: Operand) -> None:
         """Null traps (NULL_REFERENCE, not catchable); else the object becomes the one in flight."""

@@ -1,10 +1,13 @@
 """Where the environment cannot do what a test needs, the test (or a module that does it while it is
 imported) is skipped instead of erroring: no processes (Pyodide: "emscripten does not support
-processes"; Android's testbed app embeds Python, `sys.executable` is empty)."""
+processes"; Android's testbed app embeds Python, `sys.executable` is empty, and a child process
+there resets the app's signal chain)."""
 
+import gc
 import os
 import subprocess
 import sys
+from collections.abc import Iterator
 
 import pytest
 
@@ -20,6 +23,8 @@ def _popen(self: subprocess.Popen[bytes], args: object, *rest: object, **kwargs:
     argv = [args] if isinstance(args, (str, bytes, os.PathLike)) else list(args)  # type: ignore[call-overload]
     if sys.platform == "emscripten":
         _skip("no processes on emscripten")
+    if sys.platform == "android":  # LESSONS 134: the child would reset this process's signal chain
+        _skip("no processes in the Android app (CPython's vfork child writes libsigchain's table)")
     if argv and not argv[0]:
         _skip("empty program name (sys.executable is empty in the Android app)")
     _popen_init(self, args, *rest, **kwargs)  # type: ignore[arg-type]
@@ -75,3 +80,14 @@ def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
     mod = metafunc.definition.nodeid.split("/")  # tests/jit/test_x.py::test_y
     if len(modes) > 1 and mod[:2] == ["tests", "jit"] and mod[-1].split(".")[0] not in _MODE_FREE:
         metafunc.parametrize("jit_bounds", modes, ids=modes)
+
+
+@pytest.fixture(autouse=True)
+def _collect_garbage() -> Iterator[None]:
+    """Free-threaded builds: a dropped JIT store is a reference cycle whose committed memory (a
+    value stack, and 2.1 MiB or more per GC heap since D69; 66 MiB before) waits for the cyclic GC,
+    which runs too rarely to see it; collected after every test, a worker does not exhaust Windows'
+    commit limit (LESSONS 135)."""
+    yield
+    if not getattr(sys, "_is_gil_enabled", lambda: True)():
+        gc.collect()

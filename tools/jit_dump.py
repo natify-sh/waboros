@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Cross-compilation check (D35, S0004 step 4c): compile, never run, every module of the spec cache
 (`tests/spec/fetch.py`) and CoreMark with one JIT target, on any host, and write one line per
-module: `<path> <sha256 of the whole Compiled> <data_start>` (code,
+module: `<path> <sha256 of the whole Compiled> <data_start> <sha256 of the stack maps>` (code,
 data_start, funcs, records, sigs, thunks, layout; flags and fault map in guard mode,
-WABOROS_JIT_BOUNDS=guard), or `<path> rejected|unsupported: <feature>`.
+WABOROS_JIT_BOUNDS=guard; the STACKMAPS section in its own column, S0013 3a, so code identity
+is checked apart from it), or `<path> rejected|unsupported: <feature>`.
 The lists of two hosts must be identical:
 
     python3 tools/jit_dump.py --target jit-aarch64 OUT.txt      # PYTHONPATH=src
@@ -26,6 +27,7 @@ def main() -> int:
     from waboros.frontend.binary import parse
     from waboros.frontend.validate import validate
     from waboros.targets import base
+    from waboros.targets.jit.common import gc
     from waboros.targets.jit.common.compiler import Compiled
 
     ap = argparse.ArgumentParser(description=__doc__)
@@ -38,6 +40,7 @@ def main() -> int:
         ROOT / "poc/in/core.wasm",
     ]
     lines: list[str] = []
+    mapped = 0  # modules with at least one reference slot in a map
     for f in files:
         name = f.relative_to(ROOT if f.is_relative_to(ROOT / "poc") else CACHE_DIR).as_posix()
         try:
@@ -60,10 +63,15 @@ def main() -> int:
         if c.flags:  # guard mode (S0006): the flags and the fault map; explicit lines unchanged
             everything += repr((c.flags, c.faults))
         digest = hashlib.sha256(c.code + everything.encode()).hexdigest()
-        lines.append(f"{name} {digest} {c.data_start}")
+        maps = c.stackmaps or b""
+        mapped += any(site[4] for site in gc.decode(maps).values()) if maps else 0
+        lines.append(f"{name} {digest} {c.data_start} {hashlib.sha256(maps).hexdigest()}")
     args.out.write_text("\n".join(lines) + "\n", encoding="utf-8")
     done = sum(1 for ln in lines if " rejected" not in ln and " unsupported" not in ln)
-    print(f"jit_dump: {len(lines)} modules, {done} compiled by {args.target}, list in {args.out}")
+    print(
+        f"jit_dump: {len(lines)} modules, {done} compiled by {args.target}, {mapped} with "
+        f"reference maps, list in {args.out}"
+    )
     return 0 if done else 1
 
 
