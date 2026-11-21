@@ -2118,8 +2118,9 @@ Median of the run medians (range over runs), session 1 / session 2:
 | calls `leaf` (ns) | 1.96 / 1.98 | – / 1.96 | 2.11 / 1.92 | 1.86 / 1.96 |
 | calls `fib(27)` (ns) | 2.58 / 2.66 | – / 2.92 | 3.06 / 2.96 | 2.87 / 2.98 |
 
-Reading: the C path costs about **+1.7 ns per cross-instance call** and **+0.7 ns per
-`call_indirect`**. CoreMark sorts through function pointers, yet its variants differ by less than
+Reading: the C path costs about **+1.7 ns per cross-instance call** and about **+1.5 ns per
+`call_indirect`** against the placement control (3.00 → 4.51-4.57 ns; against base without the
+control it looks like +0.7 ns, corrected 2026-11-21). CoreMark sorts through function pointers, yet its variants differ by less than
 one variant's own spread (about 17 %): no loss is measurable, and the apparent gain of cabi is
 placement, since basepad gains too. `fib` and `leaf` run code that did not change; their shift
 is placement as well (LESSONS 51, 139). cabi2's fast path gains nothing beyond the noise. A call

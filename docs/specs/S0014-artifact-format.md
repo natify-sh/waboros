@@ -413,6 +413,11 @@ it needs no version and no flag. Appending it to `.waboros.traps` would break th
 The exact wasm bytes whose SHA-256 is `module_sha256`. Its presence makes a **fat** file (D18).
 
 ### `.waboros.trampolines` (Q2)
+*Note (2026-11-21):* [S0015](S0015-boundary-convention.md) (draft) replaces this section's layout
+when implemented: compiler blobs only (`bridge`, `tail_switch`, `restore` and its two numbers),
+the entry and the stack-pointer stub becoming the host's own by contract; until phase 6 the
+compare below stays in `read` and the exact `compiler` string stays the rule.
+
 The entry, the bridge, the stack-pointer stub and `tail_switch` of part 3, for every host
 convention of the architecture, are in every module artifact (part 2's `ENTRIES`, D59; D23: one artifact for
 every OS, so x86-64 carries both conventions):
@@ -841,8 +846,11 @@ When approved and implemented (step 7 unless noted):
 * 2026-11-21: **steps 6-8 and the freeze of v1 wait for [S0015](S0015-boundary-convention.md)** (D70,
   the boundary convention; draft). It changes what a record's `code` holds (a C entry), what
   `.waboros.funcs` names, what `.waboros.trampolines` carries (the compiler-private `bridge` and
-  `tail_switch`; `entry` becomes the runtime's) and the D64 sentences of this spec and of
-  ARTIFACT.md part 3; the committed v1 files of step 4.3 are regenerated once, without a bump.
+  `tail_switch` only; `entry` becomes a contract the host fulfils) and the D64 sentences of this
+  spec and of ARTIFACT.md part 3. No version bump. The committed files of step 4.3 stay as
+  pre-S0015 fixtures (`test_old`: thin refused, fat regenerated), and new v1 files are added
+  (maintainer, 2026-11-21). The exact `compiler` string stays the loader's rule and the
+  trampoline compare stays in `read` until phase 6 (S0015, "Compatibility").
 
 ## Changes
 * 2026-11-17: created (draft).
@@ -1004,3 +1012,7 @@ When approved and implemented (step 7 unless noted):
   to the format or to `src/`.
 * 2026-11-21: D70 (one boundary ABI per architecture): steps 6-8 and the v1 freeze wait for
   S0015 (Progress); no change to this spec's text yet.
+* 2026-11-21: S0015 revised: the Progress entry now says the step-4.3 files stay as pre-S0015
+  fixtures and new v1 files are added, and the exact compiler string and `read`'s trampoline
+  compare hold until phase 6; a note under "`.waboros.trampolines`" points to the layout S0015
+  replaces it with.

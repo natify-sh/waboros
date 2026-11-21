@@ -1555,17 +1555,26 @@ compatibility between architectures is asked for.
   `ctx_abi_version`. A loader accepts other compiler versions and other compilers of the same
   architecture under that rule, but thin files of other compiler versions are accepted only from
   phase 6 (Q3 (b), loader policy only; nothing in the format or the ABI blocks it).
+  *Amended (maintainer, 2026-11-21, S0015 review):* until phase 6 the waboros loader keeps the
+  exact `compiler` string: thin files of another compiler or another compiler version are refused,
+  fat files regenerated. The per-architecture rule above is specified now (S0015,
+  "Compatibility") and enabled in phase 6 together with mixed stores, which then need a foreign
+  compiler's blob to be executed (executable memory, W^X, instruction cache) and the trampoline
+  compare to move from `read` to store attach.
 * **v1, no bump.** The change alters what a record's `code` means, so the committed v1 files of
   S0014 step 4.3 would no longer run under it. They are regenerated once, without a version
   bump: v1 is not frozen yet (D66: the format spec starts from the final form of v1), and no file
-  has been released.
+  has been released. *Amended (maintainer, 2026-11-21):* not regenerated. The step-4.3 files stay
+  as pre-S0015 fixtures (`test_old` expects the thin ones refused and the fat ones regenerated),
+  and new v1 files made after S0015's format step are committed next to them.
 * **Scope now:** x86-64 and aarch64, both Python backends, the spec, the conformance test, the v1
-  regeneration. **Deferred:** thin files of other compiler versions (phase 6); a real store
+  regeneration (amended: the new v1 files). **Deferred:** thin files of other compiler versions (phase 6); a real store
   mixing the Python JIT and sljit (when the micro-compiler exists).
 
 Measured (prototype on `jit-x86_64` alone, every call through a record on the C path; BENCHMARKS.md):
-a cross-instance call 2.6 → 4.4 ns, a `call_indirect` 3.8 → 4.5 ns, CoreMark unchanged within its
-spread; 64 229 spec commands pass under the walk check in both bounds modes.
+a cross-instance call 2.6 → 4.4 ns, a `call_indirect` 3.0 (the placement control) → 4.5 ns
+(corrected 2026-11-21 from "3.8 → 4.5", which compared with the tree without the control),
+CoreMark unchanged within its spread; 64 229 spec commands pass under the walk check in both bounds modes.
 
 Rejected:
 * **Keep D64**: modules of different compilers in different stores, talking through host
