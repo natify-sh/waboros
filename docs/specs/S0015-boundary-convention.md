@@ -104,8 +104,12 @@ int32_t f(uint64_t *ctx, uint64_t *frame);
   it out for the callee's module.
   * Words 8 `HOST_BRIDGE` and 9 `TAIL_SWITCH` point to the copy of the **callee's** compiler.
   * Words 2–6 (`INTERRUPT`, `FUEL`, `EPOCH_DEADLINE`, `VSTACK_LIMIT`, `NSTACK_LIMIT`) hold the
-    store's values in every context of the store; the host writes them all (any thread may set
-    `INTERRUPT`).
+    store's values in every context code can switch to (LESSONS 31); the host writes them all
+    (any thread may set `INTERRUPT`).
+  * The exception is the collector's context (D61), which is kept out of `store.instances`. Its
+    `INTERRUPT` (and its epoch) stay 0, so a collection is never cut in half, and during a
+    collection its stack limits are its own (`collect.py`;
+    `tests/jit/test_gc_subtype.py::test_the_collector_follows_the_stores_native_stack_limit`).
   * Word 7 (`HOST_ERROR`) is per context, managed by the context's own bridge.
   * Words 10 (`EXCEPTION`) and 14 (`EXIT_RECORD`) point to the store's pending word and exit
     record.
@@ -154,8 +158,14 @@ int32_t f(uint64_t *ctx, uint64_t *frame);
   * Before the call, the caller saves whatever of its own convention the C entry may clobber. For
     the Python backends that is the pool registers in the caller-saved row, for every frame above,
     as the bridge does today (LESSONS 2): x86-64 `rsi rdi r8`–`r11`; aarch64 `x2`–`x8`.
-  * After the call, it reloads what a callee may change (memory 0's registers: a callee may grow an
-    imported memory).
+  * After the call, **before it tests the status and on every return path** (zero, a trap, 14),
+    it restores the registers it saved and reloads what a callee may change (memory 0's
+    registers: a callee may grow an imported memory).
+  * Why on every path: S0012's "State at a landing pad" relies on the callee's epilogue having
+    restored the pool on a non-zero status. A C entry does not do that: it keeps only the
+    boundary's callee-saved registers, and sljit code clobbers `rsi`, `rdi` and `r9`. So the
+    caller's pins and the pins of every frame above must already be back when a trap or an
+    exception reaches a landing pad or the caller's unwind.
 * Calls inside a module (`call` of a defined function) keep the compiler's internal convention.
 * Every defined function and every host thunk has a C entry (Q1). The runtime's `entry` calls only
   C entries.
@@ -184,7 +194,19 @@ host convention. Its bytes are not part of any artifact. It must:
 
 It sets up no pinned register: each compiler's C entry does that. It never sees a private status
 (a C entry consumes it). The stack-pointer stub (`sp_stub`, `frame[0]` = the stack pointer as a C
-entry sees it on entry) is the runtime's too, written as a C entry. The reference listing is the
+entry sees it on entry) is the runtime's too, written as a C entry.
+
+**Where they live in the package** (step 1):
+* Today `entry` and `sp_stub` come out of each backend's `abi.assemble`, which is the compiler's
+  side.
+* From step 1 they move to a per-architecture runtime module apart from the compilers,
+  `targets/jit/<arch>/entry.py`. It assembles `entry` (each host convention) and `sp_stub`, and
+  `common/instance.py` maps them once per process.
+* `abi.py` keeps only what is private to the Python compiler: its bridge and `tail_switch`. These
+  are written into its artifacts (`.waboros.trampolines`), and until phase 6 the runtime also
+  runs its own in-process copy of them for its own compiler string, as today.
+* The S0006 fault handler stays the runtime's; it moves to the same runtime module or stays where
+  it is (step 1 decides by size; it is per process, not per compiler). The reference listing is the
 appendix "Reference listing of the runtime's `entry`".
 
 ### `bridge` and `tail_switch`: private to each compiler
@@ -239,8 +261,10 @@ their layout. The interface is:
 
 The GC heap, its object layout, the type-info and RTT records and the collector's root buffer are
 part 3's and shared already: every compiler allocates and casts against the same store heap.
-Runtime modules (the collector, D61) are compiled by the runtime's own compiler for the
-architecture.
+Runtime modules (the collector, D61) are compiled by the **runtime's own compiler** for the
+architecture. In a phase-6 mixed store they are not compiled by whichever compiler made the
+user's modules. This amends D64 consequence 3 ("compiled by the Store's compiler") and D61 ("by
+the store's JIT").
 
 ### Traps, interrupts and the guard handler
 * **Traps are status returns** through every frame and every C entry, as today. No signal,
@@ -383,7 +407,11 @@ v1 is amended, not bumped (D70, D66): v1 is not frozen, and no file has been rel
 written before this spec cannot run under it.
 * The committed files of S0014 step 4.3 stay as **pre-S0015 fixtures**. `tests/artifact/test_old.py`
   changes its expectations, not its cases:
-  * the thin files are refused (by the compiler string, and by `read` if they no longer parse);
+  * the thin files are **refused by `read` on the layout**, whatever the compiler string: the test
+    runs with the compiler-string check passed (or patched). The `.waboros.trampolines` payload is
+    40 bytes per record before and 28 after, so 84 against 60 bytes on x86-64 and 44 against 32
+    on aarch64, and the exact parse fails. The refusal must not rest on an unrelated field
+    (CLAUDE.md, "The JIT artifact is a contract");
   * the fat files are regenerated from their wasm and run.
 * **New v1 files**, made after step 4 of the plan, are committed next to them with the same tests
   `test_old` runs today (read, inventory, instantiate, load thin and fat, version refusals).
@@ -458,7 +486,21 @@ written before this spec cannot run under it.
   * **the boundary registers and machine state:** a hand-assembled C entry clobbers every
     caller-saved register of the table (xmm and v registers included) and is called through a
     record. The caller's pins survive, and DF, MXCSR and FPCR are as the table says after the
-    call. The runtime's Win64 `entry` is tested for `xmm6`–`xmm15` on the Windows CI runner.
+    call.
+    * The same clobbering C entry also returns a trap, and status 14 into a `try_table` with
+      pinned locals: the pins are intact at the landing pad and in every frame the trap unwinds
+      (A3).
+    * The runtime's Win64 `entry` is tested for `xmm6`–`xmm15` on the Windows CI runner.
+* **The pre-S0015 fixtures** (A4): `test_old` asserts that `read` refuses each thin fixture on the
+  trampolines payload's size, with the compiler-string check passed or patched.
+* **Tests that depend on today's trampolines and offsets:**
+  * `tools/stack_info.py` (around lines 73-77) calls the compiler's `entry`/`sp_stub`: it moves to
+    the runtime module's, and CI keeps running it;
+  * `tests/jit/test_exceptions.py::test_no_module_uses_the_reserved_words` (around lines 650-703)
+    and `tests/jit/test_gc_subtype.py::test_no_module_uses_the_reserved_word` spy on
+    `abi.assemble`: they follow the split into `entry.py` and `abi.py`;
+  * `tests/jit/test_placement_knobs.py` (lines 34-35): the aarch64 offsets move if a per-module
+    C entry comes first in the code.
 * **CET and GCS balance: not tested on enforcing hardware.** No CI runner enforces CET shadow
   stacks or Arm GCS, and none runs Intel SDE. The balance of every call and return (the hop
   included) is checked by the review (step 6 of the plan). A test under SDE or on enforcing
@@ -507,9 +549,9 @@ found once. Each step stops and reports if it needs more than its size.
 
 | step | goal | agent | acceptance | size (lines) |
 |---|---|---|---|---|
-| 1 | x86-64: C entries for every function and host thunk; record calls through them, saving rsi/rdi/r8–r11; records written with C entries; the runtime's SysV and Win64 `entry` by the contract (Win64 saves rsi, rdi, xmm6–15) and `sp_stub`; `tail_switch` as the first hop, later hops by return-then-jump with a status of the private range; the walk with sets of entry and restore points; `test_boundary.py`; the x86-64 shape tests | jit-engineer | the spec suite and GC runs of the Test plan on `jit-x86_64`; `test_boundary.py`; `pytest -q` (the x86-64 pre-S0015 fixtures with `test_old`'s new expectations); D35 list regenerated; ISA gate; CoreMark and the cross-call driver alternated with a placement control, recorded | src ~200, tests ~300 |
+| 1 | x86-64: C entries for every function and host thunk; record calls through them, saving rsi/rdi/r8–r11; records written with C entries; the runtime's SysV and Win64 `entry` by the contract (Win64 saves rsi, rdi, xmm6–15) and `sp_stub`; `tail_switch` as the first hop, later hops by return-then-jump with a status of the private range; the walk with sets of entry and restore points; `test_boundary.py`; the x86-64 shape tests | jit-engineer | the spec suite and GC runs of the Test plan on `jit-x86_64`; `test_boundary.py`; `pytest -q` (the x86-64 pre-S0015 fixtures with `test_old`'s new expectations); D35 list regenerated; ISA gate; CoreMark and the cross-call driver alternated with a placement control, recorded; `platforms.yml` green (Windows x64 and ARM64, macOS x86-64 and arm64, Android x86_64: tests and the spec suite; the Win64 `entry` is D47 exception (a)) | src ~200, tests ~300 |
 | 2 | Review of step 1 without the implementer's reasoning: the boundary table against the code (every register a C entry may clobber is saved by every caller; machine state), the call/return balance of the hop, the private range, the walk's sets, the stack headroom bound | reviewer | findings closed before step 3 | — |
-| 3 | aarch64: the same (save x2–x8 around record calls; `bti jc` C entries; the entry zero-extends w0 into `TRAP_CODE`; sibling hops); the aarch64 shape tests | jit-engineer | the same on `jit-aarch64`, explicit under QEMU and guard on the arm64 runner; the cross-compiled D35 identity | src ~180, tests ~120 |
+| 3 | aarch64: the same (save x2–x8 around record calls; `bti jc` C entries; the entry zero-extends w0 into `TRAP_CODE`; sibling hops); the aarch64 shape tests | jit-engineer | the same on `jit-aarch64`, explicit under QEMU and guard on the arm64 runner; the cross-compiled D35 identity; `platforms.yml` green on every row | src ~180, tests ~120 |
 | 4 | Format and loader: `.waboros.funcs` and `thunks` as C entries; `.waboros.trampolines` with compiler blobs only, the symbols, `read`'s compare over the new fields; the inventory; the pre-S0015 fixtures' expectations; the new v1 files | implementer | `tests/artifact/` on both architectures; the spec suite through files (`WABOROS_JIT_ARTIFACT=1`) at parity on both JITs | src ~80, tests ~120 |
 | 5 | Docs ("Docs this changes"), and S0014's text | orchestrator | `python3 tools/check_docs.py` | — |
 | 6 | Review of steps 3–4 and of the whole for CET/GCS balance | reviewer | findings closed | — |
@@ -540,7 +582,7 @@ mixed-compiler test.
     one map.
   * Not done (D70); a compiler may add it later, privately, with a measurement.
 * **`ctx_abi_version` 2** instead of amending v1: old files refused by version. Nothing released
-  depends on v1, and the pre-S0015 fixtures are refused by the compiler string anyway, so a bump
+  depends on v1, and the pre-S0015 fixtures are refused by `read` on their layout anyway, so a bump
   would only add a refused version to every loader. Rejected (D70, "Versions").
 * **The runtime's `entry` as fixed bytes in every artifact** (Q1 (a) of the first draft):
   * foreign hosts would need no assembly;
@@ -586,26 +628,69 @@ mixed-compiler test.
      only `br` targets that are C entries.
 
 ## Docs this changes
-When approved and implemented:
+Each is updated in the step that makes it untrue (step 5 for those no code step owns).
 * [ARTIFACT.md](../ARTIFACT.md):
+  * the introduction (lines 10-15): a host also supplies `entry` as machine code. The appendix
+    plan gains hex bytes of each reference listing for hosts without an assembler (Dart FFI,
+    LuaJIT);
   * part 2: the `ENTRIES` row, the loader paragraph (the compiler-string rule until phase 6, the
     D64 clause), the fat-file text;
-  * part 3: the "Boundary convention" section, "Entry" as a contract with the reference listing,
-    "Function records", "Tail calls", the private status range in the trap codes, the split "Per
-    architecture" table.
-* [S0014](S0014-artifact-format.md): `.waboros.funcs`, `.waboros.context` (`thunks`),
-  `.waboros.trampolines`, `.text`, the symbols, "What instantiation reads", `read`'s trampoline
-  compare and "Semantics: the loader" (compatibility, phase 6), the test plan; a Changes line.
+  * part 2 `STACKMAPS` (lines 105-127): shift 0 for a C entry's internal call; the CoreMark site
+    count, which goes stale; the trampolines' own points move;
+  * part 3:
+    * the "Boundary convention" section, "Entry" as a contract with the reference listing,
+      "Function records", "Tail calls", the private status range in the trap codes;
+    * the context rows: word 8 per compiler; word 9 per compiler and possibly 0; word 14's
+      `frame` meaning; the memory row (line 185: reloaded after record calls too); the
+      `IS_SUBTYPE` row (line 196);
+    * "Host functions" (line 254): the bridge's saves become compiler-private, and `HOST_ERROR`
+      takes only public values;
+    * the split "Per architecture" table: the landing-pad row becomes `bti jc` at C entries, and
+      jump-table `bti j` moves to the compiler rows.
+* [S0014](S0014-artifact-format.md):
+  * `.waboros.funcs`, `.waboros.context` (`thunks`; "at least 18 words (the entry reads memory 0's
+    words)", which no longer holds), `.waboros.trampolines`, `.text`, the symbols;
+  * the `compiler` field (line 177) and its D64 clause; "What instantiation reads";
+  * `read`'s trampoline compare and "Semantics: the loader" (compatibility, phase 6);
+  * the foreign-host "one copy per store" rule; Q2 and "Alternatives considered", partly reversed
+    for `entry`;
+  * the test plan; a Changes line.
 * [S0013](S0013-gc.md): the walk section (sets of entry and restore points, C-entry sites, I1 with
   derived pointers) and a Changes line.
-* [S0003](S0003-jit-context-abi.md) and [S0004](S0004-jit-aarch64.md): Changes lines (records hold
-  C entries; the entry is a contract).
-* [DECISIONS.md](../DECISIONS.md): D70, if the approval changes it.
-* [SLJIT-BACKEND.md](../SLJIT-BACKEND.md): the sljit compiler's C entries, sibling tail calls and
-  the patches listed above.
-* [MICRO-COMPILERS.md](../MICRO-COMPILERS.md): D64's "one compiler per store" wording, where it
-  appears.
-* [TESTING.md](../TESTING.md): `tests/jit/test_boundary.py`, the pre-S0015 fixtures.
+* [S0012](S0012-exceptions.md): "State at a landing pad". After a record call the caller has
+  restored its pool itself (A3), not the callee's epilogue.
+* [S0005](S0005-simd.md) (lines 124 and 299): the xmm6-15 rule and its Win64-entry reason (the
+  runtime's Win64 `entry` now saves them).
+* [S0003](S0003-jit-context-abi.md) and [S0004](S0004-jit-aarch64.md):
+  * the body text ("one entry … `tail_switch` serve all"), the BTI paragraph;
+  * the per-frame bounds (≤ 144 / 96 bytes), with the recursion depth through `call_indirect`
+    recorded;
+  * Changes lines.
+* [DECISIONS.md](../DECISIONS.md): D70 if the approval changes it, and "amended by D70" markers
+  on:
+  * D30 (one `tail_switch` per process; the restore-jump path);
+  * D36 (the host supplies `entry`);
+  * D56 ("the trampolines are the runtime's own", "restore frames by fixed numbers");
+  * D59 (the `__waboros_entry_*` global symbols);
+  * D61 (the collector compiled by the runtime's own compiler);
+  * D62 rule 2;
+  * D64 consequence 3.
+* [ARCHITECTURE.md](../ARCHITECTURE.md): lines 301-303, 384 and 418.
+* [MICRO-COMPILERS.md](../MICRO-COMPILERS.md) (lines 86-90) and
+  [MICRO-COMPILERS-SHIPPING.md](../MICRO-COMPILERS-SHIPPING.md) (line 20): D64's "one compiler per
+  store".
+* [SLJIT-BACKEND.md](../SLJIT-BACKEND.md) (line 70 and a new paragraph): the sljit compiler's C
+  entries, sibling tail calls and the patches listed above.
+* [RISKS.md](../RISKS.md): R1 (lines 16-17); R2's BTI row (`bti jc`).
+* [STATIC-BUILDS.md](../STATIC-BUILDS.md) (lines 64-75, 85, 94) and
+  [ARTIFACT-CONTAINER.md](../ARTIFACT-CONTAINER.md) (lines 73 and 82): the entry symbols and the
+  trampolines.
+* [ROADMAP.md](../ROADMAP.md):
+  * line 302 (D64);
+  * phase 6 gains S0015's deferred items: the per-architecture rule, mixed stores, executing a
+    foreign blob, the compare at store attach, the walk's restore set, the mixed-compiler test.
+* [TESTING.md](../TESTING.md): `tests/jit/test_boundary.py`; the pre-S0015 fixtures; lines 95-101
+  (`test_trampolines`: `saved` leaves the file); line 331 (`tools/stack_info.py`).
 * [BENCHMARKS.md](../BENCHMARKS.md): the step-1 measurements.
 * [LESSONS.md](../LESSONS.md): whatever the steps find.
 * `tests/artifact/data/README.md`: the pre-S0015 fixtures and the new v1 files.
@@ -786,3 +871,14 @@ ret
   * the any/extern/exn wording of walk item 5;
   * the `0xFFFFFFFF` exception to the offset rule;
   * the tail hops of the gate ran without the walk check.
+* 2026-11-21: after the cross-spec consistency audit:
+  * A2: the collector's context is the exception to the store-wide words (D61);
+  * A3: a caller restores its saved registers and reloads memory before the status test, on every
+    path, with the S0012 consequence and a test;
+  * A4: the pre-S0015 thin fixtures are refused by `read` on the layout (84 against 60 bytes on
+    x86-64, 44 against 32 on aarch64), independent of the compiler string;
+  * A5: `platforms.yml` in the acceptance of steps 1 and 3;
+  * runtime modules are compiled by the runtime's own compiler (amends D64 c.3 and D61);
+  * `entry` and `sp_stub` move to a runtime module per architecture, `targets/jit/<arch>/entry.py`;
+  * "Docs this changes" extended to every document the audit found;
+  * the tests that spy on `abi.assemble` or depend on offsets added.
