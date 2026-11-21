@@ -1114,3 +1114,26 @@ What went wrong or surprised us while building the PoC, so it is not found again
     definition, and the writer applies that definition first (the code padded to 16 is the code
     everywhere: `.text`, symbols, the view), so that `write(read(b)) == b`. Found: S0014 step 5
     plan, 2026-11-21.
+139. **Same-size stubs before every function move CoreMark by ±5 % through placement alone.** The
+    C-ABI boundary prototype (D70) put a 16-byte stub before each function. CoreMark looked 5 %
+    *faster* (median 18 095 against 17 216 it/s) and `fib(27)` 0.3-0.5 ns slower, although neither
+    ran the new path more than rarely (`fib` not at all). A control with 16 bytes of `int3` in the
+    same places (`basepad`) showed the same shifts. Rule: a change that inserts code before
+    functions is measured against a padding control that has the same layout, never only against
+    the unchanged tree (LESSONS 51). Found: the D70 prototype, 2026-11-21 (BENCHMARKS.md, "C-ABI
+    boundary between instances").
+140. **sljit's `SLJIT_ENTER_KEEP(n)` keeps at most three registers, and only S0 upward.** The
+    option that lets sljit functions share registers across a `SLJIT_CALL_REG_ARG` call accepts
+    n = 1..3 and keeps S0..S(n-1): rbx, r15 and r14 on x86-64 SysV, x19-x21 on aarch64. Our
+    context and frame registers (r15/r12, x28/x27) and memory 0's (r13/r14, x26/x25) cannot all
+    be kept that way, and `sljit_emit_op_custom` does not change the registers sljit itself uses.
+    Rule: a register role that a sljit-based compiler must share with other code is either among
+    S0..S2 or needs a patched register map; check `sljitLir.h` before planning one. Found: the
+    D70 investigation, 2026-11-21 (sljit 39c508d).
+141. **sljit's x86-64 register map differs between its SysV and Win64 builds.** With `_WIN64`
+    sljit maps S1 to rsi instead of r15, and has eight saved registers instead of six, so code
+    from the same compiler source uses different registers depending on how sljit was built.
+    A micro-compiler shipped as wasm is built once; it must build sljit in one configuration for
+    every OS, with host calls only through our per-convention trampolines. Rule: never read
+    sljit's register roles from one build and assume them on another OS. Found: the D70
+    investigation, 2026-11-21 (`sljitNativeX86_common.c`, `reg_map`).

@@ -2,7 +2,7 @@
 title: Decisions
 kind: log
 status: current
-updated: 2026-11-18
+updated: 2026-11-21
 ---
 
 # Decisions
@@ -1333,9 +1333,9 @@ Status 14 propagation (D52) is unchanged.
   register, on both architectures.
 
 ### D64. One compiler per Store; nothing shared between Stores; part 3's register table is per compiler
-Status: accepted (maintainer, 2026-11-16) · Date: 2026-11-16 · Supersedes: the advice of the first sljit package (freeze part 3's per-architecture table to sljit's registers, or decide hand-written against sljit before freezing part 3) · Evidence: SLJIT-BACKEND.md (sljit keeps the context in rbx and the frame in r15 on x86-64, `jit-x86_64` in r15 and r12)
+Status: accepted (maintainer, 2026-11-16); superseded in part by D70 (the bullets marked below) · Date: 2026-11-16 · Supersedes: the advice of the first sljit package (freeze part 3's per-architecture table to sljit's registers, or decide hand-written against sljit before freezing part 3) · Evidence: SLJIT-BACKEND.md (sljit keeps the context in rbx and the frame in r15 on x86-64, `jit-x86_64` in r15 and r12)
 
-* **A Store uses exactly one compiler.** If the runtime picks a compiler (for example a sljit
+* *(Superseded by D70: one boundary ABI per Store, not one compiler.)* **A Store uses exactly one compiler.** If the runtime picks a compiler (for example a sljit
   micro-compiler on x86-64), every module, instance and runtime module of that Store goes through
   it; mixing compilers inside a Store is not allowed.
 * **Nothing is shared between Stores**: no functions, contexts or trampolines, so Stores with
@@ -1346,11 +1346,13 @@ Status: accepted (maintainer, 2026-11-16) · Date: 2026-11-16 · Supersedes: the
   that holds by construction, and no table has to be common to all compilers.
 
 Consequences:
-1. **ARTIFACT.md part 3's "Per architecture" table belongs to a compiler**, keyed by the target in
+1. *(Superseded by D70: the boundary part of the table is per architecture; only the bridge and
+   `tail_switch` rows are a compiler's.)* **ARTIFACT.md part 3's "Per architecture" table belongs to a compiler**, keyed by the target in
    the header's `compiler` field. The present table is `jit-x86_64`'s and `jit-aarch64`'s; a sljit
    micro-compiler brings its own. A host that provides the bridge or `tail_switch` follows the table
    of its Store's compiler.
-2. **A loader refuses, never guesses**: a thin artifact whose compiler target differs from the
+2. *(Superseded by D70 in its compiler clause: another compiler of the same architecture and
+   versions loads.)* **A loader refuses, never guesses**: a thin artifact whose compiler target differs from the
    Store's compiler is refused, like an `arch` or ISA mismatch; a fat artifact is regenerated from
    its wasm, as for another target today. The AOT cache key already holds `compiler` and
    `config_sha256`.
@@ -1361,6 +1363,7 @@ Consequences:
 5. **Static builds (D62)**: trampolines may be one set per compiler (they hold no state), shared by
    Stores of that compiler; state lives in each Store's context.
 
+*(The first rejection below is reversed by D70: compilers mix through a boundary ABI.)*
 Rejected: mixing compilers inside a Store; one register table per architecture common to every
 compiler (it would force the Python JIT onto sljit's register roles or the reverse, for no gain
 once Stores do not mix).
@@ -1516,3 +1519,65 @@ Status: accepted (maintainer, 2026-11-20) · Date: 2026-11-20 · Supersedes: D57
   functions outside it; 4 MiB per heap with a function-type record is the price.
 * Context ABI v1 amended without a bump (as D34, D50, D52, D56, D57): no word moves, no code
   changes, an older artifact's code addresses only committed bytes.
+
+### D70. One boundary ABI per architecture; compiler internals private
+Status: accepted (maintainer, 2026-11-21); the design goes into the boundary-convention spec (to be written, the next spec after S0014) · Date: 2026-11-21 · Supersedes: D64 in part (its first bullet, consequences 1 and 2 in their compiler clause, the rejection of mixing compilers) · Evidence: BENCHMARKS.md, "C-ABI boundary between instances (prototype, 2026-11-21)"; [WAMR-INTEROP.md](WAMR-INTEROP.md)
+
+The maintainer's target: within one architecture, an artifact behaves like an ordinary `.so`. An
+x86-64 artifact of `jit-x86_64` and one of the sljit micro-compiler (D60, D68) load and link in
+one store, and so do artifacts of different compiler versions; the same holds on aarch64. No
+compatibility between architectures is asked for.
+* **One ABI per store instead of one compiler per store.** Every function record's `code` is a
+  C entry `int32_t f(uint64_t *ctx, uint64_t *frame)` in one fixed convention per architecture:
+  SysV on x86-64 on every OS (Windows included: only our code calls it), AAPCS64 on aarch64. The
+  status comes back in `eax`/`w0`. Calls through a record (imports of another instance,
+  `call_indirect`, `call_ref`, the IS_SUBTYPE record) use it; calls inside a module keep each
+  compiler's own convention. Pinned registers, the pool, frame layout and the native frame size
+  stay each compiler's own.
+* **Trampolines.** `entry` becomes the runtime's, one per architecture and independent of the
+  compiler: it calls a C entry. `bridge` and `tail_switch` are private to a compiler, carried in
+  its artifacts and reached through each instance's context words 8 and 9 (already per context).
+* **The walk interface** is fixed per architecture, not per compiler. Every return address on a
+  store's stack is a site in some artifact's `STACKMAPS`, and each C entry's call into its body is
+  a site with shift 0 and no map. A C call passes `frame` = the caller's base + 8 · shift. The exit
+  record is `{sp at the call, pc, the innermost frame base}`, and the entry's saved block has a
+  fixed place. Invariant I1 holds in every compiler: at a site no reference is in a register.
+  Foreign frames are opaque except for their site numbers; no frame-pointer chain is needed.
+* **Traps** stay status returns through every frame and every C entry; interrupts, fuel and stack
+  limits stay context words; the guard fault handler stays per process and reads each artifact's
+  fault map.
+* **Tail calls across the boundary keep constant stack.** The first hop calls the foreign C entry
+  through the compiler's `tail_switch`. A later hop starts in a body whose return address is its
+  own module's C entry: that frame is unwound and the foreign C entry is jumped to (a C sibling
+  call). Every compiler must do this; a conformance test checks it.
+* **Compatibility rule.** S0014 Q3's exact `compiler` string stays the cache key, but it is not
+  the compatibility rule. Compatibility follows the architecture, `format_version` and
+  `ctx_abi_version`. A loader accepts other compiler versions and other compilers of the same
+  architecture under that rule, but thin files of other compiler versions are accepted only from
+  phase 6 (Q3 (b), loader policy only; nothing in the format or the ABI blocks it).
+* **v1, no bump.** The change alters what a record's `code` means, so the committed v1 files of
+  S0014 step 4.3 would no longer run under it. They are regenerated once, without a version
+  bump: v1 is not frozen yet (D66: the format spec starts from the final form of v1), and no file
+  has been released.
+* **Scope now:** x86-64 and aarch64, both Python backends, the spec, the conformance test, the v1
+  regeneration. **Deferred:** thin files of other compiler versions (phase 6); a real store
+  mixing the Python JIT and sljit (when the micro-compiler exists).
+
+Measured (prototype on `jit-x86_64` alone, every call through a record on the C path; BENCHMARKS.md):
+a cross-instance call 2.6 → 4.4 ns, a `call_indirect` 3.8 → 4.5 ns, CoreMark unchanged within its
+spread; 64 229 spec commands pass under the walk check in both bounds modes.
+
+Rejected:
+* **Keep D64**: modules of different compilers in different stores, talking through host
+  functions. A call through the host into another store costs about 13.5 µs, about 5 000 times a
+  direct cross-instance call, and nothing (memories, tables, GC references) can be shared.
+* **One internal register table per architecture for all compilers.** sljit's `ENTER_KEEP(n)`
+  shares only S0..S(n-1) with n ≤ 3 (rbx, r15, r14 on x86-64; x19-x21 on aarch64), so our r12,
+  r13 and x25-x28 need a patched register map. The set of registers that survive a call must match
+  too: sljit clobbers rsi, rdi and r9 (x2-x7 on aarch64), which our pool keeps. It would freeze both
+  compilers' internals across versions, which is the opposite of the target.
+* **A fast path for records of one's own context** (the prototype's `cabi2`): no gain beyond the
+  noise, and two call instructions per site with one map.
+* **`ctx_abi_version` 2** for this change: nothing released depends on v1, so a bump would only
+  add a refused version to the loaders.
+

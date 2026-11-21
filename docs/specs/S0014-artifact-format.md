@@ -4,7 +4,7 @@ kind: spec
 id: S0014
 status: approved
 superseded_by:
-related: [D18, D23, D24, D29, D33, D35, D36, D44, D48, D54, D58, D59, D60, D61, D62, D63, D64, D65, D66, R2, R3, R6, S0003, S0006, S0013]
+related: [D18, D23, D24, D29, D33, D35, D36, D44, D48, D54, D58, D59, D60, D61, D62, D63, D64, D65, D66, D70, R2, R3, R6, S0003, S0006, S0013]
 owner: maintainer
 updated: 2026-11-21
 ---
@@ -838,6 +838,11 @@ When approved and implemented (step 7 unless noted):
   string: loads; another: refused with the "compiler" message); `load` of the fat file runs; a copy
   with `EI_ABIVERSION` 2 refused thin and regenerated fat. Another architecture's files get the
   read, the refusal (`e_machine`) and the version tests. Everything of the plan is done.
+* 2026-11-21: **steps 6-8 and the freeze of v1 wait for the boundary-convention spec** (D70, to be
+  written as the next spec). It changes what a record's `code` holds (a C entry), what
+  `.waboros.funcs` names, what `.waboros.trampolines` carries (the compiler-private `bridge` and
+  `tail_switch`; `entry` becomes the runtime's) and the D64 sentences of this spec and of
+  ARTIFACT.md part 3; the committed v1 files of step 4.3 are regenerated once, without a bump.
 
 ## Changes
 * 2026-11-17: created (draft).
@@ -997,3 +1002,5 @@ When approved and implemented (step 7 unless noted):
   entry symbols).
 * 2026-11-21: step 4.3 done: the committed v1 files and `tests/artifact/test_old.py`; no change
   to the format or to `src/`.
+* 2026-11-21: D70 (one boundary ABI per architecture): steps 6-8 and the v1 freeze wait for the
+  boundary-convention spec (Progress); no change to this spec's text yet.

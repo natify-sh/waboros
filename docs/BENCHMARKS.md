@@ -2076,3 +2076,53 @@ A commit limit (the mechanism of LESSONS 135): RLIMIT_DATA set to the current `V
 then live stores each allocating one struct. Before: four stores fit and the fifth failed (`OSError` ENOMEM,
 `VmData` +202 MiB; `execmem._retry` freed the dropped warm-up store once); after: all 16 fit, `VmData` +47 MiB. The test is
 `tests/jit/test_gc_commit.py::test_live_stores_fit_under_a_commit_limit` (Linux).
+
+## C-ABI boundary between instances (prototype, 2026-11-21)
+
+What a C-ABI boundary at function records (D70) costs on `jit-x86_64`, measured with a scratch
+prototype in which **every** call through a record takes the C path: a 16-byte stub before each
+body (`endbr64; lea rdx, [rip + 5]; jmp centry`) is the record's `code`; one `centry` per module
+(saves r12-r15, sets up r15/r12/r13/r14, calls the body; a site with shift 0); every
+`call_record`, `call_indirect` and `call_ref` pushes and pops rsi, rdi and r8-r11 (the pool
+registers SysV lets a callee clobber), calls `[record]` with rdi = context, rsi = frame, and
+reloads r13/r14. Tail calls: the first cross-context hop through `tail_switch`, which now saves
+those six registers (restore frame 64 bytes); later hops unwind the module's `centry` frame and
+jump to the foreign C entry.
+
+* Date: 2026-11-21. Code: branch `gc` after S0014 step 4.3; four copies of `src/waboros` on
+  `PYTHONPATH`, not committed: **base** (as is), **basepad** (base with 16 bytes of `int3` before
+  each function: the placement control for the stubs), **cabi** (the prototype), **cabi2** (cabi
+  plus a fast path: a record of the caller's own context is called at its internal body).
+* Machine: Intel Xeon @ 2.10 GHz, 4 vCPU cloud VM, Linux 6.18; CPython 3.13.17; guard mode.
+* Commands, under `taskset -c 2`, variants alternated round by round in one session: the scratch
+  driver `xcall.py` (10⁷ loop iterations with one call each, median of 5 rounds per run;
+  option 1: 10⁵), `tools/run_calls_bench.py --targets jit-x86_64 --rounds 5`,
+  `tools/run_coremark_jit.py poc/in/core.wasm`. Session 1: 5 rounds of base, cabi, cabi2;
+  session 2: 6 rounds of all four. Every CoreMark run passed its self-check.
+* Correctness of cabi: the spec suite with `WABOROS_JIT_WALK_CHECK=1` 64 229 pass, 0 fail, in guard
+  and in explicit mode; `gc` and `exceptions` with the three GC switches 905 pass, 0 fail;
+  `tests/jit/test_tail.py` passes (10⁵ cross-instance tail hops in a 256 KiB thread). 53 tests of
+  `tests/jit` fail on fixed shapes only (one more site per module, one more walk frame per
+  cross call, code offsets moved by 16).
+
+Median of the run medians (range over runs), session 1 / session 2:
+
+| case | base | basepad | cabi | cabi2 |
+|---|---|---|---|---|
+| `call` of another instance's function (ns) | 2.60 / 2.67 | – / 2.68 | 4.42 / 4.37 | 5.07 / 5.04 |
+| `call_indirect`, own table (ns) | 3.79 / 3.79 | – / 3.00 | 4.51 / 4.57 | 3.45 / 3.54 |
+| `call_indirect` to another instance's function (ns) | 3.14 / 3.45 | – / 2.93 | 4.56 / 4.53 | 5.34 / 5.86 |
+| direct call, code unchanged (ns) | 2.02 / 2.35 | – / 1.90 | 1.96 / 1.94 | 1.96 / 1.93 |
+| option 1: a host function calling into another store (µs) | 13.8 / 13.5 | – / 13.0 | 13.1 / 13.7 | 13.4 / 13.8 |
+| CoreMark (it/s) | 17 216 / 16 443 (15 620-18 437) | – / 17 054 (16 023-17 224) | 18 095 / 17 353 (16 255-18 880) | 17 676 / 17 657 (16 897-18 932) |
+| calls `leaf` (ns) | 1.96 / 1.98 | – / 1.96 | 2.11 / 1.92 | 1.86 / 1.96 |
+| calls `fib(27)` (ns) | 2.58 / 2.66 | – / 2.92 | 3.06 / 2.96 | 2.87 / 2.98 |
+
+Reading: the C path costs about **+1.7 ns per cross-instance call** and **+0.7 ns per
+`call_indirect`**. CoreMark sorts through function pointers, yet its variants differ by less than
+one variant's own spread (about 17 %): no loss is measurable, and the apparent gain of cabi is
+placement, since basepad gains too. `fib` and `leaf` run code that did not change; their shift
+is placement as well (LESSONS 51, 139). cabi2's fast path gains nothing beyond the noise. A call
+through the host into another store (D64's only path between compilers) is about 5 000 times a
+direct cross-instance call. CoreMark code: 34 547 bytes (base), 35 011 (basepad), 35 057 (cabi),
+35 159 (cabi2). Not measured: aarch64, and a store that really mixes two compilers.
