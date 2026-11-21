@@ -1521,7 +1521,7 @@ Status: accepted (maintainer, 2026-11-20) · Date: 2026-11-20 · Supersedes: D57
   changes, an older artifact's code addresses only committed bytes.
 
 ### D70. One boundary ABI per architecture; compiler internals private
-Status: accepted (maintainer, 2026-11-21); the design goes into the boundary-convention spec (to be written, the next spec after S0014) · Date: 2026-11-21 · Supersedes: D64 in part (its first bullet, consequences 1 and 2 in their compiler clause, the rejection of mixing compilers) · Evidence: BENCHMARKS.md, "C-ABI boundary between instances (prototype, 2026-11-21)"; [WAMR-INTEROP.md](WAMR-INTEROP.md)
+Status: accepted (maintainer, 2026-11-21); the design is [S0015](specs/S0015-boundary-convention.md) (draft) · Date: 2026-11-21 · Supersedes: D64 in part (its first bullet, consequences 1 and 2 in their compiler clause, the rejection of mixing compilers) · Evidence: BENCHMARKS.md, "C-ABI boundary between instances (prototype, 2026-11-21)"; [WAMR-INTEROP.md](WAMR-INTEROP.md)
 
 The maintainer's target: within one architecture, an artifact behaves like an ordinary `.so`. An
 x86-64 artifact of `jit-x86_64` and one of the sljit micro-compiler (D60, D68) load and link in
