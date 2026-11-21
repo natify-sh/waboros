@@ -92,6 +92,9 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   switches that change code (`WABOROS_JIT_NOPIN`, `NOLIVE`, `PAD`, `LOOP_ALIGN`: `write` refuses).
   `tests/artifact/test_instantiate.py` instantiates from the read form directly and checks that
   `Compiled.module` and the read module have only the inventory's keys.
+  `tests/artifact/test_old.py` (S0014 step 4.3) reads and runs the v1 files committed under
+  `tests/artifact/data/` (never regenerated; their README names the commit and compiler string); a
+  later format or ABI bump keeps the test, changed to expect the version refusal.
   `tests/artifact/test_trampolines.py` (S0014 step 5): the instance of a loaded file runs on the
   process's trampolines; a blob byte, a moved `restore` or `saved` of any convention is refused
   thin and regenerated fat; the payload's layout rules; and the store rule of a foreign host (two

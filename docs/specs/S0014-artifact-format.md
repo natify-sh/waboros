@@ -829,6 +829,15 @@ When approved and implemented (step 7 unless noted):
   called). Spec suite through files 64 229 pass, 0 fail, both bounds modes; without the switch
   unchanged; D35 lists unchanged on both JITs. Left: 4.2 (GC heap lazy commit) and 4.3 (committed
   v1 files, after step 5); the trampoline rule of step 6 is step 5's.
+* Step 4.3 done (2026-11-21): the v1 files are committed under `tests/artifact/data/` (one small
+  module, `v1-small.wat`/`.wasm`, as fat and thin files for `jit-x86_64` and `jit-aarch64`, explicit
+  bounds mode, compiler string `waboros 0.0.1.dev207-dc5da8fdb1c107b3 jit-<arch> 0`, made at
+  commit `9340759` by `tools/make_v1_artifacts.py`, never regenerated). `tests/artifact/test_old.py`:
+  `read` and its inventory on all four; the read view instantiated directly on the native
+  architecture (context ABI v1 runs old code); `load` of the thin file (this process's compiler
+  string: loads; another: refused with the "compiler" message); `load` of the fat file runs; a copy
+  with `EI_ABIVERSION` 2 refused thin and regenerated fat. Another architecture's files get the
+  read, the refusal (`e_machine`) and the version tests. Everything of the plan is done.
 
 ## Changes
 * 2026-11-17: created (draft).
@@ -986,3 +995,5 @@ When approved and implemented (step 7 unless noted):
   a file's copy is executed. No version bump: the section is in the approved v1 table and no v1
   file has been committed (step 4.3 follows). `.symtab`'s `sh_info` is the first global (the
   entry symbols).
+* 2026-11-21: step 4.3 done: the committed v1 files and `tests/artifact/test_old.py`; no change
+  to the format or to `src/`.
