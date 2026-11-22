@@ -2,7 +2,7 @@
 title: Architecture
 kind: reference
 status: current
-updated: 2026-11-05
+updated: 2026-11-22
 ---
 
 # Architecture
@@ -417,7 +417,7 @@ everything else as wasm modules that run inside it and cannot reach past the mem
 The kernel is what cannot be done otherwise: allocate memory, run machine code, catch a trap, call
 the host (the context ABI, a few services, the bridge and the entry trampolines). The rest is
 runtime modules under D54 ([RUNTIME-MODULES.md](RUNTIME-MODULES.md)): the GC collector first (S0013),
-then instantiation and the segment libcalls, the decoder and validator, later the compilers
+then the decoder and validator (instantiation and the segment libcalls stay host code, D72), later the compilers
 themselves ([JIT-AS-WASM.md](JIT-AS-WASM.md)) and WASI's computing part. A new host (the C loader of
 D36, MicroPython, a host in another language) implements only the kernel; every capability comes
 as bytes, the same for all, written and tested once.

@@ -2,7 +2,7 @@
 title: Runtime modules in wasm (D54) - which parts of the runtime should be one, and in what order
 kind: reference
 status: draft
-updated: 2026-11-16
+updated: 2026-11-22
 ---
 
 # Runtime modules in wasm: candidates and order
@@ -58,6 +58,10 @@ non-final target only (D61, ARTIFACT.md part 3); the test checks the export list
 answers.
 
 ### Built already, moved for the C loader (with ROADMAP "Next" item 6, not before)
+
+*Deferred (maintainer, 2026-11-22, [D72](DECISIONS.md)):* items 4 and 5 stay host code; a C host
+implements them in C from the specification, checked by conformance tests. Revisit when a host that
+is not C would write them a second time. The text below is kept as the analysis.
 
 4. **Instantiation work** (today Python, `instance.py`): evaluation of constant expressions
    (`extended-const`, `global.get`, `ref.func`) and the application of active data and element

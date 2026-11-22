@@ -1650,3 +1650,25 @@ Rejected:
 * **Shrink the C path instead**: at best 64 bytes a level (saves cut to the module's pinned
   volatile registers; the frame's 16, the return address's 8 and `centry`'s 40 stay, its pad
   included), twice Wasmtime's.
+
+### D72. Instantiation and the segment libcalls stay host code; no runtime module for them now
+Status: accepted (maintainer, 2026-11-22) · Date: 2026-11-22 · Supersedes: RUNTIME-MODULES.md items 4 and 5 ("moved for the C loader") and the corresponding clause of ROADMAP "Next" item (6) and ARCHITECTURE.md "The kernel and runtime modules" · Evidence: RUNTIME-MODULES.md; D36, D54, D60
+
+* **Instantiation** (constant expressions, active data and element segments with their bounds
+  checks and traps in the specification's order) and **the four segment libcalls** (`memory.init`,
+  `data.drop`, `table.init`, `elem.drop`) are not moved into a wasm runtime module. The Python
+  runtime keeps its own; a C host implements them in C from the specification (S0014 "Semantics:
+  the loader", ARTIFACT.md part 3), which D36 already requires to be sufficient.
+* **Why:** the module's run-time cost would be small (cold paths), but it adds a bootstrap path (a
+  module that instantiates modules must itself be instantiable without itself), one more module to
+  compile or ship per process, and a layer the Python runtime does not need. Its only beneficiaries
+  are hosts that would otherwise re-implement the semantics, and the foreseen ones are all C: the C
+  reference loader (D36, a test tool), the native C runtime with a micro-compiler (D60) and a
+  MicroPython natmod; one C implementation serves them all.
+* **The trap-order risk** (RUNTIME-MODULES.md item 4: a re-implementation gets the order of traps
+  wrong) is covered by conformance instead: the C loader runs the spec suite's instantiation
+  commands and the old-artifact tests in CI and must agree with the Python runtime.
+* **Revisit** when a host that is not C (Dart, LuaJIT, ...) would have to write the semantics a
+  second time.
+* Unchanged: the GC collector stays a runtime module (D61, D54); the kernel-and-modules direction
+  stays for the parts that pass RUNTIME-MODULES.md's criterion.
