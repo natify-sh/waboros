@@ -2,7 +2,7 @@
 title: Lessons
 kind: log
 status: current
-updated: 2026-11-21
+updated: 2026-11-22
 ---
 
 # Lessons
@@ -1137,3 +1137,20 @@ What went wrong or surprised us while building the PoC, so it is not found again
     every OS, with host calls only through our per-convention trampolines. Rule: never read
     sljit's register roles from one build and assume them on another OS. Found: the D70
     investigation, 2026-11-21 (`sljitNativeX86_common.c`, `reg_map`).
+142. **Moving the boundary silently changes which path a tail-call test takes.** Before S0015 an
+    export that `return_call`ed another instance's function went through `tail_switch` and left a
+    restore frame. With C entries the export is entered through its module's C entry, so the same
+    test now takes the later-hop path (return to the C entry, jump to the foreign one) and no
+    restore frame exists. `test_the_walk_steps_over_a_tail_switch_restore_frame` and
+    `test_one_copy_per_store_from_the_first_file` failed only on their frame counts, and adjusting
+    the counts would have left `restore` untested. Rule: when the entry shape changes, a test of a
+    first hop must enter the tail-calling function by a `call` inside its module; check which
+    path each tail-call test takes, not only its numbers. Found: S0015 step 1, 2026-11-22.
+143. **A test's hand-made callee must look foreign by the compiler's own test.** With D71 a record
+    call takes the C path only when the record's context has another `HOST_BRIDGE`; the
+    hand-assembled C entries of `test_boundary.py` were wired with a real context of this compiler
+    (or 0). The first would have been "called at its body", 16 bytes into a stub; the second read
+    word 8 of address 0. And the status tests through "one and two C entries" between real
+    instances silently stopped crossing any C entry once those calls became body calls. Rule: a
+    fake callee gets a context the fast-path test rejects, asserted in the test, and a test named
+    after a path checks that it still takes it. Found: S0015 step 1, D71, 2026-11-22.

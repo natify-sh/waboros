@@ -1,8 +1,9 @@
 """The frame walk of a store's JIT code (docs/specs/S0013, "The walk"): from the store's exit record
 (context word 14, written by the bridge) through every wasm frame by its return address and the
-site numbers of `Compiled.stackmaps`, across nested entries by the block each entry trampoline
-keeps. An unknown return address or a frame base that disagrees with its entry is an internal
-error (`RuntimeError`), never a guess.
+site numbers of `Compiled.stackmaps` (a module's C entry calls its bodies at a site of its own,
+shift 0 and no map: S0015), across nested entries by the block each entry trampoline keeps. An
+unknown return address or a frame base that disagrees with its entry is an internal error
+(`RuntimeError`), never a guess.
 
 The check mode (`WABOROS_JIT_WALK_CHECK=1`, tests only; read when an instance is created) walks
 at every host call and libcall: `check`."""
@@ -14,7 +15,6 @@ from typing import Any
 
 from waboros.targets.jit.common import gc
 
-RESTORE_RET_AT, RESTORE_UP = 8, 16  # tail_switch's restore frame: context, real return address
 Frame = tuple[Any, gc.SiteMap, int, int]  # instance, site, sp, base
 
 
@@ -73,7 +73,7 @@ def walk(store: Any, st: Any, tramp: Any) -> list[tuple[list[Frame], int]]:
         _, ret_at, up, _, _, _ = site
         pc, nsp = read(sp + ret_at), sp + up
         if pc == tramp.restore:  # one restore frame at most; the tail-called frame keeps the base
-            pc, nsp = read(nsp + RESTORE_RET_AT), nsp + RESTORE_UP
+            pc, nsp = read(nsp + tramp.restore_ret_at), nsp + tramp.restore_up
             if pc == tramp.restore:
                 raise RuntimeError("JIT walk: a restore frame returns to another")
         if nsp <= sp:

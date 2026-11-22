@@ -24,6 +24,10 @@ EXIT = 8 * EXIT_RECORD  # the store's exit record {sp, pc, frame} (S0013 3a)
 # where the entry keeps the enclosing exit record and its frame, from sp at its `blr`
 ENTRY_SAVED = 96
 
+# tail_switch's restore frame {x28, x30}, from sp at its `blr`: the real return address, the
+# caller's sp (S0013 3a)
+RESTORE_RET_AT, RESTORE_UP = 8, 16
+
 
 def reload_memory(a: Asm) -> None:
     a.pair(True, MBASE, MSIZE, CTX, MEM0)

@@ -253,7 +253,7 @@ def subtype(fn: Any, pc: int, h: int, rec: Any, ti: int, top: int, miss: Any) ->
     b.cmp_branch("eq", q, tos, hit, True)
     b.move(Slot(fn.L + h + 1), tos, True)
     b.call_record(fn.f, fn.m.layout.subtype(), fn.L + h)
-    fn.site(pc, fn.L + h, h, top)
+    fn.site(pc, fn.L + h, h, top, True)
     b.cmp_branch("eq", q, Imm(0), miss, True)
     b.bind(hit)
 
@@ -702,7 +702,7 @@ def call_open(fn: Any, ti: int, table: int, pc: int, tail: bool) -> None:
         fn.dead = True
         return
     b.call_ref(f, rec, fn.L + h0)
-    fn.site(pc, fn.L + h0, h0, h0 + n + 1)
+    fn.site(pc, fn.L + h0, h0, h0 + n + 1, True)
     del fn.st[h0:]
     fn.st += [core.SLOTE] * nres
     fn.maxh = max(fn.maxh, h0 + max(n, nres))

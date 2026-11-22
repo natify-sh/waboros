@@ -73,6 +73,7 @@ class Frame:
 
 class Backend:
     pool = POOL
+    record_sites = 1
     tos = 0
     supported = SUPPORTED | v128.SUPPORTED | frozenset(WIDEOPS) | EXN | gc.OPS  # GC: S0013
 
@@ -234,6 +235,13 @@ class Backend:
         if shift_slots:
             self._add_k(FRAME, FRAME, -8 * shift_slots)
         self._cbz(0, f.error, wide=False, nz=True)
+
+    def c_entry(self) -> int:
+        """No C entry before S0015 step 3: a record's `code` is the body itself."""
+        return len(self.a.buf)
+
+    def c_entry_shared(self) -> int:
+        return 0
 
     def host_thunk(self, word: int) -> int:
         at = len(self.a.buf)

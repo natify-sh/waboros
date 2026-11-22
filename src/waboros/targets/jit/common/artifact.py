@@ -210,15 +210,15 @@ def _types(mod: Any) -> bytes:
 
 
 def _conventions(target: str) -> dict[str, tuple[bytes, list[int], int]]:
-    """The target's conventions in file order: (blob, offsets, ENTRY_SAVED) from abi.assemble."""
+    """The target's conventions in file order: (blob, offsets, ENTRY_SAVED), `t.conventions()`."""
     t: Any = base.TARGETS[target]()
     return t.conventions()
 
 
 def _text(c: Any, target: str) -> tuple[bytes, bytes, list[tuple[str, int, list[int], int]]]:
     """`.text`: the code and data area padded with zeros to a multiple of 16 (the padding is part
-    of the data area), then each convention's blob, as abi.assemble gives it, at the next multiple
-    of 16; `.waboros.trampolines`; and (convention, start, offsets, size) per blob."""
+    of the data area), then each convention's blob, as the target's conventions give it, at the
+    next multiple of 16; `.waboros.trampolines`; and (convention, start, offsets, size) per blob."""
     convs = _conventions(target)
     text, pay, at = bytearray(c.code), [_u("I", len(convs))], []
     for name, (blob, offs, saved) in convs.items():
@@ -669,8 +669,9 @@ def _cexpr_r(r: _R, env: _Env, want: Any = None) -> Any:
 
 def _trampolines(text: bytes, b: bytes, target: str) -> bytes:
     """The code and data area of `.text` (up to the first blob), after the blobs are checked: laid
-    out as the writer lays them out, and every convention's record and blob equal to what its
-    abi.assemble gives (S0014, Q4 (b): on any host, as `compiler` is this process's anyway)."""
+    out as the writer lays them out, and every convention's record and blob equal to what the
+    target's conventions give (S0014, Q4 (b): on any host, as `compiler` is this process's
+    anyway)."""
     r = _R(b, ".waboros.trampolines")
     convs = _conventions(target)
     if r.u32() != len(convs):
@@ -690,7 +691,10 @@ def _trampolines(text: bytes, b: bytes, target: str) -> bytes:
             r.fail(f"the {name} blob is not at the next multiple of 16, after zero bytes")
         got = (size, text[start : start + size], tuple(x - start for x in rest[:6]), rest[6])
         if got != (len(blob), blob, offs, saved):
-            r.fail(f"the {name} trampolines are not this compiler's (corrupt or forged file)")
+            r.fail(
+                f"the {name} trampolines differ from this compiler's (another compiler or "
+                "version, or a corrupt file)"
+            )
         pos = start + size
     r.done()
     if pos != len(text):

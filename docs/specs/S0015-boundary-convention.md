@@ -103,6 +103,9 @@ int32_t f(uint64_t *ctx, uint64_t *frame);
 * **`ctx`** is the callee's context (the record's third word), fully initialised as part 3 lays
   it out for the callee's module.
   * Words 8 `HOST_BRIDGE` and 9 `TAIL_SWITCH` point to the copy of the **callee's** compiler.
+  * A caller may read word 8 of the callee's context before the call (to recognise its own
+    compiler, D71), so every record's context is a readable context laid out as part 3, never a
+    placeholder, whichever compiler made it.
   * Words 2–6 (`INTERRUPT`, `FUEL`, `EPOCH_DEADLINE`, `VSTACK_LIMIT`, `NSTACK_LIMIT`) hold the
     store's values in every context code can switch to (LESSONS 31); the host writes them all
     (any thread may set `INTERRUPT`).
@@ -155,6 +158,23 @@ int32_t f(uint64_t *ctx, uint64_t *frame);
 * **Every call through a record** (`call` and `return_call` of an import, `call_indirect`,
   `return_call_indirect`, `call_ref`, `return_call_ref`, a function-subtype site) uses the C
   entry.
+  * **The rule:** on the boundary there is always a C entry; a compiler may bypass it for
+    callees it recognises as its own, calling or tail-calling their bodies in its internal
+    convention. That is a private choice, as the same-context tail call is (case 1 of "Tail
+    calls"), invisible at the boundary since both sides are the same compiler's code; a context
+    of another compiler always gets the C path. `jit-x86_64` does it from step 1 (D71), in
+    `_call_record`:
+    * **its own context** (`[record + 16] == r15`): `code + 16` (the body behind the 16-byte C
+      entry) is called as a direct call is, with no saves, so recursion through its own table
+      costs a direct call's native stack;
+    * **another context of this compiler**: context word 8 (`HOST_BRIDGE`, the address of the
+      compiler's private bridge, one copy per compiler) of the record's context equals its own.
+      The body is called with a context switch, as before S0015: `r15` saved with a pad, `r15`
+      and memory 0's registers the callee's, ours back after; 32 bytes a cross-instance call, as
+      before S0015;
+    * otherwise the C path below.
+    Each record call site then has three calls, all sites of the artifact with the same map (the
+    core gives every backend site of one call its map; the backend's `record_sites`).
   * Before the call, the caller saves whatever of its own convention the C entry may clobber. For
     the Python backends that is the pool registers in the caller-saved row, for every frame above,
     as the bridge does today (LESSONS 2): x86-64 `rsi rdi r8`–`r11`; aarch64 `x2`–`x8`.
@@ -301,7 +321,8 @@ gets there is its own; two forms meet the interface:
        word 9). That trampoline saves what the caller's caller expects of the compiler's
        convention, calls the C entry with `ctx` = the record's context and `frame` = the frame
        base, restores, and returns the status. Its frame is the **restore frame**: the prototype
-       saves `rsi rdi r8`–`r11` and a pad, 64 bytes on x86-64.
+       saves `rsi rdi r8`–`r11` and a pad, `jit-x86_64` `rsi rdi r8`–`r11` and `r15` (D71), 64
+       bytes on x86-64.
      * A **later hop** starts in a body whose return address is the return point of its own
        module's C entry: it was entered through the boundary, so nothing of its compiler's
        convention is owed below it. It returns to its C entry (`ret`, balanced) with its private
@@ -309,6 +330,13 @@ gets there is its own; two forms meet the interface:
        boundary's callee-saved registers and **jumps** to the foreign C entry with `ctx` and
        `frame` set: a C sibling call.
      * So A → B → A → … across compilers holds one restore frame and one C-entry frame at most.
+     * `jit-x86_64` (D71): its `tail_switch` also serves a record of another context of the same
+       compiler (the `HOST_BRIDGE` test above). The first hop's restore frame keeps `r15` with
+       the pool registers (64 bytes either way) and calls the body behind the C entry with the
+       context switched; a hop whose return address is already `restore` only switches and jumps
+       (to a body of this compiler, or to another compiler's C entry with `ctx` and `frame` set).
+       A body entered through its module's C entry still hops by return-then-jump. The hop status
+       is returned only to a C entry's return point, so it cannot reach other code.
 3. A compiler that turns a cross-boundary tail call into a call grows the stack and fails the
    conformance test ("Test plan").
 
@@ -364,7 +392,12 @@ From the scratch gate (x86-64; "Measurements") and SLJIT-BACKEND.md:
   * the trampoline compare moving from `read` to **store attach**. The store keeps one copy of
     each compiler's blob per compiler string; the first artifact of a compiler string provides it,
     and every later artifact's blob for that string is compared byte for byte with it;
-  * the walk's sets of restore points filled per compiler.
+  * the walk's sets of restore points filled per compiler;
+  * a blob copy is never shared between compiler strings, even when its bytes are identical: equal `HOST_BRIDGE` addresses must mean the same compiler string and the same internal convention, which `jit-x86_64`'s same-compiler record path relies on (D71);
+  * before a foreign C entry runs in a store, a C entry that takes a private hop status from its
+    body must be sure the status came from its own body. Today that holds by construction: a C
+    entry calls only its own module's bodies, and every C entry of a store is one compiler's,
+    which consumes its own private value (M5 of the step-1 review).
 
 ## What changes in the artifact format (S0014)
 * **`.waboros.funcs`:** each defined function's code offset is its **C entry**, the one the
@@ -599,7 +632,9 @@ mixed-compiler test.
   * Measured 3.45–3.54 ns, against 4.51–4.57 on the C path and 3.00 for the placement control.
   * The cross-instance call slows to 5.04–5.07 ns, and each site needs two call instructions with
     one map.
-  * Not done (D70); a compiler may add it later, privately, with a measurement.
+  * Not done by D70; done privately in `jit-x86_64` in step 1, for its own and every other
+    context of the same compiler, for the recursion depth (D71, the maintainer's decisions of
+    2026-11-22), measured in BENCHMARKS.md.
 * **`ctx_abi_version` 2** instead of amending v1: old files refused by version. Nothing released
   depends on v1, and the pre-S0015 fixtures are refused by `read` on their layout anyway, so a bump
   would only add a refused version to every loader. Rejected (D70, "Versions").
@@ -848,6 +883,17 @@ ret
 * 2026-11-21: draft.
 * 2026-11-22: **approved** by the maintainer, with the open questions' recommendations (Q1-Q5)
   and the threads section; implementation starts with step 1 (x86-64).
+* 2026-11-22: step 1 implemented (x86-64), with the plan's answers: the file keeps the 40-byte
+  trampoline record until step 4, with the runtime's `entry` and `sp_stub` (`x86_64/entry.py`)
+  next to the compiler's bridge and `tail_switch` (`x86_64/abi.py`) in one blob; the walk takes
+  the restore numbers from `Trampolines` (single values, no sets before phase 6); the fault
+  handler stays in `abi.py`; `test_old` refuses the x86-64 fixtures on the trampoline compare
+  until step 4. The spec suite under the walk check 64 229 pass, 0 fail in both bounds modes, `gc`
+  and `exceptions` with the GC switches 905, through files at parity; record calls +1.5 to
+  +1.8 ns against the placement control, CoreMark within the spread (BENCHMARKS.md, "The
+  boundary convention on `jit-x86_64`"). Step 4 notes: `centry` has no symbol of its own (the
+  last function's or thunk's covers it); S0014's "at least 18 words" holds for this compiler's
+  C entry, not for the boundary.
 
 ## Changes
 * 2026-11-21: created (draft), from D70 and the prototype measured in BENCHMARKS.md.
@@ -905,3 +951,10 @@ ret
   * the tests that spy on `abi.assemble` or depend on offsets added.
 * 2026-11-22: "Threads (D58)" added (one atomics mapping per architecture, a shared memory's
   size never in a register, shared-everything threads stay version 2); approved by the maintainer.
+* 2026-11-22: step 1 review (no blocking issue); by the maintainer's decision the own-context
+  fast path (the prototype's `cabi2`, D71) is done in step 1: "The C entry and the function
+  record", "Alternatives considered"; a phase-6 note on the private hop status (M5).
+* 2026-11-22: by the maintainer's decision a record of another context of the same compiler
+  (`HOST_BRIDGE` equal) is called at its body too, and `jit-x86_64`'s `tail_switch` serves it
+  (D71 accepted): "The C entry and the function record", "Tail calls across the boundary". The
+  boundary contract is unchanged.

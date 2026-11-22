@@ -208,6 +208,14 @@ None. Nothing in this spec differs by operating system.
   `call_host`). So a branch from the landing pad to a catch label sees the state of a `br` from
   the `try_table`'s entry height, and the core's existing branch code applies. No register is
   live across the landing pad except the status, which `exn_match` and `exn_field` must not touch.
+  *x86-64 from S0015 step 1; aarch64 from step 3:* after a call through a function record the
+  callee's epilogue is not relied on. The callee is entered through a C entry, which keeps only
+  the boundary's callee-saved registers, so the caller has saved the pool registers a C entry may
+  clobber (`rsi rdi r8`–`r11`) and restores them itself, with memory 0's registers, before it
+  tests the status, on every path (S0015 A3; `tests/jit/test_boundary.py`). A record of the
+  caller's own context, or of another context of the same compiler, is called at its body as
+  `call_direct` calls (D71; the second with `r15` saved and switched, and memory 0's registers
+  reloaded, before the status test), so there the callee's epilogue restores the pool, as above.
 * **Nested entries and re-entry.** An exception that reaches an entry trampoline ends there as
   `Trap(UNCAUGHT_EXCEPTION)`. It never jumps over a host or ctypes frame. The pending word is only
   meaningful while status 14 propagates, so a nested entry that overwrites it cannot hurt an outer
@@ -502,3 +510,7 @@ in a comment (REFERENCES.md).
   without a bump, S0013 Q5). The backends' `exn_match`, `exn_field`, `exn_load` and `throw` are
   deleted, so this spec's D39 amendment is `Frame.error`, `landing` and `throw_ref`. Module code
   is byte-identical to step 6.2. `pyc` is unchanged.
+* 2026-11-22: S0015 step 1 (x86-64): "State at a landing pad" after a call through a function
+  record: the caller restores the pool itself before the status test (S0015 A3).
+* 2026-11-22: D71 (x86-64): a record of the caller's own context, or of another context of the
+  same compiler, is called at its body, where the callee's epilogue restores the pool as before.

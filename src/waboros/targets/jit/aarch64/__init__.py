@@ -81,6 +81,7 @@ def conventions() -> dict[str, tuple[bytes, tuple[int, ...], int]]:
 @cache
 def trampolines() -> "Trampolines":
     """This process's trampolines, assembled by abi.py and sealed once by the host side."""
+    from waboros.targets.jit.aarch64.abi import RESTORE_RET_AT, RESTORE_UP
     from waboros.targets.jit.common.instance import load_trampolines
 
-    return load_trampolines(*conventions()["aapcs64"])
+    return load_trampolines(*conventions()["aapcs64"], (RESTORE_RET_AT, RESTORE_UP))

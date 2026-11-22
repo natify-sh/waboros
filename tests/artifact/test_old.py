@@ -2,7 +2,12 @@
 """S0014 step 4.3: the committed v1 artifacts (tests/artifact/data, made once by
 tools/make_v1_artifacts.py, never regenerated) are still read, still run, or are refused with the
 version message. If a later change bumps `ctx_abi_version` or `format_version` on purpose,
-`test_view_runs` must change to expect that refusal (the version message), not be deleted."""
+`test_view_runs` must change to expect that refusal (the version message), not be deleted.
+
+S0015 (the boundary convention, v1 amended): the x86-64 files are pre-S0015 fixtures from step 1
+(aarch64 from step 3). Their code calls records and is entered the old way, so `read` refuses
+them; until step 4 changes the record's layout it does so on the trampoline compare, then on the
+payload's size (S0015 "Versions"). The fat ones are regenerated from their wasm and run."""
 
 from pathlib import Path
 from typing import Any
@@ -21,6 +26,8 @@ DATA = Path(__file__).parent / "data"
 HOST = native_jit()
 ARCHS = ("x86_64", "aarch64")
 WASM = (DATA / "v1-small.wasm").read_bytes()
+PRE_S0015 = {"x86_64"}  # architectures whose committed files predate the boundary convention
+REFUSED = "trampolines differ from this compiler's"  # S0015 step 4: the payload's size instead
 EXPORTS = [("mem", 2, 0), ("add", 0, 1), ("load", 0, 2), ("table", 0, 3), ("glob", 0, 4),
            ("bump", 0, 5), ("obj", 0, 6)]  # fmt: skip
 
@@ -49,6 +56,10 @@ def check_runs(target: str, c: Any) -> None:
 @pytest.mark.parametrize("thin", [True, False])
 @pytest.mark.parametrize("arch", ARCHS)
 def test_read(arch: str, thin: bool) -> None:
+    if arch in PRE_S0015:
+        with pytest.raises(A.ArtifactError, match=REFUSED):
+            A.read(get(arch, thin))
+        return
     v = A.read(get(arch, thin))
     assert v.target == f"jit-{arch}" and v.ctx_abi_version == 1 and v.flags == 0
     assert (v.wasm is None) == thin and v.compiler.startswith("waboros ")
@@ -61,9 +72,14 @@ def test_read(arch: str, thin: bool) -> None:
 
 @pytest.mark.parametrize("thin", [True, False])
 def test_view_runs(thin: bool) -> None:
-    """Bypasses `load`'s compiler check: context ABI v1 still runs the old code."""
+    """Bypasses `load`'s compiler check: context ABI v1 still runs the old code, except a
+    pre-S0015 file, which `read` refuses."""
     arch = HOST.split("-")[1]
     native(HOST)
+    if arch in PRE_S0015:
+        with pytest.raises(A.ArtifactError, match=REFUSED):
+            A.read(get(arch, thin))
+        return
     check_runs(HOST, A.read(get(arch, thin)))
 
 
@@ -75,6 +91,10 @@ def test_thin_load(arch: str) -> None:
             A.load(b, target=target)
         return
     native(HOST)
+    if arch in PRE_S0015:  # another compiler string, and `read` would refuse it anyway
+        with pytest.raises(A.ArtifactError, match="compiler"):
+            A.load(b, target=target)
+        return
     if A.read(b).compiler == A.compiler_string(target):
         assert isinstance(A.load(b, target=target), A.ModuleView)
     else:

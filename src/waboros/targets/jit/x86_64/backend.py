@@ -30,7 +30,7 @@ from waboros.targets.jit.common.context import (
     VSTACK_LIMIT,
 )
 from waboros.targets.jit.x86_64 import simd as v128
-from waboros.targets.jit.x86_64.abi import MEM0
+from waboros.targets.jit.x86_64.abi import MEM0, POOL_VOLATILE
 from waboros.targets.jit.x86_64.encoder import (
     R8,
     R9,
@@ -54,6 +54,7 @@ from waboros.targets.jit.x86_64.encoder import (
 )
 
 POOL = (RBX, RBP, RSI, RDI, R8, R9, R10, R11)  # pinnable; never used by the trampolines' roles
+HOP = 0x80000001  # private status (S0015, bit 31): a body returns it to its module's C entry to hop
 STATUS_MISALIGNED = 255  # test builds only (`check_align`): a call site found rsp % 16 != 0
 CC = {"eq": "e", "ne": "ne", "lt_s": "l", "lt_u": "b", "gt_s": "g", "gt_u": "a", "le_s": "le",
       "le_u": "be", "ge_s": "ge", "ge_u": "ae"}  # fmt: skip
@@ -85,6 +86,7 @@ def _imm32(o: Operand, wide: bool) -> int | None:
 
 class Backend:
     pool = POOL
+    record_sites = 3  # own context, this compiler's other contexts, the C entry (D71)
     tos = RAX
     supported = SUPPORTED | v128.SUPPORTED | frozenset(WIDEOPS) | EXN | gc.OPS  # GC: S0013
 
@@ -97,6 +99,7 @@ class Backend:
         self._faults: list[tuple[int, Label]] = []
         self._oob: Label | None = None  # the stub of the unchecked access `_bounds` just formed
         self.sites: list[tuple[int, int, int]] = []  # (ret, ret_at, up) per call (S0013 3a)
+        self._centry, self._centry_ret = self.a.label(), self.a.label()  # the module's C entry
 
     # ---------------------------------------------------------------- labels, frames, traps
     def new_label(self) -> Label:
@@ -1143,7 +1146,9 @@ class Backend:
         self._copy(8)
 
     # ---------------------------------------------------------------- calls
-    def _call(self, f: Frame | None, target: Label | Mem, misaligned: Label | None = None) -> None:
+    def _call(
+        self, f: Frame | None, target: Label | int | Mem, misaligned: Label | None = None
+    ) -> None:
         """`call target`; a `check_align` build first jumps to `misaligned` (default: the frame's
         MISALIGNED stub) if rsp % 16 != 0."""
         if self.check_align:
@@ -1190,11 +1195,45 @@ class Backend:
         self.a.jcc("e", self._stub(f, TrapCode.NULL_REFERENCE))
 
     def _call_record(self, f: Frame, shift_slots: int) -> None:
-        """Call the record in rdx on its own context: r15 is saved on the native stack (with a
-        pad: 16-byte alignment holds), r13/r14 come from the callee's context and are reloaded
-        from ours after. As Wasmtime's `call_indirect` lowering (a funcref is a pointer to
-        `{code, type, vmctx}`; crates/cranelift/src/func_environ.rs), written anew."""
+        """Call the record in rdx; the callee's frame `shift_slots` above ours. Three call sites,
+        one map (the core gives each site the map of its call). A compiler may bypass the C entry
+        for callees it recognises as its own (S0015 "The C entry and the function record", D71):
+        * Our own context: its body, right after its 16-byte C entry, as `call_direct` calls
+          (pins, r12-r15 and memory 0's registers are the callee's to keep), so recursion
+          through our own table costs no more native stack than a direct call.
+        * Another context of this compiler (its HOST_BRIDGE word, this compiler's private
+          bridge, is ours): its body on its context, as before S0015: r15 saved with a pad
+          (16-byte alignment holds), r13/r14 the callee's, ours reloaded after.
+        * A context of another compiler: its C entry (S0015: SysV on every OS, `int32_t
+          code(rdi = context, rsi = frame)`). The pool registers a C entry may clobber are saved
+          for every frame above (any may be a pin; LESSONS 2), r12-r15 the C entry keeps. They
+          are restored and memory 0's registers reloaded (the callee may have grown an imported
+          memory) before the status is tested: a landing pad or this frame's unwind finds the
+          pins back on every path (S0015 A3).
+        As Wasmtime's `call_indirect` lowering (a funcref is a pointer to `{code, type, vmctx}`;
+        crates/cranelift/src/func_environ.rs, which also calls a same-instance callee without a
+        trampoline), written anew."""
         a = self.a
+        other, foreign, reload, done = a.label(), a.label(), a.label(), a.label()
+        a.alu("cmp", R15, Mem(RDX, 16), w=True)
+        a.jcc("ne", other)
+        a.mov(RCX, Mem(RDX), w=True)
+        a.alu_imm("add", RCX, 16, w=True)
+        if shift_slots:
+            a.lea(R12, Mem(R12, 8 * shift_slots))
+        self._call(f, RCX)
+        self._site(8 * (len(f.pins) + f.pad))
+        if shift_slots:
+            a.lea(R12, Mem(R12, -8 * shift_slots))
+        a.jmp(done)
+        a.bind(other)
+        a.mov(RCX, Mem(RDX, 16), w=True)
+        a.mov(RCX, Mem(RCX, 8 * HOST_BRIDGE), w=True)
+        a.alu("cmp", RCX, Mem(R15, 8 * HOST_BRIDGE), w=True)
+        a.jcc("ne", foreign)
+        if self.check_align:  # before the pushes, as on the C path: no stub unwinds them
+            a.test_imm(RSP, 15)
+            a.jcc("ne", self._stub(f, STATUS_MISALIGNED))
         if shift_slots:
             a.lea(R12, Mem(R12, 8 * shift_slots))
         a.push(R15)
@@ -1202,16 +1241,88 @@ class Backend:
         a.mov(R15, Mem(RDX, 16), w=True)
         a.mov(R13, Mem(R15, MEM0), w=True)
         a.mov(R14, Mem(R15, MEM0 + 8), w=True)
-        self._call(f, Mem(RDX))
+        a.mov(RCX, Mem(RDX), w=True)
+        a.alu_imm("add", RCX, 16, w=True)
+        a.call(RCX)  # aligned: checked above, the two pushes keep rsp mod 16
         self._site(8 * (len(f.pins) + f.pad) + 16)  # r15 and its pad
         a.alu_imm("add", RSP, 8, w=True)
         a.pop(R15)
-        a.mov(R13, Mem(R15, MEM0), w=True)
-        a.mov(R14, Mem(R15, MEM0 + 8), w=True)
         if shift_slots:
             a.lea(R12, Mem(R12, -8 * shift_slots))
-        a.test(RAX, RAX)
+        a.jmp(reload)
+        a.bind(foreign)
+        if self.check_align:  # before the pushes, which keep rsp mod 16: no stub unwinds them
+            a.test_imm(RSP, 15)
+            a.jcc("ne", self._stub(f, STATUS_MISALIGNED))
+        for r in POOL_VOLATILE:
+            a.push(r)  # six: rsp stays 0 mod 16
+        a.mov(RDI, Mem(RDX, 16), w=True)
+        a.lea(RSI, Mem(R12, 8 * shift_slots))
+        a.call(Mem(RDX))
+        self._site(8 * (len(f.pins) + f.pad + len(POOL_VOLATILE)))
+        for r in reversed(POOL_VOLATILE):
+            a.pop(r)
+        a.bind(reload)
+        a.mov(R13, Mem(R15, MEM0), w=True)
+        a.mov(R14, Mem(R15, MEM0 + 8), w=True)
+        a.bind(done)
+        a.test(RAX, RAX)  # 32 bits: the upper half of rax is undefined after a C entry
         a.jcc("ne", f.error)
+
+    def c_entry(self) -> int:
+        """The C entry of the body (or host thunk) that follows, 16 bytes (S0015 Q1 (a)):
+        `endbr64; lea rdx, [rip + 5]; jmp centry`, rdx = the body. Returns its offset."""
+        a = self.a
+        at = len(a.buf)
+        a.endbr64()
+        a.buf += b"\x48\x8d\x15" + (5).to_bytes(4, "little")  # lea rdx, [rip + 5]: the body
+        a.jmp(self._centry)  # rel32
+        assert len(a.buf) - at == 16
+        return at
+
+    def c_entry_shared(self) -> int:
+        """The module's C entry part after the last body: `int32_t (rdi = ctx, rsi = frame,
+        rdx = body)` in SysV. Saves r12-r15 (rbx and rbp every body keeps), sets up this
+        compiler's registers and calls the body: a site with shift 0 and no map. A body that
+        returns the private HOP status left a tail call into another context (rdx = the
+        record): r12-r15 are put back and the record's C entry is jumped to, with this C entry's
+        return address (a C sibling call, S0015 form 2b). Every other status is returned as it
+        is. Returns the number of sites it recorded."""
+        a = self.a
+        hop = a.label()
+        a.bind(self._centry)
+        for r in (R12, R13, R14, R15):
+            a.push(r)
+        a.alu_imm("sub", RSP, 8, w=True)  # 8 mod 16 on entry: 0 mod 16 at the call
+        a.mov(R15, RDI, w=True)
+        a.mov(R12, RSI, w=True)
+        a.mov(R13, Mem(R15, MEM0), w=True)
+        a.mov(R14, Mem(R15, MEM0 + 8), w=True)
+        bad = a.label()  # a check_align build: no frame here, the C entry returns the status
+        self._call(None, RDX, bad)
+        a.bind(self._centry_ret)
+        self._site(40)
+        a.alu_imm("cmp", RAX, HOP)  # 32 bits
+        a.jcc("e", hop, short=True)
+        a.alu_imm("add", RSP, 8, w=True)
+        for r in (R15, R14, R13, R12):
+            a.pop(r)
+        a.ret()
+        a.bind(hop)
+        a.mov(RDI, Mem(RDX, 16), w=True)
+        a.mov(RSI, R12, w=True)
+        a.alu_imm("add", RSP, 8, w=True)
+        for r in (R15, R14, R13, R12):
+            a.pop(r)
+        a.jmp(Mem(RDX))
+        if self.check_align:
+            a.bind(bad)
+            a.mov_imm(RAX, STATUS_MISALIGNED)
+            a.alu_imm("add", RSP, 8, w=True)
+            for r in (R15, R14, R13, R12):
+                a.pop(r)
+            a.ret()
+        return 1
 
     def call_indirect(
         self, f: Frame, table: int, sig: int, index: Operand, shift_slots: int, *, a64: bool
@@ -1261,14 +1372,26 @@ class Backend:
         self.a.jmp(label)
 
     def _tail_record(self) -> None:
-        """Jump to the record in rdx: directly on our context, else through the tail_switch
-        trampoline (abi.py, D30), which restores the context our caller expects."""
+        """Jump to the record in rdx (S0015 "Tail calls across the boundary"). Our context: its
+        body, right after its 16-byte C entry. Another context: if our return address is this
+        module's C entry, we were entered through the boundary and owe our caller nothing of our
+        convention, so we return the private HOP status to it and it jumps to the record's C
+        entry (a later hop: every `ret` matches its `call`); else the first hop through
+        tail_switch (abi.py), which saves the pool for our caller and calls the C entry."""
         a = self.a
+        other, first = a.label(), a.label()
         a.alu("cmp", R15, Mem(RDX, 16), w=True)
-        other = a.label()
         a.jcc("ne", other, short=True)
-        a.jmp(Mem(RDX))
+        a.mov(RCX, Mem(RDX), w=True)
+        a.alu_imm("add", RCX, 16, w=True)
+        a.jmp(RCX)
         a.bind(other)
+        a.lea_label(RCX, self._centry_ret)
+        a.alu("cmp", RCX, Mem(RSP), w=True)
+        a.jcc("ne", first, short=True)
+        a.mov_imm(RAX, HOP)
+        a.ret()
+        a.bind(first)
         a.jmp(Mem(R15, 8 * TAIL_SWITCH))
 
     def tail_indirect(
@@ -1289,11 +1412,12 @@ class Backend:
         self._tail_record()
 
     def host_thunk(self, word: int) -> int:
-        """The code address a function record of an imported function points to: called like a
-        wasm function (frame in r12, context in r15), it calls the import in context word `word`
-        through the host bridge with its frame as the slots and returns the bridge's status."""
+        """The C entry a function record of an imported function points to (S0015), then its
+        body: called like a wasm function (frame in r12, context in r15), it calls the import in
+        context word `word` through the host bridge with its frame as the slots and returns the
+        bridge's status. Returns the C entry's offset."""
         a = self.a
-        at = len(a.buf)
+        at = self.c_entry()
         a.endbr64()  # reached through `call [record]`
         a.alu_imm("sub", RSP, 8, w=True)  # rsp = 8 mod 16 on entry: aligned for the bridge
         a.mov(RDX, R12, w=True)

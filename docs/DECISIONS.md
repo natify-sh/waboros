@@ -2,7 +2,7 @@
 title: Decisions
 kind: log
 status: current
-updated: 2026-11-21
+updated: 2026-11-22
 ---
 
 # Decisions
@@ -1595,7 +1595,58 @@ Rejected:
   too: sljit clobbers rsi, rdi and r9 (x2-x7 on aarch64), which our pool keeps. It would freeze both
   compilers' internals across versions, which is the opposite of the target.
 * **A fast path for records of one's own context** (the prototype's `cabi2`): no gain beyond the
-  noise, and two call instructions per site with one map.
+  noise, and two call instructions per site with one map. *Amended by D71 (2026-11-22):* done
+  privately in `jit-x86_64`, for its own and every other context of the same compiler, for the
+  recursion depth.
 * **`ctx_abi_version` 2** for this change: nothing released depends on v1, so a bump would only
   add a refused version to the loaders.
 
+### D71. A record of the same compiler's code is called at its body; only another compiler's pays the C path
+Status: accepted (maintainer, 2026-11-22) · Date: 2026-11-22 · Supersedes: D70 in part (its rejection of the own-context fast path) · Evidence: BENCHMARKS.md, "The boundary convention on `jit-x86_64` (S0015 step 1, 2026-11-22)"
+
+With S0015 step 1 every call through a function record took the C path: the six caller-saved
+pool registers saved, a C entry's frame, its return address. Recursion through `call_indirect`
+then cost 112 bytes of native stack a level instead of 32: 4 681 levels at the default 512 KiB,
+against Wasmtime's 16 380 (the step-1 review; a direct call 32 765 here, 32 761 in Wasmtime);
+recursion across instances 4 680 calls (112 bytes a call) against 16 383 before S0015 and
+Wasmtime's 21 840. The maintainer would accept neither.
+* **The rule:** on the boundary there is always a C entry; a compiler may bypass it for callees
+  it recognises as its own. The S0015 contract is unchanged; this is `jit-x86_64`'s private
+  optimisation (S0015, "The C entry and the function record").
+* **Its own context.** `_call_record` compares the record's context with `r15`: equal, it calls
+  the body behind the 16-byte C entry (`code + 16`) as a direct call does, with no saves.
+* **Another context of the same compiler.** Context word 8 (`HOST_BRIDGE`) holds the address of
+  the compiler's private bridge, one copy per compiler (per compiler string from phase 6), so
+  equal words mean the callee's code is this compiler's. So every record's context must be a
+  readable part-3 context (S0015, "Arguments and the context"), and a blob copy is never shared
+  between compiler strings, even with identical bytes. Then the body is called with a context
+  switch, as every cross-instance call was before S0015: `r15` saved with a pad, the callee's
+  `r15` and memory 0's registers, ours back after.
+* **Another compiler's context** (a different `HOST_BRIDGE`): the C path of S0015, 112 bytes and
+  about +1.5 to +1.8 ns a call against the placement control (BENCHMARKS.md, step 1).
+* **Tail calls.** The same-context jump is unchanged. Into another context, a body entered
+  through its module's C entry still hops by return-then-jump; any other jumps to `tail_switch`,
+  which serves both kinds of callee with one 64-byte restore frame (the six pool registers and
+  `r15`): this compiler's body with the context switched, as before S0015, or another compiler's
+  C entry. A hop whose return address is already `restore` only switches and jumps, so chains
+  stay in constant stack and the walk's restore numbers do not change.
+* Each record call has three call sites with one map (`record_sites`); the core gives every
+  backend site of one call its map, so the walk, the liveness pass and the collector see all.
+
+Measured (depth until `STACK_OVERFLOW` at 512 KiB, scratch drivers): own-table `call_indirect`
+16 384 levels before S0015 (32 bytes), 4 681 after step 1 (112), 32 765 with this decision (16,
+as a direct call); across instances 16 383 calls before S0015, 4 680 after step 1, 16 382 now
+(32 bytes a call; Wasmtime 21 840). Time (6 alternated rounds against the placement control
+basepad): own-table `call_indirect` 3.07 ns → 2.65, a cross-instance call 2.39 → 3.09 (step 1:
+4.29), a `call_indirect` to another instance 2.98 → 3.50 (step 1: 4.88), CoreMark within the
+spread. References: S0015, D70.
+
+Rejected:
+* **Keep the C path for every record** (step 1 as reviewed): a quarter of Wasmtime's depth
+  through `call_indirect`, which the maintainer would not accept.
+* **The C path for every other context** (this decision as first proposed): cross-instance
+  recursion at 112 bytes a call, a regression against the code before S0015 that the maintainer
+  rejected.
+* **Shrink the C path instead**: at best 64 bytes a level (saves cut to the module's pinned
+  volatile registers; the frame's 16, the return address's 8 and `centry`'s 40 stay, its pad
+  included), twice Wasmtime's.

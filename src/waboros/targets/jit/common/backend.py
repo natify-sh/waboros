@@ -59,6 +59,7 @@ class Backend(Protocol[L, F]):
     pool: tuple[int, ...]
     tos: int
     supported: frozenset[int]  # the opcodes this backend compiles (S0004)
+    record_sites: int  # call sites of one call through a function record (S0015, D71)
     # D39 amendment (S0013 3a): every method that emits a call (call_*, call_host, host_thunk)
     # appends (ret, ret_at, up), in code order: the offset of the return address; the bytes from
     # the stack pointer at the call (before a pushing `call`) to this frame's own return address,
@@ -182,6 +183,10 @@ class Backend(Protocol[L, F]):
     def call_ref(self, f: F, ref: Operand, shift_slots: int) -> None: ...  # null: NULL_REFERENCE
     def call_record(self, f: F, word: int, shift_slots: int) -> None: ...  # a function import
     def host_thunk(self, word: int) -> int: ...  # code offset of an import's record entry
+    # S0015: the C entry of the body that follows (its offset; a record's `code`), and the
+    # module's shared part after the last body (the number of call sites it recorded)
+    def c_entry(self) -> int: ...
+    def c_entry_shared(self) -> int: ...
     def null_check(self, f: F, x: Operand, code: int) -> None: ...  # trap if the reference is 0
 
     # tail calls: the arguments (slots src..src+n) become the callee's frame at our frame base,

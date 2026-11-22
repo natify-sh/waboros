@@ -33,14 +33,30 @@ def word(addr: int) -> int:
     return ctypes.c_uint64.from_address(addr).value
 
 
-def compiled(text: str) -> tuple[Any, Any, list[tuple[int, gc.SiteMap]]]:
-    """(module, Compiled, its sites sorted by return offset)."""
+Site = tuple[int, gc.SiteMap]
+
+
+def compiled(text: str) -> tuple[Any, Any, list[Site], Site | None]:
+    """(module, Compiled, its sites sorted by return offset, the module's C entry's site): on
+    jit-x86_64 the last site is the C entry's call into a body (S0015), apart here."""
     native(JIT)
     mod = parse(wat(text))
     validate(mod)
     c = base.TARGETS[JIT]().compile(mod)
     assert isinstance(c, Compiled) and c.stackmaps is not None
-    return mod, c, sorted(gc.decode(c.stackmaps).items())
+    sites = sorted(gc.decode(c.stackmaps).items())
+    ce = sites.pop() if JIT == "jit-x86_64" else None
+    assert ce is None or ce[1] == (0, 40, 48, 0, 0, 0)
+    return mod, c, sites, ce
+
+
+def ret(sp: int, site: gc.SiteMap, code: int, ce: Site | None) -> tuple[int, int]:
+    """The return address of the frame at `sp` and its caller's stack pointer, over the module's
+    C-entry frame when the frame returns into it."""
+    pc, sp = word(sp + site[1]), sp + site[2]
+    if ce is not None and pc == code + ce[0]:
+        pc, sp = word(sp + ce[1][1]), sp + ce[1][2]
+    return pc, sp
 
 
 def instantiate(mod: Any, c: Any, store: StoreState, providers: Any) -> Inst:
@@ -48,7 +64,7 @@ def instantiate(mod: Any, c: Any, store: StoreState, providers: Any) -> Inst:
 
 
 def test_exit_record_names_the_caller_and_survives_nested_entries() -> None:
-    mod, c, sites = compiled("""(module (import "env" "h" (func $h (param i32) (result i32)))
+    mod, c, sites, ce = compiled("""(module (import "env" "h" (func $h (param i32) (result i32)))
       (tag $e)
       (func (export "run") (param i32) (result i32) (call $h (local.get 0)))
       (func (export "trap") unreachable)
@@ -67,10 +83,11 @@ def test_exit_record_names_the_caller_and_survives_nested_entries() -> None:
         assert pc == code + thunk_ret  # the bridge's return address: in the thunk
         assert frame == base_ + 8 * thunk[0] + 8 * call[0]  # thunk shift 0, run's call shift 1
         # the walk: the thunk's return address is run's record call; run's is the entry's
-        assert word(sp + thunk[1]) == code + call_ret
-        sp_run = sp + thunk[2]
-        assert word(sp_run + call[1]) == tramp.entry_ret
-        saved = sp_run + call[2] + tramp.saved  # the entry's block: enclosing record, its frame
+        pc, sp_run = ret(sp, thunk, code, ce)
+        assert pc == code + call_ret
+        pc, sp_entry = ret(sp_run, call, code, ce)
+        assert pc == tramp.entry_ret
+        saved = sp_entry + tramp.saved  # the entry's block: enclosing record, its frame
         assert tuple(word(saved + 8 * i) for i in range(3)) == recs[-1]
         assert word(saved + 24) == base_
         seen.append(sp)
@@ -96,26 +113,31 @@ def test_exit_record_names_the_caller_and_survives_nested_entries() -> None:
 
 
 def test_the_walk_steps_over_a_tail_switch_restore_frame() -> None:
-    """A's export tail-calls B's function (another context: tail_switch leaves a restore frame),
-    which calls the host: B's frame returns to `restore`, whose frame returns to the entry."""
-    mb, cb, sb = compiled("""(module (import "env" "h" (func $h (param i32) (result i32)))
+    """A's export calls $t, which tail-calls B's function (another context, $t entered inside its
+    module: tail_switch leaves a restore frame), which calls the host: B's frame returns to
+    `restore`, whose frame returns to A's call of $t, and A's export to the entry."""
+    mb, cb, sb, ceb = compiled("""(module (import "env" "h" (func $h (param i32) (result i32)))
       (func (export "callee") (param i32) (result i32) (call $h (local.get 0))))""")
-    ma, ca, _ = compiled("""(module (import "b" "callee" (func $c (param i32) (result i32)))
-      (func (export "tc") (param i32) (result i32) (return_call $c (local.get 0))))""")
+    ma, ca, sa, cea = compiled("""(module (import "b" "callee" (func $c (param i32) (result i32)))
+      (func $t (param i32) (result i32) (return_call $c (local.get 0)))
+      (func (export "tc") (param i32) (result i32) (call $t (local.get 0))))""")
     (call_ret, call), (thunk_ret, thunk) = sb[0], sb[-1]
+    t_ret, t_call = sa[0]  # (then the thunk of $c, unused here)
     store, hits = StoreState(), []
 
     def host(args: Sequence[Raw]) -> list[Raw]:
         st, tramp = store.target_state, b.inst.tramp  # type: ignore[attr-defined]
         sp, pc, _ = tuple(st.exit)  # type: ignore[union-attr]
-        code = b.inst.code.addr  # type: ignore[attr-defined]
-        assert pc == code + thunk_ret and word(sp + thunk[1]) == code + call_ret
-        sp_b = sp + thunk[2]
-        assert word(sp_b + call[1]) == tramp.restore
-        sp_r = sp_b + call[2]  # the restore frame: saved context, then the real return address
-        assert word(sp_r) == ctypes.addressof(a.inst.ctx)  # type: ignore[attr-defined]  # A's: the entry's
-        assert word(sp_r + 8) == tramp.entry_ret
-        assert word(sp_r + 16 + tramp.saved + 24) == st.vstack.addr  # type: ignore[union-attr]
+        code, code_a = b.inst.code.addr, a.inst.code.addr  # type: ignore[attr-defined]
+        assert pc == code + thunk_ret
+        pc, sp_b = ret(sp, thunk, code, ceb)
+        assert pc == code + call_ret
+        pc, sp_r = ret(sp_b, call, code, ceb)
+        assert pc == tramp.restore
+        assert word(sp_r + tramp.restore_ret_at) == code_a + t_ret  # the real return address
+        pc, sp_e = ret(sp_r + tramp.restore_up, t_call, code_a, cea)
+        assert pc == tramp.entry_ret
+        assert word(sp_e + tramp.saved + 24) == st.vstack.addr  # type: ignore[union-attr]
         hits.append(1)
         return [args[0] + 1]
 
@@ -125,7 +147,7 @@ def test_the_walk_steps_over_a_tail_switch_restore_frame() -> None:
 
 
 def test_a_libcall_leaves_the_record_of_its_site(monkeypatch: pytest.MonkeyPatch) -> None:
-    mod, c, sites = compiled("""(module (memory 1)
+    mod, c, sites, ce = compiled("""(module (memory 1)
       (func (export "g") (result i32) (memory.grow (i32.const 0))))""")
     ((grow_ret, grow),) = sites
     store, hits = StoreState(), []
@@ -135,7 +157,8 @@ def test_a_libcall_leaves_the_record_of_its_site(monkeypatch: pytest.MonkeyPatch
         sp, pc, frame = tuple(store.target_state.exit)  # type: ignore[union-attr]
         assert pc == jit.inst.code.addr + grow_ret and grow[0] == 0  # type: ignore[attr-defined]
         assert frame == store.target_state.vstack.addr  # type: ignore[union-attr]
-        assert word(sp + grow[1]) == jit.inst.tramp.entry_ret  # type: ignore[attr-defined]
+        code = jit.inst.code.addr  # type: ignore[attr-defined]
+        assert ret(sp, grow, code, ce)[0] == jit.inst.tramp.entry_ret  # type: ignore[attr-defined]
         hits.append(1)
         return real(self, delta)
 

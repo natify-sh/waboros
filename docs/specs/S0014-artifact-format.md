@@ -6,7 +6,7 @@ status: approved
 superseded_by:
 related: [D18, D23, D24, D29, D33, D35, D36, D44, D48, D54, D58, D59, D60, D61, D62, D63, D64, D65, D66, D70, R2, R3, R6, S0003, S0006, S0013, S0015]
 owner: maintainer
-updated: 2026-11-21
+updated: 2026-11-22
 ---
 
 # S0014 JIT artifact format v1 in the ELF64 container
@@ -446,8 +446,11 @@ Every later artifact's blob for that convention, and its `entry_ret`, `restore` 
 relative to the blob's `start`, **must be byte-identical** to the store's copy. The loader checks
 this (a compare of about 300 bytes), and does not rely on the `compiler` check alone: equal
 `compiler` strings are the writer's promise, the compare is the proof, and its failure means a
-corrupt or forged file. A mismatch is a refusal (thin) or a regeneration (fat). Two rules, by who
-loads:
+corrupt or forged file. A mismatch is a refusal (thin) or a regeneration (fat). A copy is never
+shared between compiler strings, even when the bytes are identical: equal `HOST_BRIDGE`
+addresses must mean the same compiler string and the same internal convention (S0015, D71:
+`jit-x86_64` calls a record whose context has its own `HOST_BRIDGE` at its body). Two rules, by
+who loads:
 
 * **A foreign host** (no compiler, D36): the store's copy is the first artifact's; every later
   artifact's record and blob for the running convention are compared with it as above, and the
@@ -1016,3 +1019,5 @@ When approved and implemented (step 7 unless noted):
   fixtures and new v1 files are added, and the exact compiler string and `read`'s trampoline
   compare hold until phase 6; a note under "`.waboros.trampolines`" points to the layout S0015
   replaces it with.
+* 2026-11-22: "One copy per store": a copy is never shared between compiler strings, even with
+  identical bytes (D71: `HOST_BRIDGE` identity means the same compiler).

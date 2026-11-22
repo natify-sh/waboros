@@ -19,6 +19,7 @@ from waboros.frontend.types import key
 from waboros.frontend.validate import validate
 from waboros.targets import base
 from waboros.targets.jit.common import artifact as A
+from waboros.targets.jit.common import gc
 
 SMALL = wat("""(module (memory 1 2) (global (mut i32) (i32.const 7))
   (func (export "f") (param i32) (result i32) (i32.load (local.get 0)))
@@ -64,7 +65,8 @@ def test_pinned_payloads() -> None:
     off = u32(6) + b"\x41\0" + u32(8)
     assert s["segments"] == u32(0, 1) + b"\0" + u32(0) + off + u32(2) + b"ab"
     assert s["context"] == b"\0\0\0\0" + u32(0, 0, 0, 0, 0)
-    assert s["traps"] == u32(0) and s["stackmaps"] == u32(0, 0)
+    assert s["traps"] == u32(0)  # one site: the C entry's call into the body (S0015)
+    assert list(gc.decode(s["stackmaps"]).values()) == [(0, 40, 48, 0, 0, 0)]
 
 
 def parse_valid() -> dict[str, Any]:

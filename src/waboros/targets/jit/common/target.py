@@ -50,7 +50,8 @@ class JitTarget:
 
     def conventions(self) -> dict[str, tuple[bytes, tuple[int, ...], int]]:
         """Per convention of the architecture, in file order: (blob, [entry, bridge, sp_stub,
-        tail_switch, entry_ret, restore], ENTRY_SAVED) as its abi.assemble gives them."""
+        tail_switch, entry_ret, restore], ENTRY_SAVED), as the architecture builds them (x86-64:
+        `x86_64.conventions`, entry.py and abi.py in one blob until S0015 step 4)."""
         raise NotImplementedError
 
     def guard_backend(self) -> Any:

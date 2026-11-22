@@ -1,6 +1,6 @@
 # pyright: reportUnknownVariableType=false, reportUnknownArgumentType=false, reportUnknownMemberType=false, reportArgumentType=false, reportPrivateUsage=false
 """S0014 step 5: every artifact carries the trampolines of every convention of its architecture
-(`.waboros.trampolines`, blobs at the end of `.text`); `read` requires each to be abi.assemble's,
+(`.waboros.trampolines`, blobs at the end of `.text`); `read` requires each to be the target's,
 so a mismatch is refused thin and regenerated fat; the runtime runs on its own copy; one copy per
 store, taken from the first file, serves two instances (the store rule of a foreign host)."""
 
@@ -69,7 +69,7 @@ def test_a_mismatch_is_refused_thin_and_regenerated_fat(conv: int, how: str) -> 
             return put(b, at + 32, struct.pack("<I", r[9] + 1))
         return put(b, at + 36, struct.pack("<I", r[10] + 8))
 
-    both(patch, "trampolines are not this compiler's")
+    both(patch, "trampolines differ from this compiler's")
 
 
 def test_layout_is_strict(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -101,7 +101,8 @@ H = '(import "env" "h" (func $h (param i32) (result i32)))'
 def test_one_copy_per_store_from_the_first_file(monkeypatch: pytest.MonkeyPatch) -> None:
     """A foreign host's store rule (S0014 `.waboros.trampolines`), run here: both instances on a
     copy sealed from the first artifact's blob; a tail call from A into B switches contexts
-    through that copy's `tail_switch` and the walk crosses its `restore` frame and its entry."""
+    through that copy's `tail_switch` ($t is entered by a call, so it is the chain's first hop)
+    and the walk crosses its `restore` frame and its entry."""
     native(JIT)
     monkeypatch.setenv("WABOROS_JIT_WALK_CHECK", "1")
     t: Any = base.TARGETS[JIT]()
@@ -110,7 +111,7 @@ def test_one_copy_per_store_from_the_first_file(monkeypatch: pytest.MonkeyPatch)
       (func (export "callee") (param i32) (result i32) (return_call $g (local.get 0))))""",
              """(module (import "b" "callee" (func $c (param i32) (result i32)))
       (func $t (param i32) (result i32) (return_call $c (local.get 0)))
-      (func (export "tc") (param i32) (result i32) (return_call $t (local.get 0))))"""]  # fmt: skip
+      (func (export "tc") (param i32) (result i32) (call $t (local.get 0))))"""]  # fmt: skip
     mods, files = [], []
     for text in texts:
         m = parse(wat(text))
@@ -121,7 +122,9 @@ def test_one_copy_per_store_from_the_first_file(monkeypatch: pytest.MonkeyPatch)
     _, _, start, size, *offs, saved = next(r for r in records(files[0]) if r[1] == run)
     copy = files[0][text_at(files[0]) + start :][:size]
     assert all(copy in f for f in files[1:])  # every later file carries the same bytes
-    tramp = load_trampolines(copy, [o - start for o in offs], saved)
+    own = t.trampolines()  # the restore frame's numbers: the compiler's, not in v1's record yet
+    restore = (own.restore_ret_at, own.restore_up)
+    tramp = load_trampolines(copy, [o - start for o in offs], saved, restore)
 
     def first_copy(_: object) -> Any:
         return tramp
@@ -141,5 +144,8 @@ def test_one_copy_per_store_from_the_first_file(monkeypatch: pytest.MonkeyPatch)
     for x in (a.inst, b.inst):
         ctx: Any = x.ctx  # type: ignore[attr-defined]
         assert (ctx[HOST_BRIDGE], ctx[TAIL_SWITCH]) == (tramp.bridge, tramp.tail_switch)
-    assert a("tc", 3) == [3] and seen == [[[0, 0]]]  # B's thunk and $g; A's frames are gone
+    # B's thunk and $g, then (over the restore frame) A's tc; on jit-x86_64 with tc's C entry
+    # (S0015; $g is this compiler's, called at its body: D71)
+    c = JIT == "jit-x86_64"
+    assert a("tc", 3) == [3] and seen == [[[0] * 2 + [1] * (1 + c)]]
     assert ctypes.c_uint8.from_address(tramp.entry).value == copy[0]

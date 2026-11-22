@@ -6,7 +6,7 @@ status: implemented
 superseded_by:
 related: [D10, D14, D15, D18, D23, D24, R2, R3, R6, S0002]
 owner: maintainer
-updated: 2026-11-18
+updated: 2026-11-22
 ---
 
 # S0003 JIT context ABI and entry (phase 3, x86-64)
@@ -106,7 +106,7 @@ site check it (`test spl, 15; jnz` → trap) and the encoder tests run with it o
 **value stack** the runtime maps per store (frame overlap as in `w2jit`); every prologue checks
 `r12 + 8·frame_slots ≤ ctx[VSTACK_LIMIT]`. The **native stack** holds only return addresses, pushed
 pins and pads (at most 96 bytes per frame with a function-record call in flight — return address,
-eight pins, pad, the saved context — plus 16 per `tail_switch` restore frame; never more than one page at once: no stack probes on Windows,
+eight pins, pad, the saved context — plus 16 per `tail_switch` restore frame; *x86-64 from S0015 step 1:* at most 176 bytes per frame called through a function record — its own 80, the caller's six saved registers (48), the C entry's frame (40) and its return address — and 64 per restore frame, measured 112 bytes per level of a recursion through `call_indirect` into another compiler's context without pins against 32 before; a record of the caller's own context is called at its body, 16 bytes a level as a direct call, and one of another context of the same compiler at its body with `r15` and a pad saved, a direct call's bytes plus 16 (32 a level without pins; D71) (BENCHMARKS.md, "The boundary convention on `jit-x86_64` (S0015 step 1, 2026-11-22)"); never more than one page at once: no stack probes on Windows,
 D23; the SysV red zone is never used). Every prologue checks `rsp ≥ ctx[NSTACK_LIMIT]`. The runtime
 sets that limit at the first JIT entry of the store on the stack, whatever the store's depth:
 `limit = sp − min(max_wasm_stack, (sp − low) / 2)`, `max_wasm_stack` default 512 KiB (Wasmtime's,
@@ -422,3 +422,8 @@ uv run pytest tests/jit -k "entry or trap or reentry or host or interrupt or sta
   records, tags, the GC group) moves by 4 (`context.LIBCALL_WORDS`). Code bytes change only in
   modules whose code names such a word (217 of 2 527 compiled modules on each JIT, CoreMark among
   them); the spec suite's output is identical on both JITs in both bounds modes.
+* 2026-11-22: S0015 step 1 (x86-64): the native stack's per-frame bound through function records
+  and the restore frame ("Two stacks"); the entry, records and tail calls of x86-64 follow
+  S0015's boundary convention (ARTIFACT.md part 3).
+* 2026-11-22: "Two stacks": the native stack of a record call into another context of the same
+  compiler (D71).

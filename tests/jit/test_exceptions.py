@@ -593,6 +593,7 @@ def test_no_module_uses_the_reserved_words(monkeypatch: pytest.MonkeyPatch, targ
     from waboros.targets.jit.aarch64 import abi, encoder
     from waboros.targets.jit.x86_64 import abi as xabi
     from waboros.targets.jit.x86_64 import encoder as x86
+    from waboros.targets.jit.x86_64 import entry as xentry
 
     monkeypatch.setenv("WABOROS_JIT_GC_STRESS", "1")  # the second throw collects
     store = StoreState()
@@ -689,8 +690,21 @@ def test_no_module_uses_the_reserved_words(monkeypatch: pytest.MonkeyPatch, targ
     # modules and the installed collector still run, 4 modules in each bounds mode
     assert n > (250 if spec else 7) and {8, 10} <= seen  # the bridge and the pending word
     builds: list[Any] = [abi.assemble]
-    if x:
-        builds = [lambda: xabi.assemble(False), lambda: xabi.assemble(True)]
+    if x:  # the compiler's bridge and tail_switch, the runtime's entry and sp_stub (S0015)
+
+        def blob(win64: bool) -> None:
+            a = x86.Asm()
+            xabi.bridge(a, win64)
+            xabi.tail_switch(a)
+
+        def runtime(win64: bool, ctx: Any) -> None:  # the entry's ctx argument
+            alias[ctx] = 0
+            a = x86.Asm()
+            xentry.entry(a, win64)
+            xentry.sp_stub(a)
+
+        builds = [lambda w=w: blob(w) for w in (False, True)]
+        builds += [lambda w=w, r=r: runtime(w, r) for w, r in ((False, x86.RDI), (True, x86.RCX))]
     for h in [{}, {"darwin": True}, {"windows": True}] + [{"bionic": True}] * x:
         builds.append(lambda h=h: t.fault_handler(1, 2, 3, 4, **h))
     seen.clear()
@@ -701,6 +715,7 @@ def test_no_module_uses_the_reserved_words(monkeypatch: pytest.MonkeyPatch, targ
         assert not {11, 12, 13} & set(words)
         seen |= set(words)
     assert {7, 14} <= seen  # the bridge's HOST_ERROR, the entry's EXIT_RECORD
+    assert not x or 1 in seen  # the runtime entry's TRAP_CODE, seen through its copies of ctx
 
 
 # ------------------------------------------------------------------ S0013 step 6.4: t1-t10

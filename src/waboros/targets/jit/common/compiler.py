@@ -194,7 +194,7 @@ class Compiled:
     module: ValidModule  # the inventory's keys only (artifact.module_view; S0014 step 3)
     code: bytes  # the code, then the data area from `data_start` (jump tables)
     data_start: int
-    funcs: list[tuple[int, int]]  # (code offset, result slot count) per defined function
+    funcs: list[tuple[int, int]]  # (C-entry offset, result slot count) per defined function
     layout: Layout
     records: list[int]  # the function index of each function record (Layout.record)
     sigs: list[int]  # the type index of each signature word (Layout.sig)
@@ -296,8 +296,9 @@ def compile_module(mod: ValidModule, b: Backend[Any, Any], target: str) -> Compi
         fidx = len(fimps) + k
         pin = not (nopin == "all" or str(fidx) in nopin.split(","))
         live = not (nolive == "all" or str(fidx) in nolive.split(","))
+        entry = b.c_entry()  # the record's `code` and the runtime entry's target (S0015)
         pos = b.here()
-        funcs.append((pos, simd.width(m.types[m.ftypes[fidx]][1])))
+        funcs.append((entry, simd.width(m.types[m.ftypes[fidx]][1])))
         fn = _Func(m, fidx, locs, insns, pin, live)
         if not fn.run(False):  # a branch does not reach
             b.rewind(pos)
@@ -312,6 +313,7 @@ def compile_module(mod: ValidModule, b: Backend[Any, Any], target: str) -> Compi
         if i < len(fimps):  # its frame is the host function's arguments: no map
             thunks[i] = b.host_thunk(layout.import_(i))
             maps.append((0, 0, 0, 0))
+    maps += [(0, 0, 0, 0)] * b.c_entry_shared()  # its call into a body: shift 0, no map
     assert len(b.sites) - s0 == len(maps)
     code, data = b.finish()
     sites = [
@@ -356,6 +358,7 @@ class _Func:
         # the validator's masks on, `refs` marks every reference local and `live` those live at
         # the site (step 7.2, common/liveness.py; `live = refs` without the pass)
         self.sites: list[tuple[int, int, int, int]] = []
+        self.s0 = len(self.b.sites)  # the backend's sites before this function's
         self.rm: dict[int, int] | None = None
         self.live: dict[int, int] | None = None
         mod, k = m.mod, fidx - m.nimp
@@ -368,9 +371,13 @@ class _Func:
             if live and self.lmask and self.rm:  # a reference local and a site (D65)
                 self.live = liveness.live(insns, bit, self.rm)[0]
 
-    def site(self, pc: int, shift: int, keep: int, top: int) -> None:
-        """The map of the call the backend just recorded: slots [0, L + keep) of this frame; the
-        validator's mask at instruction `pc` covers the `top` operand slots before it popped."""
+    def site(self, pc: int, shift: int, keep: int, top: int, record: bool = False) -> None:
+        """The map of the call the backend just recorded, for each of its call sites: one, or
+        `record_sites` for a call through a function record (S0015, D71); slots
+        [0, L + keep) of this frame; the validator's mask at instruction `pc` covers the `top`
+        operand slots before it popped."""
+        n = len(self.b.sites) - self.s0 - len(self.sites)  # the backend's sites of this call
+        assert n == (self.b.record_sites if record else 1), (pc, n, record)
         # a call's slots are in the frame: the value-stack check covers L + maxh (S0013 3b.2 review)
         assert keep <= self.maxh, (pc, keep, self.maxh)
         # no scratch value above the call's slots: a nested entry's frame starts at L + keep (B1)
@@ -386,7 +393,7 @@ class _Func:
             cut = (1 << (self.L + keep)) - 1
             bits = (self.lmask | ops << self.L) & cut
             live = bits if self.live is None else (self.live[pc] | ops << self.L) & cut
-        self.sites.append((shift, self.L + keep, bits, live))
+        self.sites += [(shift, self.L + keep, bits, live)] * n
 
     def choose_pins(self) -> dict[int, int]:
         """Integer locals by uses weighted by loop depth (as w2jit2), as many as the pool holds."""
@@ -671,7 +678,7 @@ class _Func:
             b.call_record(self.f, m.layout.record(m.records[fi]), self.L + h0)
         else:
             b.call_direct(self.f, m.labels[fi - m.nimp], self.L + h0)
-        self.site(pc, self.L + h0, h0, h0 + n)  # the arguments are the callee's parameters
+        self.site(pc, self.L + h0, h0, h0 + n, fi < m.nimp)  # the callee's parameters
         self.st += [SLOTE] * nres
         self.maxh = max(self.maxh, h0 + max(n, nres))
 
@@ -685,7 +692,7 @@ class _Func:
         del self.st[h0:]
         lay, a64 = m.layout, self.t64(table)
         b.call_indirect(self.f, lay.table(table), lay.sig(m.sigs[ti]), index, self.L + h0, a64=a64)
-        self.site(pc, self.L + h0, h0, h0 + n + 1)
+        self.site(pc, self.L + h0, h0, h0 + n + 1, True)
         self.st += [SLOTE] * nres
         self.maxh = max(self.maxh, h0 + max(n, nres))
 
@@ -697,7 +704,7 @@ class _Func:
         h0 = len(self.st) - n
         del self.st[h0:]
         self.b.call_ref(self.f, ref, self.L + h0)
-        self.site(pc, self.L + h0, h0, h0 + n + 1)
+        self.site(pc, self.L + h0, h0, h0 + n + 1, True)
         self.st += [SLOTE] * nres
         self.maxh = max(self.maxh, h0 + max(n, nres))
 

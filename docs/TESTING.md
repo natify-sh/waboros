@@ -2,7 +2,7 @@
 title: Testing
 kind: reference
 status: current
-updated: 2026-11-21
+updated: 2026-11-22
 ---
 
 # Testing
@@ -94,12 +94,35 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   `Compiled.module` and the read module have only the inventory's keys.
   `tests/artifact/test_old.py` (S0014 step 4.3) reads and runs the v1 files committed under
   `tests/artifact/data/` (never regenerated; their README names the commit and compiler string); a
-  later format or ABI bump keeps the test, changed to expect the version refusal.
+  later format or ABI bump keeps the test, changed to expect the version refusal. The x86-64 files
+  are **pre-S0015 fixtures** from S0015 step 1 (aarch64 from step 3): `read` refuses them (on
+  the trampoline compare until S0015 step 4, then on the payload's size), the fat one is
+  regenerated from its wasm and runs.
   `tests/artifact/test_trampolines.py` (S0014 step 5): the instance of a loaded file runs on the
   process's trampolines; a blob byte, a moved `restore` or `saved` of any convention is refused
   thin and regenerated fat; the payload's layout rules; and the store rule of a foreign host (two
-  instances on one copy sealed from the first file's blob, a cross-instance tail call walked). The
+  instances on one copy sealed from the first file's blob, a cross-instance tail call's first hop
+  walked over that copy's restore frame). The
   round trip checks every convention's blob and offsets against `abi.assemble` on every module.
+* **The boundary convention** (S0015): `tests/jit/test_boundary.py`. On the machine's JIT:
+  tail-call ping-pong across two instances, 10⁶ round trips in a 256 KiB thread entered from the
+  host, from a direct call and through a third instance's record (a calling control overflows);
+  every public status (a trap, an exception caught one and two instances up or uncaught, a host
+  error, an interrupt) across one and two instances; the walk across modules, at the far end of
+  a hop chain entered from the host and from a direct call, and through the own-table path
+  (D71) under the walk check and the GC switches; no status with bit 31 ever reaches the host.
+  x86-64 only: recursion through the own table reaches 32 bytes a level or better and across
+  instances 40 bytes a call or better (D71: this compiler's other contexts are called at their
+  bodies). With hand-assembled C entries (aarch64: S0015 step 3), on a context of another
+  compiler (its `HOST_BRIDGE` word differs, asserted, so the call takes the C path): a status
+  with garbage in the upper half, through a record call and the runtime's `entry`; the statuses
+  and the walk chains above again through such C entries, mixing all three record paths (own,
+  this compiler's other contexts, C entry); a C entry clobbering every caller-saved register of
+  the boundary keeps the caller's pins at a result, a trap, status 14 into a `try_table` and a
+  first tail-call hop, called directly and through the own-table path, and DF and MXCSR are as
+  the boundary says after it; the same pins and statuses on the path into another context of
+  this compiler; the runtime's `entry` keeps the host's callee-saved registers (the Win64 ones,
+  `xmm6`–`xmm15` included, on the Windows cells of `platforms.yml`).
 * **The GC switches** (both JITs, S0013 step 5.3, D61; read when a store's heap is created, so a
   test sets them with `monkeypatch.setenv` before instantiating): `WABOROS_JIT_GC_STRESS=1` makes
   every allocation that may collect (in wasm code and the array services; never instantiation)
@@ -328,7 +351,7 @@ A newer push to the same ref cancels a `ci.yml` or `coverage.yml` run in progres
 runner);
 on 3.13 again with `WABOROS_JIT_BOUNDS=explicit`, so explicit checks stay covered, and the three `pyc`
 test files with `WABOROS_PYC_FBITS=1` (D46: f32/f64 as int bit patterns, the default only on 32-bit x86);
-`tools/stack_info.py` on
+`tools/stack_info.py` (the runtime's `entry` and `sp_stub`, S0015) on
 3.13, also in a musl container); `jit`
 (`tests/jit` with `WABOROS_JIT_REQUIRE=1`; the aarch64 ABI, compiler, tail-call and SIMD tests
 (`test_simd_abi.py`, `test_simd_aarch64.py`, in explicit mode: QEMU splits a straddling 16-byte store,

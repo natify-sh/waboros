@@ -18,13 +18,40 @@ from waboros.targets.jit.common.compiler import Compiled
 TARGETS = ["jit-x86_64", "jit-aarch64"]
 
 
-def sites(target: str, text: str) -> tuple[Any, list[gc.SiteMap]]:
-    """The module and its sites in code order: (shift, ret_at, up, nslots, refs, live)."""
+C_ENTRY_SITE = (0, 40, 48, 0, 0, 0)  # jit-x86_64: the module's C entry calls a body (S0015)
+
+
+def sites(target: str, text: str, raw: bool = False) -> tuple[Any, list[gc.SiteMap]]:
+    """The module and its sites in code order: (shift, ret_at, up, nslots, refs, live), without
+    the C entry's site, the last one of a jit-x86_64 module (checked here), and with each record
+    call's three as one site unless `raw` (`record_pairs`)."""
     mod = parse(wat2wasm(text))
     validate(mod)
     c = base.TARGETS[target]().compile(mod)
     assert isinstance(c, Compiled) and c.stackmaps is not None
-    return mod, [s for _, s in sorted(gc.decode(c.stackmaps).items())]
+    s = sorted(gc.decode(c.stackmaps).items())
+    if target == "jit-x86_64":
+        assert s.pop()[1] == C_ENTRY_SITE
+        s = s if raw else record_pairs(c.code, s)
+    return mod, [x for _, x in s]
+
+
+CALL_RCX, CALL_RECORD = b"\xff\xd1", b"\xff\x12"  # `call rcx`, `call [rdx]`
+
+
+def record_pairs(code: bytes, s: list[tuple[int, gc.SiteMap]]) -> list[tuple[int, gc.SiteMap]]:
+    """jit-x86_64's record call has three sites with one map (D71): the calls of a body of our
+    own context and of another context of this compiler (`call rcx` each), immediately followed
+    by the C entry's (`call [rdx]`). Only the last is kept; the three are checked."""
+    out: list[tuple[int, gc.SiteMap]] = []
+    for ret, x in s:
+        if code[ret - 2 : ret] == CALL_RECORD:
+            for _ in range(2):
+                body_ret, body = out.pop()
+                assert code[body_ret - 2 : body_ret] == CALL_RCX, (body, x)
+                assert (body[0], *body[3:]) == (x[0], *x[3:]), (body, x)
+        out.append((ret, x))
+    return out
 
 
 @pytest.mark.parametrize("target", TARGETS)
@@ -88,16 +115,22 @@ def test_throw_allocation_is_a_site_over_its_payload(target: str) -> None:
     assert [(x[0], x[3], x[4]) for x in s] == [(0, 5, 0b11)]
 
 
+TEXT_RECORD = """(module (import "m" "h" (func $h (param externref)))
+  (func (param $a externref) local.get $a call $h))"""
+
+
 @pytest.mark.parametrize("target", TARGETS)
 def test_record_call_and_host_thunk(target: str) -> None:
-    _, s = sites(
-        target,
-        """(module (import "m" "h" (func $h (param externref)))
-      (func (param $a externref) local.get $a call $h))""",
-    )
+    _, s = sites(target, TEXT_RECORD)
+    if target == "jit-x86_64":  # the record call's sites: our own context, this compiler's
+        # other contexts (r15 and its pad), a C entry
+        own, cross, cent, _ = sites(target, TEXT_RECORD, raw=True)[1]
+        assert (own[1:3], cross[1:3], cent[1:3]) == ((8, 16), (24, 32), (56, 64))
+        assert (own[0], *own[3:]) == (cross[0], *cross[3:]) == (cent[0], *cent[3:])
     (shift, ret_at, up, n, bits, live), thunk = s
     assert (shift, n, bits, live) == (1, 1, 0b1, 0)  # $a is not read after the call (7.2)
-    assert ret_at == 24 and up == 32  # no pins: x86 pad + r15 and pad; aarch64 record + x28
+    # no pins: x86 pad + the six pool registers a C entry may clobber (S0015); aarch64 record + x28
+    assert (ret_at, up) == ((56, 64) if target == "jit-x86_64" else (24, 32))
     assert thunk == (0, 8, 16, 0, 0, 0)
 
 
@@ -106,8 +139,8 @@ def test_record_call_and_host_thunk(target: str) -> None:
 # against a disassembly of every call site of the spec suite (3a.1 review), so a wrong formula in
 # a call method fails here before the walk of step 3a.3 exists.
 _PINNED = {
-    ("jit-x86_64", 1): [(24, 32), (40, 48), (8, 16)],
-    ("jit-x86_64", 3): [(40, 48), (56, 64), (8, 16)],
+    ("jit-x86_64", 1): [(24, 32), (72, 80), (8, 16)],  # a record call saves six more (S0015)
+    ("jit-x86_64", 3): [(40, 48), (88, 96), (8, 16)],
     ("jit-aarch64", 1): [(8, 32), (24, 48), (8, 16)],
     ("jit-aarch64", 3): [(8, 48), (24, 64), (8, 16)],
 }

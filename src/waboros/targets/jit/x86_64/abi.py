@@ -1,6 +1,7 @@
-"""x86-64 trampolines (docs/specs/S0003): the entry and the host bridge for each host calling
-convention (SysV; Win64 per D23), and the stack-pointer stub. All are reached through a pointer, so
-each starts with `endbr64` (CET IBT, R2); every `ret` matches its `call` (CET shadow stacks).
+"""x86-64 trampolines private to this compiler (docs/specs/S0003, S0015): the host bridge for each
+host calling convention (SysV; Win64 per D23) and tail_switch; the runtime's entry and
+stack-pointer stub are in entry.py. Both are reached through a pointer, so each starts with
+`endbr64` (CET IBT, R2); every `ret` matches its `call` (CET shadow stacks).
 
 Register roles: r15 context, r12 value-stack frame, r13/r14 memory 0 base/size, eax status.
 Alignment (LESSONS 3): rsp is 8 mod 16 on entry to any of these; each pads to 0 mod 16 before its
@@ -9,9 +10,9 @@ Alignment (LESSONS 3): rsp is 8 mod 16 on entry to any of these; each pads to 0 
 
 from waboros.targets.jit.common.context import (
     EXIT_RECORD,
+    HOST_BRIDGE,
     HOST_ERROR,
     STATUS_HOST_ERROR,
-    TRAP_CODE,
     Layout,
 )
 from waboros.targets.jit.x86_64.encoder import (
@@ -24,8 +25,6 @@ from waboros.targets.jit.x86_64.encoder import (
     R14,
     R15,
     RAX,
-    RBP,
-    RBX,
     RCX,
     RDI,
     RDX,
@@ -35,51 +34,12 @@ from waboros.targets.jit.x86_64.encoder import (
     Mem,
 )
 
+POOL_VOLATILE = (RSI, RDI, R8, R9, R10, R11)  # the pool registers SysV lets a callee clobber
 MEM0 = 8 * Layout().memory(0)  # byte offset of memory 0's base word; its size word follows
 EXIT = 8 * EXIT_RECORD  # the store's exit record {sp, pc, frame} (S0013 3a)
-# where the entry keeps the enclosing exit record and its frame, from rsp at its `call`
-ENTRY_SAVED = 0
-
-
-def entry(a: Asm, win64: bool) -> int:
-    """int32_t entry(uint64_t *ctx, uint64_t *frame, const void *code): save the registers the host
-    convention calls callee-saved, set up r15/r12/r13/r14, call the code, keep a non-zero status
-    in ctx[TRAP_CODE]. Nothing else is stored in the context, so entries nest (LESSONS 4). The
-    store's exit record (word EXIT_RECORD) of the enclosing host call and our frame are kept at
-    [rsp + ENTRY_SAVED, +32) during the call and the record is put back after it (S0013 3a), so
-    a walk of the store's frames crosses nested entries. Returns the offset of the return point."""
-    saved = [RBX, RBP, *((RSI, RDI) if win64 else ()), R12, R13, R14, R15]
-    ctx, frame, code = (RCX, RDX, R8) if win64 else (RDI, RSI, RDX)
-    a.endbr64()
-    for r in saved:
-        a.push(r)
-    a.alu_imm("sub", RSP, 40, w=True)  # 8 (return address) + 8 * even + 40 = 0 mod 16
-    a.mov(R15, ctx, w=True)
-    a.mov(R12, frame, w=True)
-    a.mov(RAX, Mem(R15, EXIT), w=True)  # rax, rcx: volatile in both conventions, not `code`
-    for i in range(3):
-        a.mov(RCX, Mem(RAX, 8 * i), w=True)
-        a.mov(Mem(RSP, ENTRY_SAVED + 8 * i), RCX, w=True)
-    a.mov(Mem(RSP, ENTRY_SAVED + 24), R12, w=True)
-    a.mov(R13, Mem(R15, MEM0), w=True)
-    a.mov(R14, Mem(R15, MEM0 + 8), w=True)
-    a.call(code)
-    ret = len(a.buf)
-    a.mov(RCX, Mem(R15, EXIT), w=True)  # eax (the status) kept; movs only, before the test
-    for i in range(3):
-        a.mov(RDX, Mem(RSP, ENTRY_SAVED + 8 * i), w=True)
-        a.mov(Mem(RCX, 8 * i), RDX, w=True)
-    a.mov(RAX, RAX)  # the status is 32-bit; a C host may leave the upper half undefined
-    a.test(RAX, RAX)
-    done = a.label()
-    a.jcc("e", done, short=True)
-    a.mov(Mem(R15, 8 * TRAP_CODE), RAX, w=True)
-    a.bind(done)
-    a.alu_imm("add", RSP, 40, w=True)
-    for r in reversed(saved):
-        a.pop(r)
-    a.ret()
-    return ret
+# tail_switch's restore frame, from rsp at its call (S0015 "Tail calls across the boundary"):
+# the caller's r15 and the six pool registers a C entry may clobber, then the real return address
+RESTORE_RET_AT, RESTORE_UP = 56, 64
 
 
 def bridge(a: Asm, win64: bool) -> None:
@@ -128,64 +88,53 @@ def bridge(a: Asm, win64: bool) -> None:
     a.ret()
 
 
-def sp_stub(a: Asm) -> None:
-    """Run through the entry like a wasm function: frame[0] = rsp as a wasm function sees it."""
-    a.endbr64()
-    a.mov(Mem(R12), RSP, w=True)
-    a.alu("xor", RAX, RAX)
-    a.ret()
-
-
 def tail_switch(a: Asm) -> int:
-    """A tail call into a function record whose context is not the caller's (D30). Entered by
-    `jmp [r15 + 8 * TAIL_SWITCH]` after the caller has torn down its frame: rdx = the record,
-    the arguments at r12, [rsp] = the caller's return address (rsp = 8 mod 16).
-
-    Only `call` sites into the same instance rely on r15 (and r13/r14) surviving a call, so the
-    first switch of a chain leaves a restore frame: the context to return to, then a real `call`
-    whose return address is `restore`. A later switch whose return address is already `restore`
-    only changes the context and jumps: a chain A -> B -> A -> ... of tail calls stays in
-    constant native stack (Wasmtime: tail calls never grow the stack). Every `ret` still returns
-    to the `call` that pushed its address, so CET shadow stacks stay balanced (R2)."""
-    restore = a.label()
-    hop = a.label()
+    """A tail call into a function record whose context is not the caller's (D30, S0015 form
+    2b). Entered by `jmp [r15 + 8 * TAIL_SWITCH]` after the caller has torn down its frame:
+    rdx = the record, the arguments at r12, [rsp] = the caller's return address (rsp = 8 mod 16).
+    That caller was called inside its module and expects its pool registers and r12-r15 back:
+    the first hop leaves a restore frame, the pool registers a C entry may clobber and r15, then
+    a real `call` whose return address is `restore`. A hop whose return address is already
+    `restore` (a body this trampoline called) only switches, so a chain A -> B -> A -> ... holds
+    one restore frame at most and every `ret` matches its `call` (CET shadow stacks, R2). The
+    switch: a context of this compiler (its HOST_BRIDGE word is ours, D71) gets r15, r13/r14
+    and a jump to the body behind its C entry, as before S0015; another compiler's, a jump to
+    its C entry with rdi = the context and rsi = the frame (a C sibling call). A body entered
+    through its module's C entry never comes here: it returns the hop status (backend.py).
+    Returns the offset of `restore`; the status stays in eax."""
+    hop, foreign, restore = a.label(), a.label(), a.label()
     a.endbr64()
-    a.lea_label(RCX, restore)
-    a.alu("cmp", RCX, Mem(RSP), w=True)
+    a.lea_label(RAX, restore)
+    a.alu("cmp", RAX, Mem(RSP), w=True)
     a.jcc("e", hop, short=True)
-    a.push(R15)  # rsp = 0 mod 16: the callee sees 8 mod 16, as after any call
-    a.mov(R15, Mem(RDX, 16), w=True)
-    a.mov(R13, Mem(R15, MEM0), w=True)
-    a.mov(R14, Mem(R15, MEM0 + 8), w=True)
-    a.call(Mem(RDX))
-    a.bind(restore)  # the status stays in eax
+    for r in POOL_VOLATILE:
+        a.push(r)
+    a.push(R15)  # rsp = 0 mod 16: the callee sees 8 mod 16
+    a.call(hop)
+    a.bind(restore)
     at = len(a.buf)
     a.pop(R15)
-    a.mov(R13, Mem(R15, MEM0), w=True)
+    for r in reversed(POOL_VOLATILE):
+        a.pop(r)
+    a.mov(R13, Mem(R15, MEM0), w=True)  # the callee may have grown an imported memory
     a.mov(R14, Mem(R15, MEM0 + 8), w=True)
     a.ret()
     a.bind(hop)
-    a.mov(R15, Mem(RDX, 16), w=True)
+    a.mov(RCX, Mem(RDX, 16), w=True)
+    a.mov(RAX, Mem(RCX, 8 * HOST_BRIDGE), w=True)
+    a.alu("cmp", RAX, Mem(R15, 8 * HOST_BRIDGE), w=True)
+    a.jcc("ne", foreign, short=True)
+    a.mov(R15, RCX, w=True)
     a.mov(R13, Mem(R15, MEM0), w=True)
     a.mov(R14, Mem(R15, MEM0 + 8), w=True)
+    a.mov(RCX, Mem(RDX), w=True)
+    a.alu_imm("add", RCX, 16, w=True)
+    a.jmp(RCX)
+    a.bind(foreign)
+    a.mov(RDI, RCX, w=True)
+    a.mov(RSI, R12, w=True)
     a.jmp(Mem(RDX))
     return at
-
-
-def assemble(win64: bool) -> tuple[bytes, list[int]]:
-    """The four trampolines for one convention in one blob and their offsets (entry, bridge, sp
-    stub, tail_switch), then the walk's table (S0013 3a): the entry's return point and
-    tail_switch's `restore`. Both conventions assemble everywhere (the encoder tests see both);
-    loading the blob is the host's (common/instance.py), so this module stays portable."""
-    a = Asm()
-    ret = entry(a, win64)
-    offsets = [0, len(a.buf)]
-    bridge(a, win64)
-    offsets.append(len(a.buf))
-    sp_stub(a)
-    offsets.append(len(a.buf))
-    restore = tail_switch(a)
-    return a.finish(), [*offsets, ret, restore]
 
 
 # The S0006 fault handler, Linux x86-64: the kernel's siginfo_t and ucontext_t (the same for

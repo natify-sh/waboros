@@ -2,7 +2,7 @@
 title: Benchmarks
 kind: log
 status: current
-updated: 2026-11-21
+updated: 2026-11-22
 ---
 
 # Benchmarks
@@ -2127,3 +2127,113 @@ is placement as well (LESSONS 51, 139). cabi2's fast path gains nothing beyond t
 through the host into another store (D64's only path between compilers) is about 5 000 times a
 direct cross-instance call. CoreMark code: 34 547 bytes (base), 35 011 (basepad), 35 057 (cabi),
 35 159 (cabi2). Not measured: aarch64, and a store that really mixes two compilers.
+
+## The boundary convention on `jit-x86_64` (S0015 step 1, 2026-11-22)
+
+What S0015 step 1 costs on `jit-x86_64`: every function record's `code` is a C entry (a 16-byte
+stub before each body and host thunk, one `centry` per module), every call through a record saves
+`rsi rdi r8`–`r11` around it, the runtime's `entry` calls C entries, and tail calls hop by
+return-then-jump. aarch64 is unchanged (D35 lists identical).
+
+* Date: 2026-11-22. Code: branch `gc`, the S0015 step-1 working tree against the commit before it
+  ("S0015 approved; threads section (D58)"); three copies of `src` on `PYTHONPATH`, not
+  committed: **base** (that commit), **basepad** (base with 16 bytes of `int3` before each body
+  and host thunk and 75 bytes, the size of `centry`, after the last thunk: the placement control,
+  LESSONS 139), **new** (step 1).
+* Machine: Intel Xeon @ 2.10 GHz, 4 vCPU cloud VM, Linux 6.18; CPython 3.13.17; default bounds
+  mode (guard).
+* Commands, under `taskset -c 2`, variants alternated round by round, 6 rounds in one session:
+  `tools/run_coremark_jit.py poc/in/core.wasm` (every run passed its self-check), the scratch
+  cross-call driver `xcall.py` of the prototype (10⁷ loop iterations with one call each, median of
+  5; `host_xstore` 10⁵), `tools/run_calls_bench.py --targets jit-x86_64 --rounds 5`.
+
+Median of the 6 rounds (range):
+
+| case | base | basepad (control) | new | new − basepad |
+|---|---|---|---|---|
+| `call` of another instance's function (ns) | 2.42 (2.37-2.55) | 2.38 (2.32-2.44) | 4.19 (4.13-4.81) | +1.8 ns |
+| `call_indirect`, own table (ns) | 3.31 (3.19-3.57) | 2.98 (2.85-3.03) | 4.44 (4.41-5.23) | +1.5 ns |
+| `call_indirect` to another instance's function (ns) | 2.94 (2.90-3.10) | 2.88 (2.85-3.12) | 4.56 (4.42-5.30) | +1.7 ns |
+| direct call, code unchanged (ns) | 1.75 (1.70-1.88) | 1.71 (1.67-1.72) | 1.76 (1.67-1.93) | within the spread |
+| a host function calling into another store (µs) | 12.1 (11.6-13.5) | 11.9 (11.7-12.5) | 12.3 (11.9-22.9) | within the spread |
+| CoreMark (it/s) | 17 698 (16 788-18 559) | 19 505 (18 451-19 799) | 19 406 (16 016-20 012) | within the spread |
+| calls `leaf` (ns) | 1.69 (1.67-1.92) | 1.69 (1.62-3.43) | 1.69 (1.59-3.66) | none |
+| calls `fib(27)` (ns) | 2.25 (2.20-2.73) | 2.42 (2.23-3.57) | 2.35 (2.14-4.09) | within the spread |
+
+* CoreMark code: 34 547 bytes (base), 35 118 (basepad), 35 085 (new, +1.6 %).
+* Native stack per level of a recursion until `STACK_OVERFLOW` (scratch driver, a 128 KiB
+  `max_wasm_stack`, no pinned locals): a direct call 16 bytes before and after (8 192 → 8 189
+  levels); `call_indirect` 32 → 112 bytes (4 096 → 1 170 levels), from the six saved registers,
+  the C entry's frame and its return address. With the default 512 KiB that is about 4 680
+  levels through `call_indirect`.
+
+Reading: as in the prototype, a call through a record costs about **+1.5 to +1.8 ns** against the
+placement control, and CoreMark does not move beyond the control: base to basepad is the placement
+effect alone (+10 %), and new is within basepad's spread. Single rounds of every variant (base
+included) were up to twice as slow when the VM was disturbed, which the medians absorb. The hop
+compare on every C-entry return is included in these numbers. Not measured: aarch64 (S0015
+step 3), the Win64 entry's xmm saves.
+
+**The own-context path (D71, same date, a second session).** After the step-1 review, a record of
+the caller's own context is called at its body. Same machine and commands; 6 rounds alternating
+base, basepad, **step 1** (the code above) and **fast** (step 1 with D71):
+
+| case | base | basepad | step 1 | fast |
+|---|---|---|---|---|
+| `call` of another instance's function (ns) | 2.42 (2.36-2.45) | 2.60 (2.35-3.73) | 4.25 (4.08-4.99) | 4.28 (4.21-4.63) |
+| `call_indirect`, own table (ns) | 3.40 (3.19-4.06) | 3.53 (2.98-4.32) | 4.57 (4.41-5.39) | 2.67 (2.53-3.06) |
+| `call_indirect` to another instance's function (ns) | 3.00 (2.85-3.20) | 3.17 (2.89-4.33) | 4.51 (4.46-4.91) | 4.79 (4.72-5.31) |
+| direct call (ns) | 1.71 (1.69-1.88) | 1.89 (1.69-2.87) | 1.74 (1.66-3.55) | 1.75 (1.67-2.05) |
+| a host function calling into another store (µs) | 11.9 | 13.4 | 12.8 | 12.5 |
+| CoreMark (it/s) | 17 550 (16 089-17 832) | 17 614 (16 864-19 014) | 18 636 (17 279-19 677) | 18 119 (17 337-19 436) |
+| calls `leaf` / `fib(27)` (ns) | 1.76 / 2.37 | 1.70 / 2.40 | 1.77 / 2.44 | 1.69 / 2.36 |
+
+CoreMark code: 35 187 bytes with fast (+102 over step 1, +1.9 % over base). Native stack until
+`STACK_OVERFLOW` (scratch driver `depth2.py`, levels at a 128 KiB / 512 KiB `max_wasm_stack`,
+bytes a level):
+
+| recursion | base | step 1 | fast | Wasmtime (512 KiB, the step-1 review) |
+|---|---|---|---|---|
+| direct `call` | 8 192 / 32 768 (16) | 8 189 / 32 765 (16) | 8 189 / 32 765 (16) | 32 761 |
+| `call_indirect`, own table | 4 096 / 16 384 (32) | 1 170 / 4 681 (112) | 8 189 / 32 765 (16) | 16 380 |
+| across instances, in calls (A's `call_indirect` to B, B's `call` of A's import; the review's `xdepth.py`, 512 KiB) | 16 383 calls (32 bytes a call) | 4 680 (112) | 4 680 (112) | 21 840 calls (about 24 bytes a call) |
+
+Reading: the own-table `call_indirect` is now faster than before S0015 (2.67 ns against basepad's
+3.53) and recurses as deep as a direct call, twice Wasmtime's depth; recursion across instances reaches 4 680 calls against Wasmtime's 21 840
+and 16 383 before S0015; calls into another instance
+keep the C path's cost, and a `call_indirect` to another instance pays the context compare on top
+(+0.3 ns). CoreMark stays within the spread. The cross-instance stack cost was the deviation
+D71 first proposed; the maintainer rejected it, and the next paragraph removes it.
+
+**The same-compiler path (D71 accepted, same date, a third session).** A record of another
+context whose `HOST_BRIDGE` word is the caller's (the same compiler) is called at its body with a
+context switch, as before S0015; `tail_switch` serves it too. Same machine and commands, the
+cross-call driver and CoreMark under `taskset -c 2`; 6 rounds alternating **basepad**, **fast**
+(the previous paragraph's code) and **same** (fast with this path):
+
+| case | basepad | fast | same | same − basepad |
+|---|---|---|---|---|
+| `call` of another instance's function (ns) | 2.39 (2.32-2.52) | 4.29 (4.12-4.48) | 3.09 (2.94-3.73) | +0.7 ns |
+| `call_indirect`, own table (ns) | 3.07 (2.94-3.82) | 2.59 (2.52-2.62) | 2.65 (2.61-3.11) | −0.4 ns |
+| `call_indirect` to another instance's function (ns) | 2.98 (2.89-3.52) | 4.88 (4.78-5.15) | 3.50 (3.30-3.93) | +0.5 ns |
+| direct call (ns) | 1.69 (1.67-1.87) | 1.69 (1.66-2.06) | 1.77 (1.70-1.89) | within the spread |
+| a host function calling into another store (µs) | 12.2 | 12.2 | 12.3 | within the spread |
+| CoreMark (it/s) | 18 631 (18 073-18 911) | 18 785 (18 151-19 519) | 18 802 (17 955-19 468) | within the spread |
+| calls `leaf` / `fib(27)` (ns) | 1.68 / 2.33 | 1.69 / 2.36 | 2.22 / 2.56 | noise: rounds 5 and 6 of every variant ran at up to twice the time |
+
+CoreMark code: 35 403 bytes (+216 over fast: CoreMark has record calls, each with the new path).
+Depth until `STACK_OVERFLOW` (`depth2.py`, 128 KiB / 512 KiB; `xdepth.py`, 512 KiB):
+
+| recursion | base | fast | same |
+|---|---|---|---|
+| direct `call` | 8 192 / 32 768 (16) | 8 189 / 32 765 (16) | 8 189 / 32 765 (16) |
+| `call_indirect`, own table | 4 096 / 16 384 (32) | 8 189 / 32 765 (16) | 8 189 / 32 765 (16) |
+| across instances, `depth2.py` (A → B → A pairs) | 2 048 / 8 192 (32 a call) | 585 / 2 341 (112) | 2 048 / 8 192 (32) |
+| across instances, `xdepth.py` (calls) | 16 383 | 4 680 | 16 382 (one C-entry frame at the bottom) |
+
+Reading: recursion across instances is back to the code before S0015 (32 bytes a call; Wasmtime
+21 840 calls, about 24 bytes), and a cross-instance call costs about +0.5 to +0.7 ns over the
+placement control instead of +1.9 (the compare of the two `HOST_BRIDGE` words and the
+`code + 16` computation; not optimised further). The C path's cost (112 bytes, +1.5 to +1.8 ns)
+now applies only to a callee of another compiler; no such compiler exists yet, so it is
+measured with hand-made C entries in tests only. Not measured: aarch64 (S0015 step 3).

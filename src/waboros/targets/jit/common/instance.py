@@ -200,6 +200,10 @@ class Trampolines:
     entry_ret: int
     restore: int
     saved: int
+    # the restore frame: from the stack pointer at tail_switch's call, the real return address and
+    # the caller's stack pointer (per architecture; S0015 puts them in the artifact in step 4)
+    restore_ret_at: int
+    restore_up: int
     keep: object = None  # the code area
 
 
@@ -345,12 +349,15 @@ class _StoreStacks:
         return ref
 
 
-def load_trampolines(code: bytes, offsets: Sequence[int], saved: int) -> Trampolines:
-    """Seal an architecture's trampoline blob (its abi.assemble: four entry points, then the entry's
-    return point and `restore`) into one code area, kept for the process's lifetime by the cache of
-    the target that calls this; `saved` is its abi.ENTRY_SAVED."""
+def load_trampolines(
+    code: bytes, offsets: Sequence[int], saved: int, restore: tuple[int, int]
+) -> Trampolines:
+    """Seal an architecture's trampoline blob (four entry points, then the entry's return point and
+    `restore`) into one code area, kept for the process's lifetime by the cache of the target that
+    calls this; `saved` is its ENTRY_SAVED, `restore` the restore frame's two numbers."""
     mem = load(code)
-    return Trampolines(*(mem.addr + o for o in offsets), saved=saved, keep=mem)
+    at = (mem.addr + o for o in offsets)
+    return Trampolines(*at, saved=saved, restore_ret_at=restore[0], restore_up=restore[1], keep=mem)
 
 
 def _stacks(store: StoreState) -> _StoreStacks:
