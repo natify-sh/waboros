@@ -1,10 +1,14 @@
 # pyright: reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportPrivateUsage=false, reportUnknownLambdaType=false, reportArgumentType=false
 """Conformance of the boundary convention (docs/specs/S0015, "Test plan"): tail calls across the
 boundary in constant stack, statuses through C entries, the walk across modules and hop chains, and
-the machine state at the boundary. The wasm-level cases run on the machine's JIT; the cases with
-hand-assembled C entries are x86-64 (jit-x86_64 from S0015 step 1; aarch64 from step 3)."""
+the machine state at the boundary, on the machine's JIT (jit-x86_64 from S0015 step 1, jit-aarch64
+from step 3), with hand-assembled C entries in each architecture's encoder. Under QEMU the aarch64
+code pages are PROT_BTI, so the `bti jc` pads of C entries are checked (a sibling `br x9`)."""
 
 import ctypes
+import os
+import shutil
+import subprocess
 import sys
 from collections.abc import Iterator, Sequence
 from typing import Any
@@ -109,11 +113,11 @@ DEPTH = """(module (type $t (func (param i32) (result i32))) (global $n (mut i32
 def test_recursion_through_the_own_table_needs_no_c_entry() -> None:
     """A record of the caller's own context is called at its body (S0015, a private choice):
     recursion through call_indirect costs a direct call's native stack, not the C path's 112
-    bytes a level, so it reaches Wasmtime's depth (32 bytes a level there)."""
-    x86()
+    bytes a level, so it reaches Wasmtime's depth (32 bytes a level there). A direct call's
+    frame: x86-64 16 bytes; aarch64 32, the frame record and a pin (48 before S0015)."""
     i = build(wat(DEPTH), store=StoreState(max_wasm_stack=128 << 10))
     assert trap_of(i, "f", 0) is TrapCode.STACK_OVERFLOW
-    assert i("n")[0] * 32 >= 128 << 10
+    assert i("n")[0] * (32 if X86 else 40) >= 128 << 10
 
 
 XA = """(module (type $t (func (param i32) (result i32))) (global $n (mut i32) (i32.const 0))
@@ -129,13 +133,13 @@ XB = """(module (type $t (func (param i32) (result i32))) (import "a" "f" (func 
 def test_recursion_across_instances_needs_no_c_entry() -> None:
     """A's call_indirect to B, B's call of A's import, alternating: both callees are this
     compiler's (their HOST_BRIDGE word is ours), called at their bodies with a context switch
-    (D71), at most 40 bytes a call (32 before S0015; the C path's 112)."""
-    x86()
+    (D71), at most 40 bytes a call on x86-64 (32 before S0015; the C path's 112), about 48 on
+    aarch64 (as before S0015; the C path's 160)."""
     store = StoreState(max_wasm_stack=128 << 10)
     a = build(wat(XA), store=store)
     build(wat(XB), imports={"a": provider(a)}, store=store)
     assert trap_of(a, "f", 0) is TrapCode.STACK_OVERFLOW
-    assert 2 * a("n")[0] * 40 >= 128 << 10
+    assert 2 * a("n")[0] * (40 if X86 else 52) >= 128 << 10
 
 
 # ------------------------------------------------------------------ statuses through C entries
@@ -167,7 +171,7 @@ def through(src: str, prefix: str, out: str) -> str:
 
 @pytest.mark.parametrize("path", ["body", "C entry"])
 def test_every_public_status_crosses_one_and_two_instances(path: str) -> None:
-    """Through this compiler's bodies (D71) or, with `path` "C entry" (x86-64), through one and
+    """Through this compiler's bodies (D71) or, with `path` "C entry", through one and
     two C entries: each import's record calls a clobbering C entry of another compiler's context
     that jumps to the exporter's C entry."""
     store = StoreState()
@@ -183,7 +187,6 @@ def test_every_public_status_crosses_one_and_two_instances(path: str) -> None:
     a = build(wat(through("b", "", "via_")), imports={"b": provider(b)}, store=store)
     c = build(wat(through("a", "via_", "via2_")), imports={"a": provider(a)}, store=store)
     if path == "C entry":
-        x86()
         for k, kind in enumerate(KINDS):
             fake(a, k, clobbering(func(b, kind)))
             fake(c, k, clobbering(func(a, "via_" + kind)))
@@ -245,10 +248,8 @@ def test_the_walk_crosses_modules_and_hop_chains(
     the far end of a cross-instance tail chain, entered from the host and from a direct call:
     under the walk check, with every allocation collecting (moving), the old space poisoned and
     every collection verified. A's records of B's g and g2 call B's bodies (this compiler's
-    context, D71) or, with `path` "C entry" (x86-64), a C entry of another compiler's context
+    context, D71) or, with `path` "C entry", a C entry of another compiler's context
     that clobbers what it may and jumps to B's C entry: the chains mix all three paths."""
-    if path == "C entry":
-        x86()
     for s in ("WALK_CHECK", "GC_STRESS", "GC_POISON", "GC_VERIFY"):
         monkeypatch.setenv(f"WABOROS_JIT_{s}", "1")
     store, seen = StoreState(), []
@@ -265,24 +266,26 @@ def test_the_walk_crosses_modules_and_hop_chains(
         fake(a, 0, clobbering(func(b, "g")))
         fake(a, 1, clobbering(func(b, "g2")))
     assert a("top", 5) == [5 + 1000 + 10 + 105]
-    # A's thunk and $back, then B's g (and its C entry), then A's top; on x86-64 with top's C
-    # entry (called from the host; S0015; aarch64: step 3)
-    assert seen[-1] == [[1] * 2 + [0] * (1 + c) + [1] * (1 + X86)]
+    # A's thunk and $back, then B's g (and its C entry), then A's top with its C entry (called
+    # from the host; S0015)
+    assert seen[-1] == [[1] * 2 + [0] * (1 + c) + [1] * 2]
     assert a("own", 5) == [5 + 1000 + 205]  # A's own table: the body, no C entry between
-    assert seen[-1] == [[1] * (3 + X86)]  # the thunk, $back, own (and its C entry)
+    assert seen[-1] == [[1] * 4]  # the thunk, $back, own and its C entry
     assert a("hops", 1001) == [7 + 2000]
-    assert seen[-1] == [[1] * (2 + X86)]  # the thunk and $back2: the whole chain hopped away
+    assert seen[-1] == [[1] * 3]  # the thunk and $back2 (and a C entry): the chain hopped away
     # from a direct call: tail_switch's restore frame, then hopsd; $back2 called through A's C
     # entry when the chain crosses the other compiler's C entries
     assert a("hopsd", 1001) == [7 + 2000]
-    assert seen[-1] == [[1] * (2 + c) + [1] * (1 + X86)]
+    assert seen[-1] == [[1] * (2 + c) + [1] * 2]
     assert _stacks(store).heap.collections > 0  # type: ignore[union-attr]
 
 
 # ------------------------------------------------------------------ hand-assembled C entries
 def asm() -> Any:
-    from waboros.targets.jit.x86_64.encoder import Asm
-
+    if X86:
+        from waboros.targets.jit.x86_64.encoder import Asm
+    else:
+        from waboros.targets.jit.aarch64.encoder import Asm
     return Asm()
 
 
@@ -294,18 +297,60 @@ def blob(a: Any) -> int:
     return KEEP[-1].addr
 
 
-def x86() -> None:
-    if not X86:
-        pytest.skip("hand-assembled x86-64 C entries (aarch64: S0015 step 3)")
+BTI_CHILD = """import ctypes, sys
+from waboros.targets.jit.common.execmem import load
+from waboros.targets.jit.aarch64.encoder import Asm
+t = Asm(); t.bti(sys.argv[1]); t.mov_imm(0, 42, wide=False); t.ret(); target = load(t.finish())
+a = Asm(); a.bti("c"); a.mov_imm(9, target.addr); a.br(9); m = load(a.finish())
+print(ctypes.CFUNCTYPE(ctypes.c_int)(m.addr)(), flush=True)"""
 
 
-def returning(rax: int) -> int:
-    """A C entry that returns `rax` whole: a status with the upper half set."""
-    from waboros.targets.jit.x86_64.encoder import RAX
+def child() -> list[str]:
+    """This interpreter as a child: itself, or under QEMU user mode without binfmt (tools/
+    run_arm64.py sets QEMU_LD_PREFIX) through qemu-aarch64, which the emulated execve runs."""
+    prefix, qemu = os.environ.get("QEMU_LD_PREFIX"), shutil.which("qemu-aarch64")
+    try:
+        subprocess.run([sys.executable, "-c", "0"], check=True, capture_output=True)
+        return [sys.executable]
+    except OSError:
+        if prefix and qemu:
+            return [qemu, "-L", prefix, sys.executable]
+        pytest.skip("no child interpreter")
 
+
+def test_a_br_through_x9_needs_the_bti_jc_pad() -> None:
+    """Q5 in the negative, where BTI is enforced (PROT_BTI pages; under QEMU in CI): `br x9` onto
+    a `bti jc` pad runs, onto a `bti c` pad it is a SIGILL. In a child: the fault ends that
+    process only."""
+    if X86:
+        pytest.skip("BTI is aarch64")
+    from waboros.targets.jit.common import execmem
+
+    if not getattr(execmem, "_PROT_BTI", 0):
+        pytest.skip("no BTI enforcement here (not Linux, or the CPU lacks BTI)")
+    run = [*child(), "-c", BTI_CHILD]
+    good = subprocess.run([*run, "jc"], capture_output=True, text=True)
+    bad = subprocess.run([*run, "c"], capture_output=True, text=True)
+    assert good.returncode == 0 and good.stdout.strip() == "42", good.stderr[-2000:]
+    assert bad.returncode != 0 and "42" not in bad.stdout
+
+
+# aarch64 words the encoder has no method for: mrs x<t>, nzcv / fpcr; ins v<d>.d[1], x<n>
+MRS_NZCV, MRS_FPCR, INS_D1 = 0xD53B4200, 0xD53B4400, 0x4E181C00
+FPCR_RULE = 0x7 | 0x1F00 | 1 << 15 | 1 << 19 | 0xF << 22  # AH/FIZ/NEP, traps, FZ16, RMode FZ DN
+
+
+def returning(value: int) -> int:
+    """A C entry that returns `value` whole: a status with the upper half set."""
     a = asm()
-    a.endbr64()
-    a.mov_imm(RAX, rax, w=True)
+    if X86:
+        from waboros.targets.jit.x86_64.encoder import RAX
+
+        a.endbr64()
+        a.mov_imm(RAX, value, w=True)
+    else:
+        a.bti("jc")
+        a.mov_imm(0, value)
     a.ret()
     return blob(a)
 
@@ -316,7 +361,6 @@ G = """(module (import "x" "g" (func $g))
 
 @pytest.mark.parametrize(("rax", "status"), [(0xDEADBEEF00000000, 0), (0xFFFFFFFF00000001, 1)])
 def test_a_status_with_an_upper_half_is_its_32_bits(rax: int, status: int) -> None:
-    x86()
     g = build(wat(G), imports={"x": {"g": lambda args: []}})
     code = returning(rax)
     fake(g, 0, code)
@@ -332,42 +376,72 @@ def test_a_status_with_an_upper_half_is_its_32_bits(rax: int, status: int) -> No
 
 
 def clobbering(target: JitFunc | None = None) -> int:
-    """A C entry that clobbers every register the boundary lets it (rax rcx rdx rsi rdi r8-r11,
-    xmm0-xmm15, the status flags), then jumps to `target`'s C entry on its context (a C sibling
-    call: the frame in rsi kept) or returns 0. DF stays 0, MXCSR as it was."""
-    from waboros.targets.jit.x86_64.encoder import R8, R9, R10, R11, RAX, RCX, RDI, RDX, RSI
-
+    """A C entry that clobbers every register the boundary lets it, then jumps to `target`'s C
+    entry on its context (a C sibling call: the frame kept) or returns 0 with the upper half of
+    the status set. x86-64: rax rcx rdx rsi rdi r8-r11, xmm0-xmm15, the status flags; DF stays
+    0, MXCSR as it was. aarch64: x0-x17, v0-v7 and v16-v31, the high halves of v8-v15, NZCV
+    (x18 never, x30 kept for the return); the jump is `br x9`, which only a `bti jc` pad takes
+    (S0015 Q5); FPCR as it was."""
     a = asm()
-    a.endbr64()
-    a.mov(RAX, RSI, w=True)
-    for k, r in enumerate((RCX, RDX, RSI, RDI, R8, R9, R10, R11)):
-        a.mov_imm(r, 0x5A5A5A5A00000000 + k, w=True)
-    for x in range(16):
-        a.movq_to_xmm(x, RCX, True)
-    a.alu("cmp", RCX, RDX, w=True)
-    a.mov(RSI, RAX, w=True)
+    code, _, ctx = target.record() if target is not None else (0, 0, 0)
+    if X86:
+        from waboros.targets.jit.x86_64.encoder import R8, R9, R10, R11, RAX, RCX, RDI, RDX, RSI
+
+        a.endbr64()
+        a.mov(RAX, RSI, w=True)
+        for k, r in enumerate((RCX, RDX, RSI, RDI, R8, R9, R10, R11)):
+            a.mov_imm(r, 0x5A5A5A5A00000000 + k, w=True)
+        for x in range(16):
+            a.movq_to_xmm(x, RCX, True)
+        a.alu("cmp", RCX, RDX, w=True)
+        a.mov(RSI, RAX, w=True)
+        if target is None:
+            a.mov_imm(RAX, 0x5A5A5A5A00000000, w=True)  # status 0, the upper half set
+            a.ret()
+            return blob(a)
+        a.mov_imm(RDI, ctx, w=True)
+        a.mov_imm(RAX, code, w=True)
+        a.jmp(RAX)
+        return blob(a)
+    a.bti("jc")
+    a.mov(17, 1)
+    for r in range(17):
+        a.mov_imm(r, 0x5A5A5A5A00000000 + r)
+    for v in (*range(8), *range(16, 32)):
+        a.fmov_to(v, 9)
+    for v in range(8, 16):
+        a.emit(INS_D1 | 9 << 5 | v)
+    a.cmp(9, 10)
+    a.mov(1, 17)
     if target is None:
-        a.mov_imm(RAX, 0x5A5A5A5A00000000, w=True)  # status 0, the upper half set
+        a.mov_imm(0, 0x5A5A5A5A00000000)
         a.ret()
         return blob(a)
-    code, _, ctx = target.record()
-    a.mov_imm(RDI, ctx, w=True)
-    a.mov_imm(RAX, code, w=True)
-    a.jmp(RAX)
+    a.mov_imm(0, ctx)
+    a.mov_imm(9, code)
+    a.br(9)
     return blob(a)
 
 
 def probe() -> int:
-    """A C entry with results (i64 rflags, i64 mxcsr) in its frame."""
-    from waboros.targets.jit.x86_64.encoder import RAX, RSI, Mem
-
+    """A C entry with results (i64 rflags, i64 mxcsr) in its frame; aarch64 (i64 nzcv, i64
+    fpcr)."""
     a = asm()
-    a.endbr64()
-    a.buf += b"\x9c\x58"  # pushfq; pop rax
-    a.mov(Mem(RSI), RAX, w=True)
-    a.mov_imm(Mem(RSI, 8), 0, w=True)
-    a.buf += b"\x0f\xae\x5e\x08"  # stmxcsr [rsi + 8]
-    a.alu("xor", RAX, RAX)
+    if X86:
+        from waboros.targets.jit.x86_64.encoder import RAX, RSI, Mem
+
+        a.endbr64()
+        a.buf += b"\x9c\x58"  # pushfq; pop rax
+        a.mov(Mem(RSI), RAX, w=True)
+        a.mov_imm(Mem(RSI, 8), 0, w=True)
+        a.buf += b"\x0f\xae\x5e\x08"  # stmxcsr [rsi + 8]
+        a.alu("xor", RAX, RAX)
+    else:
+        a.bti("jc")
+        a.emit(MRS_NZCV | 9)
+        a.emit(MRS_FPCR | 10)
+        a.pair(False, 9, 10, 1)
+        a.mov_imm(0, 0, wide=False)
     a.ret()
     return blob(a)
 
@@ -415,8 +489,8 @@ def test_a_clobbering_c_entry_keeps_the_pins_and_the_machine_state() -> None:
     """Every caller-saved register of the table clobbered behind a record call: the caller's pins
     and those of the frame above survive a result, a trap, status 14 into a try_table (A3) and
     a first tail-call hop (tail_switch);
-    after the call DF is 0 and MXCSR's control bits are 0x1F80."""
-    x86()
+    after the call DF is 0 and MXCSR's control bits are 0x1F80; on aarch64 FPCR is as the
+    boundary table says (round to nearest, no flush, no default NaN, no trap enabled)."""
     store = StoreState()
     b = build(wat(BOTTOM), imports={"x": {"fail": lambda a: [], "irq": lambda a: []}}, store=store)
     dummy = {k: (lambda args: [0]) for k in ("f_ret", "f_trap", "f_throw", "plain")}
@@ -434,8 +508,11 @@ def test_a_clobbering_c_entry_keeps_the_pins_and_the_machine_state() -> None:
         assert p(outer, 2) == [(7 + SUM) & M32]  # caught: the payload, then the pins
         assert p(outer, 0) == [(8 + inner + SUM) & M32]
         assert p(outer, 3) == [(8 + inner + SUM) & M32]  # through tail_switch's restore frame
-    flags, mxcsr = p("after")
-    assert flags & 0x400 == 0 and mxcsr & 0xFFC0 == 0x1F80, (hex(flags), hex(mxcsr))
+    flags, fp = p("after")
+    if X86:
+        assert flags & 0x400 == 0 and fp & 0xFFC0 == 0x1F80, (hex(flags), hex(fp))
+    else:
+        assert fp & FPCR_RULE == 0, hex(fp)
 
 
 def test_the_cross_context_body_call_keeps_the_pins() -> None:
@@ -459,10 +536,12 @@ def test_the_cross_context_body_call_keeps_the_pins() -> None:
 
 def harness(win64: bool) -> int:
     """`int64_t h(uint64_t *p)` in the host's convention: sets every register the host expects
-    kept (SysV rbx rbp r12-r15; Win64 also rsi rdi xmm6-xmm15) to a known value, calls
-    p[0] = entry(p[1] = ctx, p[2] = frame, p[3] = C entry), writes those registers to p[4..12),
-    the low halves of xmm6-xmm15 to p[12..22) and the status to p[22], puts the host's own
-    values back and returns."""
+    kept to a known value, calls p[0] = entry(p[1] = ctx, p[2] = frame, p[3] = C entry), writes
+    those registers to p[4..), the status to p[22], puts the host's own values back and returns.
+    SysV: rbx rbp r12-r15 at p[4..10); Win64 also rsi rdi (p[10..12)) and the low halves of
+    xmm6-xmm15 (p[12..22)); AAPCS64: x19-x28 at p[4..14) and d8-d15 at p[14..22)."""
+    if not X86:
+        return harness_a64()
     from waboros.targets.jit.x86_64 import simd
     from waboros.targets.jit.x86_64.encoder import (
         R8,
@@ -521,19 +600,89 @@ def harness(win64: bool) -> int:
     return blob(a)
 
 
-def test_the_runtime_entry_keeps_the_hosts_registers() -> None:
-    """Behind the runtime's entry a C entry clobbers what SysV lets it (rsi, rdi, xmm6-xmm15
-    included): the host's callee-saved registers come back (the Win64 ones on Windows)."""
-    x86()
-    win64 = sys.platform == "win32"
-    inst: Any = build(wat("(module)")).inst
+def harness_a64() -> int:
+    """`harness` in AAPCS64 (Linux, macOS and Windows alike; x18 untouched): x19-x28 and d8-d15
+    saved in a 176-byte frame under a frame record, p at [sp + 160]."""
+    from waboros.targets.jit.aarch64.encoder import FP, LR, SP
+
+    a = asm()
+    a.bti("c")
+    a.pair(False, FP, LR, SP, -176, "pre")
+    a.mov(FP, SP)
+    for k in range(5):
+        a.pair(False, 19 + 2 * k, 20 + 2 * k, SP, 16 + 16 * k)
+    for k in range(8):
+        a.fmov_from(9, 8 + k)
+        a.st(9, SP, 96 + 8 * k)
+    a.st(0, SP, 160)
+    a.mov(10, 0)
+    for k in range(10):
+        a.mov_imm(19 + k, 0x1111111111111111 * (k + 1))
+    for k in range(8):
+        a.mov_imm(9, 0x0101010101010101 * (k + 0x20))
+        a.fmov_to(8 + k, 9)
+    a.ld(16, 10)
+    a.ld(0, 10, 8)
+    a.ld(1, 10, 16)
+    a.ld(2, 10, 24)
+    a.blr(16)
+    a.ld(9, SP, 160)
+    a.st(0, 9, 8 * 22)
+    for k in range(10):
+        a.st(19 + k, 9, 8 * (4 + k))
+    for k in range(8):
+        a.fmov_from(10, 8 + k)
+        a.st(10, 9, 8 * (14 + k))
+    for k in range(8):
+        a.ld(9, SP, 96 + 8 * k)
+        a.fmov_to(8 + k, 9)
+    for k in range(5):
+        a.pair(True, 19 + 2 * k, 20 + 2 * k, SP, 16 + 16 * k)
+    a.pair(True, FP, LR, SP, 176, "post")
+    a.ret()
+    return blob(a)
+
+
+PINS = f"""(module (func (export "f") (param $n i32) (result i32)
+  {" ".join(f"(local $l{k} i32)" for k in range(9))}
+  {" ".join(f"(local.set $l{k} (i32.add (local.get $n) (i32.const {k})))" for k in range(9))}
+  (loop $l (local.set $n (i32.sub (local.get $n) (i32.const 1)))
+    {
+    " ".join(
+        f"(local.set $l{k} (i32.add (local.get $l{k}) (local.get $l{(k + 1) % 9})))"
+        for k in range(9)
+    )
+}
+    (br_if $l (local.get $n)))
+  {"(i32.add " * 8}(local.get $l0) {" ".join(f"(local.get $l{k}))" for k in range(1, 9))}))"""
+
+
+@pytest.mark.parametrize("callee", ["clobbering", "compiled"])
+def test_the_runtime_entry_keeps_the_hosts_registers(callee: str) -> None:
+    """Behind the runtime's entry a C entry clobbers what the boundary lets it (SysV: rsi, rdi,
+    xmm6-xmm15 included), or a compiled function whose pinned locals fill the pool runs behind
+    its module's C entry (which saves only x25-x28 / r12-r15: its bodies keep the rest; S0015
+    Q-I): the host's callee-saved registers come back (the Win64 ones on Windows)."""
+    win64 = X86 and sys.platform == "win32"
     p = (ctypes.c_uint64 * 23)()
-    p[0], p[1] = inst.tramp.entry, ctypes.addressof(inst.ctx)
-    p[2], p[3] = _stacks(inst.store).vstack.addr, clobbering()
+    if callee == "compiled":
+        g = build(wat(PINS))
+        code, _, ctx = func(g, "f").record()
+        inst: Any = g.inst
+        frame = _stacks(inst.store).vstack.addr
+        word(frame).value = 5
+    else:
+        inst = build(wat("(module)")).inst
+        code, ctx, frame = clobbering(), ctypes.addressof(inst.ctx), _stacks(inst.store).vstack.addr
+    p[0], p[1], p[2], p[3] = inst.tramp.entry, ctx, frame, code
     h = ctypes.CFUNCTYPE(ctypes.c_int64, ctypes.c_void_p)(harness(win64))
     h(ctypes.addressof(p))
-    n = 8 if win64 else 6
     assert p[22] & M32 == 0
+    if not X86:
+        assert list(p[4:14]) == [0x1111111111111111 * (k + 1) for k in range(10)]
+        assert list(p[14:22]) == [0x0101010101010101 * (k + 0x20) for k in range(8)]
+        return
+    n = 8 if win64 else 6
     assert list(p[4 : 4 + n]) == [0x1111111111111111 * (k + 1) for k in range(n)]
     if win64:
         assert list(p[12:22]) == [0x0101010101010101 * (k + 0x20) for k in range(10)]

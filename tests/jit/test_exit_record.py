@@ -36,17 +36,17 @@ def word(addr: int) -> int:
 Site = tuple[int, gc.SiteMap]
 
 
-def compiled(text: str) -> tuple[Any, Any, list[Site], Site | None]:
-    """(module, Compiled, its sites sorted by return offset, the module's C entry's site): on
-    jit-x86_64 the last site is the C entry's call into a body (S0015), apart here."""
+def compiled(text: str) -> tuple[Any, Any, list[Site], Site]:
+    """(module, Compiled, its sites sorted by return offset, the module's C entry's site): the
+    last site is the C entry's call into a body (S0015), apart here."""
     native(JIT)
     mod = parse(wat(text))
     validate(mod)
     c = base.TARGETS[JIT]().compile(mod)
     assert isinstance(c, Compiled) and c.stackmaps is not None
     sites = sorted(gc.decode(c.stackmaps).items())
-    ce = sites.pop() if JIT == "jit-x86_64" else None
-    assert ce is None or ce[1] == (0, 40, 48, 0, 0, 0)
+    ce = sites.pop()
+    assert ce[1] == ((0, 40, 48) if JIT == "jit-x86_64" else (0, 8, 48)) + (0, 0, 0)
     return mod, c, sites, ce
 
 

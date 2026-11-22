@@ -7,6 +7,7 @@ import pytest
 from tests.jit import native
 from tests.jit.test_compiler import ROOT, build, trap_of
 from waboros.targets.base import TrapCode
+from waboros.targets.jit.aarch64.abi import BODY
 from waboros.targets.jit.aarch64.backend import Backend
 
 
@@ -72,7 +73,7 @@ def test_far_branches_compile_again_and_run(monkeypatch: pytest.MonkeyPatch) -> 
     near = build(_module(1000))
     assert rewinds == [] and near("f", 0, 0) == [1000]
     far = build(_module(50_000))  # 7 instructions per step: 1.4 MB of code
-    assert rewinds == [0]
+    assert rewinds == [BODY]  # the body, after its C entry (S0015)
     assert far("f", 1, 7) == [7]  # the far br_if
     assert far("f", 0, 0) == [50_000]
     assert trap_of(far, "f", 0, 30_000) is TrapCode.MEMORY_OUT_OF_BOUNDS  # a far trap stub
@@ -99,7 +100,7 @@ def test_far_retry_of_a_function_at_a_non_zero_offset(monkeypatch: pytest.Monkey
 
     monkeypatch.setattr(Backend, "rewind", counted)
     m = build(_module(50_000, around=True))
-    assert len(rewinds) == 1 and rewinds[0] > 0  # only f, which starts after g
+    assert len(rewinds) == 1 and rewinds[0] > BODY  # only f, which starts after g
     assert (m("g", 0, 4), m("h", 0, 0), m("h", 1, 0), m("h", 5, 0)) == ([5], [10], [20], [20])
     assert m("f", 1, 7) == [7] and m("f", 0, 15_536) == [65_536]
     assert trap_of(m, "f", 0, 30_000) is TrapCode.MEMORY_OUT_OF_BOUNDS

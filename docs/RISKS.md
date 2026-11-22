@@ -51,7 +51,7 @@ known-bad versions can force recompilation.
 **Status at HEAD: partly mitigated.** Mitigated on x86-64 Linux: the W^X executable-memory probe and the
 fallback to `pyc` with `JitUnavailableWarning` (D31; proved with executable memory forbidden by
 `tools/no_exec.py` in the CI `spec` job and `tests/test_fallback.py`); CET IBT (`endbr64` at every
-indirectly reachable entry, `backend.py`) and CET shadow stacks (traps return through frames, S0003). aarch64: `bti c` landing pads are emitted and the tests run under QEMU with BTI enforced; PAC is not used (S0004). macOS `MAP_JIT` under a hardened runtime: answered for python.org CPython (the JIT runs, row below; the macOS cells of `platforms.yml` keep checking it). Android: answered for x86_64 in an `untrusted_app` process (the JIT runs, row below; the Android cell of `platforms.yml`); arm64 is built but not run (no emulator on arm64 runners), so it stays explicit. Open: Windows ACG (the Windows cells of `platforms.yml` run `tests/jit` in a default process, which does not enable ACG).
+indirectly reachable entry, `backend.py`) and CET shadow stacks (traps return through frames, S0003). aarch64: `bti c` landing pads are emitted (`bti jc` at the boundary: C entries and the runtime's `entry`, S0015) and the tests run under QEMU with BTI enforced; PAC is not used (S0004). macOS `MAP_JIT` under a hardened runtime: answered for python.org CPython (the JIT runs, row below; the macOS cells of `platforms.yml` keep checking it). Android: answered for x86_64 in an `untrusted_app` process (the JIT runs, row below; the Android cell of `platforms.yml`); arm64 is built but not run (no emulator on arm64 runners), so it stays explicit. Open: Windows ACG (the Windows cells of `platforms.yml` run `tests/jit` in a default process, which does not enable ACG).
 
 The direction is clear: more systems forbid writable-and-executable memory, and CPUs add control-flow
 integrity that hand-made code must respect.
@@ -67,7 +67,7 @@ integrity that hand-made code must respect.
 | Pyodide / browsers | no native code at all | JIT impossible | `pyc`, or the browser's `WebAssembly` (ROADMAP open question 7) |
 | x86-64 with CET **IBT** | indirect branch targets must start with `endbr64` | the entry trampoline and anything called through a pointer would fault | emit `endbr64` at every indirectly reachable entry (a no-op on older CPUs) |
 | x86-64 with CET **shadow stack** (Linux user space, Windows 11 hardware stack protection) | returns are checked against a hardware stack | the PoC's trap unwinding (reset `rsp`, then `ret`) would fault | unwind by returning through frames (each frame checks a trap flag), or a shadow-stack-aware unwind; never "jump" the stack |
-| aarch64 **BTI** / **PAC** | landing pads (`bti c`) for indirect targets; signed return addresses in some processes (arm64e) | indirect entries fault without pads | emit `bti c`; keep return addresses unsigned unless the host process requires PAC |
+| aarch64 **BTI** / **PAC** | landing pads (`bti c`) for indirect targets; signed return addresses in some processes (arm64e) | indirect entries fault without pads | emit `bti c` (`bti jc` where a `br` through any register may land: the boundary, S0015 Q5); keep return addresses unsigned unless the host process requires PAC |
 
 General answers: W^X always (map writable, write, flip to executable; never both), the probe described
 in TARGETS.md, CFI-compatible code from the first version, and `pyc` as the guaranteed fallback.

@@ -591,6 +591,7 @@ def test_no_module_uses_the_reserved_words(monkeypatch: pytest.MonkeyPatch, targ
     built its own before the spies). As test_gc_subtype.py checks GC group word 7."""
     from tests.spec.fetch import CACHE_DIR
     from waboros.targets.jit.aarch64 import abi, encoder
+    from waboros.targets.jit.aarch64 import entry as aentry
     from waboros.targets.jit.x86_64 import abi as xabi
     from waboros.targets.jit.x86_64 import encoder as x86
     from waboros.targets.jit.x86_64 import entry as xentry
@@ -689,7 +690,19 @@ def test_no_module_uses_the_reserved_words(monkeypatch: pytest.MonkeyPatch, targ
     # without the fetched spec suite and the PoC (the wheel harness: LESSONS 124), the local
     # modules and the installed collector still run, 4 modules in each bounds mode
     assert n > (250 if spec else 7) and {8, 10} <= seen  # the bridge and the pending word
-    builds: list[Any] = [abi.assemble]
+
+    def ablob() -> None:  # aarch64: the compiler's bridge and tail_switch
+        e = A()
+        abi.bridge(e)
+        abi.tail_switch(e)
+
+    def aruntime() -> None:  # the runtime's entry (ctx in x0) and sp_stub
+        alias[0] = 0
+        e = A()
+        aentry.entry(e)
+        aentry.sp_stub(e)
+
+    builds: list[Any] = [ablob, aruntime]
     if x:  # the compiler's bridge and tail_switch, the runtime's entry and sp_stub (S0015)
 
         def blob(win64: bool) -> None:
@@ -715,7 +728,7 @@ def test_no_module_uses_the_reserved_words(monkeypatch: pytest.MonkeyPatch, targ
         assert not {11, 12, 13} & set(words)
         seen |= set(words)
     assert {7, 14} <= seen  # the bridge's HOST_ERROR, the entry's EXIT_RECORD
-    assert not x or 1 in seen  # the runtime entry's TRAP_CODE, seen through its copies of ctx
+    assert 1 in seen  # the runtime entry's TRAP_CODE, seen through its copies of ctx
 
 
 # ------------------------------------------------------------------ S0013 step 6.4: t1-t10

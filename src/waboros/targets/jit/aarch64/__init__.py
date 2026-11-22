@@ -71,16 +71,27 @@ class JitAarch64Target(JitTarget):
 
 @cache
 def conventions() -> dict[str, tuple[bytes, tuple[int, ...], int]]:
-    """The one convention's blob, offsets and ENTRY_SAVED (S0014 `.waboros.trampolines`)."""
-    from waboros.targets.jit.aarch64.abi import ENTRY_SAVED, assemble
+    """The one convention's blob, offsets and ENTRY_SAVED (S0014 `.waboros.trampolines`). Until
+    S0015 step 4 one blob holds the runtime's entry and sp_stub (entry.py) with this compiler's
+    bridge and tail_switch (abi.py), in the order and with the offsets the format has: entry,
+    bridge, sp_stub, tail_switch, the entry's return point, `restore`."""
+    from waboros.targets.jit.aarch64 import abi, entry
+    from waboros.targets.jit.aarch64.encoder import Asm
 
-    b, offs = assemble()
-    return {"aapcs64": (b, tuple(offs), ENTRY_SAVED)}  # tuples: the cached value is shared
+    a = Asm()
+    ret = entry.entry(a)
+    offs = [0, len(a.buf)]
+    abi.bridge(a)
+    offs.append(len(a.buf))
+    entry.sp_stub(a)
+    offs.append(len(a.buf))
+    restore = abi.tail_switch(a)
+    return {"aapcs64": (a.finish(), (*offs, ret, restore), entry.ENTRY_SAVED)}  # tuples: shared
 
 
 @cache
 def trampolines() -> "Trampolines":
-    """This process's trampolines, assembled by abi.py and sealed once by the host side."""
+    """This process's trampolines, sealed once by the host side."""
     from waboros.targets.jit.aarch64.abi import RESTORE_RET_AT, RESTORE_UP
     from waboros.targets.jit.common.instance import load_trampolines
 

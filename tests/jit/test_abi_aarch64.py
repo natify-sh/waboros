@@ -16,8 +16,8 @@ from tests.jit.test_abi import ODD_TRAP, counter, word
 from waboros.runtime.link import host_func
 from waboros.runtime.store import StoreState
 from waboros.targets.base import HostFunc, Raw, Trap, TrapCode
-from waboros.targets.jit.aarch64 import trampolines
-from waboros.targets.jit.aarch64.abi import CTX, FRAME, MBASE, MSIZE, assemble
+from waboros.targets.jit.aarch64 import conventions, trampolines
+from waboros.targets.jit.aarch64.abi import BODY, CTX, FRAME, MBASE, MSIZE
 from waboros.targets.jit.aarch64.backend import POOL, Backend, Frame
 from waboros.targets.jit.aarch64.encoder import FP, LR, SP, ZR, Asm, Label
 from waboros.targets.jit.common.context import HOST_ERROR, INTERRUPT, TAIL_SWITCH, TRAP_CODE, Layout
@@ -28,6 +28,7 @@ Emit = Callable[[Backend, Frame, list[Label]], None]
 Funcs = Sequence[tuple[tuple[int, ...], int, int, Emit]]  # (pins, frame slots, results, body)
 M32, M64 = 0xFFFFFFFF, (1 << 64) - 1
 BTI_C = (0xD503245F).to_bytes(4, "little")
+BTI_JC = (0xD50324DF).to_bytes(4, "little")  # the boundary: C entries, entry, sp_stub (S0015)
 SPARE = 10  # a reserved context word (zero for the runtime): the tests keep a record address there
 
 
@@ -49,24 +50,27 @@ def build(
     labels = [b.new_label() for _ in funcs]
     table: list[tuple[int, int]] = []
     for label, (pins, nslots, nres, body) in zip(labels, funcs, strict=True):
-        table.append((len(b.a.buf), nres))
+        table.append((b.c_entry(), nres))  # the entry calls C entries (S0015)
         f = b.func_begin(label, pins)
         body(b, f, labels)
         b.ret_ok(f)
         b.func_end(f, nslots)
     if thunk is not None:  # a host import's record target, as the last "function"
         table.append((b.host_thunk(thunk), 0))
+    b.c_entry_shared()
     inst = Instance(store, tramp, b.a.finish(), table, imports, [memory] if memory else [])
     code = ctypes.string_at(inst.code.addr, len(b.a.buf))
-    assert all(code[off : off + 4] == BTI_C for off, _ in table)
+    assert all(code[off : off + 4] == BTI_JC for off, _ in table)
+    assert all(code[off + BODY : off + BODY + 4] == BTI_C for off, _ in table)
     return inst
 
 
 def test_trampolines_are_landing_pads(tramp: Trampolines) -> None:
-    for addr in (tramp.entry, tramp.bridge, tramp.sp_stub, tramp.tail_switch):
-        assert ctypes.string_at(addr, 4) == BTI_C
-    code, offsets = assemble()
-    assert [code[o : o + 4] for o in offsets[:4]] == [BTI_C] * 4
+    pads = [BTI_JC, BTI_C, BTI_JC, BTI_C]  # entry and sp_stub at the boundary (S0015)
+    addrs = (tramp.entry, tramp.bridge, tramp.sp_stub, tramp.tail_switch)
+    assert [ctypes.string_at(addr, 4) for addr in addrs] == pads
+    code, offsets, _ = conventions()["aapcs64"]
+    assert [code[o : o + 4] for o in offsets[:4]] == pads
 
 
 def test_bti_is_enforced_where_the_cpu_has_it(tramp: Trampolines) -> None:
@@ -360,7 +364,8 @@ def test_memory_registers_reloaded_after_the_bridge(tramp: Trampolines) -> None:
 
 
 def test_host_thunk_through_a_record(tramp: Trampolines) -> None:
-    """A record whose code is the host thunk, called with `blr`: the import runs on the caller's
+    """A record whose code is the host thunk's C entry, called at its body (our own context, as
+    `_call_record` does) with `blr`: the import runs on the caller's
     frame as its slots, x26/x25 come back reloaded, a host exception's status unwinds."""
     mem = Memory(1, None)
 
@@ -373,6 +378,7 @@ def test_host_thunk_through_a_record(tramp: Trampolines) -> None:
     def body(b: Backend, f: Frame, ls: list[Label]) -> None:
         b.a.ld(16, CTX, 8 * SPARE)  # the record
         b.a.ld(17, 16)
+        b.a.addsub_imm("add", 17, 17, BODY)  # our own context: the thunk behind its C entry
         b.a.blr(17)
         b.a.cbz(0, f.unwind, wide=False, nz=True)
         b.a.st(MSIZE, FRAME, 8)

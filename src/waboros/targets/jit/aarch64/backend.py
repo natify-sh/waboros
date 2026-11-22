@@ -2,7 +2,8 @@
 step 4e). Register roles in abi.py; x0 = tos (and the status); x9-x15 scratch inside one method,
 x16/x17 for indirect branches and offsets no immediate takes, v0/v1 for popcnt and floats
 (values stay bit patterns in x registers and slots); pool x19-x24 (callee-saved for a host)
-first, then x2-x8 (saved by the bridge).
+first, then x2-x8 (saved by the bridge and around a call to another compiler's C entry).
+Every function and host thunk has a 12-byte C entry before it (S0015, `c_entry`).
 
 i32 values stay zero-extended: 32-bit (w) forms write the whole register (LESSONS 5). Only
 `cmp/cmn/ccmp/fcmp` and `wide`'s `adds/subs` write the flags, each emitted right before its
@@ -21,7 +22,7 @@ from dataclasses import dataclass, field
 from waboros.targets.base import TrapCode, Unsupported
 from waboros.targets.jit.aarch64 import abi
 from waboros.targets.jit.aarch64 import simd as v128
-from waboros.targets.jit.aarch64.abi import CTX, FRAME, MBASE, MEM0, MSIZE
+from waboros.targets.jit.aarch64.abi import BODY, CTX, FRAME, MBASE, MEM0, MSIZE
 from waboros.targets.jit.aarch64.encoder import (
     FP,
     LR,
@@ -48,6 +49,7 @@ from waboros.targets.jit.common.context import (
 )
 
 POOL = (19, 20, 21, 22, 23, 24, 2, 3, 4, 5, 6, 7, 8)
+HOP = 0x80000001  # private status (S0015, bit 31): a body returns it to its module's C entry to hop
 CC = {"eq": "eq", "ne": "ne", "lt_s": "lt", "lt_u": "lo", "gt_s": "gt", "gt_u": "hi", "le_s": "le",
       "le_u": "ls", "ge_s": "ge", "ge_u": "hs"}  # fmt: skip
 LOGIC = {"and": "and", "or": "orr", "xor": "eor"}
@@ -73,7 +75,7 @@ class Frame:
 
 class Backend:
     pool = POOL
-    record_sites = 1
+    record_sites = 3  # own context, this compiler's other contexts, the C entry (D71)
     tos = 0
     supported = SUPPORTED | v128.SUPPORTED | frozenset(WIDEOPS) | EXN | gc.OPS  # GC: S0013
 
@@ -88,6 +90,7 @@ class Backend:
         # (ret, ret_at, up) per call (S0013 3a): the return address's offset; this frame's own
         # return address (x30 in its frame record) and the caller's sp, from sp at the call
         self.sites: list[tuple[int, int, int]] = []
+        self._centry, self._centry_ret = self.a.label(), self.a.label()  # the module's C entry
         self.align = int(os.environ.get("WABOROS_JIT_LOOP_ALIGN") or 0)  # placement study only
         self.a.pad_here(int(os.environ.get("WABOROS_JIT_PAD") or 0))  # (tools/placement_sweep.py)
 
@@ -125,7 +128,7 @@ class Backend:
         assert all(r in POOL for r in pins)
         self.far = far
         a.bind(label)
-        a.bti("c")  # reached by blr from the entry and records, by br x16/x17 from tail calls
+        a.bti("c")  # reached by blr from its C entry and records, by br x17 from tail calls
         f = Frame(pins, 16 + (len(pins) + 1) // 2 * 16, a.label(), 0, start=a.pos(label))
         f.error = f.unwind
         a.pair(False, FP, LR, SP, -f.size, "pre")
@@ -237,14 +240,60 @@ class Backend:
         self._cbz(0, f.error, wide=False, nz=True)
 
     def c_entry(self) -> int:
-        """No C entry before S0015 step 3: a record's `code` is the body itself."""
-        return len(self.a.buf)
+        """The C entry of the body (or host thunk) that follows, 12 bytes (S0015 Q1 (a), Q5):
+        `bti jc; adr x16, body; b centry`. The `adr` is a fixed word, not a label: a far-mode
+        recompile rewinds to the body and drops the labels bound there. Returns its offset."""
+        a = self.a
+        at = len(a.buf)
+        a.bti("jc")
+        a.emit(0x10000000 | (BODY - 4) >> 2 << 5 | 16)  # adr x16, .+8: the body
+        a.b(self._centry)
+        assert len(a.buf) - at == BODY
+        return at
 
     def c_entry_shared(self) -> int:
-        return 0
+        """The module's C entry part after the last body: `int32_t (x0 = ctx, x1 = frame,
+        x16 = body)` in AAPCS64. Saves x25-x28 under a frame record (x19-x24 and x29 every body
+        keeps; d8-d15 nothing touches), sets up this compiler's registers and calls the body: a
+        site with shift 0 and no map. A body that returns the private HOP status left a tail call
+        into another context (x16 = the record): x25-x28 and the frame record are put back and
+        the record's C entry is branched to with x30 = our caller's return address (a C sibling
+        call, S0015 form 2b). Every other status is returned as it is. Returns the number of
+        sites it recorded."""
+        a = self.a
+        hop = a.label()
+        a.bind(self._centry)
+        a.pair(False, FP, LR, SP, -48, "pre")
+        a.mov(FP, SP)
+        a.pair(False, MSIZE, MBASE, SP, 16)
+        a.pair(False, FRAME, CTX, SP, 32)
+        a.mov(CTX, 0)
+        a.mov(FRAME, 1)
+        abi.reload_memory(a)
+        a.blr(16)
+        a.bind(self._centry_ret)
+        self.sites.append((len(a.buf), 8, 48))
+        a.mov_imm(9, HOP, wide=False)
+        a.cmp(0, 9, wide=False)
+        a.bcc("eq", hop)
+        a.pair(True, FRAME, CTX, SP, 32)
+        a.pair(True, MSIZE, MBASE, SP, 16)
+        a.pair(True, FP, LR, SP, 48, "post")
+        a.ret()
+        a.bind(hop)
+        a.ld(0, 16, 16)
+        a.mov(1, FRAME)
+        a.ld(17, 16)
+        a.pair(True, FRAME, CTX, SP, 32)
+        a.pair(True, MSIZE, MBASE, SP, 16)
+        a.pair(True, FP, LR, SP, 48, "post")
+        a.br(17)  # a C entry: `bti jc`
+        return 1
 
     def host_thunk(self, word: int) -> int:
-        at = len(self.a.buf)
+        """The C entry a function record of an imported function points to (S0015), then its
+        body (abi.host_thunk). Returns the C entry's offset."""
+        at = self.c_entry()
         self.sites.append((abi.host_thunk(self.a, word), 8, 16))
         return at
 
@@ -261,28 +310,72 @@ class Backend:
         self._cbz(0, f.error, wide=False, nz=True)
 
     def call_record(self, f: Frame, word: int, shift_slots: int) -> None:
-        """A function import, through its record in context word `word` (D30): the callee runs
-        on the record's context; x28 is saved on the native stack (16 bytes, sp stays aligned),
-        x26/x25 come from the callee's context and are reloaded from ours after (as x86-64)."""
+        """A function import, through its record in context word `word` (D30, S0015)."""
         if shift_slots:
             self._add_k(FRAME, FRAME, 8 * shift_slots)
         self._add_k(16, CTX, 8 * word)
-        self._enter_record(f, 16)
+        self._call_record(f, 16)
         if shift_slots:
             self._add_k(FRAME, FRAME, -8 * shift_slots)
         self._cbz(0, f.error, wide=False, nz=True)
 
-    def _enter_record(self, f: Frame, r: int) -> None:
-        """Call the function record at x<r> on its context (x28 saved in a 16-byte frame)."""
+    def _call_record(self, f: Frame, r: int) -> None:
+        """Call the record at x<r>; x27 is already the callee's frame. Three call sites, one map
+        (the core gives each site the map of its call). A compiler may bypass the C entry for
+        callees it recognises as its own (S0015 "The C entry and the function record", D71):
+        * Our own context: its body, behind its 12-byte C entry, as `call_direct` calls (pins,
+          x27/x28 and memory 0's registers are the callee's to keep).
+        * Another context of this compiler (its HOST_BRIDGE word, this compiler's private
+          bridge, is ours): its body on its context, as before S0015: x28 saved in a 16-byte
+          frame, x26/x25 the callee's, ours reloaded after.
+        * A context of another compiler: its C entry (S0015: AAPCS64, `int32_t code(x0 =
+          context, x1 = frame)`). x2-x8, the pool registers a C entry may clobber, are saved for
+          every frame above (any may be a pin; LESSONS 2), x19-x28 the C entry keeps. They are
+          restored and memory 0's registers reloaded (the callee may have grown an imported
+          memory) before the caller tests the status: a landing pad or this frame's unwind finds
+          the pins back on every path (S0015 A3).
+        x9 and x17 are scratch; x0 and x1 are free at a call (the status, the slots)."""
         a = self.a
+        other, foreign, reload, done = a.label(), a.label(), a.label(), a.label()
+        a.ld(17, r, 16)
+        a.cmp(17, CTX)
+        a.bcc("ne", other)
+        a.ld(17, r)
+        a.addsub_imm("add", 17, 17, BODY)
+        a.blr(17)
+        self.sites.append((len(a.buf), 8, f.size))
+        a.b(done)
+        a.bind(other)
+        a.ld(17, 17, 8 * HOST_BRIDGE)
+        a.ld(9, CTX, 8 * HOST_BRIDGE)
+        a.cmp(17, 9)
+        a.bcc("ne", foreign)
         a.pair(False, CTX, ZR, SP, -16, "pre")
         a.ld(CTX, r, 16)
         abi.reload_memory(a)
         a.ld(17, r)
+        a.addsub_imm("add", 17, 17, BODY)
         a.blr(17)
         self.sites.append((len(a.buf), 24, f.size + 16))
         a.pair(True, CTX, ZR, SP, 16, "post")
+        a.b(reload)
+        a.bind(foreign)
+        a.pair(False, 2, 3, SP, -64, "pre")
+        a.pair(False, 4, 5, SP, 16)
+        a.pair(False, 6, 7, SP, 32)
+        a.st(8, SP, 48)
+        a.ld(0, r, 16)
+        a.mov(1, FRAME)
+        a.ld(17, r)
+        a.blr(17)
+        self.sites.append((len(a.buf), 72, f.size + 64))
+        a.ld(8, SP, 48)
+        a.pair(True, 6, 7, SP, 32)
+        a.pair(True, 4, 5, SP, 16)
+        a.pair(True, 2, 3, SP, 64, "post")
+        a.bind(reload)
         abi.reload_memory(a)
+        a.bind(done)
 
     # ---------------------------------------------------------------- data
     def _word(self, load: bool, t: int, base: int, off: int, size: int = 8) -> None:
@@ -959,7 +1052,7 @@ class Backend:
     def _call_x15(self, f: Frame, shift_slots: int) -> None:
         if shift_slots:
             self._add_k(FRAME, FRAME, 8 * shift_slots)  # x16 at most: the record is in x15
-        self._enter_record(f, 15)
+        self._call_record(f, 15)
         if shift_slots:
             self._add_k(FRAME, FRAME, -8 * shift_slots)
         self._cbz(0, f.error, wide=False, nz=True)
@@ -996,15 +1089,29 @@ class Backend:
         self.a.b(label)
 
     def _tail_record(self) -> None:
-        """Branch to the record in x16: directly on our context, else through tail_switch
-        (abi.py, D30), entered by `br x17` with x16 = the record and x30 = the return address."""
-        a, other = self.a, self.a.label()
+        """Branch to the record in x16 (S0015 "Tail calls across the boundary"). Our context: its
+        body, behind its 12-byte C entry. Another context: if our return address (x30, the frame
+        torn down) is this module's C-entry return point, we were entered through the boundary
+        and owe our caller nothing of our convention, so we return the private HOP status to it
+        and it branches to the record's C entry (a later hop: every `ret` matches its `blr`); else
+        the first hop through tail_switch (abi.py), entered by `br x17` with x16 = the record.
+        `adrp`: the C entry is at the module's end, beyond `adr`'s 1 MiB (the code is loaded at
+        0 mod 4096, as for jump tables)."""
+        a, other, first = self.a, self.a.label(), self.a.label()
         a.ld(17, 16, 16)
         a.cmp(CTX, 17)
         a.bcc("ne", other)
         a.ld(17, 16)
+        a.addsub_imm("add", 17, 17, BODY)
         a.br(17)
         a.bind(other)
+        a.adrp(17, self._centry_ret)
+        a.add_lo12(17, 17, self._centry_ret)
+        a.cmp(LR, 17)
+        a.bcc("ne", first)
+        a.mov_imm(0, HOP, wide=False)
+        a.ret()
+        a.bind(first)
         self._word(True, 17, CTX, 8 * TAIL_SWITCH)
         a.br(17)
 

@@ -211,10 +211,11 @@ None. Nothing in this spec differs by operating system.
   *x86-64 from S0015 step 1; aarch64 from step 3:* after a call through a function record the
   callee's epilogue is not relied on. The callee is entered through a C entry, which keeps only
   the boundary's callee-saved registers, so the caller has saved the pool registers a C entry may
-  clobber (`rsi rdi r8`–`r11`) and restores them itself, with memory 0's registers, before it
+  clobber (`rsi rdi r8`–`r11`; aarch64 `x2`–`x8`) and restores them itself, with memory 0's
+  registers, before it
   tests the status, on every path (S0015 A3; `tests/jit/test_boundary.py`). A record of the
   caller's own context, or of another context of the same compiler, is called at its body as
-  `call_direct` calls (D71; the second with `r15` saved and switched, and memory 0's registers
+  `call_direct` calls (D71; the second with `r15` (aarch64 `x28`) saved and switched, and memory 0's registers
   reloaded, before the status test), so there the callee's epilogue restores the pool, as above.
 * **Nested entries and re-entry.** An exception that reaches an entry trampoline ends there as
   `Trap(UNCAUGHT_EXCEPTION)`. It never jumps over a host or ctypes frame. The pending word is only

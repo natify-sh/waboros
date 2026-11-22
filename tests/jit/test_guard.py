@@ -327,6 +327,7 @@ def test_far_mode_drops_the_fault_points_of_the_first_attempt(
     if JIT != "jit-aarch64":
         pytest.skip("x86-64 has no far mode")
     from tests.jit.test_compiler_aarch64 import _module  # pyright: ignore[reportPrivateUsage]
+    from waboros.targets.jit.aarch64.abi import BODY
     from waboros.targets.jit.aarch64.backend import Backend
 
     rewinds: list[int] = []
@@ -341,7 +342,7 @@ def test_far_mode_drops_the_fault_points_of_the_first_attempt(
     mod = parse(_module(n, around))
     validate(mod)
     c = base.TARGETS[JIT]().compile(mod)
-    assert isinstance(c, Compiled) and len(rewinds) == 1 and (rewinds[0] > 0) == around
+    assert isinstance(c, Compiled) and len(rewinds) == 1 and (rewinds[0] > BODY) == around
     at = [p for p, _ in c.faults]
     assert len(at) == n and at == sorted(set(at)) and at[-1] < c.data_start
     inst = build(_module(n, around))

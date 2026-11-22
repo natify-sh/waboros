@@ -144,8 +144,7 @@ def test_one_copy_per_store_from_the_first_file(monkeypatch: pytest.MonkeyPatch)
     for x in (a.inst, b.inst):
         ctx: Any = x.ctx  # type: ignore[attr-defined]
         assert (ctx[HOST_BRIDGE], ctx[TAIL_SWITCH]) == (tramp.bridge, tramp.tail_switch)
-    # B's thunk and $g, then (over the restore frame) A's tc; on jit-x86_64 with tc's C entry
-    # (S0015; $g is this compiler's, called at its body: D71)
-    c = JIT == "jit-x86_64"
-    assert a("tc", 3) == [3] and seen == [[[0] * 2 + [1] * (1 + c)]]
+    # B's thunk and $g, then (over the restore frame) A's tc and its C entry (S0015; $g is this
+    # compiler's, called at its body: D71)
+    assert a("tc", 3) == [3] and seen == [[[0] * 2 + [1] * 2]]
     assert ctypes.c_uint8.from_address(tramp.entry).value == copy[0]

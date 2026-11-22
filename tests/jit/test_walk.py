@@ -25,9 +25,8 @@ from waboros.targets.jit.common.compiler import Compiled
 from waboros.targets.jit.common.instance import _stacks  # pyright: ignore[reportPrivateUsage]
 
 JIT = native_jit()
-# a frame for each C entry a call went through: from the host or another context, not into a body
-# of the caller's own context (S0015; aarch64: step 3)
-C = JIT == "jit-x86_64"
+# Frame counts include one for each C entry a call went through: from the host, not into a body
+# of this compiler (S0015, D71).
 
 
 @pytest.fixture(autouse=True)
@@ -87,7 +86,7 @@ def test_a_chain_of_direct_calls(checks: list[int]) -> None:
     jit = make(f"""(module {H} {calls} (func $f4 (param i32) (result i32) (call $h (local.get 0)))
       (export "f" (func $f0)))""", store, recorder(store, seen))  # fmt: skip
     # the thunk (a record of our own context: no C entry), 5 frames, f0's C entry
-    assert jit("f", 7) == [7] and seen == [[[0] * (6 + C)]] and checks[0] == 1
+    assert jit("f", 7) == [7] and seen == [[[0] * 7]] and checks[0] == 1
 
 
 def test_nested_entries_50_deep(checks: list[int]) -> None:
@@ -101,7 +100,7 @@ def test_nested_entries_50_deep(checks: list[int]) -> None:
 
     jit = make(f"""(module {H} (func (export "run") (param i32) (result i32)
       (call $h (local.get 0))))""", store, {"env": {"h": host}})  # fmt: skip
-    assert jit("run", 49) == [0] and depth == [[[0] * (2 + C)] * 50] and checks[0] == 50
+    assert jit("run", 49) == [0] and depth == [[[0] * 3] * 50] and checks[0] == 50
 
 
 def test_tail_calls_and_a_tail_switch_restore_frame(checks: list[int]) -> None:
@@ -115,11 +114,11 @@ def test_tail_calls_and_a_tail_switch_restore_frame(checks: list[int]) -> None:
       (func (export "viaCall") (param i32) (result i32) (call $t (local.get 0))))""",
              store, {"b": link.Provider(b.mod, b.inst)})  # fmt: skip
     # B's thunk and $g (and B's C entry); A's frames are gone: entered through its C entry, $t
-    # hops (S0015), or, on aarch64, through tail_switch's restore frame
-    assert a("tc", 3) == [3] and seen == [[[0] * (2 + C)]]
+    # hops (S0015)
+    assert a("tc", 3) == [3] and seen == [[[0] * 3]]
     # $t entered by a call: a restore frame between B's frames and A's caller of $t (B's body
     # called by tail_switch: this compiler's context, no C entry; D71)
-    assert a("viaCall", 4) == [4] and seen[1] == [[0] * 2 + [1] * (1 + C)]
+    assert a("viaCall", 4) == [4] and seen[1] == [[0] * 2 + [1] * 2]
     assert checks[0] == 2
 
 
@@ -137,7 +136,7 @@ def test_frames_of_another_instance_indirect_and_ref_calls(checks: list[int]) ->
              store, {"b": link.Provider(b.mod, b.inst)})  # fmt: skip
     # the entry goes through a C entry; A's call of B's g (this compiler's context, D71), B's
     # own call_indirect and A's own call_ref call the body (S0015)
-    want = [0] * 3 + [1] * (2 + C)
+    want = [0] * 3 + [1] * 3
     assert a("f", 5) == [5] and seen == [[want]] and checks[0] == 1
 
 
@@ -157,7 +156,7 @@ def test_try_table_frames_libcalls_and_throw_allocations(checks: list[int]) -> N
           (br_if $l (local.tee $n (i32.sub (local.get $n) (i32.const 1)))))))""",
                store, recorder(store, seen))  # fmt: skip
     # grow, h, then ALLOC of the first exception object (it commits the heap)
-    assert jit("f", 2) == [2] and seen == [[[0] * (3 + C)]] and checks[0] == 3
+    assert jit("f", 2) == [2] and seen == [[[0] * 4]] and checks[0] == 3
     jit("many", 100_000)  # 24 bytes a throw: the 1 MiB semispace fills, ALLOC collects
     assert checks[0] > 3 and _stacks(store).heap.collections > 0
 

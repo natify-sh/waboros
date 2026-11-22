@@ -4,8 +4,8 @@ tools/make_v1_artifacts.py, never regenerated) are still read, still run, or are
 version message. If a later change bumps `ctx_abi_version` or `format_version` on purpose,
 `test_view_runs` must change to expect that refusal (the version message), not be deleted.
 
-S0015 (the boundary convention, v1 amended): the x86-64 files are pre-S0015 fixtures from step 1
-(aarch64 from step 3). Their code calls records and is entered the old way, so `read` refuses
+S0015 (the boundary convention, v1 amended): the x86-64 files are pre-S0015 fixtures from step 1,
+the aarch64 ones from step 3. Their code calls records and is entered the old way, so `read` refuses
 them; until step 4 changes the record's layout it does so on the trampoline compare, then on the
 payload's size (S0015 "Versions"). The fat ones are regenerated from their wasm and run."""
 
@@ -26,7 +26,10 @@ DATA = Path(__file__).parent / "data"
 HOST = native_jit()
 ARCHS = ("x86_64", "aarch64")
 WASM = (DATA / "v1-small.wasm").read_bytes()
-PRE_S0015 = {"x86_64"}  # architectures whose committed files predate the boundary convention
+PRE_S0015 = {
+    "x86_64",
+    "aarch64",
+}  # architectures whose committed files predate the boundary convention
 REFUSED = "trampolines differ from this compiler's"  # S0015 step 4: the payload's size instead
 EXPORTS = [("mem", 2, 0), ("add", 0, 1), ("load", 0, 2), ("table", 0, 3), ("glob", 0, 4),
            ("bump", 0, 5), ("obj", 0, 6)]  # fmt: skip

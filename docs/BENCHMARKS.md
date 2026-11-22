@@ -2237,3 +2237,45 @@ placement control instead of +1.9 (the compare of the two `HOST_BRIDGE` words an
 `code + 16` computation; not optimised further). The C path's cost (112 bytes, +1.5 to +1.8 ns)
 now applies only to a callee of another compiler; no such compiler exists yet, so it is
 measured with hand-made C entries in tests only. Not measured: aarch64 (S0015 step 3).
+
+## The boundary convention on `jit-aarch64` (S0015 step 3, 2026-11-22): depth and code size
+
+What S0015 step 3 costs on `jit-aarch64` in native stack and code: 12-byte C entries and a
+per-module `centry`, record calls on D71's three paths, the 80-byte `tail_switch` restore frame.
+**No timing here:** QEMU's timings mean nothing for native code. The native measurement is the
+`compare` mode of `.github/workflows/placement-arm.yml` (`tools/bench_compare.py`: base, the
+placement control basepad, new; CoreMark, the calls benchmark, a cross-instance call and an
+own-table `call_indirect`, alternated), dispatched after the push; its result goes here.
+
+* Date: 2026-11-22. Code: branch `gc`, the step-3 working tree (**new**) against commit `9599795`
+  (**base**; the commit after it, D72, changes docs only, so its code is base's); **basepad** is base with
+  `tools/bench_compare.py --pad-control` (12 bytes of `nop` before each body and host thunk, 88,
+  the size of `centry`, after the last). The control covers the stubs and `centry` only, not
+  the longer record-call and tail-call sequences: those are the +300 bytes below.
+* Depth: QEMU 8.2 user mode on the Intel Xeon host, CPython 3.13.18 aarch64; a native stack's
+  arithmetic does not depend on the emulator. The driver (scratch, not committed) builds the
+  modules `DEPTH` (own table) and `XA` + `XB` (across instances) of `tests/jit/test_boundary.py`
+  and a direct twin of `DEPTH` (`call $f` instead of the `call_indirect`) with
+  `StoreState(max_wasm_stack=128 << 10)` and `512 << 10`, calls `f(0)` until `STACK_OVERFLOW`
+  and reads the level count from the global `$n` (across instances, twice `XA`'s count: one call
+  each way); bytes a level = the stack size / the count. `test_boundary.py`'s
+  `test_recursion_*` checks are looser than these values on purpose: 40 bytes a level own-table
+  (measured 32) and 52 a call across instances (measured 48), to absorb the entry's frames. Code: CoreMark compiled
+  by `jit-aarch64` on the x86-64 host (D35: the same bytes as under QEMU), the code area without
+  the data.
+
+| recursion | base | new |
+|---|---|---|
+| direct `call` (one pin) | 4 096 / 16 384 (32) | 4 094 / 16 382 (32) |
+| `call_indirect`, own table | 2 731 / 10 923 (48) | 4 094 / 16 382 (32) |
+| across instances (A's `call_indirect` to B, B's `call` of A's import), calls | 2 732 / 10 924 (48) | 2 730 / 10 922 (48) |
+
+| CoreMark code (bytes) | base | basepad | new |
+|---|---|---|---|
+| guard | 29 284 | 29 744 | 30 044 (+2.6 %; +300 over the control) |
+| explicit | 37 372 | 37 832 | 38 132 (+2.0 %; +300 over the control) |
+
+Reading: as on x86-64 (D71), the own-table `call_indirect` now costs a direct call's stack (32
+bytes a level, 48 before), a call into another context of this compiler costs what it did before
+S0015, and one C-entry frame (48 bytes) sits at the bottom of each entry. The +300 bytes over the
+control are the three-path record calls (about 31 instructions each, 9 before).

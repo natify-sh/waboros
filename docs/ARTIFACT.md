@@ -116,7 +116,7 @@ and writes null into the slots of `refs` that `live` does not mark; `live` holds
 locals live at the site, from the shared core's liveness pass (S0013 step 7.2), and the operand
 bits of `refs` (`WABOROS_JIT_NOLIVE` gives `live = refs`, the step-7.1 tables). A map is never empty and equal maps (`nslots`, `refs`, `live`) are
 stored once. Every call site has a record, a module without any reference type too (16 bytes per
-site: CoreMark 108 sites, 1 736 bytes, no map). The two-bitmap form (S0013 step 7.1) also
+site: CoreMark 115 sites, 1 848 bytes on both JITs since S0015, no map). The two-bitmap form (S0013 step 7.1) also
 amended version 1 without a bump; instantiation decodes the table with checks and refuses
 (`ValueError`) one that does not parse exactly, has a map index past the pool or a `live` bit
 outside `refs`, so a table in step 3a's one-bitmap form with a map is refused in the shapes tested, not by
@@ -154,9 +154,10 @@ new `ctx_abi_version`; new words are only ever appended in reserved space.
 int32_t entry(uint64_t *ctx, uint64_t *frame, const void *code_of_function);
 ```
 
-*x86-64 from S0015 step 1; aarch64 from step 3* ([S0015](specs/S0015-boundary-convention.md)):
+*From S0015 steps 1 (x86-64) and 3 (aarch64)* ([S0015](specs/S0015-boundary-convention.md)):
 `code_of_function` is a **C entry**, `int32_t f(uint64_t *ctx, uint64_t *frame)` in System V on
-every OS (Windows included: only the runtime's `entry` and conforming code call it). `entry` is the
+every OS on x86-64 (Windows included: only the runtime's `entry` and conforming code call it), in
+AAPCS64 on aarch64. `entry` is the
 runtime's, a contract with S0015's reference listing (its appendix): it saves the host's
 callee-saved registers the boundary does not keep (Win64: `rsi`, `rdi`, `xmm6`–`xmm15`), keeps
 the saved block (below) at `[rsp, rsp + 32)` of its call, calls the C entry, puts the exit record
@@ -165,7 +166,13 @@ register: each compiler's C entry does. `jit-x86_64`'s C entry is a 16-byte stub
 and host thunk (`endbr64; lea rdx, [rip + 5]; jmp centry`) and one `centry` per module after the
 last thunk, which saves `r12`–`r15`, sets up the compiler's registers and calls the body (a site
 with shift 0 and no map). Until S0015 step 4 the file's trampoline blob still holds the runtime's
-`entry` and `sp_stub` next to the compiler's bridge and `tail_switch`.
+`entry` and `sp_stub` next to the compiler's bridge and `tail_switch`. On aarch64 the `entry`
+saves only `x19` (with `x20`), keeps the saved block at `[sp + 96, sp + 128)` of its `blr` and
+zero-extends `w0` before it keeps the status; it and `sp_stub` start with `bti jc`.
+`jit-aarch64`'s C entry is a 12-byte stub (`bti jc; adr x16, body; b centry`), the body at
+`code + 12`, and one `centry` per module after the last thunk, which saves `x25`–`x28` under a
+frame record (`x19`–`x24`, `x29` and `d8`–`d15` its bodies keep), sets up the compiler's registers
+and calls the body (a site with shift 0 and no map: `ret_at` 8, `up` 48).
 
 * `frame` points into the host-allocated **value stack**; the arguments are written to `frame[0..n)`,
   the results come back in `frame[0..m)`, one 64-bit slot per value (i32 zero-extended in the low half;
@@ -195,14 +202,14 @@ the phase-3 meaning of each word and the register roles are in [S0003](specs/S00
 | 11-13 | reserved | | zero (S0013 step 6.3; the exception arena's refill service, cursor and limit until then, S0012; an amendment of v1 without a bump, Q5) |
 | 14 | `EXIT_RECORD` | host → code | address of the store's exit record `{sp, pc, frame}` of the innermost host call: the bridge writes it before the host runs (the calling frame's stack pointer at its call, the return address, the frame register) and clears `sp` after; every entry keeps the enclosing record and its frame on the native stack during its call and puts the record back (S0013; an amendment of v1 without a bump, Q5) |
 | 15 | reserved | | zero |
-| 16 … | per memory *i*: `base`, `size_bytes` (2 words) | host ↔ code | imported memories first; an i32 memory's base never moves (4 GiB + 32 MiB reserved, committed on grow; S0006); an i64 memory's base and `size_bytes` may both change during any host call or libcall (a `memory.grow` that moves it; D50, S0009: an amendment of v1 without a bump), so code keeps neither across a call: code that keeps a memory in registers (x86-64: memory 0 in r13/r14; aarch64: x26/x25) reloads them after every host call (and, x86-64 from S0015 step 1, after every call through a function record: a callee may grow an imported memory), any other memory is read here at each access |
+| 16 … | per memory *i*: `base`, `size_bytes` (2 words) | host ↔ code | imported memories first; an i32 memory's base never moves (4 GiB + 32 MiB reserved, committed on grow; S0006); an i64 memory's base and `size_bytes` may both change during any host call or libcall (a `memory.grow` that moves it; D50, S0009: an amendment of v1 without a bump), so code keeps neither across a call: code that keeps a memory in registers (x86-64: memory 0 in r13/r14; aarch64: x26/x25) reloads them after every host call (and, from S0015 steps 1 and 3, after every call through a function record: a callee may grow an imported memory), any other memory is read here at each access |
 | … | the GC heap: `base`, `size_bytes` (2 words), right after the module's memories | host ↔ code | only in a module that uses GC (GC types or instructions, or a `call_indirect` / `return_call_indirect` to a non-final type; S0013 step 3b, an amendment of v1 without a bump, Q5) or, from S0013 step 6.1, allocates or reads exception objects (a `throw`, or a `try_table` with a `catch` or `catch_ref` clause; a module with only `throw_ref` and `catch_all(_ref)` has none): the store's heap, an i32 memory (4 GiB + 32 MiB reserved, never moves) that `memory.size`, `memory.grow` and the libcall immediates do not count; a module without memories of its own has it as memory 0 (r13/r14, x26/x25). `size_bytes` is the highest committed end; the heap's regions are committed apart, so gaps below it are uncommitted and no code addresses them (D69, an amendment of v1 without a bump) |
 | … | per table *i*: `base`, `size` (2 words) | host ↔ code | `base`: the element words (one per element), `size`: elements; `table.grow` may move the elements, so code reads both words at each use and never keeps them across a host call. A `funcref` element (and value) is 0 (null) or the address of a function record (below); an `externref` element is 0 (null) or a reference word: a host value is `(h << 2) \| 2`, *h* its 1-based handle in the store (S0013 step 3b; the encoding is the runtime's, no code reads the bits); an `exnref` element is 0 or an exception object's heap offset (S0013 step 6.2) |
 | … | per global *i*: 1 word (2 for v128) | both | imported globals: a pointer to the owner's word instead |
 | … | per function import *i*: 1 word | host → code | address of a host function (signature below) |
 | … | the libcall block: 10 words, per libcall *j* 1 word | host → code | a runtime service, same signature as an import, in a fixed order, all ten words in every context: 0 `memory.grow`, 1 `table.grow`, 2 `table.init`, 3 `elem.drop`, 4 `memory.init`, 5 `data.drop`, 6-9 reserved, zero (D58: threads' `memory.atomic.wait32`, `wait64` and `notify` go there as an amendment of v1; S0014 step 0, an amendment of v1 without a bump: no artifact was written before it, and every word after the block moved by 4); never computation (D25). The operands are in the slots, the instruction's immediates (table, segment) after them; the memory index of `memory.grow` and `memory.init` only when the module has more than one memory. Operands and results have the address width of the memory or table they name (S0009, an amendment of v1 without a bump, Q4): for an i64 memory the delta, the old size and its failure −1 of `memory.grow` and the destination of `memory.init` are 64-bit values (−1 is `2⁶⁴−1`), for an i32 one they are i32 zero-extended as before; `table.grow` and `table.init` of an i64 table the same way (S0009 step 3) |
 | … | per signature *k*: 1 word | host → code | the canonical type id of a type the module's `call_indirect`s name (equal for equivalent types of every module of the process, never 0) |
-| … | per function record *r*: 3 words | host → code | `{code address, canonical type id, context address}` of every function import and of every function the module can take a reference to (`ref.func`, segments): a defined one; an import from another instance of the same store (its code and context: a direct call); a host function (the module's thunk, which calls the import's word through the bridge). `call_indirect` checks bounds, null and the type id, then calls `code` with r15 = `context` (and that context's memory words); `call` and `return_call` of an import go through the import's record the same way (D32). *x86-64 from S0015 step 1; aarch64 from step 3:* `code` is the callee's **C entry** (a defined function's, an exporter's for an import from another instance, the importing module's host thunk's for a host function); a call through a record saves `rsi rdi r8`–`r11` (the pool registers a C entry may clobber, for every frame above), passes `rdi` = `context` and `rsi` = its frame base + 8 · shift, and restores them and reloads memory 0's words before it tests the status, on every path. A compiler may bypass the C entry for callees it recognises as its own, a private choice (D71): `jit-x86_64` calls a record of the caller's own context at its body (`code + 16`) as a direct call, and one of another context whose word 8 (`HOST_BRIDGE`) equals the caller's (the same compiler) at its body with `r15` saved and switched and memory 0's words the callee's |
+| … | per function record *r*: 3 words | host → code | `{code address, canonical type id, context address}` of every function import and of every function the module can take a reference to (`ref.func`, segments): a defined one; an import from another instance of the same store (its code and context: a direct call); a host function (the module's thunk, which calls the import's word through the bridge). `call_indirect` checks bounds, null and the type id, then calls `code` with r15 = `context` (and that context's memory words); `call` and `return_call` of an import go through the import's record the same way (D32). *From S0015 steps 1 (x86-64) and 3 (aarch64):* `code` is the callee's **C entry** (a defined function's, an exporter's for an import from another instance, the importing module's host thunk's for a host function); a call through a record saves `rsi rdi r8`–`r11` (the pool registers a C entry may clobber, for every frame above), passes `rdi` = `context` and `rsi` = its frame base + 8 · shift, and restores them and reloads memory 0's words before it tests the status, on every path. A compiler may bypass the C entry for callees it recognises as its own, a private choice (D71): `jit-x86_64` calls a record of the caller's own context at its body (`code + 16`) as a direct call, and one of another context whose word 8 (`HOST_BRIDGE`) equals the caller's (the same compiler) at its body with `r15` saved and switched and memory 0's words the callee's. `jit-aarch64` does the same: it saves `x2`–`x8` around a C entry (`x0` = `context`, `x1` = the frame), calls a body of its own context at `code + 12`, and one of the same compiler with `x28` saved in 16 bytes and switched |
 | … | per tag *t*: 1 word | host → code | the tag's identity: non-zero, unique in the process, imported tags first; an imported tag has its exporter's value, so a `catch` compares identities, never indices (S0012) |
 | … | the GC group: 8 service words | host → code | a module with the GC heap only (above; S0013 step 3b), runtime services with the libcall signature, in this order (operands, then immediates, in slots): 0 `ALLOC` (`[bytes]`: room past the cursor; the code bumps it when it retries), 1 `ARRAY_NEW` (`[value low, high, n, type]` → object), 2 `ARRAY_NEW_DATA` and 3 `ARRAY_NEW_ELEM` (`[offset, n, type, segment]` → object), 4 `ARRAY_FILL` (`[array, i, value low, high, n, type]`), 5 `ARRAY_INIT_DATA` and 6 `ARRAY_INIT_ELEM` (`[array, d, s, n, type, segment]`), 7 reserved, zero (`FUNC_SUBTYPE` until S0013 step 5.6; no code uses it). An element value is always two words (a scalar's second is 0) |
 | … | per RTT *k*: 1 word | host → code | a module with the GC heap only: the offset in the heap of the type-info record of each struct or array type the code allocates inline or casts to (equal for equivalent types of every module of the store), then (S0013 step 6.1) of the exception record of each tag the code throws (by tag index; tags of equal type share the record) |
@@ -290,8 +297,9 @@ host's `Trap(UNCAUGHT_EXCEPTION)` with the tag and the values, read from the obj
 wasm or collection runs; a host function never returns 14 (a re-raised `UNCAUGHT_EXCEPTION` trap is status 13).
 
 **Tail calls** (D30). A `return_call*` puts its arguments at its own frame base, drops its native
-frame and jumps, so both stacks stay constant. *The rest of this paragraph is aarch64 only until
-S0015 step 3; x86-64 follows the next paragraph from S0015 step 1.* When the callee's function
+frame and jumps, so both stacks stay constant. *The rest of this paragraph describes both
+architectures before S0015 (a history): x86-64 follows the next paragraph from S0015 step 1,
+aarch64 from step 3.* When the callee's function
 record names another context, the code jumps to `ctx[TAIL_SWITCH]` instead, with the record's address and the caller's
 return address where the architecture's table below puts them.
 The trampoline (one per process and convention, in the host's code area like the bridge) does the
@@ -302,7 +310,7 @@ callee's status. Every return matches its call. The restore frame is 16 bytes on
 architectures, the saved context at the stack pointer of the `call`/`blr` and the real return
 address 8 above it; the GC's frame walk steps over it by these numbers (S0013).
 
-*x86-64 from S0015 step 1; aarch64 from step 3* (S0015, "Tail calls across the boundary", form
+*From S0015 steps 1 (x86-64) and 3 (aarch64)* (S0015, "Tail calls across the boundary", form
 2b): a chain of `return_call*` across contexts runs in constant native stack and every return
 matches its call. Our own context: a jump to the record's body (`code + 16`, behind its C entry).
 Another context: when the caller's return address is its own module's C-entry return point (it
@@ -315,7 +323,13 @@ has the caller's `HOST_BRIDGE` (the same compiler, D71), else its C entry; at `r
 them back and reloads memory 0's words. A hop whose return address is already `restore` only
 switches and jumps the same way. That restore frame is 64 bytes: the real return address 56
 above the stack pointer of its `call`, the caller's stack pointer 64 above it (the walk's
-numbers; from S0015 step 4 in `.waboros.trampolines`).
+numbers; from S0015 step 4 in `.waboros.trampolines`). On aarch64 (step 3) the same with the
+body at `code + 12`, the record in `x16`, the hop status returned with `ret` to the C entry (found
+by `adrp`), which restores `x25`–`x28` and its frame record and branches to the record's C entry
+with `x0` = its context and `x1` = the frame and `x30` our caller's return address; the first hop
+saves a frame record `{x29, x30}`, `x2`–`x8` and `x28` and calls with `bl`, its restore frame 80
+bytes: the real return address 8 above the stack pointer of that `bl`, the caller's stack pointer
+80 above it.
 
 **Per architecture** (S0004, D38; an amendment of version 1, which phase 5 fixes): what a host that
 provides the bridge or the tail-call trampoline itself must follow. The table is per compiler and
@@ -326,13 +340,13 @@ else in this part is the same 64-bit little-endian words for every architecture 
 
 | | x86-64 | aarch64 |
 |---|---|---|
-| boundary (C entry), x86-64 from S0015 step 1 | `int32_t f(rdi = ctx, rsi = frame)` in SysV on every OS: keeps `rbx rbp r12`–`r15`, may clobber `rax rcx rdx rsi rdi r8`–`r11`, every xmm register and the flags; status in `eax` (the upper half undefined); DF 0 and MXCSR `0x1F80` control bits at entry and exit; `endbr64` first | as `entry` (until S0015 step 3) |
+| boundary (C entry), from S0015 steps 1 and 3 | `int32_t f(rdi = ctx, rsi = frame)` in SysV on every OS: keeps `rbx rbp r12`–`r15`, may clobber `rax rcx rdx rsi rdi r8`–`r11`, every xmm register and the flags; status in `eax` (the upper half undefined); DF 0 and MXCSR `0x1F80` control bits at entry and exit; `endbr64` first | `int32_t f(x0 = ctx, x1 = frame)` in AAPCS64 on every OS: keeps `x19`–`x29`, `sp`, `d8`–`d15`, may clobber `x0`–`x17`, `x30`, the other vector state and NZCV; never touches `x18`; status in `w0` (the upper half undefined); FPCR at entry and exit as S0015's table; `bti jc` first |
 | bridge call | `eax` = word, `rdx` = slots; `call` | `x0` = word, `x1` = slots; `blr x16` |
 | bridge preserves | pool (`rbx rbp rsi rdi r8–r11`), `r12`–`r15` | `x2`–`x8`, `x19`–`x28`, `x29`, `sp` |
-| `tail_switch` | record in `rdx`, return address at `[rsp]`; the first hop and the hops from `restore`, never one from a C entry; restore frame 64 bytes (S0015 step 1, D71) | record in `x16`, return address in `x30` |
+| `tail_switch` | record in `rdx`, return address at `[rsp]`; the first hop and the hops from `restore`, never one from a C entry; restore frame 64 bytes (S0015 step 1, D71) | record in `x16`, return address in `x30`; the same hops; restore frame 80 bytes (S0015 step 3) |
 | exit record (bridge) | `sp` = rsp + 8 at entry (before the `call` pushed), `pc` = `[rsp]`, `frame` = `r12` | `sp` = sp at the `blr`, `pc` = `x30`, `frame` = `x27` |
 | entry's saved block | `[rsp, rsp + 32)` at its `call`: enclosing `{sp, pc, frame}`, then its frame | `[sp + 96, sp + 128)` at its `blr`, the same four words |
-| landing pad | `endbr64` | `bti c` (functions, trampolines), `bti j` (jump-table pads) |
+| landing pad | `endbr64` | `bti jc` at the boundary (C entries, `entry`, `sp_stub`; S0015 Q5), `bti c` (bodies, bridge, `tail_switch`), `bti j` (jump-table pads) |
 | `CODE` alignment | none | load address ≡ 0 mod 4096 (`adrp`) |
 | instruction cache | coherent | invalidate the loaded range before the first call |
 

@@ -6,7 +6,7 @@ status: implemented
 superseded_by:
 related: [D10, D14, D23, D24, D25, D26, D29, D30, D31, D32, D34, D35, D36, D37, R2, R3, R6, S0002, S0003]
 owner: maintainer
-updated: 2026-11-16
+updated: 2026-11-22
 ---
 
 # S0004 jit-aarch64, the second architecture (phase 4, integer core)
@@ -81,9 +81,13 @@ memory and tail calls reuse the x86-64 lowering shapes through context words. Es
 
 The pool is 13 registers (x86-64: 8), preferred order `x19…x24, x2…x8` (`choose_pins` takes the
 pool in order). Whether 13 pays over 8 is measured on CoreMark on the arm64 runner, not assumed.
-Native stack per frame: frame record 16 + pins ≤ 7·16 + 16 for a record call's saved context =
-**≤ 144 bytes** (x86-64: 96); the S0003 budget rule (bytes) is unchanged, so the maximum wasm
-recursion depth on aarch64 is lower for the same budget. Frames stay below one page (Windows probes).
+Native stack per frame: frame record 16 + pins ≤ 7·16 = **≤ 128 bytes**, plus at a call through a
+record 16 (another context of this compiler: `x28`) or 64 (another compiler's C entry: `x2`–`x8`;
+S0015 step 3), and a C entry's `centry` frame of 48 below the callee; the S0003 budget rule (bytes)
+is unchanged, so the maximum wasm recursion depth on aarch64 is lower for the same budget. Frames
+stay below one page (Windows probes). The most allocated before the next stack check (S0015's
+headroom rule) is 64 + 48 + 128 = 240 bytes through a C path, 80 + 48 + 128 = 256 through
+`tail_switch`'s first hop.
 
 ### Trampolines (one set; AAPCS64 and Windows Arm64 share it)
 AAPCS64 (Linux), Apple arm64 and Windows Arm64 agree on everything the trampolines touch: arguments
@@ -91,12 +95,22 @@ in `x0`–`x7`, result in `w0`/`x0`, callee-saved `x19`–`x29`, `sp`, `d8`–`d
 what our code never uses (`x18`, Apple's 128-byte red zone and variadic and sub-word argument rules,
 Windows unwind data and stack probes). So **one entry, one bridge, one stub, one `tail_switch` serve
 all of them**; the artifact's `ENTRIES` gives the same offset for `aapcs64` and `win-arm64`.
+From S0015 step 3 the entry and the stub are the runtime's (`aarch64/entry.py`), the bridge and
+`tail_switch` this compiler's (`aarch64/abi.py`), and every function and host thunk has a C entry
+(below); the list describes that state.
 
-* **Entry** `int32_t entry(x0 = ctx, x1 = frame, x2 = code)`: `bti c`; `stp x29, x30, [sp, #-128]!`;
-  `mov x29, sp`; `stp` x19–x28 (five pairs); `x28 ← x0`, `x27 ← x1`; the store's exit record (word
-  14) and x27 saved at `[sp, #96]` (S0013 3a); `ldp x26, x25, [x28, #128]`;
-  `blr x2`; the exit record put back; `cbz w0, done`; `str x0, [x28, #8]`
-  (`TRAP_CODE`; w0 was written by a 32-bit op, so x0 is zero-extended); restore; `ret`.
+* **Entry** (the runtime's, S0015's appendix) `int32_t entry(x0 = ctx, x1 = frame, x2 = c_entry)`:
+  `bti jc`; `stp x29, x30, [sp, #-128]!`; `mov x29, sp`; `stp x19, x20` (x19 keeps ctx); the
+  store's exit record (word 14) and the frame saved at `[sp, #96]` (S0013 3a); `blr x2`;
+  `mov w0, w0`; the exit record put back; `cbz w0, done`; `str x0, [x19, #8]` (`TRAP_CODE`);
+  restore; `ret`. It sets up no register.
+* **C entry** (S0015): a 12-byte stub before each body and host thunk, `bti jc; adr x16, body;
+  b centry` (the body at `code + 12`), and one `centry` per module after the last thunk: frame
+  record, `x25`–`x28` saved (48 bytes; the bodies keep `x19`–`x24`, `x29` and never touch
+  `d8`–`d15`), `x28 ← x0`, `x27 ← x1`, `ldp x26, x25`, `blr x16` (a site: `ret_at` 8, `up` 48,
+  shift 0, no map); a returned private hop status `0x80000001` (a 32-bit compare) means a tail
+  call left with the record in `x16`: restore, then `br` to the record's C entry with `x0`, `x1`
+  set; any other status is returned.
 * **Bridge**, reached by wasm code as `ldr x16, [x28, #8*HOST_BRIDGE]; blr x16` with
   **`x0` = context word of the host function, `x1` = slots**: `bti c`; the exit record `{sp, x30,
   x27}` written through x10/x11 (S0013 3a); frame record; save `x2`–`x8`
@@ -108,14 +122,19 @@ all of them**; the artifact's `ENTRIES` gives the same offset for `aapcs64` and 
 * **Host thunk** (per module, the record target of a host import): `bti c`; frame record;
   `mov x1, x27`; `mov w0, #word`; bridge call; reload `x26`/`x25` (S0003 3e: it returns to callers
   that do not); `ret`.
-* **sp stub**: `bti c; mov x16, sp; str x16, [x27]; mov w0, #0; ret` (frame[0] = sp as a wasm
-  function sees it).
-* **tail_switch** (D30), entered by `br x17` after the caller dropped its frame, with
-  **`x16` = the record** and the caller's return address **in `x30`** (not on the stack, as on
-  x86-64): `bti c`; `adr x17, restore; cmp x30, x17; b.eq hop`; `stp x28, x30, [sp, #-16]!`;
-  `ldr x28, [x16, #16]`; reload x26/x25; `ldr x17, [x16]; blr x17`; `restore:` `ldp x28, x30,
-  [sp], #16`; reload x26/x25; `ret`. `hop:` `ldr x28, [x16, #16]`; reload; `ldr x17, [x16];
-  br x17`. The restore frame is 16 bytes and saves `x30`, which `blr` overwrites; every `ret`
+* **sp stub** (a C entry): `bti jc; mov x16, sp; str x16, [x1]; mov w0, #0; ret` (frame[0] = sp
+  as a C entry sees it).
+* **Calls through a record** (S0015, D71): our own context: `blr` to `code + 12`; another context
+  of this compiler (equal `HOST_BRIDGE` words): `x28` saved in 16 bytes, switched, `blr` to
+  `code + 12`; otherwise the C entry with `x2`–`x8` saved in 64 bytes, `x0` = the context and
+  `x1` = the frame; memory 0's registers reloaded before the status test.
+* **tail_switch** (D30, S0015 form 2b), entered by `br x17` after the caller dropped its frame,
+  with **`x16` = the record** and the caller's return address **in `x30`** (not on the stack, as
+  on x86-64): `bti c`; `adr x17, restore; cmp x30, x17; b.eq hop`; the restore frame: frame
+  record, `x2`–`x8`, `x28` (80 bytes); `bl hop`; `restore:` restore, reload x26/x25, `ret`.
+  `hop:` a context of this compiler: `x28` switched, reload, `br` to `code + 12`; another
+  compiler's: `br` to its C entry with `x0`, `x1` set. A body whose return address is its
+  module's `centry` return point returns the hop status instead (later hops). Every `ret`
   returns to its `bl`/`blr`.
 
 **Traps return through frames** (S0003): a trap point branches to a cold stub
@@ -124,9 +143,10 @@ all of them**; the artifact's `ENTRIES` gives the same offset for `aapcs64` and 
 Arm GCS (Guarded Control Stack, Armv9.4, Linux 6.13 opt-in), the arm64 analogue of CET shadow
 stacks (R2).
 
-**BTI** (R2). `bti c` at every address reached by `blr` or `br x16/x17`: the entry, bridge, sp
-stub, `tail_switch`, every function (reached from the entry, records, tail calls) and the host
-thunk. Jump-table targets get `bti j` pads. Because every indirect branch uses `x16`/`x17`
+**BTI** (R2). `bti c` at every address reached by `blr` or `br x16/x17`: the bridge,
+`tail_switch`, every function body (reached from its C entry, records, tail calls) and the host
+thunk; from S0015 step 3 `bti jc` at the boundary (the entry, the sp stub, every C entry), which
+accepts `br` through any register (S0015 Q5). Jump-table targets get `bti j` pads. Because every indirect branch uses `x16`/`x17`
 (BTYPE 01), `bti c` also accepts the tail-call `br`. `bti` is in the HINT space: a NOP before
 ARMv8.5, so the baseline holds. Linux enforces BTI only on pages mapped `PROT_BTI` (0x10); the
 loader adds `PROT_BTI` when `getauxval(AT_HWCAP2) & HWCAP2_BTI`. The arm64 Linux CI runner's CPU
@@ -263,7 +283,7 @@ part 3 as a table, an amendment of v1 without a version bump (v1 is fixed in pha
 | bridge call | `eax` = word, `rdx` = slots; `call` | `x0` = word, `x1` = slots; `blr x16` |
 | bridge preserves | pool (`rbx rbp rsi rdi r8–r11`), r12–r15 | `x2`–`x8`, `x19`–`x28`, `x29`, `sp` |
 | `tail_switch` | record in `rdx`, return address at `[rsp]` | record in `x16`, return address in `x30` |
-| landing pad | `endbr64` | `bti c` (functions, trampolines), `bti j` (jump-table pads) |
+| landing pad | `endbr64` | `bti c` (functions, trampolines), `bti j` (jump-table pads); from S0015 step 3 `bti jc` at the boundary |
 | `CODE` alignment | none | load address ≡ 0 mod 4096 (`adrp`) |
 
 Header: `arch` = 2 (aarch64), `isa_level` = 1 (ARMv8.0-A with FP and Advanced SIMD), `isa_features`
@@ -492,3 +512,8 @@ Resolved by the maintainer on 2026-11-01 (see Changes); none open.
   or an immediate is loaded into `dst` first; never `xzr` as the base, LESSONS 118), tested against
   llvm-mc. Only modules with a function-subtype site change code (the 12 `gc/type-subtyping`
   modules 29-40, guard and explicit).
+* 2026-11-22 (S0015 step 3): the boundary convention: the runtime's entry and sp stub move to
+  `aarch64/entry.py` (`bti jc`, the entry zero-extends `w0` and sets up no register); 12-byte C
+  entries and a per-module `centry`; record calls on three paths (D71); `tail_switch` with an
+  80-byte restore frame and the hop by `HOST_BRIDGE`; later hops by return-then-jump; frame
+  bounds and the headroom numbers.

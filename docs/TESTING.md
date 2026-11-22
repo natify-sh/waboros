@@ -103,26 +103,31 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   thin and regenerated fat; the payload's layout rules; and the store rule of a foreign host (two
   instances on one copy sealed from the first file's blob, a cross-instance tail call's first hop
   walked over that copy's restore frame). The
-  round trip checks every convention's blob and offsets against `abi.assemble` on every module.
-* **The boundary convention** (S0015): `tests/jit/test_boundary.py`. On the machine's JIT:
+  round trip checks every convention's blob and offsets against the target's `conventions()` on
+  every module.
+* **The boundary convention** (S0015): `tests/jit/test_boundary.py`, on the machine's JIT and
+  under QEMU in the `jit` job, which enforces BTI (the C entries' `bti jc` pads, reached by a
+  `br x9`):
   tail-call ping-pong across two instances, 10⁶ round trips in a 256 KiB thread entered from the
   host, from a direct call and through a third instance's record (a calling control overflows);
   every public status (a trap, an exception caught one and two instances up or uncaught, a host
   error, an interrupt) across one and two instances; the walk across modules, at the far end of
   a hop chain entered from the host and from a direct call, and through the own-table path
   (D71) under the walk check and the GC switches; no status with bit 31 ever reaches the host.
-  x86-64 only: recursion through the own table reaches 32 bytes a level or better and across
-  instances 40 bytes a call or better (D71: this compiler's other contexts are called at their
-  bodies). With hand-assembled C entries (aarch64: S0015 step 3), on a context of another
+  Recursion through the own table reaches 32 bytes a level or better (aarch64 40) and across
+  instances 40 bytes a call or better (aarch64 52; D71: this compiler's other contexts are called
+  at their bodies). With hand-assembled C entries in each architecture's encoder, on a context of another
   compiler (its `HOST_BRIDGE` word differs, asserted, so the call takes the C path): a status
   with garbage in the upper half, through a record call and the runtime's `entry`; the statuses
   and the walk chains above again through such C entries, mixing all three record paths (own,
   this compiler's other contexts, C entry); a C entry clobbering every caller-saved register of
   the boundary keeps the caller's pins at a result, a trap, status 14 into a `try_table` and a
-  first tail-call hop, called directly and through the own-table path, and DF and MXCSR are as
-  the boundary says after it; the same pins and statuses on the path into another context of
-  this compiler; the runtime's `entry` keeps the host's callee-saved registers (the Win64 ones,
-  `xmm6`–`xmm15` included, on the Windows cells of `platforms.yml`).
+  first tail-call hop, called directly and through the own-table path, and DF and MXCSR (aarch64:
+  FPCR) are as the boundary says after it; the same pins and statuses on the path into another
+  context of this compiler; the runtime's `entry` keeps the host's callee-saved registers (the
+  Win64 ones, `xmm6`–`xmm15` included, on the Windows cells of `platforms.yml`; AAPCS64
+  `x19`–`x28` and `d8`–`d15`) behind a clobbering C entry and behind a compiled function whose
+  pins fill the pool (its module's C entry saves only what its bodies do not keep).
 * **The GC switches** (both JITs, S0013 step 5.3, D61; read when a store's heap is created, so a
   test sets them with `monkeypatch.setenv` before instantiating): `WABOROS_JIT_GC_STRESS=1` makes
   every allocation that may collect (in wasm code and the array services; never instantiation)
@@ -432,8 +437,12 @@ smoke-tests the wheel in a clean environment, and publishes to PyPI (trusted pub
 release. `.github/dependabot.yml` updates the `uv` lock file and the pinned actions weekly.
 
 Measurement workflow: `.github/workflows/placement-arm.yml` (by hand only,
-`workflow_dispatch` with the rounds) runs `tools/placement_sweep.py` on `ubuntu-24.04-arm`, one job per
-bounds mode. It is the code-placement study on native aarch64 (BENCHMARKS.md, "Code placement on
+`workflow_dispatch` with the mode and the rounds) runs `tools/placement_sweep.py` on `ubuntu-24.04-arm`, one job per
+bounds mode. Mode `compare` instead runs `tools/bench_compare.py` on three source trees, `base` (a
+git ref, default `HEAD~1`), its placement control `basepad` (`--pad-control`: `nop`s where S0015
+step 3 puts the C entries) and this commit, alternated round by round: CoreMark, the calls
+benchmark and two record-call kernels, medians and ranges in the summary and the artifact
+`compare-<mode>`. It is the code-placement study on native aarch64 (BENCHMARKS.md, "Code placement on
 aarch64"), not a gate. It fails only on a wrong result: CoreMark not validated, a kernel checksum or a
 corpus result off. The values go to the job summary and the artifact `placement-<mode>`. A local run
 under QEMU checks correctness only: `python3 tools/run_arm64.py tools/placement_sweep.py --quick

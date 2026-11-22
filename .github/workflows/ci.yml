@@ -102,7 +102,7 @@ jobs:
       # arm64 runner's CPU has none); about 2.5 min with the GC tests (S0013 step 4)
       - run: sudo apt-get install -y qemu-user libc6-arm64-cross libgcc-s1-arm64-cross
       - run: uv python install cpython-3.13-linux-aarch64-gnu
-      - run: python3 tools/run_arm64.py -m pytest tests/jit/test_abi_aarch64.py tests/jit/test_compiler.py tests/jit/test_compiler_aarch64.py tests/jit/test_tail.py tests/jit/test_exit_record.py tests/jit/test_walk.py tests/test_gc.py tests/test_collector_module.py tests/jit/test_gc_collect.py tests/jit/test_gc_moving.py tests/jit/test_gc_roots.py tests/jit/test_gc_heap.py tests/jit/test_gc_nested.py tests/jit/test_gc_subtype.py -q
+      - run: python3 tools/run_arm64.py -m pytest tests/jit/test_abi_aarch64.py tests/jit/test_boundary.py tests/jit/test_compiler.py tests/jit/test_compiler_aarch64.py tests/jit/test_tail.py tests/jit/test_exit_record.py tests/jit/test_walk.py tests/test_gc.py tests/test_collector_module.py tests/jit/test_gc_collect.py tests/jit/test_gc_moving.py tests/jit/test_gc_roots.py tests/jit/test_gc_heap.py tests/jit/test_gc_nested.py tests/jit/test_gc_subtype.py -q
       # S0005: the v128 boundary tests and the NEON operators (5c, 5e1, 5e2) against pyc, BTI
       # enforced; about 2.5 min. Explicit bounds: QEMU TCG splits a straddling 16-byte store, so
       # guard mode may tear one (accepted, D45; `auto` gives guard in an aarch64 process)

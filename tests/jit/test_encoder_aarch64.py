@@ -266,6 +266,7 @@ def forms() -> list[Form]:
             lambda a, s=signed, d=d, n=n, m=m: a.mulh(d, n, m, s))  # fmt: skip
     add("bti c", lambda a: a.bti("c"))
     add("bti j", lambda a: a.bti("j"))
+    add("bti jc", lambda a: a.bti("jc"))
     return out
 
 

@@ -1641,6 +1641,13 @@ basepad): own-table `call_indirect` 3.07 ns → 2.65, a cross-instance call 2.39
 4.29), a `call_indirect` to another instance 2.98 → 3.50 (step 1: 4.88), CoreMark within the
 spread. References: S0015, D70.
 
+`jit-aarch64` does the same from S0015 step 3: its own context at `code + 12` (behind its 12-byte
+C entry), another context of the same compiler with `x28` saved in 16 bytes, another compiler's
+C entry with `x2`–`x8` saved in 64 bytes; its `tail_switch` serves both kinds with an 80-byte
+restore frame. Depth under QEMU (BENCHMARKS.md, "The boundary convention on `jit-aarch64`"):
+own-table `call_indirect` 48 → 32 bytes a level (a direct call's), across instances 48 bytes a
+call as before S0015.
+
 Rejected:
 * **Keep the C path for every record** (step 1 as reviewed): a quarter of Wasmtime's depth
   through `call_indirect`, which the maintainer would not accept.

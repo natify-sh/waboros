@@ -1154,3 +1154,12 @@ What went wrong or surprised us while building the PoC, so it is not found again
     instances silently stopped crossing any C entry once those calls became body calls. Rule: a
     fake callee gets a context the fast-path test rejects, asserted in the test, and a test named
     after a path checks that it still takes it. Found: S0015 step 1, D71, 2026-11-22.
+144. **A fixup in code that a rewind keeps must not name a label that the rewind drops.**
+    `Asm.rewind(pos)` (the far-mode recompile of one aarch64 function) drops the fixups from
+    `pos` on and unbinds every label bound there. The C entry before a body is emitted before
+    `pos`, so an `adr x16, body` written as a label fixup survives the rewind while its label does
+    not, and `finish` fails with "label never bound" for every far-mode function. No spec module
+    reaches far mode; only the far-mode tests of `test_compiler_aarch64.py` and `test_guard.py`
+    do, so they are the ones that catch it. Rule: a stub that stays across a rewind refers to the
+    code after it by a fixed offset (the `adr` word with `+8`), or rebinds its label; checked with
+    a scratch rewind before the code was written. Found: S0015 step 3, 2026-11-22.

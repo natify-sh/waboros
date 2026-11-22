@@ -82,7 +82,7 @@ compiler's bridge.
 | stack at entry | `rsp` ≡ 8 (mod 16), i.e. 16-aligned at the `call` | `sp` 16-aligned at all times |
 | red zone | **none on any OS**: nothing is kept below `rsp` (the Windows vectored handler of S0006 writes below it) | **none on any OS**: nothing is kept below `sp` (Apple's 128 bytes are not used) |
 | frame record | — | `x29` is preserved. A C entry that makes a frame pushes a frame record `{x29, x30}` and points `x29` at it before any call (Apple and Windows require a valid chain); the walk does not read it |
-| landing pad | `endbr64` first (CET IBT, R2) | `bti jc` first: accepts `blr` and `br` through any register (Q5). A C entry that signs its return address puts `paciasp` after the `bti jc`: `paciasp` alone is only an implicit `bti c` and refuses `br` through a register other than `x16`/`x17` |
+| landing pad | `endbr64` first (CET IBT, R2) | `bti jc` first: accepts `blr` and `br` through any register (Q5); the runtime's `entry` too, so a foreign host may `br` to it through any register. A C entry that signs its return address puts `paciasp` after the `bti jc`: `paciasp` alone is only an implicit `bti c` and refuses `br` through a register other than `x16`/`x17` |
 | reached by | `call`, or `jmp` with the stack as at a `call` (a sibling call, "Tail calls") | `blr`, or `br` with `x30` as at a `blr`: at a sibling `br`, `x30` holds the plain (unsigned, already authenticated) return address |
 | return | `ret` to its own `call` (CET shadow stack) | `ret` to `x30` (Arm GCS) |
 | native frames | the part allocated before the first `NSTACK_LIMIT` check stays within the headroom rule (about 768 bytes, with room for the saves around it); larger frames are allocated after the check, below one page per step or with the compiler's own stack probes (Windows): a compiler duty | the same |
@@ -122,7 +122,9 @@ int32_t f(uint64_t *ctx, uint64_t *frame);
   of the stack pointer before the next check: a caller's saves around a C call, a restore frame,
   a C entry's frame, and the next body's pushes and frame allocation. So every frame lies above
   `nlimit − 4096`, the lowest address the walk reads (D56). The prototype's worst case before a
-  check is 224 bytes on x86-64.
+  check is 224 bytes on x86-64; `jit-aarch64`'s is 240 bytes through a C path (64 of saves, the
+  48-byte `centry` frame, a 128-byte body frame) and 256 through `tail_switch`'s first hop (its
+  80-byte restore frame instead of the saves).
 
 ### The status and the private range
 * The return value is `0` or a **public** status of part 3: a trap code, `INTERRUPT` (12),
@@ -852,9 +854,10 @@ pop  rsi
 pop  rbx
 ret
 ```
-**aarch64** (`x0` ctx, `x1` frame, `x2` c_entry; GNU as / `llvm-mc` syntax, comments after `//`):
+**aarch64** (`x0` ctx, `x1` frame, `x2` c_entry; GNU as / `llvm-mc` syntax, comments after `//`;
+`bti jc`, as every boundary address, from step 3: a host may also reach it by `br`):
 ```
-bti  c
+bti  jc
 stp  x29, x30, [sp, #-128]!
 mov  x29, sp
 stp  x19, x20, [sp, #16]  // x19 keeps ctx across the call
@@ -894,6 +897,19 @@ ret
   boundary convention on `jit-x86_64`"). Step 4 notes: `centry` has no symbol of its own (the
   last function's or thunk's covers it); S0014's "at least 18 words" holds for this compiler's
   C entry, not for the boundary.
+* 2026-11-22: step 3 implemented (aarch64), with the maintainer's answers to the plan's questions:
+  `bti jc` on everything at the boundary (the runtime's `entry`, `sp_stub`, every C entry; `bti c`
+  stays on bodies, the bridge and `tail_switch`); a 12-byte C-entry stub (`bti jc; adr x16, body;
+  b centry`), the body at `code + 12`; `centry` saves `x25`–`x28` under a frame record (the
+  bodies keep `x19`–`x24`), shown by a harness that calls a function whose pins fill the pool
+  through the runtime's `entry`; the hop status by an exact 32-bit compare with `0x80000001`;
+  `centry`'s return point found by `adrp` + `add` (a body may be farther than `adr`'s 1 MiB);
+  `tail_switch`'s restore frame a real frame record with `x2`–`x8` and `x28`, 80 bytes, numbers
+  8/80; record calls on three paths (D71), sites (8, size), (24, size + 16), (72, size + 64);
+  the headroom 240 / 256 bytes. Under QEMU (BTI enforced) the spec suite with the walk check
+  64 229 pass, 0 fail in explicit mode, `spec_diff` against HEAD empty; `gc` and `exceptions`
+  with the GC switches 905; through files 64 229. x86-64 code byte-identical (D35). Timing on
+  the native runner: `placement-arm.yml`, mode `compare` (BENCHMARKS.md).
 
 ## Changes
 * 2026-11-21: created (draft), from D70 and the prototype measured in BENCHMARKS.md.
@@ -958,3 +974,5 @@ ret
   (`HOST_BRIDGE` equal) is called at its body too, and `jit-x86_64`'s `tail_switch` serves it
   (D71 accepted): "The C entry and the function record", "Tail calls across the boundary". The
   boundary contract is unchanged.
+* 2026-11-22: step 3 (aarch64): the runtime's `entry` starts with `bti jc` (the table's landing-pad
+  row, the appendix listing; maintainer's decision); the aarch64 headroom numbers.
