@@ -2,11 +2,11 @@
 title: The boundary convention between separately compiled JIT artifacts
 kind: spec
 id: S0015
-status: draft
+status: approved
 superseded_by:
 related: [D23, D30, D32, D35, D36, D47, D56, D59, D60, D62, D64, D65, D66, D68, D70, R2, S0003, S0004, S0006, S0013, S0014]
 owner: maintainer
-updated: 2026-11-21
+updated: 2026-11-22
 ---
 
 # S0015 The boundary convention between separately compiled JIT artifacts
@@ -315,6 +315,25 @@ gets there is its own; two forms meet the interface:
 **Correction to the prototype:** its later hop unwound the C-entry frame with `add rsp` and jumped
 from the body, discarding a return address that a CET shadow stack still holds. The
 return-then-jump form above keeps every `ret` balanced.
+
+### Threads (D58)
+Threads come after the format, as an amendment inside space v1 reserves (D58): one store per
+thread, several stores sharing a memory. Calls through records never cross stores, so the boundary
+itself does not change; three rules hold for every compiler of an architecture now:
+* **One mapping of the atomic operations per architecture.** Wasm atomics are sequentially
+  consistent; code of two compilers on one shared memory is only correct if both use the same
+  mapping (as C/C++ compilers of one platform must). x86-64: a seq-cst load is a plain `mov`, a
+  seq-cst store is `xchg` (or `mov` then `mfence`), a read-modify-write is a `lock`-prefixed
+  instruction or `lock cmpxchg` loop. aarch64: a seq-cst load is `ldar`, a store `stlr`, a
+  read-modify-write `ldaxr`/`stlxr` or the LSE `*al` forms (LSE only at a declared ISA level). No
+  compiler uses the leading- or trailing-fence alternatives. The mapping is part of the boundary
+  ABI; changing it is a `ctx_abi_version` bump.
+* **A shared memory's size is never kept in a register** (D58), in a body or across a call through
+  a record; a compiler reads it from the context at each bounds check.
+* **Shared-everything threads** (one store used by several threads, so words 10 and 14 per thread)
+  stay out of v1: they are version 2 (D58).
+`memory.atomic.wait32/64` and `notify` are libcalls in the four reserved words of the block (D58),
+provided by the runtime, so they do not depend on the compiler.
 
 ### What sljit-based compilers must add (D60's patch set)
 From the scratch gate (x86-64; "Measurements") and SLJIT-BACKEND.md:
@@ -826,7 +845,9 @@ ret
 ```
 
 ## Progress
-* 2026-11-21: draft; awaiting the maintainer's approval.
+* 2026-11-21: draft.
+* 2026-11-22: **approved** by the maintainer, with the open questions' recommendations (Q1-Q5)
+  and the threads section; implementation starts with step 1 (x86-64).
 
 ## Changes
 * 2026-11-21: created (draft), from D70 and the prototype measured in BENCHMARKS.md.
@@ -882,3 +903,5 @@ ret
   * `entry` and `sp_stub` move to a runtime module per architecture, `targets/jit/<arch>/entry.py`;
   * "Docs this changes" extended to every document the audit found;
   * the tests that spy on `abi.assemble` or depend on offsets added.
+* 2026-11-22: "Threads (D58)" added (one atomics mapping per architecture, a shared memory's
+  size never in a register, shared-everything threads stay version 2); approved by the maintainer.

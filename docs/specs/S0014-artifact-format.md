@@ -413,7 +413,7 @@ it needs no version and no flag. Appending it to `.waboros.traps` would break th
 The exact wasm bytes whose SHA-256 is `module_sha256`. Its presence makes a **fat** file (D18).
 
 ### `.waboros.trampolines` (Q2)
-*Note (2026-11-21):* [S0015](S0015-boundary-convention.md) (draft) replaces this section's layout
+*Note (2026-11-21):* [S0015](S0015-boundary-convention.md) (approved 2026-11-22) replaces this section's layout
 when implemented: compiler blobs only (`bridge`, `tail_switch`, `restore` and its two numbers),
 the entry and the stack-pointer stub becoming the host's own by contract; until phase 6 the
 compare below stays in `read` and the exact `compiler` string stays the rule.
