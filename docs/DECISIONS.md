@@ -490,7 +490,7 @@ this sense: a code object belongs to one Python version and implementation (mars
 Status: accepted (maintainer, 2026-11-01) · Date: 2026-11-01 · Supersedes: D18 in part (the bullets "runs only on a waboros runtime", "the interface … is internal and may change between any two versions" and "loaders in other languages and the C reference loader become optional"), and the D15 narrowing · Evidence: —
 
 A JIT artifact talks to its host only through the context words and C-convention functions
-(ARTIFACT.md part 3: `entry(ctx, frame, code)`, `host(ctx, slots)` with the status in `ctx[7]` (D34),
+(ARTIFACT.md part 3: `entry(ctx, frame, code)` *(amended by D70: `code` is a function's C entry)*, `host(ctx, slots)` with the status in `ctx[7]` (D34),
 records, libcalls), with no Python in it (D15, D23). So a host written in another language (C, Rust,
 Go, Dart, LuaJIT, …) can load and run it, and that is now a supported use, not an accident:
 * **Versioned, not internal.** From phase 5 the artifact format and the context ABI are a stable,
