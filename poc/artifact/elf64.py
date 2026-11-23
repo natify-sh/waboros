@@ -1,5 +1,8 @@
 """A waboros artifact as an ELF64 relocatable (ARTIFACT-CONTAINER.md, option (b)): standard library only.
 
+The prototype of D59, superseded: format v1 is S0014 (src/waboros/targets/jit/common/artifact.py);
+since S0015 the file has no entry trampoline and no global symbol.
+
     blob = write(machine="x86_64", code=b"...", funcs=[("f", 0, 6), ...], entries={"sysv": 0x40},
                  sections={"header": b"...", "types": b"...", "stackmaps": b"..."})
     art = read(blob)    # {"machine", "code", "symbols", "sections"}

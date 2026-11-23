@@ -143,8 +143,11 @@ uv run python tools/run_coremark_jit.py poc/in/core.wasm   # CoreMark on the pac
 python3 tools/check_docs.py                # documents follow docs/STANDARDS.md
 python3 tools/features.py --check          # feature table is consistent
 uv run python tools/stack_info.py          # thread stack bounds the JIT uses
-uv run python tools/isa_all.py [--target jit-aarch64]   # ISA gate: every JIT blob of every compiled spec module has only baseline instructions (needs GNU objdump)
-uv run python tools/jit_dump.py --target jit-aarch64 OUT.txt   # sha256 list for the D35 cross-compile diff
+uv run python tools/isa_all.py [--target jit-aarch64]   # ISA gate: the code and trampolines of every compiled spec module's artifact file have only baseline instructions (needs GNU objdump)
+uv run python tools/jit_dump.py --target jit-aarch64 OUT.txt [--files DIR]   # sha256 list for the D35 cross-compile diff (DIR: one thin .wbo per module)
+WABOROS_JIT_ARTIFACT=1 uv run python -m tests.spec.run --engine jit-x86_64   # the spec suite through artifact files (written, loaded, instantiated)
+uv run python tools/artifact_dump.py OUT.txt [DIR]   # sha256 of the .wbo files of CoreMark and v1-small (OS-independence, D23)
+uv run --with pyelftools python tools/elf_readers.py   # independent ELF readers on those files (readelf, llvm-readobj, pyelftools, llvm-objdump, eu-elflint)
 uv run python tools/fuzz.py --targets pyc,jit,wasmtime --minutes 5   # differential fuzz (wasm-tools smith); tools/fuzz.py N SEED is the pyc branch-emission mode
 uv run python tools/bench_throw.py         # throw cost per target (S0012)
 uv run python tools/run_corpus.py          # corpus of real C libraries against hashlib/zlib/Wasmtime
