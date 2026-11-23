@@ -706,7 +706,7 @@ def test_x86_runtime_entry_builds_and_passes_the_isa_gate_on_any_host(
     path = tmp_path / "entry.bin"
     path.write_bytes(blob)
     tool = os.path.join(os.path.dirname(__file__), "..", "..", "tools", "isa_check.py")
-    p = subprocess.run([sys.executable, tool, str(path)], capture_output=True, text=True)
+    p = subprocess.run([*child(), tool, str(path)], capture_output=True, text=True)
     assert p.returncode == 0, p.stdout[:2000] + p.stderr
     cmd = [OBJDUMP, "-D", "-b", "binary", "-mi386:x86-64", "-Mintel", str(path)]
     text = subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
