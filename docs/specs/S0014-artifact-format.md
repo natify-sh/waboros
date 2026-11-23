@@ -864,6 +864,12 @@ When approved and implemented (step 7 unless noted):
   (maintainer, 2026-11-21). The exact `compiler` string stays the loader's rule and the
   trampoline compare stays in `read` until phase 6 (S0015, "Compatibility").
 
+* Step 6, partial (file identity, 2026-11-23): `tools/artifact_dump.py` writes the 16 `.wbo` files of
+  CoreMark and `v1-small.wasm` (thin and fat, both JITs, both bounds modes) and lists their sha256;
+  `platforms.yml` jobs `artifacts` / `artifacts-diff` run it on Linux x86-64 and arm64, Windows x64
+  and ARM64, macOS x86-64 and arm64 and fail on any difference, naming the file. Not done: the
+  independent ELF readers, `isa_all` over files.
+
 ## Changes
 * 2026-11-17: created (draft).
 * 2026-11-17: the maintainer's answers: Q1, Q3, Q4, Q6-Q12 decided as recommended; Q2 decided (b),

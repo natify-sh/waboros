@@ -484,6 +484,14 @@ spec module and CoreMark, and from S0013 step 3a a fourth column, the sha256 of 
 the `arm64` job (Linux) compiles the same modules and `diff`s its lists with them, so code compiled on
 x86-64 and on arm64 is the same bytes both ways.
 
+Files across OS (D23, S0014 step 6): a `.wbo` file depends on the architecture, not on the OS.
+`tools/artifact_dump.py OUT` writes the files of CoreMark and `v1-small.wasm` (thin and fat, both JITs,
+guard and explicit; 16 files, under 1 s) and lists `<name> <sha256>`. The `platforms` workflow runs it
+as `artifacts` on Linux x86-64 and arm64, Windows x64 and ARM64, macOS x86-64 and arm64 (a plain `uv run
+--no-project`, no wheel), and `artifacts-diff` fails if any list differs from the Linux x86-64 one,
+naming the list; `diff` shows the file. The compiler string's source digest hashes bytes, so
+`.gitattributes` (`eol=lf`) must keep Windows checkouts LF.
+
 The `spec` job also runs `--engine auto` with executable memory forbidden: `tools/no_exec.py` sets
 `PR_SET_MDWE` (`PR_MDWE_REFUSE_EXEC_GAIN`, Linux >= 6.3; the kernel then refuses `mprotect(PROT_EXEC)` on
 written memory, the JIT's W^X path) and `exec`s the runner. `auto` must warn once

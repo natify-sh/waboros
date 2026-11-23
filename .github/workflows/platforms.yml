@@ -98,6 +98,50 @@ jobs:
       - run: uv run --only-group dev cibuildwheel ci/harness --platform ${{ matrix.platform }} --output-dir wheelhouse
         env: { CIBW_CACHE_PATH: "${{ runner.temp }}/cibw-cache" }
         shell: bash
+  # D23/D35, S0014 step 6: a JIT artifact file is architecture-dependent and OS-independent. Each of
+  # the six hosts writes the `.wbo` files of CoreMark and the v1 module (tools/artifact_dump.py, pure
+  # standard library: no project install, so no wheel needed) and uploads the sha256 list; `artifacts-diff`
+  # compares every list with the first one and names the files that differ. One job per host, one final
+  # compare: a cross-workflow download is avoided, and a failing host does not hide the others.
+  artifacts:
+    name: artifacts ${{ matrix.os }}
+    needs: dedup
+    if: needs.dedup.outputs.skip != 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, windows-11-arm, macos-26-intel, macos-26]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+      - run: uv run --no-project python tools/artifact_dump.py wbo-${{ matrix.os }}.txt
+        shell: bash
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: wbo-${{ matrix.os }}
+          path: wbo-${{ matrix.os }}.txt
+  artifacts-diff:
+    needs: artifacts
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          pattern: wbo-*
+          path: lists
+          merge-multiple: true
+      - run: |
+          ls lists
+          n=$(ls lists | wc -l)
+          [ "$n" -eq 6 ] || { echo "expected 6 lists, got $n"; exit 1; }
+          ref=lists/wbo-ubuntu-latest.txt
+          rc=0
+          for f in lists/*.txt; do
+            diff "$ref" "$f" || { echo "::error::$f differs from $ref"; rc=1; }
+          done
+          exit $rc
   # Optional, never on push, never counts against the run: the architectures that have only pyc (no
   # micro-compiler yet). Start it from the Actions tab with `exotic` ticked. QEMU is very slow, so
   # each emulated architecture has a runner of its own (armv7l is in the main arm job, natively).
