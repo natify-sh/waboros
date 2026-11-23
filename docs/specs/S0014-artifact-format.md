@@ -2,7 +2,7 @@
 title: JIT artifact format v1 in the ELF64 container
 kind: spec
 id: S0014
-status: approved
+status: implemented
 superseded_by:
 related: [D18, D23, D24, D29, D33, D35, D36, D44, D48, D54, D58, D59, D60, D61, D62, D63, D64, D65, D66, D70, D73, R2, R3, R6, S0003, S0006, S0013, S0015]
 owner: maintainer
@@ -962,6 +962,7 @@ When approved and implemented (step 7 unless noted):
   (`tests/artifact/test_review.py`; Changes, 2026-11-23); a re-review confirmed them closed. What
   the reader does not check is under "Known limitations of v1".
 ## Changes
+* 2026-11-23: the **working freeze v0** (maintainer, 2026-11-23): the format of S0014 and the context ABI with S0015's boundary are the project's working ABI, not a release. Nothing in them changes silently: a change goes through a spec or a decision and updates the documents and the tests, without a version bump. The numbers in the file stay `format_version` 1 and `ctx_abi_version` 1 (0 in `EI_ABIVERSION` is what any ELF carries and is refused), so if nothing changes these bytes become v1. **The v1 freeze** comes before the merge to `main`, once the first sljit micro-compiler (D68) compiles code across the S0015 boundary (its C entries, the form-2a sibling tail calls and a record with no `tail_switch`, untested until then) and the C reference loader (D36) embeds it and reads and runs the committed files.
 * 2026-11-17: created (draft).
 * 2026-11-17: the maintainer's answers: Q1, Q3, Q4, Q6-Q12 decided as recommended; Q2 decided (b),
   trampolines in every module artifact (`.waboros.trampolines`, blobs at the end of `.text`, the

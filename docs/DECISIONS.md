@@ -1740,3 +1740,5 @@ artifact-format spec". The byte-level definition stays in S0014; this is the lis
   computable without Python (D60).
 * Unchanged: part 1 and part 3 (versions 1; the libcall block of 10 words, D58, S0014 step 0), D62's
   three rules, D18's frozen part.
+
+*(2026-11-23, maintainer: the working freeze v0 (maintainer, 2026-11-23): the format of S0014 and the context ABI with S0015's boundary are the project's working ABI, not a release. Nothing in them changes silently: a change goes through a spec or a decision and updates the documents and the tests, without a version bump. The numbers in the file stay `format_version` 1 and `ctx_abi_version` 1 (0 in `EI_ABIVERSION` is what any ELF carries and is refused), so if nothing changes these bytes become v1. The v1 freeze comes before the merge to `main`, once the first sljit micro-compiler (D68) compiles code across the S0015 boundary (its C entries, the form-2a sibling tail calls and a record with no `tail_switch`, untested until then) and the C reference loader (D36) embeds it and reads and runs the committed files; ROADMAP.md "Next" (6).)*
