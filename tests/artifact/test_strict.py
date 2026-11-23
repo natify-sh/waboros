@@ -122,8 +122,8 @@ def test_section_header_table_pinned() -> None:
         typ, fl, al, link, info, ent = (1, 0, 8, 0, 0, 0)
         if n == ".text":
             typ, fl, al = 1, 2 | 4, 4096  # SHF_ALLOC | SHF_EXECINSTR
-        if n == ".symtab":  # null, wasm[0], 3 trampolines x 2 conventions; link = .strtab
-            typ, link, info, ent = 2, i + 1, 8, 24
+        if n == ".symtab":  # null, wasm[0], centry, 2 blob symbols x 2 conventions; link = .strtab
+            typ, link, info, ent = 2, i + 1, 7, 24
         if n in (".strtab", ".shstrtab"):
             typ, al = 3, 1
         pos += -pos % al
@@ -156,32 +156,62 @@ def test_symbols_pinned() -> None:
     thunk = struct.unpack_from("<I", s["context"], 4 + 4 + 4 * 1 + 4 + 4)[
         0
     ]  # after 1 record, 0 sigs
-    ends = sorted([*code, thunk, ds])
+    stub = min(code + [thunk])
+    tgt: Any = base.TARGETS["jit-x86_64"]()
+    cen = tgt.centry(s["text"], stub)  # test_centry_symbol checks it
+    ends = sorted([*code, thunk, cen, ds])
     want = [("", 0, 0, 0, 0, 0)]
     want += [
         (f"wasm[{1 + i}]", 2, 0, 2, o, ends[ends.index(o) + 1] - o) for i, o in enumerate(code)
     ]
     want += [("thunk[0]", 2, 0, 2, thunk, ends[ends.index(thunk) + 1] - thunk)]
-    entries = []
-    for k, conv in enumerate(("sysv", "win64")):  # the trampolines, in `.waboros.trampolines` order
-        start, size, *offs = struct.unpack_from("<8I", s["trampolines"], 4 + 40 * k + 4)[:6]
-        cuts = [*offs[:4], start + size]
-        kinds = ("entry", "bridge", "sp_stub", "tail_switch")
-        tr = [
-            (f"__waboros_{n}_{conv}", a, b - a)
-            for n, a, b in zip(kinds, cuts, cuts[1:], strict=False)
-        ]
-        assert offs[0] == start and start % 16 == 0
-        want += [(n, 2, 0, 2, v, z) for n, v, z in tr[1:]]
-        entries.append((tr[0][0], 0x12, 0, 2, tr[0][1], tr[0][2]))  # STB_GLOBAL, STT_FUNC
-    assert symbols(imp) == want + entries
-    # the mapping symbols of AAELF64: $x at 0, $d at data_start, $x at the first trampoline
+    want += [("__waboros_centry_sysv", 2, 0, 2, cen, ds - cen)]
+    for k, conv in enumerate(
+        ("sysv", "win64")
+    ):  # the compiler's blobs, in `.waboros.trampolines` order
+        start, size, bridge, tail = struct.unpack_from("<4I", s["trampolines"], 4 + 28 * k + 4)
+        assert bridge == start and start % 16 == 0
+        want += [(f"__waboros_bridge_{conv}", 2, 0, 2, bridge, tail - bridge),
+                 (f"__waboros_tail_switch_{conv}", 2, 0, 2, tail, start + size - tail)]  # fmt: skip
+    assert symbols(imp) == want  # every symbol local (info 2 = STB_LOCAL, STT_FUNC)
+    # the mapping symbols of AAELF64: $x at 0, $d at data_start, $x at the first blob
     a64 = small("jit-aarch64")
     a, first = symbols(a64), struct.unpack_from("<I", A._sections_r(a64)[0]["trampolines"], 8)[0]
-    tr = ["__waboros_bridge_aapcs64", "__waboros_sp_stub_aapcs64", "__waboros_tail_switch_aapcs64"]
-    assert [x[0] for x in a] == ["", "wasm[0]", *tr, "$x", "$d", "$x", "__waboros_entry_aapcs64"]
+    tr = ["__waboros_centry_aapcs64", "__waboros_bridge_aapcs64", "__waboros_tail_switch_aapcs64"]
+    assert [x[0] for x in a] == ["", "wasm[0]", *tr, "$x", "$d", "$x"]
     assert a[5] == ("$x", 0, 0, 2, 0, 0) and a[7] == ("$x", 0, 0, 2, first, 0)
     assert [x[0] for x in symbols(small())][:2] == ["", "wasm[0]"]
+
+
+@pytest.mark.parametrize("target", ["jit-x86_64", "jit-aarch64"])
+def test_centry_symbol(target: str) -> None:
+    """`__waboros_centry_<conv>` is local, at the module's shared C entry part and as long as it:
+    its first bytes are the prologue the backend emits, it ends at the data area and the last
+    function's or thunk's symbol ends where it starts. Also with no
+    function at all."""
+    text = '(module (import "m" "f" (func)) (func (export "g")) (func))'
+    pro = {
+        "jit-x86_64": b"\x41\x54\x41\x55\x41\x56\x41\x57",
+        "jit-aarch64": (0xA9BD7BFD).to_bytes(4, "little"),
+    }[target]  # stp x29, x30, [sp, -48]!
+    for src in (text, "(module)"):
+        m = parse(wat(src))
+        validate(m)
+        c: Any = base.TARGETS[target]().compile(m)
+        b = A.write(c, target=target, module_sha256=bytes(32))
+        sec = A._sections_r(b)[0]
+        name = "__waboros_centry_" + ("sysv" if target == "jit-x86_64" else "aapcs64")
+        (cs,) = [x for x in symbols(b) if x[0] == name]
+        _, info, other, shndx, value, size = cs
+        assert (info, other, shndx) == (2, 0, 2)  # STB_LOCAL, STT_FUNC, .text
+        assert value + size == c.data_start and value < c.data_start
+        assert sec["text"][value : value + len(pro)] == pro
+        last = [x for x in symbols(b) if x[0].startswith(("wasm[", "thunk["))]
+        if last:
+            assert max(x[4] + x[5] for x in last) == value
+        else:
+            assert value == 0
+        assert all(x[1] >> 4 == 0 for x in symbols(b))  # no global symbol
 
 
 def test_config_sha256_is_the_specs_definition(monkeypatch: pytest.MonkeyPatch) -> None:

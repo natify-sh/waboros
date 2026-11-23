@@ -16,7 +16,7 @@ from tests.jit.test_abi import ODD_TRAP, counter, word
 from waboros.runtime.link import host_func
 from waboros.runtime.store import StoreState
 from waboros.targets.base import HostFunc, Raw, Trap, TrapCode
-from waboros.targets.jit.aarch64 import conventions, trampolines
+from waboros.targets.jit.aarch64 import conventions, runtime, trampolines
 from waboros.targets.jit.aarch64.abi import BODY, CTX, FRAME, MBASE, MSIZE
 from waboros.targets.jit.aarch64.backend import POOL, Backend, Frame
 from waboros.targets.jit.aarch64.encoder import FP, LR, SP, ZR, Asm, Label
@@ -69,8 +69,9 @@ def test_trampolines_are_landing_pads(tramp: Trampolines) -> None:
     pads = [BTI_JC, BTI_C, BTI_JC, BTI_C]  # entry and sp_stub at the boundary (S0015)
     addrs = (tramp.entry, tramp.bridge, tramp.sp_stub, tramp.tail_switch)
     assert [ctypes.string_at(addr, 4) for addr in addrs] == pads
-    code, offsets, _ = conventions()["aapcs64"]
-    assert [code[o : o + 4] for o in offsets[:4]] == pads
+    rt, (_, stub), _ = runtime()
+    code, (bridge, tail, _), _ = conventions()["aapcs64"]
+    assert [rt[0:4], code[bridge : bridge + 4], rt[stub : stub + 4], code[tail : tail + 4]] == pads
 
 
 def test_bti_is_enforced_where_the_cpu_has_it(tramp: Trampolines) -> None:

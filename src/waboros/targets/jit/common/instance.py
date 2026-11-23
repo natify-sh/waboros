@@ -201,7 +201,7 @@ class Trampolines:
     restore: int
     saved: int
     # the restore frame: from the stack pointer at tail_switch's call, the real return address and
-    # the caller's stack pointer (per architecture; S0015 puts them in the artifact in step 4)
+    # the caller's stack pointer (per architecture, the compiler's: in the artifact, S0015)
     restore_ret_at: int
     restore_up: int
     keep: object = None  # the code area
@@ -350,14 +350,24 @@ class _StoreStacks:
 
 
 def load_trampolines(
-    code: bytes, offsets: Sequence[int], saved: int, restore: tuple[int, int]
+    runtime: tuple[bytes, tuple[int, int], int],
+    compiler: tuple[bytes, tuple[int, ...], tuple[int, int]],
 ) -> Trampolines:
-    """Seal an architecture's trampoline blob (four entry points, then the entry's return point and
-    `restore`) into one code area, kept for the process's lifetime by the cache of the target that
-    calls this; `saved` is its ENTRY_SAVED, `restore` the restore frame's two numbers."""
-    mem = load(code)
-    at = (mem.addr + o for o in offsets)
-    return Trampolines(*at, saved=saved, restore_ret_at=restore[0], restore_up=restore[1], keep=mem)
+    """Seal the runtime's blob (entry, sp_stub; `Target.runtime()`) and a compiler's (bridge,
+    tail_switch, `restore` and the restore frame's numbers; `Target.conventions()`, or a file's
+    copy) into one code area, kept for the process's lifetime by the cache of the target that
+    calls this. The compiler's blob starts at the next multiple of 16."""
+    (rblob, (entry_ret, sp_stub), saved), (cblob, (bridge, tail_switch, restore), nums) = (
+        runtime,
+        compiler,
+    )
+    c = len(rblob) + -len(rblob) % 16
+    mem = load(rblob + bytes(c - len(rblob)) + cblob)
+    a = mem.addr
+    return Trampolines(
+        a, a + c + bridge, a + sp_stub, a + c + tail_switch, a + entry_ret, a + c + restore,
+        saved=saved, restore_ret_at=nums[0], restore_up=nums[1], keep=mem,
+    )  # fmt: skip
 
 
 def _stacks(store: StoreState) -> _StoreStacks:

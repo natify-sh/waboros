@@ -9,8 +9,8 @@ ctx[TRAP_CODE] when non-zero. It sets up no pinned register (each compiler's C e
 touches x18. Both start with `bti jc`: anything at the boundary is reached by `blr` or by `br`
 through any register (S0015 Q5).
 
-Until S0015 step 4 the artifact blob still carries these next to the compiler's bridge and
-tail_switch (`aarch64.conventions`)."""
+The artifact does not carry these (S0015): `aarch64.runtime()` builds them for the process.
+"""
 
 from waboros.targets.jit.aarch64.encoder import FP, LR, SP, Asm
 from waboros.targets.jit.common.context import EXIT_RECORD, TRAP_CODE

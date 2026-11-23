@@ -48,10 +48,20 @@ class JitTarget:
 
     convention: str  # the host convention this process runs (S0014 `.waboros.trampolines`)
 
-    def conventions(self) -> dict[str, tuple[bytes, tuple[int, ...], int]]:
-        """Per convention of the architecture, in file order: (blob, [entry, bridge, sp_stub,
-        tail_switch, entry_ret, restore], ENTRY_SAVED), as the architecture builds them (x86-64:
-        `x86_64.conventions`, entry.py and abi.py in one blob until S0015 step 4)."""
+    def conventions(self) -> dict[str, tuple[bytes, tuple[int, ...], tuple[int, int]]]:
+        """The compiler's part of `.waboros.trampolines`, per convention of the architecture in
+        file order: (blob of bridge then tail_switch, (bridge, tail_switch, restore) offsets in
+        it, (restore_ret_at, restore_up)); abi.py (S0015)."""
+        raise NotImplementedError
+
+    def runtime(self) -> tuple[bytes, tuple[int, int], int]:
+        """The runtime's own trampolines for this process's convention, never in a file:
+        (blob of entry then sp_stub, (entry_ret, sp_stub) offsets in it, ENTRY_SAVED); entry.py."""
+        raise NotImplementedError
+
+    def centry(self, code: bytes, stub: int) -> int:
+        """The offset of the module's shared C entry part, from the jump of the C-entry stub at
+        `stub` (the writer's symbols; S0015), -1 if the bytes there are not a C-entry stub."""
         raise NotImplementedError
 
     def guard_backend(self) -> Any:

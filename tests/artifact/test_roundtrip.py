@@ -34,15 +34,20 @@ def norm(x: Any) -> Any:
     return x
 
 
-def tramps(blob: bytes) -> dict[str, tuple[bytes, tuple[int, ...], int]]:
-    """Each convention's blob, offsets from its start and `saved`, decoded from the file itself."""
+def tramps(blob: bytes) -> dict[str, tuple[bytes, tuple[int, ...], tuple[int, int]]]:
+    """Each convention's blob, its offsets from its start and the restore numbers, decoded from the
+    file itself."""
     s, out = artifact._sections_r(blob)[0], {}
     name = {v: k for k, v in artifact.CONVENTIONS.items()}
     for k in range(struct.unpack_from("<I", s["trampolines"])[0]):
-        cid, start, size, *offs, saved = struct.unpack_from(
-            "<B3xIIIIIIIII", s["trampolines"], 4 + 40 * k
+        cid, start, size, *offs, ret_at, up = struct.unpack_from(
+            "<B3x5I2H", s["trampolines"], 4 + 28 * k
         )
-        out[name[cid]] = (s["text"][start : start + size], tuple(o - start for o in offs), saved)
+        out[name[cid]] = (
+            s["text"][start : start + size],
+            tuple(o - start for o in offs),
+            (ret_at, up),
+        )
     return out
 
 

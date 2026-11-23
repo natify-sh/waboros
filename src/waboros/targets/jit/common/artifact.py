@@ -209,24 +209,26 @@ def _types(mod: Any) -> bytes:
     return b"".join(out) + _u("I", len(td)) + b"".join(T.key(mod, i) for i in range(len(td)))
 
 
-def _conventions(target: str) -> dict[str, tuple[bytes, list[int], int]]:
-    """The target's conventions in file order: (blob, offsets, ENTRY_SAVED), `t.conventions()`."""
+def _conventions(target: str) -> dict[str, tuple[bytes, tuple[int, ...], tuple[int, int]]]:
+    """The compiler's blobs in file order: (blob, (bridge, tail_switch, restore), (restore_ret_at,
+    restore_up)), `t.conventions()`."""
     t: Any = base.TARGETS[target]()
     return t.conventions()
 
 
-def _text(c: Any, target: str) -> tuple[bytes, bytes, list[tuple[str, int, list[int], int]]]:
+def _text(c: Any, target: str) -> tuple[bytes, bytes, list[tuple[str, int, tuple[int, ...], int]]]:
     """`.text`: the code and data area padded with zeros to a multiple of 16 (the padding is part
-    of the data area), then each convention's blob, as the target's conventions give it, at the
-    next multiple of 16; `.waboros.trampolines`; and (convention, start, offsets, size) per blob."""
+    of the data area), then each convention's compiler blob (S0015: bridge and tail_switch, no
+    entry) at the next multiple of 16; `.waboros.trampolines`; and (convention, start, offsets,
+    size) per blob."""
     convs = _conventions(target)
     text, pay, at = bytearray(c.code), [_u("I", len(convs))], []
-    for name, (blob, offs, saved) in convs.items():
+    for name, (blob, offs, nums) in convs.items():
         text += bytes(-len(text) % 16)
         o = len(text)
         text += blob
         pay.append(_u("BBHII", CONVENTIONS[name], 0, 0, o, len(blob)))
-        pay.append(_u("7I", *(o + x for x in offs), saved))
+        pay.append(_u("3I2H", *(o + x for x in offs), *nums))
         at.append((name, o, offs, len(blob)))
     return bytes(text), b"".join(pay), at
 
@@ -302,28 +304,32 @@ def _sections(c: Any, wasm: bytes | None, target: str) -> dict[str, bytes]:
 
 
 def _symbols(c: Any, mach: int, nimp: int, target: str) -> list[tuple[str, int, int, int]]:
-    """(name, value, size, info): the locals, then the global entry symbols (S0014 "Symbols")."""
+    """(name, value, size, info): every symbol is local (S0014 "Symbols"; S0015: no globals)."""
+    t: Any = base.TARGETS[target]()
     starts = [(o, f"wasm[{nimp + k}]") for k, (o, _) in enumerate(c.funcs)]
     starts += [(o, f"thunk[{i}]") for i, o in sorted(c.thunks.items())]
-    ends = sorted({o for o, _ in starts} | {c.data_start})
-    out = [(n, o, ends[ends.index(o) + 1] - o, 2) for o, n in starts]
     at = _text(c, target)[2]
-    entries = []
+    # the module's C entry part follows the last body and runs to the data area; the writer finds
+    # it from a stub's jump, so a view needs no field for it (the symbols are not read, D62)
+    cen = t.centry(c.code, min(o for o, _ in starts)) if starts else 0
+    if not 0 <= cen < c.data_start:  # code the reader does not check: a symbol that is no use
+        cen = c.data_start
+    ends = sorted({o for o, _ in starts} | {cen, c.data_start})
+    out = [(n, o, ends[ends.index(o) + 1] - o, 2) for o, n in starts]
+    out.append((f"__waboros_centry_{at[0][0]}", cen, c.data_start - cen, 2))
     for conv, o, offs, size in at:
-        cuts = [o + x for x in offs[:4]] + [o + size]
-        names = ("entry", "bridge", "sp_stub", "tail_switch")
-        tramp = [
-            (f"__waboros_{n}_{conv}", a, b - a)
+        cuts = [o + x for x in offs[:2]] + [o + size]
+        names = ("bridge", "tail_switch")
+        out += [
+            (f"__waboros_{n}_{conv}", a, b - a, 2)
             for n, a, b in zip(names, cuts, cuts[1:], strict=False)
         ]
-        out += [(n, a, z, 2) for n, a, z in tramp[1:]]
-        entries.append((*tramp[0], 0x12))  # STB_GLOBAL, STT_FUNC
     if mach == 183:
         out.append(("$x", 0, 0, 0))
         if at[0][1] > c.data_start:  # the data area (its padding included) is not empty
             out.append(("$d", c.data_start, 0, 0))
         out.append(("$x", at[0][1], 0, 0))
-    return out + entries
+    return out
 
 
 def _strtab(names: list[str]) -> tuple[bytes, dict[str, int]]:
@@ -336,11 +342,12 @@ def _strtab(names: list[str]) -> tuple[bytes, dict[str, int]]:
 
 
 def _symtab(c: Any, mach: int, nimp: int, target: str) -> tuple[bytes, bytes, int]:
-    """The `.symtab` and `.strtab` payloads the file of `c` must have, and the first global."""
+    """The `.symtab` and `.strtab` payloads the file of `c` must have, and `sh_info`: the symbol
+    count, as there is no global."""
     syms = _symbols(c, mach, nimp, target)
     strtab, so = _strtab([n for n, *_ in syms])
     tab = bytes(24) + b"".join(_u("IBBHQQ", so[n], i, 0, 2, v, z) for n, v, z, i in syms)
-    return tab, strtab, 1 + sum(i >> 4 == 0 for *_, i in syms)
+    return tab, strtab, 1 + len(syms)
 
 
 def write(
@@ -676,11 +683,18 @@ def _trampolines(text: bytes, b: bytes, target: str) -> bytes:
     convs = _conventions(target)
     if r.u32() != len(convs):
         r.fail(f"not one record per convention of {target} ({', '.join(convs)})")
+    if len(b) != 4 + 28 * len(convs):
+        r.fail(
+            f"the payload is {len(b)} bytes, the layout of S0015 (compiler blobs only, 28 bytes "
+            f"per convention) has {4 + 28 * len(convs)} for {len(convs)} (an older file has 40-byte"
+            " records with the entry)"
+        )
     first = pos = -1
-    for name, (blob, offs, saved) in convs.items():
+    for name, (blob, offs, nums) in convs.items():
         cid = r.u8()
         r.zero(3)
-        start, size, *rest = (r.u32() for _ in range(9))
+        start, size, *rest = (r.u32() for _ in range(5))
+        nu = (r.u(2), r.u(2))
         if cid != CONVENTIONS[name]:
             r.fail(f"convention {cid} where the format has {name} ({CONVENTIONS[name]})")
         if first < 0:
@@ -689,8 +703,10 @@ def _trampolines(text: bytes, b: bytes, target: str) -> bytes:
                 r.fail("the first blob is not at a multiple of 16 inside .text")
         elif start != pos + -pos % 16 or any(text[pos:start]):
             r.fail(f"the {name} blob is not at the next multiple of 16, after zero bytes")
-        got = (size, text[start : start + size], tuple(x - start for x in rest[:6]), rest[6])
-        if got != (len(blob), blob, offs, saved):
+        if any(x != NO_START and not start <= x < start + size for x in rest):
+            r.fail(f"an offset of the {name} record is not inside its blob")
+        got = (size, text[start : start + size], tuple(x - start for x in rest), nu)
+        if got != (len(blob), blob, offs, nums):
             r.fail(
                 f"the {name} trampolines differ from this compiler's (another compiler or "
                 "version, or a corrupt file)"

@@ -63,7 +63,8 @@ from `jit-x86_64` (a recursive function, a memory loop, an out-of-bounds load) l
 C host runs through `__waboros_entry_sysv`, the host building the context from ARTIFACT.md part 3;
 results, traps and speed (613-643 M iterations/s on the kernel) are as with `mmap`. The linked form
 needs three things the loaded form does not: unique global symbols (two artifacts collide on
-`__waboros_entry_sysv`); metadata in the image (`.waboros.*` without `SHF_ALLOC` stays in the file,
+`__waboros_entry_sysv`; that was the prototype's, before S0015: the file now has no global symbol,
+and a linked host calls a function's C entry with its own entry); metadata in the image (`.waboros.*` without `SHF_ALLOC` stays in the file,
 and the functions are local symbols C cannot name); `.note.GNU-stack` in every artifact (`ld.bfd`
 warns of an executable stack).
 
@@ -71,8 +72,9 @@ warns of an executable stack).
 
 1. **A loader ignores `sh_flags` of `.waboros.*` sections** and finds them by name (D59), so
    `SHF_ALLOC` metadata reads the same and changing the flags is no format change.
-2. **A loader never depends on global symbol names**: it finds the entry trampolines through a
-   `.waboros.*` payload (offsets, as `ENTRIES` today), not by looking up `__waboros_entry_sysv`;
+2. **A loader never depends on global symbol names**: it finds the trampolines through a
+   `.waboros.*` payload (offsets, `.waboros.trampolines`), never through a symbol; since S0015
+   (D70) the file has no entry trampoline and no global symbol at all, the entry being the runtime's;
    `.symtab` stays for tools and a future linker, so the linked form can add a per-artifact prefix
    (for example the module hash) without touching a v1 loader.
 3. **Unknown sections are skipped** (D59), so `.note.GNU-stack` and a future descriptor section go

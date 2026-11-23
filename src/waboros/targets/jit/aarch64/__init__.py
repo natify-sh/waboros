@@ -34,8 +34,17 @@ class JitAarch64Target(JitTarget):
     def trampolines(self) -> "Trampolines":
         return trampolines()
 
-    def conventions(self) -> dict[str, tuple[bytes, tuple[int, ...], int]]:
+    def conventions(self) -> dict[str, tuple[bytes, tuple[int, ...], tuple[int, int]]]:
         return conventions()
+
+    def runtime(self) -> tuple[bytes, tuple[int, int], int]:
+        return runtime()
+
+    def centry(self, code: bytes, stub: int) -> int:
+        w = int.from_bytes(code[stub + 8 : stub + 12], "little")  # bti jc; adr x16; b centry
+        if w >> 26 != 5:  # b imm26
+            return -1
+        return stub + 8 + 4 * ((w & 0x3FFFFFF) - ((w & 0x2000000) << 1))
 
     convention = "aapcs64"  # Linux, macOS and Windows alike
 
@@ -70,29 +79,37 @@ class JitAarch64Target(JitTarget):
 
 
 @cache
-def conventions() -> dict[str, tuple[bytes, tuple[int, ...], int]]:
-    """The one convention's blob, offsets and ENTRY_SAVED (S0014 `.waboros.trampolines`). Until
-    S0015 step 4 one blob holds the runtime's entry and sp_stub (entry.py) with this compiler's
-    bridge and tail_switch (abi.py), in the order and with the offsets the format has: entry,
-    bridge, sp_stub, tail_switch, the entry's return point, `restore`."""
-    from waboros.targets.jit.aarch64 import abi, entry
+def conventions() -> dict[str, tuple[bytes, tuple[int, ...], tuple[int, int]]]:
+    """The compiler's blob (S0014 `.waboros.trampolines`, S0015): this compiler's bridge then
+    tail_switch (abi.py), the offsets of bridge, tail_switch and `restore` and the restore
+    frame's two numbers."""
+    from waboros.targets.jit.aarch64 import abi
+    from waboros.targets.jit.aarch64.encoder import Asm
+
+    a = Asm()
+    abi.bridge(a)
+    tail = len(a.buf)
+    restore = abi.tail_switch(a)
+    return {"aapcs64": (a.finish(), (0, tail, restore), (abi.RESTORE_RET_AT, abi.RESTORE_UP))}
+
+
+@cache
+def runtime() -> tuple[bytes, tuple[int, int], int]:
+    """The runtime's entry then sp_stub (entry.py), the offsets of the entry's return point and of
+    sp_stub, and ENTRY_SAVED: not in any artifact (S0015)."""
+    from waboros.targets.jit.aarch64 import entry
     from waboros.targets.jit.aarch64.encoder import Asm
 
     a = Asm()
     ret = entry.entry(a)
-    offs = [0, len(a.buf)]
-    abi.bridge(a)
-    offs.append(len(a.buf))
+    stub = len(a.buf)
     entry.sp_stub(a)
-    offs.append(len(a.buf))
-    restore = abi.tail_switch(a)
-    return {"aapcs64": (a.finish(), (*offs, ret, restore), entry.ENTRY_SAVED)}  # tuples: shared
+    return a.finish(), (ret, stub), entry.ENTRY_SAVED
 
 
 @cache
 def trampolines() -> "Trampolines":
     """This process's trampolines, sealed once by the host side."""
-    from waboros.targets.jit.aarch64.abi import RESTORE_RET_AT, RESTORE_UP
     from waboros.targets.jit.common.instance import load_trampolines
 
-    return load_trampolines(*conventions()["aapcs64"], (RESTORE_RET_AT, RESTORE_UP))
+    return load_trampolines(runtime(), conventions()["aapcs64"])

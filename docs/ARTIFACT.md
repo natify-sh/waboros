@@ -86,7 +86,7 @@ Wasmtime does; see [ARTIFACT-CONTAINER.md](ARTIFACT-CONTAINER.md) (maintainer's 
 | id | section | content |
 |---|---|---|
 | 1 | `CODE` | the machine code, position-independent: internal branches relative, everything absolute through the context register |
-| 2 | `ENTRIES` | entry trampolines, one per host calling convention: `{sysv: offset, win64: offset}` on x86-64; `{aapcs64: offset}` on aarch64 (one convention on Linux, macOS and Windows; S0014 `.waboros.trampolines`). The host picks its own |
+| 2 | `ENTRIES` | the compiler's trampolines, one blob per calling convention: `sysv`, `win64` on x86-64; `aapcs64` on aarch64 (one convention on Linux, macOS and Windows; S0014 `.waboros.trampolines`). Since S0015 the file carries only the compiler's bridge and `tail_switch` per convention (28-byte records, local symbols `__waboros_bridge_<conv>`, `__waboros_tail_switch_<conv>`, `__waboros_centry_<conv>`); the host's `entry` and `sp_stub` are its own, and the host picks its convention |
 | 3 | `FUNCS` | per defined function: code offset, type index, frame size (slots), name (if any) |
 | 4 | `TYPES` | function types (param/result value types) |
 | 5 | `IMPORTS` | function imports: module, name, type index, context slot; memory/table/global imports with their types |
@@ -165,8 +165,8 @@ back, takes the status as 32 bits and keeps a non-zero one in `TRAP_CODE`. It se
 register: each compiler's C entry does. `jit-x86_64`'s C entry is a 16-byte stub before each body
 and host thunk (`endbr64; lea rdx, [rip + 5]; jmp centry`) and one `centry` per module after the
 last thunk, which saves `r12`–`r15`, sets up the compiler's registers and calls the body (a site
-with shift 0 and no map). Until S0015 step 4 the file's trampoline blob still holds the runtime's
-`entry` and `sp_stub` next to the compiler's bridge and `tail_switch`. On aarch64 the `entry`
+with shift 0 and no map). The file's trampoline blob (S0015 step 4) holds the compiler's bridge and
+`tail_switch` only: the `entry` and `sp_stub` are the host's. On aarch64 the `entry`
 saves only `x19` (with `x20`), keeps the saved block at `[sp + 96, sp + 128)` of its `blr` and
 zero-extends `w0` before it keeps the status; it and `sp_stub` start with `bti jc`.
 `jit-aarch64`'s C entry is a 12-byte stub (`bti jc; adr x16, body; b centry`), the body at
@@ -323,7 +323,7 @@ has the caller's `HOST_BRIDGE` (the same compiler, D71), else its C entry; at `r
 them back and reloads memory 0's words. A hop whose return address is already `restore` only
 switches and jumps the same way. That restore frame is 64 bytes: the real return address 56
 above the stack pointer of its `call`, the caller's stack pointer 64 above it (the walk's
-numbers; from S0015 step 4 in `.waboros.trampolines`). On aarch64 (step 3) the same with the
+numbers, in `.waboros.trampolines` since S0015 step 4: `restore_ret_at` and `restore_up`). On aarch64 (step 3) the same with the
 body at `code + 12`, the record in `x16`, the hop status returned with `ret` to the C entry (found
 by `adrp`), which restores `x25`–`x28` and its frame record and branches to the record's C entry
 with `x0` = its context and `x1` = the frame and `x30` our caller's return address; the first hop

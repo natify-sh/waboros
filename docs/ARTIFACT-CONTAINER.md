@@ -70,7 +70,8 @@ Every file is `ET_REL` with OS/ABI `0xc8`, on Linux, macOS and Windows alike. Wh
   target would make the container big-endian unless we fix `EI_DATA` to LE.
 * **Wasmtime's artifacts differ per OS** (`x86_64-unknown-linux-gnu`, `-apple-darwin` and
   `-pc-windows-msvc` give three different files, first difference at byte 69), while our D23 gives
-  one artifact for every OS (both entry trampolines inside). The container is the same idea; the
+  one artifact for every OS (both conventions' trampolines inside; since S0015 the compiler's
+  bridge and `tail_switch`, the entry being the runtime's). The container is the same idea; the
   per-OS split is Wasmtime's, not ELF's.
 
 ## What our sections would become
@@ -79,7 +80,7 @@ Every file is `ET_REL` with OS/ABI `0xc8`, on Linux, macOS and Windows alike. Wh
 |---|---|
 | header: `magic`, `format_version`, `ctx_abi_version`, `isa_level`, `isa_features`, `flags`, `compiler`, `module_sha256`, `config_sha256` | ELF header (`e_machine` = `EM_X86_64` / `EM_AARCH64` / `EM_RISCV` replaces our `arch`; a private `EI_OSABI`) + a `.waboros.header` section with the remaining fields |
 | 1 `CODE` | `.text` (`SHF_ALLOC | SHF_EXECINSTR`, page-aligned) |
-| 2 `ENTRIES` | symbols `__waboros_entry_sysv`, `__waboros_entry_win64`, … in `.symtab` |
+| 2 `ENTRIES` | `.waboros.trampolines` (the compiler's bridge and `tail_switch` per convention); since S0015 every symbol is local (`__waboros_bridge_<conv>`, `__waboros_tail_switch_<conv>`, `__waboros_centry_<conv>`) and the entry is the runtime's, not in the file |
 | 3 `FUNCS` | `.symtab` entries (`STT_FUNC`, offset and size; names from the name section or `wasm[N]`) + `.waboros.funcs` for type index and frame size |
 | 4-11 `TYPES` … `START` | `.waboros.types`, `.waboros.imports`, … the same payloads, one section each |
 | 12 `TRAPMAP` (frames and, with `BOUNDS_GUARD`, the guard fault map) | `.waboros.traps` |

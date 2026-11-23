@@ -1140,7 +1140,10 @@ The artifact container of format v1 is ELF64: `ET_REL`, a private `EI_OSABI`, no
 the code in `.text` (file offset aligned to 4096, so a loader may map it and aarch64's `adrp` rule
 holds), each payload of ARTIFACT.md part 2 as a `.waboros.<name>` section aligned to 8 in a fixed
 order, and `.symtab` with one local `STT_FUNC` per function and the entry trampolines as globals
-(`__waboros_entry_sysv`, `_win64`, `_aapcs64`). `e_machine` replaces `arch`; ELF's ident and the
+(`__waboros_entry_sysv`, `_win64`, `_aapcs64`). *(Amended by D70, S0015 step 4, 2026-11-23: the
+entry is the runtime's and leaves the file; every symbol is local, the compiler's
+`__waboros_bridge_<conv>`, `__waboros_tail_switch_<conv>` and `__waboros_centry_<conv>` among them,
+`sh_info` the symbol count.)* `e_machine` replaces `arch`; ELF's ident and the
 OS/ABI replace the magic. Deterministic (fixed order, no timestamps, string tables in first-use
 order), so D35's identity holds for the files. The question of ARTIFACT-CONTAINER.md is closed:
 options (a), our own container, and (c), our own plus an ELF exporter, are dropped.
@@ -1278,7 +1281,9 @@ ignores the `sh_flags` of `.waboros.*` sections and finds them by name (D59); a 
 depends on global symbol names and finds the entry trampolines through a `.waboros.*` payload
 (offsets, as `ENTRIES`), so names can take a per-artifact prefix later (`.symtab` is for tools and
 a future linker); unknown sections are skipped (D59), so `.note.GNU-stack` and a future descriptor
-section need no version change.
+section need no version change. *(Rule 2 amended by D70, S0015 step 4: the file holds no entry
+trampoline and no global symbol; a loader finds the compiler's bridge and `tail_switch` through
+`.waboros.trampolines`, never through a symbol.)*
 
 ### D63. JIT exceptions in the GC heap: a throw allocates, pads read through the heap, `exnref` a u32 reference
 Status: accepted (maintainer, 2026-11-16: the step-6 plan's D1 (b), D2-D5 (a), D6 (b), D7 (a) and the three additions from Wasmtime) · Date: 2026-11-16 · Supersedes: D52 in part (the arena, words 11-13, the object and `exnref` encoding, the D39 methods `exn_match`, `exn_field`, `exn_load` and `throw`) · Evidence: S0013 Changes 6.1, 6.2 and 6.3; spec `gc` and `exceptions` with `WABOROS_JIT_GC_STRESS=1 WABOROS_JIT_GC_POISON=1 WABOROS_JIT_GC_VERIFY=1` on both JITs, both bounds modes (905 pass, 0 fail); `tests/jit/test_exceptions.py`; BENCHMARKS.md "Exceptions in the GC heap (S0013 step 6)" (step 6.5: a throw caught one frame up 14 ns in guard mode against the arena's 15 and Wasmtime's 242; 10⁷ throws grow RSS by 2.1 MiB against the arena's 153 MiB; 1 000 instantiations 271 µs against 385 µs)

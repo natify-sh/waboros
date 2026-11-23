@@ -115,7 +115,7 @@ its target-endian ELF (we are little-endian only, D48) are not taken either.
 | 14 | `.waboros.traps` | `SHT_PROGBITS` | 0 | 8 | always |
 | 15 | `.waboros.trampolines` | `SHT_PROGBITS` | 0 | 8 | always |
 | 16 | `.waboros.wasm` | `SHT_PROGBITS` | 0 | 8 | fat files only |
-| next | `.symtab` | `SHT_SYMTAB` (2) | 0 | 8 | always; `sh_entsize` 24, `sh_link` = `.strtab`, `sh_info` = first non-local symbol |
+| next | `.symtab` | `SHT_SYMTAB` (2) | 0 | 8 | always; `sh_entsize` 24, `sh_link` = `.strtab`, `sh_info` = the symbol count (no global symbol; S0015) |
 | next | `.strtab` | `SHT_STRTAB` (3) | 0 | 1 | always |
 | last | `.shstrtab` | `SHT_STRTAB` | 0 | 1 | always |
 
@@ -134,16 +134,19 @@ its target-endian ELF (we are little-endian only, D48) are not taken either.
 part of the contract beyond determinism). Entry 0 is the null symbol. Every other symbol has
 `st_other` 0 and `st_shndx` 2 (`.text`). First the locals (`STB_LOCAL`): one `STT_FUNC` per defined
 function in index order, named `wasm[<i>]` (`<i>` the function index, imports counted, decimal),
-`st_value` its code offset, `st_size` up to the next function's start, the first host thunk or
-`data_start`; one `STT_FUNC` per host thunk, named `thunk[<i>]` (`<i>` the imported function's
-index); per convention, in the order of `.waboros.trampolines`, `STT_FUNC` symbols
-`__waboros_bridge_<conv>`, `__waboros_sp_stub_<conv>` and `__waboros_tail_switch_<conv>` (`<conv>`
-`sysv`, `win64`, `aapcs64`); on aarch64 and riscv64 the mapping symbols of AAELF64 and the RISC-V
-psABI, `$x` (`STT_NOTYPE`) at 0, `$d` at `data_start` when the data area is not empty, and `$x`
-at the first trampoline, so `objdump -d` does not decode jump tables. Then the globals
-(`STB_GLOBAL`, `sh_info` points at the first): `__waboros_entry_<conv>`, one `STT_FUNC` per
-convention in the same order (D59's names; tools and a future linker only, D62). Each trampoline
-symbol's `st_size` reaches the next trampoline's start or the blob's end. Names from the wasm name
+`st_value` its code offset (the function's C entry, S0015), `st_size` up to the next function's
+start, the first host thunk, the module's shared C entry part or `data_start`; one `STT_FUNC` per
+host thunk, named `thunk[<i>]` (`<i>` the imported function's index); `__waboros_centry_<conv>`,
+the module's shared C entry part (S0015: it follows the last body and runs to `data_start`;
+`<conv>` the first convention of `.waboros.trampolines`, as the C entries are one convention on
+every OS); per convention, in the order of `.waboros.trampolines`, `STT_FUNC` symbols
+`__waboros_bridge_<conv>` and `__waboros_tail_switch_<conv>` (`<conv>` `sysv`, `win64`, `aapcs64`;
+`st_size` reaches the next symbol's start or the blob's end); on aarch64 and riscv64 the mapping
+symbols of AAELF64 and the RISC-V psABI, `$x` (`STT_NOTYPE`) at 0, `$d` at `data_start` when the
+data area is not empty, and `$x` at the first trampoline, so `objdump -d` does not decode jump
+tables. **There is no global symbol**: S0015 removed `__waboros_entry_<conv>` with the entry (D59,
+D62), so `sh_info` is the symbol count. A writer finds `centry` from the jump of the first C-entry
+stub; no field of the file carries it. Names from the wasm name
 section are not in v1 (the front end drops that section); adding them later changes only
 `.strtab`, which no loader reads.
 
@@ -198,9 +201,10 @@ The machine code of the module, then its data area (jump tables of 32-bit relati
 executed) from `data_start` (`.waboros.funcs`) to the first trampoline: together exactly the bytes
 the backend's `finish` returns, then zero bytes to the next multiple of 16 (part of the data area; written as zero, not checked
 by a reader, which cannot tell them from data-area bytes).
-Then the trampoline blob of each convention (`.waboros.trampolines`), each at the next offset that
-is a multiple of 16, the gaps zero bytes; each blob is exactly what
-the architecture's `abi.assemble` returns for that convention. Position-independent: branches are
+Then the **compiler blob** of each convention (`.waboros.trampolines`: the bridge, then `tail_switch`
+with its `restore` point; no entry and no `sp_stub`, S0015), each at the next offset that
+is a multiple of 16, the gaps zero bytes; each blob is exactly what the architecture's
+`conventions()` gives for that convention. Position-independent: branches are
 relative (the trampolines' too: aarch64's `tail_switch` uses `adr` within its blob) and everything
 absolute is reached through the context register (part 3). A loader copies it into executable memory whose
 start is a multiple of 4096 (aarch64's `adrp` rule, part 3 "Per architecture"), applies W^X and,
@@ -387,7 +391,7 @@ part 3 in its order: memories = imported + defined; the heap's two words when `h
 imported + defined; globals = imported + defined, two words for each **defined** `v128` global;
 function imports; the libcall block; `nsigs` signature words; `nrecords` records of 3 words; tags =
 imported + defined; when `heap`, the 8 GC service words, `nrtts + nthrown` RTT words and the
-3-word IS_SUBTYPE record; at least 18 words in total (part 3: the entry reads memory 0's words).
+3-word IS_SUBTYPE record; at least 18 words in total (before S0015 the entry read memory 0's words; the boundary no longer does: this compiler's C entry reads them, and a module with no memory has them zero).
 When `heap`, the loader also writes a function-type record for every function type of the module
 that has a supertype or is not final (part 3, "Type-info records").
 
@@ -413,38 +417,42 @@ it needs no version and no flag. Appending it to `.waboros.traps` would break th
 The exact wasm bytes whose SHA-256 is `module_sha256`. Its presence makes a **fat** file (D18).
 
 ### `.waboros.trampolines` (Q2)
-*Note (2026-11-21):* [S0015](S0015-boundary-convention.md) (approved 2026-11-22) replaces this section's layout
-when implemented: compiler blobs only (`bridge`, `tail_switch`, `restore` and its two numbers),
-the entry and the stack-pointer stub becoming the host's own by contract; until phase 6 the
-compare below stays in `read` and the exact `compiler` string stays the rule.
+*Amended by [S0015](S0015-boundary-convention.md) (step 4, 2026-11-23):* the section carries the
+**compiler's blob only**, one per host convention. The entry and the stack-pointer stub are the host's
+own by contract (part 3, "Entry"); the waboros runtime builds them in `entry.py` (`target.runtime()`).
+Before S0015 the section held the entry, the bridge, the stack-pointer stub and `tail_switch` in a
+40-byte record; a file of that layout is refused by `read` on the payload's size.
 
-The entry, the bridge, the stack-pointer stub and `tail_switch` of part 3, for every host
-convention of the architecture, are in every module artifact (part 2's `ENTRIES`, D59; D23: one artifact for
-every OS, so x86-64 carries both conventions):
+The bridge and `tail_switch` of part 3, for every host convention of the architecture, are in every
+module artifact (part 2's `ENTRIES`, D59; D23: one artifact for every OS, so x86-64 carries both
+conventions):
 
 ```
 u32 n
-n x convention:  u8 id (1 sysv, 2 win64, 3 aapcs64), u8 0, u16 0,
-                 u32 start, u32 size,                                  the blob in .text
-                 u32 entry, u32 bridge, u32 sp_stub, u32 tail_switch,  offsets in .text
-                 u32 entry_ret, u32 restore,                           the walk's points, in .text
-                 u32 saved                                             ENTRY_SAVED (part 3)
+n x blob:  u8 id (1 sysv, 2 win64, 3 aapcs64), u8 0, u16 0,
+           u32 start, u32 size,                        the blob in .text
+           u32 bridge,                                 offset in .text
+           u32 tail_switch, u32 restore,               offsets in .text; 0xFFFFFFFF for none
+           u16 restore_ret_at, u16 restore_up          the restore frame (S0015)
 ```
 
-x86-64 writes `sysv` then `win64`; aarch64 writes `aapcs64` (one convention on Linux, macOS and
-Windows); riscv64 defines its own with its baseline. Every offset lies inside its blob; `start` of
-the first blob is the end of the data area. Sizes today (2026-11-17, `abi.assemble`): x86-64 308
-bytes (`sysv`) and 314 (`win64`), aarch64 316; with the padding, the payload and the symbols a CoreMark file grows by 1 208 bytes
-on x86-64 and 680-688 on aarch64 (BENCHMARKS.md, "Artifact size"). A loader finds them only through this payload, never through a symbol (D62).
+28 bytes per blob. x86-64 writes `sysv` then `win64`; aarch64 writes `aapcs64` (one convention on
+Linux, macOS and Windows); riscv64 defines its own with its baseline. `restore_ret_at` and `restore_up`
+are the bytes from the stack pointer at `tail_switch`'s call to the real return address and to the
+caller's stack pointer (x86-64 56 and 64, aarch64 8 and 80). Every offset lies inside its blob (or is
+`0xFFFFFFFF`); `start` of the first blob is the end of the data area. The reader checks the payload's
+size, the ids, the reserved bytes, the placement and the ranges, then compares. A loader finds the
+blobs only through this payload, never through a symbol (D62). Sizes and the file growth are in
+BENCHMARKS.md, "Artifact size".
 
 **One copy per store.** The frame walk recognises the entry's return point and `tail_switch`'s
 `restore` by address, and `tail_switch` checks for its own `restore`, so every instance of a store
 runs on one copy of the trampolines of the host's convention (part 3; D64 item 5 allows one copy per
 compiler, shared by stores). That copy is the store's (a foreign host: the first module artifact
 loaded into the store provides it; the waboros runtime: the copy it assembles in the process, below).
-Every later artifact's blob for that convention, and its `entry_ret`, `restore` and `saved`
-relative to the blob's `start`, **must be byte-identical** to the store's copy. The loader checks
-this (a compare of about 300 bytes), and does not rely on the `compiler` check alone: equal
+Every later artifact's blob for that convention, and its `bridge`, `tail_switch`, `restore`
+relative to the blob's `start` and the two restore numbers, **must be byte-identical** to the
+store's copy. The loader checks this (a compare of about 150 bytes), and does not rely on the `compiler` check alone: equal
 `compiler` strings are the writer's promise, the compare is the proof, and its failure means a
 corrupt or forged file. A mismatch is a refusal (thin) or a regeneration (fat). A copy is never
 shared between compiler strings, even when the bytes are identical: equal `HOST_BRIDGE`
@@ -454,17 +462,18 @@ who loads:
 
 * **A foreign host** (no compiler, D36): the store's copy is the first artifact's; every later
   artifact's record and blob for the running convention are compared with it as above, and the
-  other conventions are checked for being well-formed only (every offset but `saved`, a stack
-  displacement, inside its blob), not compared: such a host cannot make them.
+  other conventions are checked for being well-formed only (every offset inside its blob), not
+  compared: such a host cannot make them. It supplies its own `entry` and `sp_stub` (S0015).
 * **The waboros runtime** keeps assembling its trampolines in the process (`target.trampolines()`,
-  one per process and architecture) and runs every store on them; it never executes an
+  one per process and architecture: its own `entry` and `sp_stub`, `target.runtime()`, with the
+  compiler's blob of its convention) and runs every store on them; it never executes an
   artifact's copy. As it can assemble every convention on any host, and requires its own exact
-  `compiler` string anyway (Q3), `read` compares **every** convention's record (`size`, `entry`,
-  `bridge`, `sp_stub`, `tail_switch`, `entry_ret`, `restore` relative to `start`, and `saved` as
-  is) and blob with what that architecture's `abi.assemble` gives: a mismatch in any is a corrupt
-  or forged file, refused thin and regenerated fat; the in-process and the file copies cannot
-  drift; and every file `read` accepts is the writer's, `write(read(b)) == b`. The writer writes
-  exactly `abi.assemble`'s bytes for every convention.
+  `compiler` string anyway (Q3), `read` compares **every** convention's record (`size`, `bridge`,
+  `tail_switch`, `restore` relative to `start`, the two numbers) and blob with what that
+  architecture's `conventions()` gives: a mismatch in any is a corrupt or forged file, refused
+  thin and regenerated fat; the in-process and the file copies cannot drift; and every file
+  `read` accepts is the writer's, `write(read(b)) == b`. The writer writes exactly
+  `conventions()`'s bytes for every convention.
 
 The collector module (D61) is an ordinary module artifact compiled from
 `runtime/gc/collector.wasm`.
@@ -498,7 +507,7 @@ compiled and loaded modules.
 | `records`, `sigs`, `thunks`, `rtts`, `thrown` | instance | `.waboros.context` |
 | `flags`, `faults` | `target.instantiate`, instance | header, `.waboros.traps` |
 | `stackmaps` | instance, walk, collector | `.waboros.stackmaps` |
-| `Trampolines` (`target.trampolines()`: entry, bridge, sp_stub, tail_switch, entry_ret, restore, saved) | `Instance`, the walk, `tail_switch` | `.text` + `.waboros.trampolines` (one copy per store, checked) |
+| `Trampolines` (`target.trampolines()`): the runtime's part (entry, sp_stub, entry_ret, saved: its own, `target.runtime()`, not read from the file) and the compiler's (bridge, tail_switch, restore, restore_ret_at, restore_up) | `Instance`, the walk, `tail_switch` | the compiler's part: `.text` + `.waboros.trampolines` (one copy per store, checked); the runtime's: not in the file |
 | `refmasks`, `v128masks`, `insns`, `codes`, `validated`, `gc`, `anyext` | the compiler only | not carried |
 
 ## Semantics: the loader
@@ -526,7 +535,7 @@ fat file is regenerated, below):
    known; `BOUNDS_GUARD` only where this host can run guard code (S0006: a handler for its row,
    installed and ours, and a guard at least `2^GUARD_LOG2`); every `features_required` bit is known.
 6. Every payload parses exactly with its checks; the trampolines equal the store's copy (the
-   waboros runtime: every convention equals `abi.assemble`'s; "`.waboros.trampolines`").
+   waboros runtime: every convention's compiler blob equals `conventions()`'s; "`.waboros.trampolines`").
 7. Instantiation, in the order of the wasm specification's instantiation: imports matched (kind,
    type by key and declared subtyping, limits and address type, as `link.py`); the context written
    (part 3); type-info records when `heap`; records, signature words, tags; globals in order
@@ -577,9 +586,9 @@ authoritative (D18).
   bounds modes, and for CoreMark: `read(write(c))` gives every field of the inventory equal to
   `c`'s, and `write(read(b)) == b`; with `wasm=` the same plus the fat section.
 * **Trampolines**: in every written artifact, each convention's blob and offsets equal
-  `abi.assemble`'s for that convention (both x86-64 conventions on any host); an instance loaded
-  from a file runs on the process's copy, and a file whose blob of any convention differs by one
-  byte (or whose `restore` or `saved` is moved) is refused thin and regenerated fat; in a C-style test of the
+  `conventions()`'s for that convention (both x86-64 conventions on any host; S0015: the compiler's
+  blob only); an instance loaded from a file runs on the process's copy, and a file whose blob of
+  any convention differs by one byte (or whose `bridge`, `restore` or restore numbers are moved) is refused thin and regenerated fat; in a C-style test of the
   store rule, two artifacts loaded into one store share the first one's copy and a cross-instance
   tail call and a walk across both work.
 * **The spec suite through files**: `WABOROS_JIT_ARTIFACT=1 uv run python -m tests.spec.run
@@ -1021,3 +1030,9 @@ When approved and implemented (step 7 unless noted):
   replaces it with.
 * 2026-11-22: "One copy per store": a copy is never shared between compiler strings, even with
   identical bytes (D71: `HOST_BRIDGE` identity means the same compiler).
+* 2026-11-23: S0015 step 4 done: `.waboros.trampolines` is the 28-byte compiler-blob record (bridge,
+  `tail_switch`, `restore`, the two restore numbers); the entry and `sp_stub` leave the file (the
+  runtime's `target.runtime()`); `.text` carries bridge and `tail_switch` only; the symbols are all
+  local, with `__waboros_centry_<conv>` added and `__waboros_entry_<conv>` and the `sp_stub` symbol
+  gone, `sh_info` the symbol count; `read` refuses the 40-byte layout on the payload's size and keeps
+  the compare against the process's own blobs; "at least 18 words" no longer comes from the entry.

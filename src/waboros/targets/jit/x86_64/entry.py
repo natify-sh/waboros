@@ -6,8 +6,8 @@ saved block at [rsp, rsp + 32) of its call, calls a C entry `int32_t f(ctx, fram
 every OS), puts the record back and returns the status as 32 bits, kept in ctx[TRAP_CODE] when
 non-zero. It sets up no pinned register: each compiler's C entry does that.
 
-Until S0015 step 4 the artifact blob still carries these next to the compiler's bridge and
-tail_switch (`x86_64.conventions`)."""
+The artifact does not carry these (S0015): `x86_64.runtime()` builds them for the process.
+"""
 
 from waboros.targets.jit.common.context import EXIT_RECORD, TRAP_CODE
 from waboros.targets.jit.x86_64 import simd

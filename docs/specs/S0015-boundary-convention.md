@@ -418,20 +418,22 @@ From the scratch gate (x86-64; "Measurements") and SLJIT-BACKEND.md:
   ```
   * 28 bytes per blob. x86-64 writes `sysv` then `win64`; aarch64 writes `aapcs64`.
   * `restore_ret_at` is the number of bytes from the stack pointer at `tail_switch`'s call to the
-    real return address; `restore_up` the same to the caller's stack pointer. Today's fixed values
-    are 8 and 16; the prototype's are 56 and 64. Both are 0 when `tail_switch` is none.
+    real return address; `restore_up` the same to the caller's stack pointer: x86-64 56 and 64,
+    aarch64 8 and 80. Both are 0 when `tail_switch` is none.
   * Every offset lies inside its blob, except `0xFFFFFFFF` (none).
 * **`.text`:** the code and data area as today, then each blob at the next multiple of 16 in record
   order, the gaps zero.
 * **Symbols:**
   * `wasm[<i>]` at each function's C entry, `thunk[<i>]` at each host thunk's C entry;
+  * `__waboros_centry_<conv>` at the module's shared C entry part, up to `data_start` (added at
+    step 4: the writer finds it from the first stub's jump, a view carries no field for it);
   * per blob in record order, `__waboros_bridge_<conv>` and, when present,
     `__waboros_tail_switch_<conv>`;
   * the aarch64 mapping symbols as today;
   * **no global symbols** (`__waboros_entry_<conv>` goes with the entry; `sh_info` equals the
     symbol count).
 * **`read`** (until phase 6) compares every blob and record with what the architecture's
-  `abi.assemble` gives for this compiler string, as today but over the new fields.
+  `conventions()` gives for this compiler string, as today but over the new fields.
 * The inventory table (S0014 "What instantiation reads") splits `Trampolines` into the runtime's
   part (entry, `sp_stub`, `entry_ret`, `saved`: the runtime's own, not read from the file) and the
   compiler's (bridge, `tail_switch`, `restore` and its two numbers).
@@ -894,8 +896,8 @@ ret
   until step 4. The spec suite under the walk check 64 229 pass, 0 fail in both bounds modes, `gc`
   and `exceptions` with the GC switches 905, through files at parity; record calls +1.5 to
   +1.8 ns against the placement control, CoreMark within the spread (BENCHMARKS.md, "The
-  boundary convention on `jit-x86_64`"). Step 4 notes: `centry` has no symbol of its own (the
-  last function's or thunk's covers it); S0014's "at least 18 words" holds for this compiler's
+  boundary convention on `jit-x86_64`"). Step 4 notes: `centry` had no symbol of its own (step 4 adds
+  one, below); S0014's "at least 18 words" holds for this compiler's
   C entry, not for the boundary.
 * 2026-11-22: step 3 implemented (aarch64), with the maintainer's answers to the plan's questions:
   `bti jc` on everything at the boundary (the runtime's `entry`, `sp_stub`, every C entry; `bti c`
@@ -910,6 +912,21 @@ ret
   64 229 pass, 0 fail in explicit mode, `spec_diff` against HEAD empty; `gc` and `exceptions`
   with the GC switches 905; through files 64 229. x86-64 code byte-identical (D35). Timing on
   the native runner: `placement-arm.yml`, mode `compare` (BENCHMARKS.md).
+* 2026-11-23: step 4 implemented (format and loader), with the maintainer's answers: the file
+  carries the 28-byte compiler-blob record (bridge, `tail_switch`, `restore`, the two restore
+  numbers; `0xFFFFFFFF` stays the format's "none" for case 2a, but no loader path uses it yet:
+  this compiler always has `tail_switch`, and the compare refuses a blob without one) and `.text` holds bridge and
+  `tail_switch` only; the runtime's `entry` and `sp_stub` are `Target.runtime()` (not in a file),
+  sealed with the compiler's blob into the in-process copy by `load_trampolines`. All symbols are
+  local: `centry` **now has one**, `__waboros_centry_<conv>` (`<conv>` the first convention of the
+  file, as C entries are one convention on every OS), after the functions and thunks, up to
+  `data_start`; the writer finds it from the jump of the first C-entry stub (a view has no field for
+  it and the reader still reads no symbol), and `__waboros_entry_*` and the `sp_stub` symbol are
+  gone, `sh_info` the symbol count. `read` refuses the 40-byte layout on the payload's size (84
+  against 60 bytes on x86-64, 44 against 32 on aarch64), also with the compiler string patched.
+  New v1 files `v1-s15-small-*` beside the pre-S0015 ones. Code bytes unchanged (D35 lists equal
+  to HEAD's on both targets); the spec suite through files 64 229 pass, 0 fail (BENCHMARKS.md,
+  "Artifact size": the CoreMark files are 536 bytes smaller on x86-64, 168 on aarch64).
 
 ## Changes
 * 2026-11-21: created (draft), from D70 and the prototype measured in BENCHMARKS.md.
@@ -976,3 +993,5 @@ ret
   boundary contract is unchanged.
 * 2026-11-22: step 3 (aarch64): the runtime's `entry` starts with `bti jc` (the table's landing-pad
   row, the appendix listing; maintainer's decision); the aarch64 headroom numbers.
+* 2026-11-23: step 4 (format and loader): the symbols gain a local `__waboros_centry_<conv>` (the
+  step-1 note "`centry` has no symbol" is withdrawn); see Progress.

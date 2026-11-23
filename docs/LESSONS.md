@@ -1163,3 +1163,11 @@ What went wrong or surprised us while building the PoC, so it is not found again
     do, so they are the ones that catch it. Rule: a stub that stays across a rewind refers to the
     code after it by a fixed offset (the `adr` word with `+8`), or rebinds its label; checked with
     a scratch rewind before the code was written. Found: S0015 step 3, 2026-11-22.
+145. **A writer that derives a symbol from the code must survive code the reader never checked.**
+    The reader does not check code bytes (D62), so `write(read(b))` runs on a view whose stub has
+    a flipped byte. `__waboros_centry_<conv>` is found by decoding the first C-entry stub's jump;
+    on garbage the first version gave a negative `st_size` and `struct.error` in the byte-flip
+    loop of `test_strict.py`, which only that loop catches. Rule: a symbol the writer derives
+    answers "not found" (a size 0 at `data_start`), never an exception or an assert, and the
+    round trip stays idempotent because the derivation is a function of the code. Found: S0015
+    step 4, 2026-11-23.

@@ -298,8 +298,9 @@ limits (`sys.getrecursionlimit()`, 1000 by default, and the C stack). Plan:
   Only SIMD operations see the pair; they use vector registers as scratch inside one backend call
   (`simd`, D41, S0005), never across calls, so there is no vector register class and no save around host
   calls. The core itself moves a v128 pair whole through `move_v128` (locals, constants, `select`). In `pyc` a v128 is a Python `int`.
-* Trampolines: `abi.assemble()` of an architecture only returns bytes (compiler side); the host side
-  (`instance.load_trampolines`) puts them into a code area and seals it, so the compiler side stays free
+* Trampolines: an architecture's `conventions()` (the compiler's bridge and `tail_switch`) and
+  `runtime()` (the runtime's entry and `sp_stub`, S0015) only return bytes; the host side
+  (`instance.load_trampolines`) puts both into one code area and seals it, so the compiler side stays free
   of `ctypes`/`mmap`.
 
 ## Long calls and the GIL

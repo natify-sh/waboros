@@ -1,8 +1,9 @@
 # pyright: reportUnknownVariableType=false, reportUnknownArgumentType=false, reportUnknownMemberType=false, reportArgumentType=false, reportPrivateUsage=false
-"""S0014 step 5: every artifact carries the trampolines of every convention of its architecture
-(`.waboros.trampolines`, blobs at the end of `.text`); `read` requires each to be the target's,
-so a mismatch is refused thin and regenerated fat; the runtime runs on its own copy; one copy per
-store, taken from the first file, serves two instances (the store rule of a foreign host)."""
+"""S0014 step 5, S0015 step 4: every artifact carries the compiler's blob (bridge, tail_switch) of
+every convention of its architecture (`.waboros.trampolines`, blobs at the end of `.text`; the
+runtime's entry and sp_stub are not in it); `read` requires each to be the target's, so a mismatch
+is refused thin and regenerated fat; the runtime runs on its own copy; one copy per store, taken
+from the first file, serves two instances (the store rule of a foreign host)."""
 
 import ctypes
 import struct
@@ -26,14 +27,14 @@ from waboros.targets.jit.common.instance import _stacks, load_trampolines
 
 JIT = native_jit()
 _ = explicit
-REC = 40  # bytes per convention record
+REC = 28  # bytes per convention record
 
 
 def records(blob: bytes) -> list[tuple[int, ...]]:
-    """(file offset of the record, id, start, size, entry, ..., restore, saved) per convention."""
+    """(file offset of the record, id, start, size, bridge, tail_switch, restore, ret_at, up)."""
     _, at, _ = secs(blob)[".waboros.trampolines"]
     n = struct.unpack_from("<I", blob, at)[0]
-    return [(at + 4 + REC * k, *struct.unpack_from("<B3x9I", blob, at + 4 + REC * k))
+    return [(at + 4 + REC * k, *struct.unpack_from("<B3x5I2H", blob, at + 4 + REC * k))
             for k in range(n)]  # fmt: skip
 
 
@@ -54,7 +55,8 @@ def test_runs_on_the_process_copy() -> None:
 
 
 @pytest.mark.parametrize("conv", [0, 1])
-@pytest.mark.parametrize("how", ["blob byte", "restore moved", "saved"])
+@pytest.mark.parametrize("how", ["blob byte", "bridge moved", "tail_switch none",
+                                 "restore moved", "restore_ret_at", "restore_up"])  # fmt: skip
 def test_a_mismatch_is_refused_thin_and_regenerated_fat(conv: int, how: str) -> None:
     """Any convention (Q4 (b)): the running one and, on x86-64, the other one too."""
     native(JIT)
@@ -65,9 +67,13 @@ def test_a_mismatch_is_refused_thin_and_regenerated_fat(conv: int, how: str) -> 
         at, _, start, *_ = r = records(b)[conv]
         if how == "blob byte":
             return put(b, text_at(b) + start + 5, bytes((b[text_at(b) + start + 5] ^ 1,)))
+        if how == "bridge moved":
+            return put(b, at + 12, struct.pack("<I", r[4] + 4))
+        if how == "tail_switch none":
+            return put(b, at + 16, struct.pack("<I", 0xFFFFFFFF))
         if how == "restore moved":
-            return put(b, at + 32, struct.pack("<I", r[9] + 1))
-        return put(b, at + 36, struct.pack("<I", r[10] + 8))
+            return put(b, at + 20, struct.pack("<I", r[6] + 1))
+        return put(b, at + (24 if how == "restore_ret_at" else 26), struct.pack("<H", 1))
 
     both(patch, "trampolines differ from this compiler's")
 
@@ -83,6 +89,8 @@ def test_layout_is_strict(monkeypatch: pytest.MonkeyPatch) -> None:
         (put(blob, a0 + 4, struct.pack("<I", s0 + 1)), "first blob is not at a multiple of 16"),
         (put(blob, a1 + 4, struct.pack("<I", s1 + 16)), "not at the next multiple of 16"),
         (put(blob, tx + gap, b"\1"), "after zero bytes"),
+        (put(blob, a0 + 12, struct.pack("<I", s0 + z0)), "not inside its blob"),
+        (put(blob, a0 + 16, struct.pack("<I", 0xFFFFFFFE)), "not inside its blob"),
     ]:
         with pytest.raises(A.ArtifactError, match=f"waboros.trampolines: .*{why}"):
             A.read(patched)
@@ -93,6 +101,26 @@ def test_layout_is_strict(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(A, "_sections", emits({**good, "text": good["text"] + bytes(16)}))
     with pytest.raises(A.ArtifactError, match="after the last trampoline"):
         A.read(A.write(c, target="jit-x86_64", module_sha256=bytes(32)))
+
+
+def test_the_payload_has_the_layout_of_s0015() -> None:
+    """40-byte records (the entry and `saved` in the file) are refused on the size, whatever
+    their contents: 84 bytes for two conventions where the layout has 60."""
+    blob = small("jit-x86_64")
+    assert secs(blob)[".waboros.trampolines"][2] == 4 + 2 * REC == 60
+    with pytest.raises(A.ArtifactError, match="the payload is 84 bytes, .* has 60"):
+        A._trampolines(bytes(64), struct.pack("<I", 2) + bytes(80), "jit-x86_64")
+
+
+def test_the_file_has_no_runtime_trampolines() -> None:
+    """The entry and sp_stub are the runtime's (S0015): not in any `.text`, not in the symbols."""
+    native(JIT)
+    t: Any = base.TARGETS[JIT]()
+    rt, (_, stub), _ = t.runtime()
+    b = small(JIT)
+    text = secs(b)[".text"]
+    assert rt[:stub] not in b[text[1] : text[1] + text[2]]
+    assert b"__waboros_entry_" not in b and b"sp_stub" not in b
 
 
 H = '(import "env" "h" (func $h (param i32) (result i32)))'
@@ -119,12 +147,10 @@ def test_one_copy_per_store_from_the_first_file(monkeypatch: pytest.MonkeyPatch)
         mods.append(m)
         files.append(A.write(t.compile(m), target=JIT, module_sha256=bytes(32)))
     run = A.CONVENTIONS[t.convention]
-    _, _, start, size, *offs, saved = next(r for r in records(files[0]) if r[1] == run)
+    _, _, start, size, *offs, ret_at, up = next(r for r in records(files[0]) if r[1] == run)
     copy = files[0][text_at(files[0]) + start :][:size]
     assert all(copy in f for f in files[1:])  # every later file carries the same bytes
-    own = t.trampolines()  # the restore frame's numbers: the compiler's, not in v1's record yet
-    restore = (own.restore_ret_at, own.restore_up)
-    tramp = load_trampolines(copy, [o - start for o in offs], saved, restore)
+    tramp = load_trampolines(t.runtime(), (copy, tuple(o - start for o in offs), (ret_at, up)))
 
     def first_copy(_: object) -> Any:
         return tramp
@@ -147,4 +173,6 @@ def test_one_copy_per_store_from_the_first_file(monkeypatch: pytest.MonkeyPatch)
     # B's thunk and $g, then (over the restore frame) A's tc and its C entry (S0015; $g is this
     # compiler's, called at its body: D71)
     assert a("tc", 3) == [3] and seen == [[[0] * 2 + [1] * 2]]
-    assert ctypes.c_uint8.from_address(tramp.entry).value == copy[0]
+    assert (
+        ctypes.string_at(tramp.bridge, len(copy[: offs[1] - offs[0]])) == copy[: offs[1] - offs[0]]
+    )

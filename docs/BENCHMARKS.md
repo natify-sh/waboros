@@ -236,6 +236,32 @@ the second pair): `write` 0.18 against 0.15 ms (explicit) and 0.37 against 0.32 
 0.2 and 0.4 ms, `read` 0.3 and 0.8 ms, 669 fault points in guard mode). Wasmtime's `.cwasm` of the
 same module is 53 608 bytes. The instantiation time through a file is step 3's.
 
+## Artifact size after S0015 (2026-11-23)
+
+The same CoreMark, thin and fat. S0015 steps 1 and 3 changed the code (the C entries); step 4
+changed the trampolines: a file carries the compiler's bridge and `tail_switch` only (28-byte
+records, a `centry` symbol, no `sp_stub`, no entry or other global symbols). "After steps 1-3" is
+the step-3 commit, "after step 4" the step-4 tree, both measured on 2026-11-23 (aarch64 compiled
+on x86-64, D35), each mode by
+
+```
+WABOROS_JIT_BOUNDS=<mode> uv run python -c "import hashlib; from waboros.frontend.binary import parse; \
+from waboros.frontend.validate import validate; from waboros.targets import base; \
+from waboros.targets.jit.common import artifact as A; w = open('poc/in/core.wasm', 'rb').read(); \
+[print(t, len(A.write(c, target=t, module_sha256=hashlib.sha256(w).digest())), len(A.write(c, target=t, wasm=w))) \
+ for t in ('jit-x86_64', 'jit-aarch64') for m in [parse(w)] if validate(m) is None for c in [base.TARGETS[t]().compile(m)]]"
+```
+
+| target, bounds mode | thin, fat after steps 1-3 (bytes) | thin, fat after step 4 (bytes) |
+|---|---|---|
+| `jit-x86_64`, explicit | 57 360, 76 896 | 56 824, 76 368 |
+| `jit-x86_64`, guard | 53 720, 73 256 | 53 184, 72 728 |
+| `jit-aarch64`, explicit | 51 032, 70 576 | 50 864, 70 400 |
+| `jit-aarch64`, guard | 48 304, 67 848 | 48 136, 67 672 |
+
+Step 4 saves 536 bytes per x86-64 file (the entry and `sp_stub` of two conventions) and 168 thin,
+176 fat per aarch64 file.
+
 ## Instantiation from an artifact (S0014 step 3, 2026-11-19)
 
 `jit-x86_64`, guard mode (the default here), CPython 3.13, `taskset -c 2`, Intel Xeon @ 2.10 GHz
