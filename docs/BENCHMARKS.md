@@ -2242,10 +2242,10 @@ measured with hand-made C entries in tests only. Not measured: aarch64 (S0015 st
 
 What S0015 step 3 costs on `jit-aarch64` in native stack and code: 12-byte C entries and a
 per-module `centry`, record calls on D71's three paths, the 80-byte `tail_switch` restore frame.
-**No timing here:** QEMU's timings mean nothing for native code. The native measurement is the
-`compare` mode of `.github/workflows/placement-arm.yml` (`tools/bench_compare.py`: base, the
-placement control basepad, new; CoreMark, the calls benchmark, a cross-instance call and an
-own-table `call_indirect`, alternated), dispatched after the push; its result goes here.
+QEMU's timings mean nothing for native code; the native timing below is the `compare` mode of
+`.github/workflows/placement-arm.yml` (`tools/bench_compare.py`: base, the placement control
+basepad, new; CoreMark, the calls benchmark, a cross-instance call and an own-table
+`call_indirect`, alternated).
 
 * Date: 2026-11-22. Code: branch `gc`, the step-3 working tree (**new**) against commit `9599795`
   (**base**; the commit after it, D72, changes docs only, so its code is base's); **basepad** is base with
@@ -2274,6 +2274,26 @@ own-table `call_indirect`, alternated), dispatched after the push; its result go
 |---|---|---|---|
 | guard | 29 284 | 29 744 | 30 044 (+2.6 %; +300 over the control) |
 | explicit | 37 372 | 37 832 | 38 132 (+2.0 %; +300 over the control) |
+
+**Native timing** (2026-11-23): GitHub `ubuntu-24.04-arm` runner (Neoverse-N2), CPython 3.13,
+`placement-arm.yml` compare run 45169731213 on the step-3 commit against base `9599795`,
+6 alternated rounds, median (min-max):
+
+| case | bounds | base | basepad | new |
+|---|---|---|---|---|
+| CoreMark (it/s) | guard | 19 465 (19 445-19 472) | 19 524 (19 430-19 564) | 19 521 (19 409-19 559) |
+| CoreMark (it/s) | explicit | 17 449 (17 437-17 462) | 17 283 (17 262-17 294) | 17 272 (17 262-17 304) |
+| calls `leaf` / `fib` (ns) | guard | 3.25 / 2.42 | 3.25 / 2.46 | 3.25 / 2.46 |
+| cross-instance call (ns) | guard | 3.29 | 3.29 | 3.30 |
+| own-table `call_indirect` (ns) | guard | 3.62 | 3.57 | **3.25** |
+| cross-instance call (ns) | explicit | 3.29 | 3.29 | 3.32 |
+| own-table `call_indirect` (ns) | explicit | 3.61 | 3.59 | **3.25** |
+
+Reading: against the placement control, CoreMark is unchanged in both modes (new within 0.1 % of
+basepad; explicit base's +1 % over both is placement, as the control shows); a cross-instance call
+of the same compiler costs the same as before S0015 (+0.01-0.03 ns, within the range); the
+own-table `call_indirect` is 0.3 ns faster (D71's fast path). The C path between compilers is not
+timed natively (no second compiler; x86-64 numbers above).
 
 Reading: as on x86-64 (D71), the own-table `call_indirect` now costs a direct call's stack (32
 bytes a level, 48 before), a call into another context of this compiler costs what it did before
