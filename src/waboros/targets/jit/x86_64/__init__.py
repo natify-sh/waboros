@@ -100,14 +100,18 @@ def conventions() -> dict[str, tuple[bytes, tuple[int, ...], tuple[int, int]]]:
 
 
 @cache
-def runtime() -> tuple[bytes, tuple[int, int], int]:
-    """The runtime's entry then sp_stub for this process's convention (entry.py), the offsets of
-    the entry's return point and of sp_stub, and ENTRY_SAVED: not in any artifact (S0015)."""
+def runtime(name: str = JitX86_64Target.convention) -> tuple[bytes, tuple[int, int], int]:
+    """The runtime's entry then sp_stub for the convention `name` (`sysv` or `win64`; this
+    process's by default), built on any host as the compilers' blobs are (D23: the Win64 entry is
+    assembled and checked on Linux too); the offsets of the entry's return point and of sp_stub,
+    and ENTRY_SAVED: not in any artifact (S0015)."""
     from waboros.targets.jit.x86_64 import entry
     from waboros.targets.jit.x86_64.encoder import Asm
 
+    if name not in ("sysv", "win64"):
+        raise ValueError(f"no x86-64 convention {name!r}")
     a = Asm()
-    ret = entry.entry(a, JitX86_64Target.convention == "win64")
+    ret = entry.entry(a, name == "win64")
     stub = len(a.buf)
     entry.sp_stub(a)
     return a.finish(), (ret, stub), entry.ENTRY_SAVED

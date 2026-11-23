@@ -686,3 +686,35 @@ def test_the_runtime_entry_keeps_the_hosts_registers(callee: str) -> None:
     assert list(p[4 : 4 + n]) == [0x1111111111111111 * (k + 1) for k in range(n)]
     if win64:
         assert list(p[12:22]) == [0x0101010101010101 * (k + 0x20) for k in range(10)]
+
+
+@pytest.mark.parametrize("conv", ["sysv", "win64"])
+def test_x86_runtime_entry_builds_and_passes_the_isa_gate_on_any_host(
+    conv: str, tmp_path: Any
+) -> None:
+    """Both x86-64 runtime entries are built and gated on every host, the Win64 one on Linux too
+    (D23, S0015): the Win64 entry saves and restores rsi, rdi and xmm6-xmm15, the SysV one none
+    of them."""
+    from tests.jit.test_encoder import OBJDUMP
+
+    if OBJDUMP is None:
+        pytest.skip("no GNU objdump with x86-64")
+    from waboros.targets.jit.x86_64 import runtime
+
+    blob, (ret, stub), _ = runtime(conv)
+    assert 0 < ret < stub < len(blob)
+    path = tmp_path / "entry.bin"
+    path.write_bytes(blob)
+    tool = os.path.join(os.path.dirname(__file__), "..", "..", "tools", "isa_check.py")
+    p = subprocess.run([sys.executable, tool, str(path)], capture_output=True, text=True)
+    assert p.returncode == 0, p.stdout[:2000] + p.stderr
+    cmd = [OBJDUMP, "-D", "-b", "binary", "-mi386:x86-64", "-Mintel", str(path)]
+    text = subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
+    xmm = [f"xmm{i}" for i in range(6, 16)]
+    saved = {r for r in ("rsi", "rdi") if f"push   {r}" in text}
+    saved |= {x for x in xmm if f",{x}" in text}  # a store: the register is the source
+    back = {r for r in ("rsi", "rdi") if f"pop    {r}" in text}
+    back |= {x for x in xmm if f"{x},XMMWORD" in text}  # a load
+    want = {"rsi", "rdi", *xmm} if conv == "win64" else set()
+    assert saved == want
+    assert back == want

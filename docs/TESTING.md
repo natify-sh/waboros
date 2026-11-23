@@ -118,6 +118,8 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   error, an interrupt) across one and two instances; the walk across modules, at the far end of
   a hop chain entered from the host and from a direct call, and through the own-table path
   (D71) under the walk check and the GC switches; no status with bit 31 ever reaches the host.
+  Both x86-64 runtime entries (SysV and Win64) are built and ISA-gated on any host with a GNU
+  objdump for x86-64, the Win64 one checked for its saves and restores of rsi, rdi and xmm6-xmm15.
   Recursion through the own table reaches 32 bytes a level or better (aarch64 40) and across
   instances 40 bytes a call or better (aarch64 52; D71: this compiler's other contexts are called
   at their bodies). With hand-assembled C entries in each architecture's encoder, on a context of another

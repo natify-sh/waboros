@@ -995,3 +995,8 @@ ret
   row, the appendix listing; maintainer's decision); the aarch64 headroom numbers.
 * 2026-11-23: step 4 (format and loader): the symbols gain a local `__waboros_centry_<conv>` (the
   step-1 note "`centry` has no symbol" is withdrawn); see Progress.
+* 2026-11-23: after step 4 (maintainer): `runtime()` of x86-64 takes the convention and builds
+  the SysV and the Win64 entry on any host, as the compiler's blobs are (D23); `test_boundary.py`
+  builds and ISA-gates both on Linux, the Win64 one checked for its saves and restores of rsi, rdi and
+  xmm6-xmm15,
+  so the Win64 entry is not left to the Windows runner alone.
