@@ -103,7 +103,7 @@ From S0015 step 3 the entry and the stub are the runtime's (`aarch64/entry.py`),
 `tail_switch` this compiler's (`aarch64/abi.py`), and every function and host thunk has a C entry
 (below); the list describes that state.
 
-* **Entry** (the runtime's, S0015's appendix) `int32_t entry(x0 = ctx, x1 = frame, x2 = c_entry)`:
+* **Entry** (the runtime's; reference listing in ARTIFACT.md part 3) `int32_t entry(x0 = ctx, x1 = frame, x2 = c_entry)`:
   `bti jc`; `stp x29, x30, [sp, #-128]!`; `mov x29, sp`; `stp x19, x20` (x19 keeps ctx); the
   store's exit record (word 14) and the frame saved at `[sp, #96]` (S0013 3a); `blr x2`;
   `mov w0, w0`; the exit record put back; `cbz w0, done`; `str x0, [x19, #8]` (`TRAP_CODE`);

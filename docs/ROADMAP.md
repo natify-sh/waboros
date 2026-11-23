@@ -350,7 +350,17 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29; done 2026-11-03) -> 
   the trampoline compare moved from `read` to store attach; the walk's set of restore points, one
   per compiler present (`walk.py` takes one `Trampolines` today); the test with a real second
   compiler in one store (the sljit micro-compiler, D68). The flags that must agree within a store
-  (S0015 Q4) are decided there too.
+  (S0015 Q4) are decided there too. Also deferred from S0015's review (step 6):
+  * before a foreign C entry runs in a store, a C entry that takes a private hop status from its
+    body must be sure the status came from its own body (M5: true today by construction);
+  * D71's precondition: a blob copy is never shared between compiler strings, enforced at store
+    attach;
+  * the walk's set of entry points per convention (one `entry_ret` today);
+  * a CET/GCS test under Intel SDE or on enforcing hardware (no runner has either);
+  * the "none" path of `TAIL_SWITCH` (0 in the context, `0xFFFFFFFF` in the file) that no loader
+    or test uses yet;
+  * the hex bytes of each reference listing of `entry` (ARTIFACT.md part 3);
+  * the cost of the Win64 `entry`'s xmm saves (not measured).
 * **JIT code visible to debuggers and profilers** (maintainer, 2026-11-10, with S0013 Q3): the GC's
   frame walk uses return addresses and site tables, not a frame-pointer chain, so `perf`, `gdb` and
   native profilers cannot unwind through JIT frames or name them. Options to weigh then: a perf map /

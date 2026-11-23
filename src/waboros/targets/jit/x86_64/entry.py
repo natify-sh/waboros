@@ -1,6 +1,6 @@
 """The runtime's x86-64 `entry` and stack-pointer stub (docs/specs/S0015, "The runtime's `entry`"):
 the host's side of the boundary, not a compiler's. `entry` follows the contract and the reference
-listings of S0015's appendix (SysV and Win64 hosts): it saves what the host needs kept that the
+listings of ARTIFACT.md part 3 (SysV and Win64 hosts): it saves what the host needs kept that the
 boundary convention does not keep, keeps the store's enclosing exit record and the frame in the
 saved block at [rsp, rsp + 32) of its call, calls a C entry `int32_t f(ctx, frame)` (System V on
 every OS), puts the record back and returns the status as 32 bits, kept in ctx[TRAP_CODE] when

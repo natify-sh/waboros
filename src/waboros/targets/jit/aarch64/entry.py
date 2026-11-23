@@ -1,6 +1,6 @@
 """The runtime's aarch64 `entry` and stack-pointer stub (docs/specs/S0015, "The runtime's `entry`"):
 the host's side of the boundary, not a compiler's. `entry` follows the contract and the reference
-listing of S0015's appendix: AAPCS64 on Linux, macOS and Windows alike, so the host's callee-saved
+listing of ARTIFACT.md part 3: AAPCS64 on Linux, macOS and Windows alike, so the host's callee-saved
 registers are the boundary's and it saves only x19 (with x20, a pair), which keeps ctx across the
 call. It pushes a frame record, keeps the store's enclosing exit record and the frame in the saved
 block at [sp + 96, sp + 128) of its `blr`, calls a C entry `int32_t f(x0 = ctx, x1 = frame)`, puts

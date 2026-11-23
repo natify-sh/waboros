@@ -60,9 +60,9 @@ Rules:
   Windows. Hosts in other languages do the equivalent.
 
 A host also supplies `entry` as machine code of its own (S0015, D70): the file holds none. Part 3's
-"Entry" is its contract, and S0015's appendix gives a reference listing per architecture and
-convention. The appendix plan: hex bytes of each listing, for hosts without an assembler (Dart FFI,
-LuaJIT).
+"Entry" is its contract, and "Reference listing of the runtime's `entry`" there gives a listing per
+architecture and convention. Planned: hex bytes of each listing, for hosts without an assembler
+(Dart FFI, LuaJIT).
 
 ## 2. Artifact format (version 1)
 
@@ -155,7 +155,8 @@ as `CODE`; to settle in phase 2. File names: `<name>.<target>.<ext>`, e.g. `core
 What compiled code expects from its host at run time. Any change to a word's meaning or position is a
 new `ctx_abi_version`; new words are only ever appended in reserved space.
 
-**Entry.** Each trampoline in `ENTRIES` is a C function in the host's calling convention:
+**Entry.** The host's `entry` (the runtime's own; `ENTRIES` holds only the compiler's bridge and
+`tail_switch`, S0015 step 4) is a C function in the host's calling convention:
 
 ```c
 int32_t entry(uint64_t *ctx, uint64_t *frame, const void *code_of_function);
@@ -165,7 +166,7 @@ int32_t entry(uint64_t *ctx, uint64_t *frame, const void *code_of_function);
 `code_of_function` is a **C entry**, `int32_t f(uint64_t *ctx, uint64_t *frame)` in System V on
 every OS on x86-64 (Windows included: only the runtime's `entry` and conforming code call it), in
 AAPCS64 on aarch64. `entry` is the
-runtime's, a contract with S0015's reference listing (its appendix): it saves the host's
+runtime's, a contract with the reference listing below: it saves the host's
 callee-saved registers the boundary does not keep (Win64: `rsi`, `rdi`, `xmm6`–`xmm15`), keeps
 the saved block (below) at `[rsp, rsp + 32)` of its call, calls the C entry, puts the exit record
 back, takes the status as 32 bits and keeps a non-zero one in `TRAP_CODE`. It sets up no
@@ -339,26 +340,166 @@ saves a frame record `{x29, x30}`, `x2`–`x8` and `x28` and calls with `bl`, it
 bytes: the real return address 8 above the stack pointer of that `bl`, the caller's stack pointer
 80 above it.
 
-**Per architecture** (S0004, D38; an amendment of version 1, which phase 5 fixes): what a host that
-provides the bridge or the tail-call trampoline itself must follow. The boundary row is per
-architecture and the same for every compiler (S0015, D70); the other rows (bridge, `tail_switch`,
-exit record, the compiler's own landing pads) belong to a compiler, keyed by the target in the
-header's `compiler` field: the columns below are `jit-x86_64` and `jit-aarch64`; another compiler
-(a sljit micro-compiler) states its own. Everything
-else in this part is the same 64-bit little-endian words for every architecture and compiler.
+**Per architecture** (S0004, D38; an amendment of version 1, which phase 5 fixes). A host never
+provides a compiler's bridge or `tail_switch`; they come from the artifact. The first table is
+fixed per architecture, the same for every compiler (S0015, D70), and is what a host must follow.
+Everything else in this part is the same 64-bit little-endian words for every architecture and
+compiler.
 
 | | x86-64 | aarch64 |
 |---|---|---|
 | boundary (C entry), from S0015 steps 1 and 3 | `int32_t f(rdi = ctx, rsi = frame)` in SysV on every OS: keeps `rbx rbp r12`–`r15`, may clobber `rax rcx rdx rsi rdi r8`–`r11`, every xmm register and the flags; status in `eax` (the upper half undefined); DF 0 and MXCSR `0x1F80` control bits at entry and exit; `endbr64` first | `int32_t f(x0 = ctx, x1 = frame)` in AAPCS64 on every OS: keeps `x19`–`x29`, `sp`, `d8`–`d15`, may clobber `x0`–`x17`, `x30`, the other vector state and NZCV; never touches `x18`; status in `w0` (the upper half undefined); FPCR at entry and exit as S0015's table; `bti jc` first |
+| exit record (bridge): `sp`, `pc` | `sp` = rsp + 8 at entry (before the `call` pushed), `pc` = `[rsp]` | `sp` = sp at the `blr`, `pc` = `x30` |
+| entry's saved block | `[rsp, rsp + 32)` at its `call`: enclosing `{sp, pc, frame}`, then its frame | `[sp + 96, sp + 128)` at its `blr`, the same four words |
+| landing pad, boundary | `endbr64` | `bti jc` (C entries, `entry`, `sp_stub`; S0015 Q5) |
+| `CODE` alignment | none | load address ≡ 0 mod 4096 (`adrp`) |
+| instruction cache | coherent | invalidate the loaded range before the first call |
+
+Compiler-private rows, keyed by the target in the header's `compiler` field, given for `jit-x86_64`
+and `jit-aarch64` as information (another compiler, a sljit micro-compiler, states its own):
+
+| | x86-64 | aarch64 |
+|---|---|---|
 | bridge call | `eax` = word, `rdx` = slots; `call` | `x0` = word, `x1` = slots; `blr x16` |
 | bridge preserves | pool (`rbx rbp rsi rdi r8–r11`), `r12`–`r15` | `x2`–`x8`, `x19`–`x28`, `x29`, `sp` |
 | `tail_switch` | record in `rdx`, return address at `[rsp]`; the first hop and the hops from `restore`, never one from a C entry; restore frame 64 bytes (S0015 step 1, D71) | record in `x16`, return address in `x30`; the same hops; restore frame 80 bytes (S0015 step 3) |
-| exit record (bridge) | `sp` = rsp + 8 at entry (before the `call` pushed), `pc` = `[rsp]`, `frame` = `r12` | `sp` = sp at the `blr`, `pc` = `x30`, `frame` = `x27` |
-| entry's saved block | `[rsp, rsp + 32)` at its `call`: enclosing `{sp, pc, frame}`, then its frame | `[sp + 96, sp + 128)` at its `blr`, the same four words |
-| landing pad, boundary (per architecture) | `endbr64` | `bti jc` (C entries, `entry`, `sp_stub`; S0015 Q5) |
+| exit record (bridge): `frame` | `r12` | `x27` |
 | landing pad, the compiler's own | `endbr64` | `bti c` (bodies, bridge, `tail_switch`), `bti j` (jump-table pads) |
-| `CODE` alignment | none | load address ≡ 0 mod 4096 (`adrp`) |
-| instruction cache | coherent | invalidate the loaded range before the first call |
+
+**Reference listing of the runtime's `entry`** (S0015, Q3 (a); moved here from the spec's appendix).
+A listing for the C loader and for review, not the waboros runtime's bytes. `EXIT` is
+`8 · EXIT_RECORD` (112) and `TRAP` is `8 · TRAP_CODE` (8). Labels and register choices are free;
+the saved block's place and steps 1–5 of the contract (S0015, "The runtime's `entry`") are not. The x86-64 listings are GNU as
+syntax with `.intel_syntax noprefix`, one instruction per line, comments after `#`.
+
+**Checked:**
+* the x86-64 SysV and aarch64 listings were assembled and run by the reviewer (2026-11-21, a C
+  harness on x86-64 and `llvm-mc` with `+bti` under QEMU for aarch64, scratch files, not
+  committed). Seen: the status, `TRAP_CODE`, the alignment the callee sees, the saved block's
+  frame word, the exit record put back, and a status with garbage in the upper half;
+* the Win64 listing was assembled only (GNU as 2.42); it has not been run on Windows;
+* 2026-11-23: compared with `targets/jit/x86_64/entry.py` and `targets/jit/aarch64/entry.py`, the
+  instruction order, saves, saved block and landing pads are the same (the xmm saves were
+  `movdqa` in the spec's appendix and are `movups` here, as in the code; the block is 16-aligned
+  either way). The code the Win64 listing matches runs on the Windows CI runners since S0015 step 1.
+
+**x86-64, SysV host** (`rdi` ctx, `rsi` frame, `rdx` c_entry; `rsp` ≡ 8 mod 16 on entry):
+```
+endbr64
+push rbx                       # rbx keeps ctx across the call (boundary callee-saved)
+sub  rsp, 32                   # rsp = 0 mod 16; the saved block is [rsp, rsp + 32)
+mov  rbx, rdi
+mov  rax, [rbx + EXIT]         # the store's exit record
+mov  rcx, [rax]
+mov  [rsp], rcx
+mov  rcx, [rax + 8]
+mov  [rsp + 8], rcx
+mov  rcx, [rax + 16]
+mov  [rsp + 16], rcx
+mov  [rsp + 24], rsi           # the frame
+call rdx                       # c_entry(rdi = ctx, rsi = frame); return point = entry point
+mov  rcx, [rbx + EXIT]
+mov  rdx, [rsp]
+mov  [rcx], rdx
+mov  rdx, [rsp + 8]
+mov  [rcx + 8], rdx
+mov  rdx, [rsp + 16]
+mov  [rcx + 16], rdx
+mov  eax, eax                  # the status is 32 bits
+test eax, eax
+je   done
+mov  [rbx + TRAP], rax
+done:
+add  rsp, 32
+pop  rbx
+ret
+```
+**x86-64, Win64 host** (`rcx` ctx, `rdx` frame, `r8` c_entry; `rsp` ≡ 8 mod 16 on entry). The
+callee is SysV, so no shadow space is allocated for it; the host's home area above the return
+address is not used:
+```
+endbr64
+push rbx                       # rbx keeps ctx across the call
+push rsi                       # Win64 callee-saved, SysV caller-saved
+push rdi                       # rsp = 0 mod 16
+mov  rdi, rcx                  # the SysV arguments, before anything uses rdi, rsi or rcx: ctx
+mov  rsi, rdx                  # frame
+sub  rsp, 192                  # the saved block is [rsp, rsp + 32); no shadow space for the SysV callee
+movups [rsp + 32], xmm6                # xmm6-xmm15 at [rsp + 32 + 16k]
+movups [rsp + 48], xmm7
+movups [rsp + 64], xmm8
+movups [rsp + 80], xmm9
+movups [rsp + 96], xmm10
+movups [rsp + 112], xmm11
+movups [rsp + 128], xmm12
+movups [rsp + 144], xmm13
+movups [rsp + 160], xmm14
+movups [rsp + 176], xmm15
+mov  rbx, rdi
+mov  rax, [rbx + EXIT]
+mov  rcx, [rax]
+mov  [rsp], rcx
+mov  rcx, [rax + 8]
+mov  [rsp + 8], rcx
+mov  rcx, [rax + 16]
+mov  [rsp + 16], rcx
+mov  [rsp + 24], rsi
+call r8                        # c_entry(rdi = ctx, rsi = frame); return point = entry point
+mov  rcx, [rbx + EXIT]
+mov  rdx, [rsp]
+mov  [rcx], rdx
+mov  rdx, [rsp + 8]
+mov  [rcx + 8], rdx
+mov  rdx, [rsp + 16]
+mov  [rcx + 16], rdx
+mov  eax, eax
+test eax, eax
+je   done
+mov  [rbx + TRAP], rax
+done:
+movups xmm6, [rsp + 32]
+movups xmm7, [rsp + 48]
+movups xmm8, [rsp + 64]
+movups xmm9, [rsp + 80]
+movups xmm10, [rsp + 96]
+movups xmm11, [rsp + 112]
+movups xmm12, [rsp + 128]
+movups xmm13, [rsp + 144]
+movups xmm14, [rsp + 160]
+movups xmm15, [rsp + 176]
+add  rsp, 192
+pop  rdi
+pop  rsi
+pop  rbx
+ret
+```
+**aarch64** (`x0` ctx, `x1` frame, `x2` c_entry; GNU as / `llvm-mc` syntax, comments after `//`;
+`bti jc`, as every boundary address, from step 3: a host may also reach it by `br`):
+```
+bti  jc
+stp  x29, x30, [sp, #-128]!
+mov  x29, sp
+stp  x19, x20, [sp, #16]  // x19 keeps ctx across the call
+mov  x19, x0
+ldr  x9, [x19, #EXIT]
+ldp  x10, x11, [x9]
+ldr  x12, [x9, #16]
+stp  x10, x11, [sp, #96]  // saved block at [sp + 96, sp + 128)
+stp  x12, x1, [sp, #112]
+blr  x2  // c_entry(x0 = ctx, x1 = frame); return point = entry point
+mov  w0, w0  // the status is 32 bits: zero-extend
+ldr  x9, [x19, #EXIT]
+ldp  x10, x11, [sp, #96]
+ldr  x12, [sp, #112]
+stp  x10, x11, [x9]
+str  x12, [x9, #16]
+cbz  w0, done
+str  x0, [x19, #TRAP]
+done:
+ldp  x19, x20, [sp, #16]
+ldp  x29, x30, [sp], #128
+ret
+```
 
 **Trap codes** (keep the PoC's first six numbers; names are Wasmtime's `TrapCode`):
 

@@ -2,9 +2,9 @@
 title: The boundary convention between separately compiled JIT artifacts
 kind: spec
 id: S0015
-status: approved
+status: implemented
 superseded_by:
-related: [D23, D30, D32, D35, D36, D47, D56, D59, D60, D62, D64, D65, D66, D68, D70, R2, S0003, S0004, S0006, S0013, S0014]
+related: [D23, D30, D32, D35, D36, D47, D56, D59, D60, D62, D64, D65, D66, D68, D70, D71, D72, R2, S0003, S0004, S0006, S0013, S0014]
 owner: maintainer
 updated: 2026-11-23
 ---
@@ -228,8 +228,8 @@ entry sees it on entry) is the runtime's too, written as a C entry.
   are written into its artifacts (`.waboros.trampolines`), and until phase 6 the runtime also
   runs its own in-process copy of them for its own compiler string, as today.
 * The S0006 fault handler stays the runtime's; it moves to the same runtime module or stays where
-  it is (step 1 decides by size; it is per process, not per compiler). The reference listing is the
-appendix "Reference listing of the runtime's `entry`".
+  it is (step 1 decides by size; it is per process, not per compiler). The reference listing is in
+ARTIFACT.md part 3, "Reference listing of the runtime's `entry`".
 
 ### `bridge` and `tail_switch`: private to each compiler
 * A compiler's bridge (wasm → host) and its `tail_switch` follow its own internal convention: they
@@ -506,10 +506,12 @@ written before this spec cannot run under it.
   Not tested there: interrupts and fuel, status 14 through sljit, a walk inside a hop chain,
   aarch64.
 * **Not measured:**
-  * aarch64;
-  * the Win64 entry's xmm saves;
+  * aarch64 (measured since, natively: BENCHMARKS.md, `placement-arm.yml` compare run
+    45169731213 on the step-3 commit);
+  * the Win64 entry's xmm saves (still not measured);
   * the hop compare on every C-entry return and the return-then-jump hop (the prototype jumped
-    from the body);
+    from the body; included in the step-1 measurement since, BENCHMARKS.md, "The boundary
+    convention on `jit-x86_64`");
   * a store of real sljit artifacts.
 
 ## Test plan
@@ -688,9 +690,8 @@ mixed-compiler test.
 ## Docs this changes
 Each is updated in the step that makes it untrue (step 5 for those no code step owns).
 * [ARTIFACT.md](../ARTIFACT.md):
-  * the introduction (lines 10-15): a host also supplies `entry` as machine code. The appendix
-    plan gains hex bytes of each reference listing for hosts without an assembler (Dart FFI,
-    LuaJIT);
+  * the introduction (lines 10-15): a host also supplies `entry` as machine code. The reference
+    listing (moved to part 3) gains hex bytes for hosts without an assembler (Dart FFI, LuaJIT);
   * part 2: the `ENTRIES` row, the loader paragraph (the compiler-string rule until phase 6, the
     D64 clause), the fat-file text;
   * part 2 `STACKMAPS` (lines 105-127): shift 0 for a C entry's internal call; the CoreMark site
@@ -753,136 +754,9 @@ Each is updated in the step that makes it untrue (step 5 for those no code step 
 * [LESSONS.md](../LESSONS.md): whatever the steps find.
 * `tests/artifact/data/README.md`: the pre-S0015 fixtures and the new v1 files.
 
-## Appendix: reference listing of the runtime's `entry`
-A listing for the C loader and for review, not the waboros runtime's bytes. `EXIT` is
-`8 · EXIT_RECORD` (112) and `TRAP` is `8 · TRAP_CODE` (8). Labels and register choices are free;
-the saved block's place and steps 1–5 of the contract are not. The x86-64 listings are GNU as
-syntax with `.intel_syntax noprefix`, one instruction per line, comments after `#`.
-
-**Checked:**
-* the x86-64 SysV and aarch64 listings were assembled and run by the reviewer (2026-11-21, a C
-  harness on x86-64 and `llvm-mc` with `+bti` under QEMU for aarch64, scratch files, not
-  committed). Seen: the status, `TRAP_CODE`, the alignment the callee sees, the saved block's
-  frame word, the exit record put back, and a status with garbage in the upper half;
-* the Win64 listing was assembled only (GNU as 2.42); it has not been run on Windows.
-
-**x86-64, SysV host** (`rdi` ctx, `rsi` frame, `rdx` c_entry; `rsp` ≡ 8 mod 16 on entry):
-```
-endbr64
-push rbx                       # rbx keeps ctx across the call (boundary callee-saved)
-sub  rsp, 32                   # rsp = 0 mod 16; the saved block is [rsp, rsp + 32)
-mov  rbx, rdi
-mov  rax, [rbx + EXIT]         # the store's exit record
-mov  rcx, [rax]
-mov  [rsp], rcx
-mov  rcx, [rax + 8]
-mov  [rsp + 8], rcx
-mov  rcx, [rax + 16]
-mov  [rsp + 16], rcx
-mov  [rsp + 24], rsi           # the frame
-call rdx                       # c_entry(rdi = ctx, rsi = frame); return point = entry point
-mov  rcx, [rbx + EXIT]
-mov  rdx, [rsp]
-mov  [rcx], rdx
-mov  rdx, [rsp + 8]
-mov  [rcx + 8], rdx
-mov  rdx, [rsp + 16]
-mov  [rcx + 16], rdx
-mov  eax, eax                  # the status is 32 bits
-test eax, eax
-je   done
-mov  [rbx + TRAP], rax
-done:
-add  rsp, 32
-pop  rbx
-ret
-```
-**x86-64, Win64 host** (`rcx` ctx, `rdx` frame, `r8` c_entry; `rsp` ≡ 8 mod 16 on entry). The
-callee is SysV, so no shadow space is allocated for it; the host's home area above the return
-address is not used:
-```
-endbr64
-push rbx                       # rbx keeps ctx across the call
-push rsi                       # Win64 callee-saved, SysV caller-saved
-push rdi                       # rsp = 0 mod 16
-mov  rdi, rcx                  # the SysV arguments, before anything uses rdi, rsi or rcx: ctx
-mov  rsi, rdx                  # frame
-sub  rsp, 192                  # the saved block is [rsp, rsp + 32); no shadow space for the SysV callee
-movdqa [rsp + 32], xmm6                # xmm6-xmm15 at [rsp + 32 + 16k]
-movdqa [rsp + 48], xmm7
-movdqa [rsp + 64], xmm8
-movdqa [rsp + 80], xmm9
-movdqa [rsp + 96], xmm10
-movdqa [rsp + 112], xmm11
-movdqa [rsp + 128], xmm12
-movdqa [rsp + 144], xmm13
-movdqa [rsp + 160], xmm14
-movdqa [rsp + 176], xmm15
-mov  rbx, rdi
-mov  rax, [rbx + EXIT]
-mov  rcx, [rax]
-mov  [rsp], rcx
-mov  rcx, [rax + 8]
-mov  [rsp + 8], rcx
-mov  rcx, [rax + 16]
-mov  [rsp + 16], rcx
-mov  [rsp + 24], rsi
-call r8                        # c_entry(rdi = ctx, rsi = frame); return point = entry point
-mov  rcx, [rbx + EXIT]
-mov  rdx, [rsp]
-mov  [rcx], rdx
-mov  rdx, [rsp + 8]
-mov  [rcx + 8], rdx
-mov  rdx, [rsp + 16]
-mov  [rcx + 16], rdx
-mov  eax, eax
-test eax, eax
-je   done
-mov  [rbx + TRAP], rax
-done:
-movdqa xmm6, [rsp + 32]
-movdqa xmm7, [rsp + 48]
-movdqa xmm8, [rsp + 64]
-movdqa xmm9, [rsp + 80]
-movdqa xmm10, [rsp + 96]
-movdqa xmm11, [rsp + 112]
-movdqa xmm12, [rsp + 128]
-movdqa xmm13, [rsp + 144]
-movdqa xmm14, [rsp + 160]
-movdqa xmm15, [rsp + 176]
-add  rsp, 192
-pop  rdi
-pop  rsi
-pop  rbx
-ret
-```
-**aarch64** (`x0` ctx, `x1` frame, `x2` c_entry; GNU as / `llvm-mc` syntax, comments after `//`;
-`bti jc`, as every boundary address, from step 3: a host may also reach it by `br`):
-```
-bti  jc
-stp  x29, x30, [sp, #-128]!
-mov  x29, sp
-stp  x19, x20, [sp, #16]  // x19 keeps ctx across the call
-mov  x19, x0
-ldr  x9, [x19, #EXIT]
-ldp  x10, x11, [x9]
-ldr  x12, [x9, #16]
-stp  x10, x11, [sp, #96]  // saved block at [sp + 96, sp + 128)
-stp  x12, x1, [sp, #112]
-blr  x2  // c_entry(x0 = ctx, x1 = frame); return point = entry point
-mov  w0, w0  // the status is 32 bits: zero-extend
-ldr  x9, [x19, #EXIT]
-ldp  x10, x11, [sp, #96]
-ldr  x12, [sp, #112]
-stp  x10, x11, [x9]
-str  x12, [x9, #16]
-cbz  w0, done
-str  x0, [x19, #TRAP]
-done:
-ldp  x19, x20, [sp, #16]
-ldp  x29, x30, [sp], #128
-ret
-```
+## Reference listing of the runtime's `entry`
+Moved to [ARTIFACT.md](../ARTIFACT.md) part 3, "Reference listing of the runtime's `entry`", as Q3
+(a) says, when the spec was implemented (2026-11-23). It is the contract's one statement.
 
 ## Progress
 * 2026-11-21: draft.
@@ -937,6 +811,14 @@ ret
   `tests/artifact/data/README.md`. Not done by anything yet: the appendix's hex bytes of each
   reference listing (ARTIFACT.md's introduction names it as planned). Word 9 equal to 0 and the
   sljit rows are specified, but no compiler uses them and no test covers them.
+* 2026-11-23: step 6 (final review of steps 3-4 and of the whole). No correctness defect found.
+  the QEMU child-exec test fix: `tests/jit/test_boundary.py` starts the subprocess of its ISA gate
+  through `child()` (a test fix, no code change). Documents: the reference listing moved
+  to ARTIFACT.md part 3 and checked against `entry.py` of both architectures (same, but the code
+  uses `movups` for the Win64 xmm saves where the listing has `movdqa`); the "Per architecture"
+  table split as "What changes in ARTIFACT.md part 3" says; ARTIFACT.md's `ENTRIES` text matched
+  to step 4; "Not measured" updated; ROADMAP phase 6 gains the missing deferred items. Status set
+  to `implemented`, as S0005 and S0009 are marked. The Changes section has the matching line.
 
 ## Changes
 * 2026-11-21: created (draft), from D70 and the prototype measured in BENCHMARKS.md.
@@ -1011,3 +893,6 @@ ret
   xmm6-xmm15,
   so the Win64 entry is not left to the Windows runner alone.
 * 2026-11-23: step 5 (docs): see Progress; no change to the contract.
+* 2026-11-23: step 6 (final review): the reference listing moved from this spec's appendix to
+  ARTIFACT.md part 3 (Q3 (a)); the "Per architecture" table split into fixed and compiler-private
+  rows; "Not measured" updated; status `implemented`; see Progress. No change to the contract.
