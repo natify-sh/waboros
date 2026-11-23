@@ -10,7 +10,8 @@ The lists of two hosts must be identical:
     python3 tools/jit_dump.py --target jit-aarch64 OUT.txt      # PYTHONPATH=src
     diff x86-OUT.txt arm64-OUT.txt
 
-With WABOROS_JIT_DUMP=<dir> the code of every module is also written there (tools/isa_all.py)."""
+With `--files DIR` the (thin) artifact of every compiled module is also written there as `N.wbo`
+(tools/isa_all.py reads them, S0014 step 6)."""
 
 import argparse
 import hashlib
@@ -27,12 +28,13 @@ def main() -> int:
     from waboros.frontend.binary import parse
     from waboros.frontend.validate import validate
     from waboros.targets import base
-    from waboros.targets.jit.common import gc
+    from waboros.targets.jit.common import artifact, gc
     from waboros.targets.jit.common.compiler import Compiled
 
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--target", required=True, choices=["jit-x86_64", "jit-aarch64"])
     ap.add_argument("out", type=Path)
+    ap.add_argument("--files", type=Path)
     args = ap.parse_args()
     target = base.TARGETS[args.target]()
     files = sorted((CACHE_DIR / "json").rglob("*.wasm")) + [
@@ -55,6 +57,12 @@ def main() -> int:
             lines.append(f"{name} unsupported: {e.feature}")
             continue
         assert isinstance(c, Compiled)
+        if args.files:
+            data = f.read_bytes()
+            sha = hashlib.sha256(data).digest()
+            (args.files / f"{len(lines)}.wbo").write_bytes(
+                artifact.write(c, target=args.target, module_sha256=sha)
+            )
         everything = repr(
             (c.data_start, c.funcs, c.records, c.sigs, sorted(c.thunks.items()), c.layout)
         )

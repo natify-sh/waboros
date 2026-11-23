@@ -879,8 +879,20 @@ When approved and implemented (step 7 unless noted):
 * Step 6, partial (file identity, 2026-11-23): `tools/artifact_dump.py` writes the 16 `.wbo` files of
   CoreMark and `v1-small.wasm` (thin and fat, both JITs, both bounds modes) and lists their sha256;
   `platforms.yml` jobs `artifacts` / `artifacts-diff` run it on Linux x86-64 and arm64, Windows x64
-  and ARM64, macOS x86-64 and arm64 and fail on any difference, naming the file. Not done: the
-  independent ELF readers, `isa_all` over files.
+  and ARM64, macOS x86-64 and arm64 and fail on any difference, naming the file.
+* Step 6, done (independent readers, 2026-11-23): `tools/elf_readers.py` (CI job `jit`, Linux x86-64
+  only; it reads the aarch64 files too, the arm64 job adds nothing) checks the same 16 files (the
+  round-trip test set is the pinned spec suite, too large to write for five readers; CoreMark and
+  `v1-small` cover both JITs, both modes, thin and fat): `readelf -aW` and `llvm-readobj --all` print no
+  warning; pyelftools gives our reader's sections (name, offset, size, payload) and function symbols
+  (name, value, size); `llvm-objdump -d` has a label for every function symbol (`wasm[i]`, `thunk[i]`,
+  `__waboros_*`); `eu-elflint --gnu-ld` exits 1 with exactly two complaints, the private identification
+  and nothing else, which the check allows and any other line fails: `unsupported OS ABI e_ident[7] ==
+  '<unknown>: 203'` and `unsupported ABI version e_ident[8] == 1`. `tools/isa_all.py` now writes
+  an artifact per compiled module (`jit_dump.py --files`), reads the files back and checks the code up to
+  the first trampoline blob (the data area excluded) and every trampoline blob (x86-64: 954 blobs
+  against 952 before, aarch64: 931 against 930; identical blobs are checked once, so the
+  trampolines add one per convention, not one per module).
 
 ## Changes
 * 2026-11-17: created (draft).

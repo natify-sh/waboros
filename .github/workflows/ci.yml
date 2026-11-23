@@ -175,6 +175,11 @@ jobs:
       - run: uv run python tools/isa_all.py
       # S0004: the same gate for the aarch64 code, cross-compiled here (never run; D35): ARMv8.0-A
       - run: uv run python tools/isa_all.py --target jit-aarch64
+      # S0014 step 6: independent readers of the 16 files of CoreMark and v1-small (both JITs): readelf,
+      # llvm-readobj, pyelftools, llvm-objdump, eu-elflint (apt: elfutils only; retried, the mirrors fail)
+      - run: |
+          for i in 1 2 3; do sudo apt-get install -y -qq elfutils && break; sleep 20; done
+          uv run --with pyelftools python tools/elf_readers.py
       # D35: the code of every module and CoreMark per target as a sha256 list; the `arm64` job
       # compiles the same modules on arm64 and diffs its lists with these (both ways). The bounds
       # mode is named on both hosts (`auto` gives guard only in a process of the target's

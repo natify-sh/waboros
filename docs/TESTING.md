@@ -471,8 +471,9 @@ slow runner took 9.6 s). The interrupt-latency test (`tests/jit/test_abi.py`) al
 for loaded runners.
 
 The `jit` job runs `tools/isa_all.py` (747 blobs at SIMD step 5d3; the count grows with the code): it compiles every
-spec module of **every directory, claimed or not** (so `simd/` too), and CoreMark, through `tools/jit_dump.py` with
-`WABOROS_JIT_DUMP` and disassembles each blob with `tools/isa_check.py` (code ranges only), failing on any
+spec module of **every directory, claimed or not** (so `simd/` too), and CoreMark, through `tools/jit_dump.py --files`
+(one artifact file per module; S0014 step 6), reads the files back and disassembles the code of each (up to
+the first trampoline blob, data excluded) and every trampoline blob with `tools/isa_check.py`, failing on any
 instruction above x86-64-v1 (D24). `isa_all.py --target jit-aarch64` does the same for aarch64 code,
 compiled (never run) on any host: `isa_check.py --arch aarch64` disassembles with `llvm-mc` and allows
 ARMv8.0-A and the `bti` HINTs only (tests: `tests/jit/test_isa_aarch64.py`, planted LSE/CRC/SVE/fp16/
@@ -489,7 +490,11 @@ Files across OS (D23, S0014 step 6): a `.wbo` file depends on the architecture, 
 guard and explicit; 16 files, under 1 s) and lists `<name> <sha256>`. The `platforms` workflow runs it
 as `artifacts` on Linux x86-64 and arm64, Windows x64 and ARM64, macOS x86-64 and arm64 (a plain `uv run
 --no-project`, no wheel), and `artifacts-diff` fails if any list differs from the Linux x86-64 one,
-naming the list; `diff` shows the file. The compiler string's source digest hashes bytes, so
+naming the list; `diff` shows the file.
+Independent readers (`jit` job, Linux x86-64, about 1.5 s plus the `elfutils` install):
+`uv run --with pyelftools python tools/elf_readers.py` checks the same 16 files with `readelf -aW`,
+`llvm-readobj --all`, pyelftools, `llvm-objdump -d` and `eu-elflint --gnu-ld` (S0014 step 6 lists its two
+allowed complaints, the private OS/ABI); a file or a complaint outside the list fails the job. The compiler string's source digest hashes bytes, so
 `.gitattributes` (`eol=lf`) must keep Windows checkouts LF.
 
 The `spec` job also runs `--engine auto` with executable memory forbidden: `tools/no_exec.py` sets
