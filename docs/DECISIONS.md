@@ -1168,6 +1168,7 @@ The package keeps no dependency: its own writer and reader on `struct` (about 20
 every section). pyelftools, `readelf`, `llvm-readobj`, `llvm-objdump` and `eu-elflint` are test and
 CI tools only, as independent checks of the writer.
 
+*(Every point of the list below was decided by the maintainer on 2026-11-17 in S0014; D73 records the answers.)*
 Left to the artifact-format spec (ROADMAP "Next" (6)), each to decide there: the `EI_OSABI` value
 (64 or above, not Wasmtime's `0xC8`, not 97 or 255); whether `EI_ABIVERSION` or `.waboros.header`
 carries `format_version` (one source of truth); little-endian and ELF64 only (D48); the header split
@@ -1198,7 +1199,7 @@ Status: accepted (maintainer, 2026-11-15) · Date: 2026-11-15 · Supersedes: —
   `.incbin`), not linked, and loaded by the runtime's own loader like any other artifact. Rejected:
   linking the artifact into the binary with the system linker. It works (the maintainer checked
   on the prototype, 2026-11-15: `ld.bfd`, `ld.gold`, `ld.lld` on x86-64 and `ld.lld` on aarch64
-  accept the private `EI_OSABI`, and a C call through `__waboros_entry_sysv` reaches the code), but
+  accept the private `EI_OSABI`, and a C call through `__waboros_entry_sysv` reaches the code; *the prototype's symbol: the file has no global symbol since S0015, D70*), but
   it would need per-artifact global symbol names (two artifacts collide on the trampoline names),
   `SHF_ALLOC` metadata sections with symbols, and `.note.GNU-stack` in every artifact, for nothing
   the embedded-bytes form lacks. The bytes sit in `.rodata` and the loader copies the code into
@@ -1381,7 +1382,9 @@ Consequences:
 4. **The oracle between compilers is behaviour**: the spec suite, `spec_diff` both ways, the walk
    check, poison. D35 (byte identity, cross-compilation) holds within one compiler, not across.
 5. **Static builds (D62)**: trampolines may be one set per compiler (they hold no state), shared by
-   Stores of that compiler; state lives in each Store's context.
+   Stores of that compiler; state lives in each Store's context. *(Added by D73: a foreign host takes
+   the store's copy from the first module artifact loaded; every later artifact's blob is compared
+   with it.)*
 
 *(The first rejection below is reversed by D70: compilers mix through a boundary ABI.)*
 Rejected: mixing compilers inside a Store; one register table per architecture common to every
@@ -1699,3 +1702,36 @@ Status: accepted (maintainer, 2026-11-22) · Date: 2026-11-22 · Supersedes: RUN
   second time.
 * Unchanged: the GC collector stays a runtime module (D61, D54); the kernel-and-modules direction
   stays for the parts that pass RUNTIME-MODULES.md's criterion.
+
+### D73. Format v1 in the ELF container: the answers to D59's list
+Status: accepted (maintainer, 2026-11-17: S0014 approved with every open question decided) · Date: 2026-11-23 · Supersedes: — · Evidence: S0014 (steps 0-6 implemented; its Progress and Changes), `tests/artifact/`, BENCHMARKS.md "Artifact size" and "Instantiation from an artifact"
+
+Records what S0014 decided and the code now does, so that one entry answers D59's open list, closes
+D29's "recorded in the artifact" clause and S0006 step 6, and D66's "defined by the
+artifact-format spec". The byte-level definition stays in S0014; this is the list of choices.
+
+* **Container**: `EI_OSABI` 0xCB (Q1), `EI_ABIVERSION` is `format_version` and nowhere else (Q4),
+  `e_machine` replaces `arch`, ELF64 little-endian only (D48), extension `.wbo` (Q7). `pyc` and `mpy`
+  files are not in v1; later `EM_NONE` in the same container (Q6).
+* **No checksum** (Q5): the strict reader refuses truncated and malformed files, `module_sha256`
+  checks the wasm of a fat file, writes are atomic. A CRC32 in the header was considered and rejected.
+  `RELOCS` is absent and `SHT_REL`/`SHT_RELA` are refused; a relocating amendment takes a
+  `features_required` bit.
+* **Flag sets** (Q8, D66): two u64 in the header, `features_required` (unknown bit: refuse) and
+  `features_optional` (unknown bit: ignore), both empty in v1. `flags` carries `BOUNDS_GUARD` and
+  `GUARD_LOG2` (D29, S0006 step 6); the fault map is `.waboros.traps`. The portable file's default
+  bounds mode is `explicit`, made final with the phase-6 API (Q12); the writer refuses while a
+  test switch that changes code is set (Q11).
+* **Trampolines in every artifact** (Q2 (b)): `.waboros.trampolines` and the blobs in `.text`, one
+  copy per store, every later artifact's blob compared byte for byte (the waboros runtime compares
+  every convention with its own `conventions()`). A separate trampoline artifact and "none in any
+  artifact" were rejected; since S0015 (D70) the artifact holds the compiler's bridge and
+  `tail_switch` only, and `entry` is the host's.
+* **Loader** (Q3): the exact `compiler` string until phase 6 (D70 relaxes it from there); a thin
+  file is refused at the first failing check, a fat one is regenerated (D18).
+* **Identity** (Q9, Q10): constant expressions in a fixed-width subset of the wasm constant
+  expressions with wasm's own opcode numbers, evaluated without recursion; the canonical type key
+  is 32 bytes, SHA-256 of a byte encoding of the type's rec group, stored in the artifact and
+  computable without Python (D60).
+* Unchanged: part 1 and part 3 (versions 1; the libcall block of 10 words, D58, S0014 step 0), D62's
+  three rules, D18's frozen part.

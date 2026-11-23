@@ -4,7 +4,7 @@ kind: spec
 id: S0014
 status: approved
 superseded_by:
-related: [D18, D23, D24, D29, D33, D35, D36, D44, D48, D54, D58, D59, D60, D61, D62, D63, D64, D65, D66, D70, R2, R3, R6, S0003, S0006, S0013, S0015]
+related: [D18, D23, D24, D29, D33, D35, D36, D44, D48, D54, D58, D59, D60, D61, D62, D63, D64, D65, D66, D70, D73, R2, R3, R6, S0003, S0006, S0013, S0015]
 owner: maintainer
 updated: 2026-11-23
 ---
@@ -605,14 +605,18 @@ authoritative (D18).
   form, with no `ValidModule` behind it), both bounds modes, with `WABOROS_JIT_WALK_CHECK=1` and
   the GC switches for `gc/` and `exceptions/`; then `uv run python tools/spec_diff.py jit-x86_64
   <the same with the switch>` gives no difference. The same for `jit-aarch64` under QEMU and on
-  the native arm64 runner.
+  the native arm64 runner. *(As built, step 7, 2026-11-23: run by hand under QEMU on both JITs, both
+  modes (Progress, step 3); no CI job sets `WABOROS_JIT_ARTIFACT=1` yet and it was not run on the
+  native arm64 runner; open, for step 8 to rule on.)*
 * **CoreMark through a file** on both JITs (`tools/run_coremark_jit.py` with the switch): the self
   check passes; run time alternated with the direct path (no change expected: the code is the
   same bytes); write time, read time, instantiation time and file size recorded in BENCHMARKS.md.
 * **Determinism (D35)**: each module written twice in one process and in two processes gives the
   same bytes; in CI's arm64 job, the files written there for `jit-aarch64` equal the files written
-  on x86-64 (`tools/jit_dump.py` gains a mode that hashes artifact files) and the x86-64-written
-  file runs there.
+  on x86-64 (as built: `tools/artifact_dump.py` writes the files and lists their sha256, and the
+  `artifacts` / `artifacts-diff` jobs of `platforms.yml` compare six hosts, step 6; `tools/jit_dump.py
+  --files` writes one file per module) and the x86-64-written file runs there (not checked: the
+  files of an architecture run only on that architecture, and the arm64 jobs compare bytes only).
 * **Refusals** (`tests/artifact/test_refuse.py`), each with its message, each thin and fat (fat:
   regenerated and run): wrong magic or OS/ABI (refused even fat); `EI_ABIVERSION` 0 and 2;
   `e_machine` of the other architecture; `ctx_abi_version` 2; `isa_level` 3 on a CPU without AVX2
@@ -893,6 +897,12 @@ When approved and implemented (step 7 unless noted):
   the first trampoline blob (the data area excluded) and every trampoline blob (x86-64: 954 blobs
   against 952 before, aarch64: 931 against 930; identical blobs are checked once, so the
   trampolines add one per convention, not one per module).
+* Step 7 done (2026-11-23, docs only): every document of "Docs this changes" checked against the code
+  (`artifact.py`, the targets' `conventions()` and `runtime()`) and fixed where it was still the
+  draft of part 2: ARTIFACT.md part 2 is a summary of this spec (ELF sections, no `ENTRIES`,
+  `RELOCS` or `CHECKSUM`), part 3's `.text` alignment row and `tail_switch` wording; D73 records the
+  decisions; S0006, S0013, ARCHITECTURE.md, ARTIFACT-CONTAINER.md, README.md, TESTING.md and ROADMAP.md
+  follow. Open for step 8: the spec suite through files runs in no CI job (Test plan note).
 
 ## Changes
 * 2026-11-17: created (draft).
@@ -1070,3 +1080,5 @@ When approved and implemented (step 7 unless noted):
   copy per store", the compatibility check of "Semantics: the loader" (the compiler string until
   phase 6), "Alternatives considered" and Q2 (`entry` partly reversed); the test plan names the
   S0015 tests. No format change.
+* 2026-11-23: step 7 (docs): Test plan notes on what was built for "the spec suite through files" and
+  "Determinism" (`tools/artifact_dump.py`, the `platforms.yml` jobs); D73 added to `related`.

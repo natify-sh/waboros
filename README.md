@@ -119,7 +119,7 @@ not approved for implementation.
 | [`docs/STANDARDS.md`](docs/STANDARDS.md) | how documents here are written, labelled and checked |
 | [`docs/specs/README.md`](docs/specs/README.md) | index of the specifications (`S0001`...), one per component |
 | [`docs/ISA-LEVELS.md`](docs/ISA-LEVELS.md) | note (draft): ISA levels above the baseline |
-| [`docs/ARTIFACT-CONTAINER.md`](docs/ARTIFACT-CONTAINER.md) | note (draft): our own artifact container or ELF |
+| [`docs/ARTIFACT-CONTAINER.md`](docs/ARTIFACT-CONTAINER.md) | analysis of the container (decided: ELF64, D59; the format is S0014) |
 | [`docs/MICRO-COMPILERS.md`](docs/MICRO-COMPILERS.md) | note (draft): micro-compilers, a compiler as a wasm module |
 | [`docs/MICRO-COMPILERS-SHIPPING.md`](docs/MICRO-COMPILERS-SHIPPING.md) | note (draft): shipping pre-compiled micro-compilers |
 | [`docs/COMPONENTS.md`](docs/COMPONENTS.md) | note (draft): components without fusion |

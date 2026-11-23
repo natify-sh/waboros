@@ -6,7 +6,7 @@ status: implemented
 superseded_by:
 related: [D10, D23, D25, D29, D31, D33, D35, D36, D37, D39, D42, R2, R3, R6, S0003, S0004, S0005]
 owner: maintainer
-updated: 2026-11-19
+updated: 2026-11-23
 ---
 
 # S0006 Guard pages instead of explicit bounds checks on jit-x86_64 and jit-aarch64
@@ -116,7 +116,7 @@ of LESSONS 5; aarch64: a `uxtw` register offset or a 32-bit `mov`), and the acce
 * Header `flags`: bit 0 `BOUNDS_GUARD` (0: every access checked; 1: this spec); bits 8–15
   `GUARD_LOG2`, the guard size the code assumes (25 for 32 MiB), zero when bit 0 is clear. Both are
   in `config_sha256` and the cache key (D29).
-* Section 12 `TRAPMAP`: `u32 fault_count`, then `fault_count` entries `{u32 fault_offset, u32
+* *(Built by [S0014](S0014-artifact-format.md), 2026-11-23: the file's `.waboros.traps` holds the fault map only, `u32 n` and the entries; the frames table below is not produced and, when it is, becomes a separate optional section `.waboros.addrmap`.)* Section 12 `TRAPMAP`: `u32 fault_count`, then `fault_count` entries `{u32 fault_offset, u32
   resume_offset}` sorted by `fault_offset` (strictly increasing), then the frames table that part 2
   already reserves (wasm function index and byte offset, for `Trap.frames`; not specified here). An
   artifact with `BOUNDS_GUARD` and no `TRAPMAP` is malformed. Size: 8 bytes per fault point (CoreMark:
@@ -319,7 +319,7 @@ reservation is a crash, not a trap: the explicit-mode tests and differential run
    The cell also takes over what `tools/android_check.py` checked in the former `android` job (the JIT
    works in the app process and `auto` selects it; CoreMark passes its self-check there), and the
    script is then deleted (maintainer, 2026-11-03).
-6. **Artifact** (moved to the artifact-format spec of phase 5, see Changes): the flag bits and `TRAPMAP` in the serialized format when phase 5 fixes it;
+6. **Artifact** (done by S0014, 2026-11-23: the flag bits in `.waboros.header`, the fault map as `.waboros.traps`, the refusal and regeneration tests in `tests/artifact/test_refuse.py`; the C loader's handler stays with the C loader's spec). Moved to the artifact-format spec of phase 5, see Changes: the flag bits and `TRAPMAP` in the serialized format when phase 5 fixes it;
    ARTIFACT.md parts 2–3, DECISIONS (D29 amended), a test that a guard artifact is refused where
    guard mode is unavailable and regenerated when fat; the C loader's handler (D36).
 7. **Review** by a `reviewer` (handler, fault points, registry), SIMD rows, RISKS R6 status. Done.
@@ -875,3 +875,7 @@ reservation is a crash, not a trap: the explicit-mode tests and differential run
   libsigchain's entry for SIGSEGV to `SIG_DFL` (LESSONS 134); guard calls are refused with an
   error naming `WABOROS_JIT_BOUNDS=explicit`; no reinstall, no fallback at run time; the race with
   another thread starting a process is documented, not handled.
+* 2026-11-23: step 6 is done by [S0014](S0014-artifact-format.md): `BOUNDS_GUARD` and `GUARD_LOG2` are
+  bits of `.waboros.header`'s `flags`, the fault map is `.waboros.traps`, a loader refuses (thin) or
+  regenerates (fat) a guard file where guard is unavailable or the guard is smaller than the file's.
+  The frames table of the "Artifact" paragraph is not produced; it becomes `.waboros.addrmap`.

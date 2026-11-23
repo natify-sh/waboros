@@ -66,48 +66,37 @@ architecture and convention. Planned: hex bytes of each listing, for hosts witho
 
 ## 2. Artifact format (version 1)
 
-A little-endian binary container. Self-contained: a host needs **no wasm parser** to instantiate it.
-Open before the format is fixed (phase 5): our own container or ELF64 as a container only, as
-Wasmtime does; see [ARTIFACT-CONTAINER.md](ARTIFACT-CONTAINER.md) (maintainer's note, draft).
+The byte-exact definition is [S0014](specs/S0014-artifact-format.md); this part is its summary and
+the contract's version line. A file is an **ELF64** relocatable object (D59; the analysis is in
+[ARTIFACT-CONTAINER.md](ARTIFACT-CONTAINER.md)): `ET_REL`, little-endian only, private `EI_OSABI`
+0xCB, `EI_ABIVERSION` = `format_version`, `e_machine` 62 (x86-64), 183 (aarch64) or 243 (riscv64,
+reserved), no program headers. No OS loads it; the waboros loader maps `.text` itself. Self-contained:
+a host needs **no wasm parser** to instantiate it. Written and read by
+`targets/jit/common/artifact.py`; deterministic (D35); named `<name>.<target>-<level>[-guard].wbo`.
 
-**Header** (fixed size):
+**Sections**, in a fixed order, each payload parsed exactly; `.waboros.*` sections are found by
+name and unknown sections are skipped (D62):
 
-| field | type | meaning |
-|---|---|---|
-| `magic` | 8 bytes | `WABOROS\0` |
-| `format_version` | u16 | this document's part 2 version (1) |
-| `ctx_abi_version` | u16 | part 3 version (1) |
-| `arch` | u16 | 1 = x86-64, 2 = aarch64, 3 = riscv64, … (registry in this file) |
-| `isa_level` | u16 | per architecture: 1 = baseline, 2 = v2, 3 = v3, … |
-| `isa_features` | u64 | bitset of extra features (registry per architecture) |
-| `flags` | u32 | code-affecting options: fuel, epoch/interrupt polling, bounds-check mode, … Bit 0 `BOUNDS_GUARD` and bits 8–15 `GUARD_LOG2` are fixed by S0006; the package computes them (`FLAGS` in `guard.py`) but serializes no artifact before the phase-5 spec |
-| `compiler` | str | `waboros <version> <target> <target version>` |
-| `module_sha256` | 32 bytes | hash of the wasm bytes |
-| `config_sha256` | 32 bytes | hash of every code-affecting option |
-| `section_count` | u32 | |
+| section | content |
+|---|---|
+| `.waboros.header` | `module_sha256` (first 32 bytes, frozen across versions), `config_sha256`, `ctx_abi_version` (1), `isa_level`, `flags` (bit 0 `BOUNDS_GUARD`, bits 8-15 `GUARD_LOG2`, S0006), `isa_features`, `features_required` and `features_optional` (D66, empty in v1), `compiler` (`waboros <version> <target> <target version>`) |
+| `.text` | the machine code, position-independent, at a file offset of 4096; then its data area (jump tables); then the compiler's trampoline blobs |
+| `.waboros.types` ... `.waboros.segments` | `types` (with the 32-byte canonical type keys), `imports`, `funcs` (type, code offset, `data_start` and the start function), `tables`, `memories`, `globals`, `tags`, `exports`, `segments`; constant expressions in a fixed-width form (`cexpr`) |
+| `.waboros.context` | what the context layout (part 3) needs beyond the counts: the heap and subtype bits, the function records, signatures, thunks, RTTs and thrown tags |
+| `.waboros.stackmaps` | the frame walk's site table (below). Required |
+| `.waboros.traps` | the guard fault map `{fault_offset, resume_offset}` of S0006 (empty without `BOUNDS_GUARD`); the address map for `Trap.frames` is not produced (a later optional `.waboros.addrmap`) |
+| `.waboros.trampolines` | one 28-byte record per host convention (`sysv`, `win64` on x86-64; `aapcs64` on aarch64: one convention on Linux, macOS and Windows) for the compiler's bridge and `tail_switch` in `.text` (S0015: `entry` and `sp_stub` are the host's, not in the file); a store runs on one copy (S0014, "One copy per store") |
+| `.waboros.wasm` | optional: the original wasm bytes. Its presence makes a **fat** file (below) |
+| `.symtab`, `.strtab`, `.shstrtab` | for tools (`objdump`, `readelf`, `gdb`); every symbol local; no loader reads them (D62) |
 
-**Sections** (`id: u16`, `length: u32`, payload; unknown ids are skipped):
+What the first, container-less draft of this part had and v1 does not: `START` is a field of
+`.waboros.funcs`; `RELOCS` is absent (the code is position-independent; a `SHT_REL`/`SHT_RELA`
+section is refused); `CHECKSUM` is dropped (S0014 Q5: the strict reader refuses truncated and
+malformed files, and cache writes are atomic); `FUNCS`, `TRAPMAP` and `STACKMAPS` became
+`.waboros.funcs`, `.waboros.traps` and `.waboros.stackmaps`; `ENTRIES` became
+`.waboros.trampolines` and the blobs in `.text`.
 
-| id | section | content |
-|---|---|---|
-| 1 | `CODE` | the machine code, position-independent: internal branches relative, everything absolute through the context register |
-| 2 | `ENTRIES` | the compiler's trampolines, one blob per calling convention: `sysv`, `win64` on x86-64; `aapcs64` on aarch64 (one convention on Linux, macOS and Windows; S0014 `.waboros.trampolines`). Since S0015 the file carries only the compiler's bridge and `tail_switch` per convention (28-byte records, local symbols `__waboros_bridge_<conv>`, `__waboros_tail_switch_<conv>`, `__waboros_centry_<conv>`); the host's `entry` and `sp_stub` are its own, and the host picks its convention |
-| 3 | `FUNCS` | per defined function: code offset, type index, frame size (slots), name (if any) |
-| 4 | `TYPES` | function types (param/result value types) |
-| 5 | `IMPORTS` | function imports: module, name, type index, context slot; memory/table/global imports with their types |
-| 6 | `EXPORTS` | name → kind + index |
-| 7 | `MEMORIES` | per memory: min, max, page size, 64-bit, shared |
-| 8 | `TABLES` | per table: element type, min, max, address type (i32 or i64, S0009) |
-| 9 | `GLOBALS` | per global: type, mutability, initial value (or the import it comes from) |
-| 10 | `SEGMENTS` | data and element segments: active (target, offset) or passive, bytes / function indices |
-| 11 | `START` | start function index, if any |
-| 12 | `TRAPMAP` | code offset ranges → wasm function index + wasm byte offset (for `Trap.frames`); with the guard flag also the fault map, `{fault_offset, resume_offset}` per memory instruction ([S0006](specs/S0006-guard-pages.md), "Artifact"). Neither is written to a file yet |
-| 13 | `RELOCS` | empty in version 1 (code is position-independent); reserved for copy-and-patch |
-| 14 | `WASM` | optional: the original wasm bytes. Its presence makes a **fat** file (below) |
-| 15 | `STACKMAPS` | one record per call site of the code, for the frame walk of the GC (S0013, below). Required: a loader refuses a module without it, since every frame of a store must be walkable |
-| 0xFFFF | `CHECKSUM` | sha256 of everything before it |
-
-**`STACKMAPS`** (S0013 step 3a; added to version 1 without a bump, as no artifact file has been
+**`.waboros.stackmaps`** (part 2's `STACKMAPS`; S0013 step 3a; added to version 1 without a bump, as no artifact file has been
 written, S0013 Q5). Little-endian: `u32 nsites`; per site, sorted by `ret`: `u32 ret` (the code
 offset of the return address of a call), `u32 shift` (slots from this frame's base to the callee's:
 0 for a host or service call, in a host thunk and for a C entry's call into its body), `u16 ret_at` (bytes from the stack pointer at the
@@ -131,32 +120,34 @@ version, amendments inside a version through feature flags (D66). One without
 a map, the same bytes in both forms, still runs. The trampolines' own points (the entry's return point and its saved block, `tail_switch`'s
 `restore` frame) are part 3's, not this section's.
 
-Strings are UTF-8 with a u32 length prefix. A loader refuses an artifact whose `magic`,
-`format_version` major, `ctx_abi_version`, `arch` or ISA it does not support, or whose `compiler`
+Strings are UTF-8 with a u32 length prefix. A loader refuses an artifact whose ELF identification,
+`format_version` (`EI_ABIVERSION`), `ctx_abi_version`, `e_machine` or ISA it does not support, or whose `compiler`
 string is not the store's (D70: until phase 6 the exact string, which is the cache key; from
 phase 6 the rule follows the architecture, `format_version` and `ctx_abi_version`, S0015
 "Compatibility") — it never "tries".
 `Module.serialize()` writes this format; the cache stores it.
 
-**Thin and fat files (D18).** A thin file (no `WASM` section) is refused on any mismatch. A fat file is
+**Thin and fat files (D18).** A thin file (no `.waboros.wasm`) is refused on any mismatch. A fat file is
 never refused: when the loader cannot use the code — another waboros or target version, another
 compiler string than the store's (D70; phase 6 relaxes it to the architecture's rule), another ISA level, a compiler version on the known-bad list, a format it does not know — it checks that the
 embedded wasm matches `module_sha256` and regenerates from it. For this the loader must be able to
-read the header and find section 14 in every format version, so the header prefix (`magic`,
-`format_version`) and the section framing are frozen across versions.
+read the header and find `.waboros.wasm` in every format version, so the ELF identification bytes
+0-8, the section header table's own fields, the names `.waboros.header` and `.waboros.wasm`, the
+first 32 bytes of the header (`module_sha256`) and the content of `.waboros.wasm` are frozen across
+versions (S0014, "Frozen across format versions").
 
-**Other targets.** Serialized `pyc` and `mpy` modules use the same container with their own
-`arch`/`isa` meaning (the bytecode magic / `.mpy` version) and the marshalled code object or `.mpy`
-as `CODE`; to settle in phase 2. File names: `<name>.<target>.<ext>`, e.g. `core.jit-x86_64-v1.w2a`,
-`core.pyc-cp313.w2a` (`.w2a` is a working extension).
+**Other targets.** Not in format v1. Serialized `pyc` and `mpy` modules will use the same ELF
+container with `e_machine` `EM_NONE`, the compiler target `pyc-cp313` (or `mpy-6`) and the marshal
+data or `.mpy` in a `.waboros.pyc` section (S0014 Q6); JIT loaders refuse `EM_NONE`. The extension
+is `.wbo` (S0014 Q7).
 
 ## 3. Context ABI (version 1)
 
 What compiled code expects from its host at run time. Any change to a word's meaning or position is a
 new `ctx_abi_version`; new words are only ever appended in reserved space.
 
-**Entry.** The host's `entry` (the runtime's own; `ENTRIES` holds only the compiler's bridge and
-`tail_switch`, S0015 step 4) is a C function in the host's calling convention:
+**Entry.** The host's `entry` (the runtime's own; `.waboros.trampolines` holds only the
+compiler's bridge and `tail_switch`, S0015 step 4) is a C function in the host's calling convention:
 
 ```c
 int32_t entry(uint64_t *ctx, uint64_t *frame, const void *code_of_function);
@@ -311,8 +302,8 @@ architectures before S0015 (a history): x86-64 follows the next paragraph from S
 aarch64 from step 3.* When the callee's function
 record names another context, the code jumps to `ctx[TAIL_SWITCH]` instead, with the record's address and the caller's
 return address where the architecture's table below puts them.
-The trampoline (one per process and convention, in the host's code area like the bridge) does the
-following. If that return address is its own `restore` point, it loads the record's context and jumps
+The trampoline (one copy per store and convention, S0014 "One copy per store", in the host's code
+area like the bridge) does the following. If that return address is its own `restore` point, it loads the record's context and jumps
 to its code. Otherwise it saves the current context, loads the record's context and memory words, and
 calls the code; at `restore` it puts the saved context back, reloads the memory words and returns the
 callee's status. Every return matches its call. The restore frame is 16 bytes on both
@@ -352,7 +343,7 @@ compiler.
 | exit record (bridge): `sp`, `pc` | `sp` = rsp + 8 at entry (before the `call` pushed), `pc` = `[rsp]` | `sp` = sp at the `blr`, `pc` = `x30` |
 | entry's saved block | `[rsp, rsp + 32)` at its `call`: enclosing `{sp, pc, frame}`, then its frame | `[sp + 96, sp + 128)` at its `blr`, the same four words |
 | landing pad, boundary | `endbr64` | `bti jc` (C entries, `entry`, `sp_stub`; S0015 Q5) |
-| `CODE` alignment | none | load address ≡ 0 mod 4096 (`adrp`) |
+| `.text` alignment | none | load address ≡ 0 mod 4096 (`adrp`) |
 | instruction cache | coherent | invalidate the loaded range before the first call |
 
 Compiler-private rows, keyed by the target in the header's `compiler` field, given for `jit-x86_64`

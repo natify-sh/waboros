@@ -153,7 +153,7 @@ ones (TARGETS.md).
   (today the JIT's reference locals at call sites, for the stack maps: `jit/common/liveness.py`, D65);
 * side-effect order (memory, globals, calls, traps): when a tree may stay lazy and when it must be
   materialised;
-* branch targets with arities; trap points with wasm byte offsets (for `TRAPMAP` and `Trap.frames`);
+* branch targets with arities; trap points with wasm byte offsets (for the address map of `Trap.frames`, S0014 `.waboros.traps`);
 * call graph (leaf functions, recursion, inlining candidates).
 
 **Language-neutral by design (a principle, not a goal).** HIR, LIR and the JIT artifact contain
@@ -241,7 +241,7 @@ memory without knowing the target.
   guard on the verified rows (Linux glibc x86-64 and aarch64, Linux musl x86-64, macOS x86-64 and arm64, Windows x64 and arm64, Android x86-64), explicit elsewhere (Linux musl aarch64, Android arm64), silently; `WABOROS_JIT_BOUNDS=explicit`
   opts out, `=guard` requires it. macOS (both architectures, S0006 step 3) has a handler on SIGSEGV
   and SIGBUS, verified in CI; Windows (S0006 step 4) has a vectored exception handler, and Android x86-64 (step 5) a bionic `sigaction` behind ART's `libsigchain`, verified in CI (`platforms.yml`; D47: a per-OS optimisation starts on one row and grows by exception). CoreMark: +9 % on x86-64 on a quiet machine (BENCHMARKS.md, "Guard
-  pages"; +14 % on a loaded one, the PoC measured +20–25 % on another day) and +11 % on native aarch64, 20 % less machine code. The guard flag and the fault map (`TRAPMAP`) are not serialized yet: they go into the phase-5 artifact-format spec (ARTIFACT.md). Explicit checks stay the fallback (larger offsets,
+  pages"; +14 % on a loaded one, the PoC measured +20–25 % on another day) and +11 % on native aarch64, 20 % less machine code. The guard flag and the fault map are in the artifact file (`BOUNDS_GUARD` in the header, the map in `.waboros.traps`; [S0014](specs/S0014-artifact-format.md)). Explicit checks stay the fallback (larger offsets,
   platforms without the handler yet, every access to an i64 memory, `memory64`, S0009); risks in RISKS.md, R6.
 
 ## State shared across targets
@@ -408,7 +408,7 @@ the architecture and its declared ISA level only (D23, D24). So any host compile
 waboros has, as Wasmtime's `--target` does (D35): a portable artifact made on x86-64 for aarch64 is
 loaded and run on aarch64 only, the loader refusing another architecture or a missing ISA level.
 Only explicit levels are valid for another target (`"native"` is the compiling CPU, D33). Artifact
-files come in phase 5; from phase 4 CI compares the aarch64 artifact made on x86-64 with the one made
+files are written since S0014 (`.wbo`, ELF64, D59); from phase 4 CI compares the aarch64 artifact made on x86-64 with the one made
 on the arm64 runner byte for byte. `pyc`/`mpy` artifacts belong to an interpreter version, not a CPU.
 
 ## The kernel and runtime modules

@@ -2,7 +2,7 @@
 title: Testing
 kind: reference
 status: current
-updated: 2026-11-22
+updated: 2026-11-23
 ---
 
 # Testing
@@ -90,6 +90,13 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   QEMU) must give the same results as without it (`tools/spec_diff.py` both ways: no difference),
   also with the walk check and the GC switches on `gc exceptions`. It cannot be combined with the
   switches that change code (`WABOROS_JIT_NOPIN`, `NOLIVE`, `PAD`, `LOOP_ALIGN`: `write` refuses).
+  The artifact tests (`tests/artifact/`, S0014): `test_roundtrip.py` (every module of the pinned suite
+  that the JITs compile, both JITs, both bounds modes, thin and fat, and CoreMark: the inventory's
+  fields equal, `write(read(b)) == b`, written twice identical), `test_format.py` (the bytes of each
+  payload, every constant-expression operation, a malformed file refused with a message),
+  `test_strict.py` (the pinned container layout, one refusal per rule, a byte-flip loop) and
+  `test_refuse.py` (every refusal about the header: thin refused with a message naming the field,
+  fat regenerated and run). `tools/make_v1_artifacts.py` made the committed files once.
   `tests/artifact/test_instantiate.py` instantiates from the read form directly and checks that
   `Compiled.module` and the read module have only the inventory's keys.
   `tests/artifact/test_old.py` (S0014 step 4.3) reads and runs the v1 files committed under

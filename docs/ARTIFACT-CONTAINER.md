@@ -2,12 +2,12 @@
 title: The artifact container - our own format or ELF (as Wasmtime does)
 kind: reference
 status: outdated
-updated: 2026-11-15
+updated: 2026-11-23
 ---
 
 # The artifact container: our own format or an ELF container
 
-**Decided (2026-11-15): ELF64, option (b) — [DECISIONS.md](DECISIONS.md) D59; prototype `poc/artifact/elf64.py`.** The text below is the analysis that led to it.
+**Decided (2026-11-15): ELF64, option (b) — [DECISIONS.md](DECISIONS.md) D59; prototype `poc/artifact/elf64.py`.** The text below is the analysis that led to it; the format built on it is [S0014](specs/S0014-artifact-format.md) (`.waboros.*` sections in the ELF container, `.wbo` files, written and read by the package).
 
 A question from the maintainer, for the orchestrator. It belongs to the phase-5 spec that fixes the
 artifact format (D36). **Nothing is decided here.** [ARTIFACT.md](ARTIFACT.md) part 2 describes our
@@ -151,6 +151,6 @@ level, and the bounds mode: guard or explicit, S0006).
 
 ## Also open: the guard flag and the fault map
 
-S0006 step 6 (the `BOUNDS_GUARD` flag and the fault map in `TRAPMAP` in the serialized artifact, and
+*Done by S0014: the flag is in the header and the fault map is `.waboros.traps`; the C loader's fault handler stays with the C loader.* Originally: S0006 step 6 (the `BOUNDS_GUARD` flag and the fault map in `TRAPMAP` in the serialized artifact, and
 the C loader's fault handler) moved to the phase-5 artifact-format spec, to be done with the
-container chosen here. The package builds both in memory today and writes neither to a file.
+container chosen here. At the time of writing the package built both in memory and wrote neither to a file.
