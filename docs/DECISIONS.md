@@ -1713,6 +1713,11 @@ artifact-format spec". The byte-level definition stays in S0014; this is the lis
 * **Container**: `EI_OSABI` 0xCB (Q1), `EI_ABIVERSION` is `format_version` and nowhere else (Q4),
   `e_machine` replaces `arch`, ELF64 little-endian only (D48), extension `.wbo` (Q7). `pyc` and `mpy`
   files are not in v1; later `EM_NONE` in the same container (Q6).
+* **Versions are integers, no semver** (maintainer, 2026-11-23): `format_version` (one byte) and
+  `ctx_abi_version` (u16) change only on an incompatible change; compatible amendments are bits of
+  `features_required` / `features_optional` (D66) and `isa_features`, so a loader states exactly
+  which amendments it implements, not "everything up to a minor number". Semver lives only in the
+  `compiler` string (the package version).
 * **No checksum** (Q5): the strict reader refuses truncated and malformed files, `module_sha256`
   checks the wasm of a fat file, writes are atomic. A CRC32 in the header was considered and rejected.
   `RELOCS` is absent and `SHT_REL`/`SHT_RELA` are refused; a relocating amendment takes a
