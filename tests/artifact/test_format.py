@@ -114,6 +114,7 @@ def test_every_constant_expression_operation() -> None:
     validate(m)
     gt = [0x7F, 0x7E, *(t for t, _, _ in m["globals"])]  # two imported globals, then the defined
     env = A._Env(m["tdefs"], len(m["tdefs"]), nfuncs=1, nglobals=len(gt), records=[0], gtypes=gt)
+    env.rset = frozenset([0])
     env.ftidx = m["funcs"]
     env.gmut = [0] * len(gt)
     seen: set[int] = set()

@@ -177,7 +177,7 @@ unchanged). Everything else may change with `format_version`.
 | 80 | u64 | `isa_features`: features above `isa_level` (D24, D33); the registry per architecture is empty in v1, so v1 writers write 0 |
 | 88 | u64 | `features_required`: format amendments a loader must understand (D66; registry empty in v1) |
 | 96 | u64 | `features_optional`: format amendments a loader may ignore (registry empty in v1) |
-| 104 | `str` | `compiler`: `waboros <version> <target> <target version>`, four tokens separated by one space, ASCII, e.g. `waboros 1.2.3 jit-x86_64 0` or, in a development build, `waboros 0.0.1.dev207-b9515381851a1c6b jit-x86_64 0`; `<version>` is the package version of a release, verbatim; a development build (a local part `+...`, a `.devN`, or the fallback `0.0.0`) writes the version without its local part, `-` and the first 16 hex digits of a SHA-256 over its compiler sources (Changes, 2026-11-20), `<target>` the compiler target that D64 keys the part-3 "Per architecture" table by (*amended by D70: only the compiler's rows of that table; the boundary row is per architecture*), `<target version>` the target's `version` |
+| 104 | `str` | `compiler`: `waboros <version> <target> <target version>`, four tokens separated by one space, ASCII, e.g. `waboros 1.2.3 jit-x86_64 0` or, in a development build, `waboros 0.0.1.dev207-b9515381851a1c6b jit-x86_64 0`; `<version>` is the package version of a release, verbatim; a development build (a local part `+...`, a `.devN`, or the fallback `0.0.0`) writes the version without its local part, `-` and the first 16 hex digits of a SHA-256 over its compiler sources (Changes, 2026-11-20), `<target>` the compiler target that D64 keys the part-3 "Per architecture" table by (*amended by D70: only the compiler's rows of that table; the boundary row is per architecture*), `<target version>` the target's `version`; no token is empty and `<target version>` is at most 9 decimal digits |
 
 The payload ends after `compiler`.
 
@@ -230,6 +230,10 @@ u32 ntypes         (= the sum of nmembers)
 ntypes x key       the canonical key of each type, in index order
 ```
 
+A supertype is an earlier type, and a supertype chain is at most 63 supertypes deep (the
+validator's bound and Wasmtime's); a deeper one is refused, so the walks over chains (`heap.rtt`,
+`instance.type_id`, `match`) are bounded by the format.
+
 Type indices count the members of the groups in order (the wasm type index space). A shorthand
 reference type (`funcref`, `externref`, `anyref`, ...) is written in its long form (`0x63`, its
 abstract heap type), so equal types have equal bytes. A module without GC types writes each
@@ -277,7 +281,9 @@ limits:       u8 flags (bit 0 max present, bit 1 64-bit addresses, bit 2 shared;
 Imports in module order. A shared memory (bit 2) is never written by v1 writers (the front end
 refuses shared limits); a loader that does not support threads refuses it (D58 keeps the bit and
 the size rule for the threads amendment). `page_log2` other than 16 is refused (custom page sizes
-are not supported).
+are not supported). The limits obey the validator's rules: `min` is not above `max` when present;
+a memory's `min` and `max` are at most 65536 pages (i32) or 2^48 (64-bit addresses); a table's at
+most 2^32-1 (i32) or 2^64-1 elements. This applies to imports, tables and memories alike.
 
 ### `.waboros.funcs`
 
@@ -361,6 +367,24 @@ parses. An allocation follows part 3 ("The GC heap": the type-info record of the
 their storage sizes, `ALLOCATION_TOO_LARGE` past the element-size bound) and never collects (D61's
 deviation for instantiation). The writer emits the validated expression unchanged: no folding.
 
+**Typing rules the reader applies** (the validator's, for this subset; a violation is a refusal):
+* The operand types of each operation fit its signature, bottom first: `i32.add`, `sub`, `mul` two
+  i32, the i64 ones two i64, `ref.i31` an i32, `any.convert_extern` an extern-hierarchy reference and
+  `extern.convert_any` an any-hierarchy one (never a function reference), `struct.new` one value
+  per field fitting the field's unpacked type (i32 for an i8 or i16 field), `array.new` a value fitting the element and an
+  i32 length, `array.new_default` an i32 length, `array.new_fixed` n values fitting the element;
+  the stack never underflows and holds exactly one value at the end. `ref.null` fits any nullable
+  reference type (no heap type is written).
+* The result fits its use: a global's or a table's value type (by subtyping for references), an
+  element item's element type, an active segment's offset the address type of its table or memory.
+* `global.get` names an immutable global only. A global's initializer reads imported globals and
+  the globals before it; a table's `init` reads imported globals only. `ref.func` names a function
+  that has a record (`.waboros.context`).
+* `struct.new` and `struct.new_default` name a struct type, the array operations an array type;
+  an allocation needs `.waboros.context` `heap` 1.
+* An element segment with `items` 1 whose every item is a `ref.func` is refused: the writer uses
+  `items` 0 for it.
+
 Why this form (Q9): values that depend on the instance (`global.get` of an import, `ref.func`'s
 record address, a GC allocation) cannot be precomputed, so some evaluator is needed anyway; the
 wasm bytes themselves would need LEB128, s33 heap types, prefix decoding and the GC immediate forms
@@ -378,7 +402,8 @@ u8  subtype     1: the code has a function-subtype site; the IS_SUBTYPE record m
 u16 0
 u32 nrecords,  nrecords x u32 function index   every function with a record (strictly increasing;
                                                includes every function import)
-u32 nsigs,     nsigs x u32 type index          one signature word each (strictly increasing)
+u32 nsigs,     nsigs x u32 type index          one signature word each (strictly increasing;
+                                               a function type)
 u32 nthunks,   nthunks x u32 code offset       the host thunk of each function import, in import
                                                order (nthunks = the number of function imports)
 u32 nrtts,     nrtts x u32 type index          one RTT word each (struct or array types,
@@ -386,7 +411,8 @@ u32 nrtts,     nrtts x u32 type index          one RTT word each (struct or arra
 u32 nthrown,   nthrown x u32 tag index         one RTT word each, after those (strictly increasing)
 ```
 
-`heap` 0 requires `subtype`, `nrtts` and `nthrown` 0. The context's words then follow from
+`heap` 0 requires `subtype`, `nrtts` and `nthrown` 0, and no constant expression of the module
+allocates (`struct.new`, `struct.new_default`, `array.new`, `array.new_default`, `array.new_fixed`). The context's words then follow from
 part 3 in its order: memories = imported + defined; the heap's two words when `heap`; tables =
 imported + defined; globals = imported + defined, two words for each **defined** `v128` global;
 function imports; the libcall block; `nsigs` signature words; `nrecords` records of 3 words; tags =
@@ -398,7 +424,8 @@ that has a supertype or is not final (part 3, "Type-info records").
 ### `.waboros.stackmaps`
 The `STACKMAPS` payload of ARTIFACT.md part 2, unchanged (S0013, D65): `u32 nsites`, the 16-byte
 site records sorted by `ret`, `u32 nmaps`, the pool of `refs` and `live` bitmaps. Required; a
-loader decodes it with the checks listed there and refuses one that does not parse exactly.
+loader decodes it with the checks listed there and refuses one that does not parse exactly, or whose
+sites are not strictly increasing by `ret` (a duplicate or an unsorted one).
 
 ### `.waboros.traps`
 
@@ -407,7 +434,7 @@ u32 n, n x (u32 fault_offset, u32 resume_offset)   fault_offset strictly increas
 ```
 
 The guard fault map of S0006 ("Artifact", the handler contract): `n` is 0 unless `BOUNDS_GUARD`
-is set, every offset is below `data_start`. This section holds the fault map only. The address
+is set, every offset (fault and resume) is below `data_start`. This section holds the fault map only. The address
 map for `Trap.frames` (code offset to wasm function and byte offset), which part 2 reserved in
 `TRAPMAP` after the fault map, is not produced by the compiler; when it is, it is a separate
 optional section `.waboros.addrmap` (Wasmtime's `.wasmtime.addrmap`), which older loaders skip, so
@@ -455,7 +482,7 @@ compiler, shared by stores). That copy is the store's (a foreign host: the first
 loaded into the store provides it; the waboros runtime: the copy it assembles in the process, below).
 Every later artifact's blob for that convention, and its `bridge`, `tail_switch`, `restore`
 relative to the blob's `start` and the two restore numbers, **must be byte-identical** to the
-store's copy. The loader checks this (a compare of about 150 bytes), and does not rely on the `compiler` check alone: equal
+store's copy. The loader checks this (a compare of 202 or 203 bytes on x86-64, SysV or Win64, and 236 on aarch64, measured), and does not rely on the `compiler` check alone: equal
 `compiler` strings are the writer's promise, the compare is the proof, and its failure means a
 corrupt or forged file. A mismatch is a refusal (thin) or a regeneration (fat). A copy is never
 shared between compiler strings, even when the bytes are identical: equal `HOST_BRIDGE`
@@ -520,6 +547,21 @@ as Wasmtime's `Module::deserialize` is `unsafe`. The reader's checks are against
 corruption, other versions and forged *formats*: a malformed file is refused with a message and
 never crashes the interpreter; they are not a sandbox.
 
+A context-ABI amendment (words appended in reserved space) is announced by a `features_required`
+bit (D66), so a loader that does not know it refuses the file instead of running it.
+
+**Known limitations of v1** (the step-8 review; what the reader does not check):
+* Metadata is not cross-checked against the code: code and thunk offsets, the `heap` and `subtype`
+  decisions, the per-site geometry of a stack map (`shift`, `ret_at`, `up`, `ret`). A corrupt but
+  well-formed stack map misleads the stack walk of a collection; this is the trust model above,
+  not a defect to close by checks (the file is native code anyway).
+* Declared subtyping is not validated: whether a type's `final` flag is respected by its subtypes
+  and whether a subtype's composite type matches its supertype's (the keys are checked as
+  canonical, not the relation).
+* Export names are not checked for uniqueness, and the start function's type is not checked to be
+  `[] -> []`.
+* This loader runs `isa_level` 1 only (a higher level is refused, part 1).
+
 **Order of checks** (each failure names its reason; "refuse" means a thin file is refused and a
 fat file is regenerated, below):
 1. Identification: `EI_MAG`, `EI_CLASS` 2, `EI_DATA` 1, `EI_VERSION` 1, `EI_OSABI` 0xCB. Otherwise
@@ -529,7 +571,13 @@ fat file is regenerated, below):
    section inside the file, names unique, every required section present, no `SHT_REL` or
    `SHT_RELA` section (v1 has none; one would mean code the loader cannot place). Sections with
    other names are skipped (D62; `.note.GNU-stack` or a later descriptor section need no version).
-   `sh_flags` of `.waboros.*` sections are ignored; sections are found by name (D62).
+   `sh_flags` of `.waboros.*` sections are ignored; sections are found by name (D62). The layout
+   is the writer's: an unknown section is not before `.text` and not after `.shstrtab`, known ones
+   keep their order; `.shstrtab` is exactly the section names in section order, each
+   NUL-terminated, without suffix sharing; every section's offset is the running position rounded
+   up to its alignment (a power of two), the gaps are zero bytes, and the section header table
+   follows the last section at a multiple of 8 and ends the file; each header's other fields are
+   the format's (type, address 0, link, info, entry size).
 4. `.waboros.header` parses exactly.
 5. Compatibility: `e_machine` is the running architecture (a cross-compiled artifact is never run on
    the compiling host, D35); `ctx_abi_version` is 1; the `compiler` string is the store's
@@ -905,7 +953,14 @@ When approved and implemented (step 7 unless noted):
   `RELOCS` or `CHECKSUM`), part 3's `.text` alignment row and `tail_switch` wording; D73 records the
   decisions; S0006, S0013, ARCHITECTURE.md, ARTIFACT-CONTAINER.md, README.md, TESTING.md and ROADMAP.md
   follow. Open for step 8: the spec suite through files runs in no CI job (Test plan note).
+  *(2026-11-23: now run, by the ci.yml `spec` and `arm64` jobs, with `WABOROS_JIT_ARTIFACT=1`.)*
 
+* Step 8 done (2026-11-23): an independent review of the reader, the frozen part, the refusals,
+  `cexpr` evaluation and determinism (fuzzing: every truncation of 12 files, byte flips,
+  field-targeted and header mutations; every failure an `ArtifactError`, every accepted payload
+  flip written back to the same bytes). Its findings are closed in the reader with a test each
+  (`tests/artifact/test_review.py`; Changes, 2026-11-23); a re-review confirmed them closed. What
+  the reader does not check is under "Known limitations of v1".
 ## Changes
 * 2026-11-17: created (draft).
 * 2026-11-17: the maintainer's answers: Q1, Q3, Q4, Q6-Q12 decided as recommended; Q2 decided (b),
@@ -1084,3 +1139,10 @@ When approved and implemented (step 7 unless noted):
   S0015 tests. No format change.
 * 2026-11-23: step 7 (docs): Test plan notes on what was built for "the spec suite through files" and
   "Determinism" (`tools/artifact_dump.py`, the `platforms.yml` jobs); D73 added to `related`.
+* 2026-11-23: step 8 review findings closed in the reader (no change to what the writer emits):
+  a supertype chain deeper than 63, a resume offset not below `data_start`, duplicate or unsorted
+  stack-map sites, an empty or over-long compiler-string token, an allocating constant expression
+  with `heap` 0, limits the validator refuses (`min` > `max`, memory above 65536 / 2^48 pages,
+  table above 2^32-1 / 2^64-1), and a signature word that is not a function type are refused;
+  the function-record membership test is a set. The typing rules of constant expressions, the
+  container rules and the "Known limitations of v1" are in the normative sections (above).

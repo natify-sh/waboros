@@ -45,6 +45,7 @@ BIN_NAME = {v: k for k, v in BIN.items()}
 GC_NONE, GC_TYPE = (0xFB1A, 0xFB1B, 0xFB1C), (0xFB00, 0xFB01, 0xFB06, 0xFB07)  # immediates
 GC_POPS = {0xFB06: 2, 0xFB07: 1, 0xFB01: 0}  # operands; struct.new takes one per field
 M32, M64 = 0xFFFFFFFF, (1 << 64) - 1
+MAX_PAGES, MAX_PAGES64 = 65536, 1 << 48  # as the validator's limits
 # the type of `ref.null`: the file has no heap type for it, so it fits any nullable reference
 NULLREF = "nullref"
 # section names in file order (S0014 "File layout")
@@ -472,6 +473,8 @@ class _Env:
     gmax: int | None = None  # a global's initializer reads imported and earlier globals only
     ntags: int = 0
     records: list[int] | None = None
+    heap: int = 1  # `.waboros.context` heap: 0 forbids the allocating operations
+    rset: Any = frozenset()  # the same, for lookups
     gtypes: list[Any] = dc_field(default_factory=list)  # value type of every global so far
     gmut: list[int] = dc_field(default_factory=list)  # mutability of each
     ftidx: list[int] = dc_field(default_factory=list)  # type index of every function so far
@@ -488,7 +491,7 @@ class _Env:
     def func_ref(self, r: _R) -> int:
         """A function index that `ref.func` may name: in range and with a record."""
         i = r.index(self.nfuncs, "function")
-        if self.records is not None and i not in self.records:
+        if self.records is not None and i not in self.rset:
             r.fail(f"function {i} has no record")
         return i
 
@@ -521,6 +524,7 @@ def _parse_types(r: _R) -> tuple[dict[str, Any], list[bytes]]:
     td: list[Any] = []
     types: list[Any] = []
     pend: list[int] = []
+    dep: list[int] = []  # supertype depth of each type: at most 63, as the validator and Wasmtime
 
     def field() -> Any:
         b = r.b[r.p] if r.p < r.e else -1
@@ -545,6 +549,9 @@ def _parse_types(r: _R) -> tuple[dict[str, Any], list[bytes]]:
                 if s >= gs + len(group):
                     r.fail(f"supertype {s} is not before its type {gs + len(group)}")
                 sup = (s,)
+                if dep[s] >= 63:
+                    r.fail(f"the supertype chain of type {gs + len(group)} is deeper than 63")
+            dep.append(dep[sup[0]] + 1 if sup else 0)
             form = r.u8()
             if form == 0x60:
                 ps = [_vt_r(r, None, pend) for _ in range(r.count(1))]
@@ -584,7 +591,11 @@ def _limits_r(r: _R, page: int) -> tuple[int, int | None, int]:
         r.fail(f"limits flags {fl:#x} are not supported")
     if log2 != page or (not fl & 1 and mx):
         r.fail("bad page size or a maximum without the flag")
-    return mn, mx if fl & 1 else None, I64 if fl & 2 else I32
+    mx = mx if fl & 1 else None
+    cap = (MAX_PAGES64 if fl & 2 else MAX_PAGES) if page else (M64 if fl & 2 else M32)
+    if mn > cap or (mx is not None and (mx > cap or mx < mn)):
+        r.fail("limits: a size above the maximum of its kind, or a minimum above the maximum")
+    return mn, mx, I64 if fl & 2 else I32
 
 
 def _cexpr_r(r: _R, env: _Env, want: Any = None) -> Any:
@@ -656,6 +667,8 @@ def _cexpr_r(r: _R, env: _Env, want: Any = None) -> Any:
                 want_kind = "struct" if op in (0xFB00, 0xFB01) else "array"
                 if comp[0] != want_kind:
                     sub.fail(f"type {ti} is not a {want_kind} type")
+                if not env.heap:
+                    sub.fail("an allocation in a module without the heap")
                 n = sub.u32() if op == 0xFB08 else GC_POPS.get(op, len(comp[1]))
                 if n > len(st):
                     sub.fail("the operand stack underflows")
@@ -824,7 +837,8 @@ def _head(b: bytes) -> tuple[dict[str, bytes], SimpleNamespace]:
     compiler = h.text()
     h.done()
     parts = compiler.split(" ")
-    if len(parts) != 4 or parts[0] != "waboros" or not parts[3].isdigit() or not compiler.isascii():
+    if (len(parts) != 4 or not all(parts) or parts[0] != "waboros" or not compiler.isascii()
+        or not parts[3].isdigit() or len(parts[3]) > 9):  # fmt: skip
         h.fail("the compiler string is not 'waboros <version> <target> <target version>'")
     if TARGETS.get(parts[2], (0,))[0] != mach:
         h.fail(f"compiler target {parts[2]} does not match the ELF machine {mach}")
@@ -923,7 +937,7 @@ def read(b: bytes) -> ModuleView:
     records = ids("function", env.nfuncs)
     if records[:nfimp] != list(range(nfimp)):
         r.fail("a function import has no record")
-    sigs = ids("type", nt)
+    sigs = ids("type", nt, kind=("func",))
     thunks = [r.u32() for _ in range(r.count(4))]
     if len(thunks) != nfimp or any(o >= data_start for o in thunks):
         r.fail("the thunks are not one per function import below data_start")
@@ -932,7 +946,7 @@ def read(b: bytes) -> ModuleView:
     r.done()
     if not heap and (rtts or thrown):
         r.fail("rtts or thrown tags without the heap")
-    env.records = records
+    env.records, env.rset, env.heap = records, frozenset(records), heap
     # tables, memories, globals
     r = _R(s["tables"], ".waboros.tables")
     env.gmax = nimpg  # a table's initial value reads imported globals only
@@ -1025,8 +1039,10 @@ def read(b: bytes) -> ModuleView:
     if faults and not flags & 1:
         r.fail("a fault map without BOUNDS_GUARD")
     fo = [f for f, _ in faults]
-    if any(f >= data_start for f in fo) or any(a >= b for a, b in zip(fo, fo[1:], strict=False)):
-        r.fail("fault offsets are not increasing and below data_start")
+    if any(x >= data_start for f in faults for x in f) or any(
+        a >= b for a, b in zip(fo, fo[1:], strict=False)
+    ):
+        r.fail("fault and resume offsets are not below data_start, or fault offsets not increasing")
     wasm = s.get("wasm")
     if wasm is not None and hashlib.sha256(wasm).digest() != msha:
         raise ArtifactError(".waboros.wasm: its SHA-256 is not module_sha256")

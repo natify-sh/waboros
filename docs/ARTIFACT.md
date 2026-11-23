@@ -113,14 +113,20 @@ stored once. Every call site has a record, a module without any reference type t
 site: CoreMark 115 sites, 1 848 bytes on both JITs since S0015, no map). The two-bitmap form (S0013 step 7.1) also
 amended version 1 without a bump; instantiation decodes the table with checks and refuses
 (`ValueError`) one that does not parse exactly, has a map index past the pool or a `live` bit
-outside `refs`, so a table in step 3a's one-bitmap form with a map is refused in the shapes tested, not by
+outside `refs` or whose sites are not strictly increasing by `ret`, so a table in step 3a's one-bitmap form with a map is refused in the shapes tested, not by
 contract: the table has no version field, and a 3a table can be built that parses (the 7.2 review);
 versioning is the artifact format's: one `format_version` for the whole file, no per-section
 version, amendments inside a version through feature flags (D66). One without
 a map, the same bytes in both forms, still runs. The trampolines' own points (the entry's return point and its saved block, `tail_switch`'s
 `restore` frame) are part 3's, not this section's.
 
-Strings are UTF-8 with a u32 length prefix. A loader refuses an artifact whose ELF identification,
+Strings are UTF-8 with a u32 length prefix. The reader's further checks (S0014 has the full text):
+a supertype chain is at most 63 deep; limits obey the validator's (`min` <= `max`, memories at most
+65536 pages or 2^48 for 64-bit addresses, tables at most 2^32-1 or 2^64-1); the signature words are
+function types; every `resume_offset` of the fault map is below `data_start`; stack-map sites are
+strictly increasing by `ret`; no constant expression allocates when `heap` is 0; no token of the
+`compiler` string is empty. Metadata is not cross-checked against the code (S0014, "Known
+limitations of v1"). A loader refuses an artifact whose ELF identification,
 `format_version` (`EI_ABIVERSION`), `ctx_abi_version`, `e_machine` or ISA it does not support, or whose `compiler`
 string is not the store's (D70: until phase 6 the exact string, which is the cache key; from
 phase 6 the rule follows the architecture, `format_version` and `ctx_abi_version`, S0015
@@ -144,7 +150,8 @@ is `.wbo` (S0014 Q7).
 ## 3. Context ABI (version 1)
 
 What compiled code expects from its host at run time. Any change to a word's meaning or position is a
-new `ctx_abi_version`; new words are only ever appended in reserved space.
+new `ctx_abi_version`; new words are only ever appended in reserved space, and such an amendment
+is announced by a `features_required` bit (D66), so an older loader refuses the file.
 
 **Entry.** The host's `entry` (the runtime's own; `.waboros.trampolines` holds only the
 compiler's bridge and `tail_switch`, S0015 step 4) is a C function in the host's calling convention:

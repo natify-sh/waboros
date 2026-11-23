@@ -94,7 +94,10 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   that the JITs compile, both JITs, both bounds modes, thin and fat, and CoreMark: the inventory's
   fields equal, `write(read(b)) == b`, written twice identical), `test_format.py` (the bytes of each
   payload, every constant-expression operation, a malformed file refused with a message),
-  `test_strict.py` (the pinned container layout, one refusal per rule, a byte-flip loop) and
+  `test_strict.py` (the pinned container layout, one refusal per rule, a byte-flip loop),
+  `test_review.py` (one refusal per finding of the S0014 step-8 review: supertype depth, resume
+  offsets, stack-map site order, compiler-string tokens, allocation without the heap, limits,
+  signature types; and the reader's linear time on long chains and many records) and
   `test_refuse.py` (every refusal about the header: thin refused with a message naming the field,
   fat regenerated and run). `tools/make_v1_artifacts.py` made the committed files once.
   `tests/artifact/test_instantiate.py` instantiates from the read form directly and checks that

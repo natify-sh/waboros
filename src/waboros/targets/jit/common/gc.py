@@ -167,8 +167,12 @@ def decode(data: bytes) -> dict[int, SiteMap]:
         for _ in range(nmaps):
             (ns,) = struct.unpack_from("<I", data, at)
             w = (ns + 31) // 32
-            words = struct.unpack_from(f"<{2 * w}I", data, at + 4)
-            refs, live = (sum(x << 32 * i for i, x in enumerate(words[h : h + w])) for h in (0, w))
+            if at + 4 + 8 * w > len(data):
+                raise struct.error(f"map {len(maps)} needs {8 * w} bytes")
+            refs, live = (
+                int.from_bytes(data[at + 4 + 4 * h : at + 4 + 4 * (h + w)], "little")
+                for h in (0, w)
+            )
             if not refs or refs >> ns or live & ~refs:
                 raise ValueError(f"STACKMAPS: map {len(maps)} is not (refs, live ⊆ refs)")
             maps.append((ns, refs, live))
@@ -177,6 +181,8 @@ def decode(data: bytes) -> dict[int, SiteMap]:
         raise ValueError(f"STACKMAPS: truncated ({e})") from None
     if at != len(data) or any(r[4] > nmaps for r in raw):
         raise ValueError("STACKMAPS: trailing bytes or a map index past the pool")
+    if any(a[0] >= b[0] for a, b in zip(raw, raw[1:], strict=False)):
+        raise ValueError("STACKMAPS: the sites are not strictly increasing by return offset")
     return {ret: (shift, ret_at, up, *maps[k]) for ret, shift, ret_at, up, k in raw}
 
 
