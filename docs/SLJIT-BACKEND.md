@@ -2,7 +2,7 @@
 title: sljit as a backend for the long tail - our core over sljit, as a micro-compiler
 kind: reference
 status: draft
-updated: 2026-11-04
+updated: 2026-11-23
 ---
 
 # sljit as a backend for the long tail: our core over sljit, as a micro-compiler
@@ -67,10 +67,23 @@ D39 is already shaped like sljit: three-operand ops, compares fused with branch 
 | `cmp_branch` / `cmp_set` | `sljit_emit_cmp` / `sljit_emit_op2u` + `sljit_emit_op_flags` |
 | explicit bounds check, trap | compare + jump to a shared trap label (D29: new architectures use explicit checks; no signal handler) |
 | direct call / `call_indirect` / libcalls | `sljit_emit_call` / `sljit_emit_icall` |
-| trampolines (entry, host bridge) | generated with sljit itself (`emit_enter`, `emit_icall`) |
+| trampolines (host bridge, `tail_switch` if any) | generated with sljit itself (`emit_enter`, `emit_icall`); the `entry` is the runtime's (S0015) |
+| C entry of every function and host thunk | the function itself: sljit's functions are C functions, so a record's `code` is the function (S0015, D70) |
 
 The context ABI, trap codes, libcalls and artifact format stay the same, so the same loader and the
 same behaviour hold on every architecture.
+
+**At the boundary** ([S0015](specs/S0015-boundary-convention.md), D70): a sljit compiler's
+functions are its C entries, `int32_t f(ctx, frame)` in the architecture's convention, so a call
+through a function record needs no stub and a C entry has no internal call, hence no site of shift
+0. Tail calls across the boundary are sibling jumps (form 2a): `SLJIT_CALL_RETURN` to the record's
+C entry, with no `tail_switch` (word 9 stays 0) and no private status. What the compiler must add
+to sljit is S0015's "What sljit-based compilers must add" (D60's patch set): `ret_at` and `up`
+per site, `SLJIT_CONFIG_X86_CET=1`, a native frame of at most about 768 bytes before the first
+`NSTACK_LIMIT` check, on aarch64 a `bti jc` custom word at the start of every C entry (no change to
+`SLJIT_CALL_RETURN`'s `x9`), and one configuration for every OS. Its internal register map stays
+its own (D70): sljit keeps `ctx` in `rbx`, which the boundary preserves. Nothing is built yet:
+the sljit gate of S0015 ("Measurements") is the only evidence.
 
 ### D39 is our LIR vocabulary; sljit is its second consumer
 

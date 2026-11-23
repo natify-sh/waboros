@@ -2,7 +2,7 @@
 title: Architecture
 kind: reference
 status: current
-updated: 2026-11-22
+updated: 2026-11-23
 ---
 
 # Architecture
@@ -382,7 +382,7 @@ Like Wasmtime's cache (and `Module.serialize`), compiled artifacts are kept on d
   architecture, ABI and CPU features the code assumes.
 * **Content**: `pyc` → the marshalled code object (exactly what a `.pyc` holds) plus metadata;
   `mpy` → the `.mpy`; JIT → the artifact of [ARTIFACT.md](ARTIFACT.md) (position-independent code,
-  entry trampolines per calling convention, tables, segments; declared ISA level and context ABI).
+  the compiler's bridge and `tail_switch` and a C entry per function, tables, segments; declared ISA level and context ABI).
 * **Where**: `$XDG_CACHE_HOME/waboros` (or the platform's equivalent, computed with stdlib only); atomic
   writes (temp file + `os.replace`); a size limit with LRU eviction; `waboros cache` in the CLI.
 * `Module.serialize()` / `deserialize()` write and read the same artifact format, so a module can
@@ -416,7 +416,7 @@ on the arm64 runner byte for byte. `pyc`/`mpy` artifacts belong to an interprete
 The direction (maintainer, 2026-11-10): a small native **kernel** that can do almost nothing, and
 everything else as wasm modules that run inside it and cannot reach past the memory they are given.
 The kernel is what cannot be done otherwise: allocate memory, run machine code, catch a trap, call
-the host (the context ABI, a few services, the bridge and the entry trampolines). The rest is
+the host (the context ABI, a few services, the runtime's `entry` and each compiler's bridge). The rest is
 runtime modules under D54 ([RUNTIME-MODULES.md](RUNTIME-MODULES.md)): the GC collector first (S0013),
 then the decoder and validator (instantiation and the segment libcalls stay host code, D72), later the compilers
 themselves ([JIT-AS-WASM.md](JIT-AS-WASM.md)) and WASI's computing part. A new host (the C loader of

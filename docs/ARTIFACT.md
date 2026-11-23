@@ -2,7 +2,7 @@
 title: JIT artifact, ISA levels and the context ABI
 kind: reference
 status: current
-updated: 2026-11-22
+updated: 2026-11-23
 ---
 
 # JIT artifact, ISA levels and the context ABI
@@ -59,6 +59,11 @@ Rules:
   ctypes on Linux/Android, `sysctlbyname("hw.optional.*")` on macOS, `IsProcessorFeaturePresent` on
   Windows. Hosts in other languages do the equivalent.
 
+A host also supplies `entry` as machine code of its own (S0015, D70): the file holds none. Part 3's
+"Entry" is its contract, and S0015's appendix gives a reference listing per architecture and
+convention. The appendix plan: hex bytes of each listing, for hosts without an assembler (Dart FFI,
+LuaJIT).
+
 ## 2. Artifact format (version 1)
 
 A little-endian binary container. Self-contained: a host needs **no wasm parser** to instantiate it.
@@ -105,7 +110,7 @@ Wasmtime does; see [ARTIFACT-CONTAINER.md](ARTIFACT-CONTAINER.md) (maintainer's 
 **`STACKMAPS`** (S0013 step 3a; added to version 1 without a bump, as no artifact file has been
 written, S0013 Q5). Little-endian: `u32 nsites`; per site, sorted by `ret`: `u32 ret` (the code
 offset of the return address of a call), `u32 shift` (slots from this frame's base to the callee's:
-0 for a host or service call and in a host thunk), `u16 ret_at` (bytes from the stack pointer at the
+0 for a host or service call, in a host thunk and for a C entry's call into its body), `u16 ret_at` (bytes from the stack pointer at the
 call, before x86-64's `call` pushes, to this frame's own return address), `u16 up` (bytes from that
 stack pointer to the caller's stack pointer at its own call), `u32 map` (0: no reference slot; k:
 the k-th map of the pool); then `u32 nmaps` and per map `u32 nslots`, `ceil(nslots / 32)` u32
@@ -128,12 +133,14 @@ a map, the same bytes in both forms, still runs. The trampolines' own points (th
 
 Strings are UTF-8 with a u32 length prefix. A loader refuses an artifact whose `magic`,
 `format_version` major, `ctx_abi_version`, `arch` or ISA it does not support, or whose `compiler`
-target is not the Store's compiler (D64) — it never "tries".
+string is not the store's (D70: until phase 6 the exact string, which is the cache key; from
+phase 6 the rule follows the architecture, `format_version` and `ctx_abi_version`, S0015
+"Compatibility") — it never "tries".
 `Module.serialize()` writes this format; the cache stores it.
 
 **Thin and fat files (D18).** A thin file (no `WASM` section) is refused on any mismatch. A fat file is
 never refused: when the loader cannot use the code — another waboros or target version, another
-compiler target than the Store's (D64), another ISA level, a compiler version on the known-bad list, a format it does not know — it checks that the
+compiler string than the store's (D70; phase 6 relaxes it to the architecture's rule), another ISA level, a compiler version on the known-bad list, a format it does not know — it checks that the
 embedded wasm matches `module_sha256` and regenerates from it. For this the loader must be able to
 read the header and find section 14 in every format version, so the header prefix (`magic`,
 `format_version`) and the section framing are frozen across versions.
@@ -197,10 +204,10 @@ the phase-3 meaning of each word and the register roles are in [S0003](specs/S00
 | 6 | `NSTACK_LIMIT` | host → code | lowest native stack address allowed → `STACK_OVERFLOW` |
 | 7 | `HOST_ERROR` | host → code | the status of the current host call: the bridge presets 13, the host function writes its status last (D34) |
 | 8 | `HOST_BRIDGE` | host → code | address of the host-call bridge for the host's calling convention; one copy per compiler, so `jit-x86_64` also compares it to recognise a context of its own code (D71, from S0015 step 1); a copy is never shared between compiler strings, even with identical bytes: equal addresses mean the same compiler string and internal convention |
-| 9 | `TAIL_SWITCH` | host → code | address of the cross-context tail-call trampoline (below; D30) |
+| 9 | `TAIL_SWITCH` | host → code | address of the cross-context tail-call trampoline (below; D30) of the context's own compiler (S0015, D70); 0 for a compiler that has none (it jumps to a foreign C entry itself, S0015 "Tail calls", form 2a) |
 | 10 | `EXCEPTION` | host → code | address of the store's pending-exception word: the exnref of the exception in flight, valid only while status 14 propagates (S0012); from S0013 step 6.2 it holds 0 or the zero-extended u32 heap offset of the last exception thrown, and the word is a root of every collection |
 | 11-13 | reserved | | zero (S0013 step 6.3; the exception arena's refill service, cursor and limit until then, S0012; an amendment of v1 without a bump, Q5) |
-| 14 | `EXIT_RECORD` | host → code | address of the store's exit record `{sp, pc, frame}` of the innermost host call: the bridge writes it before the host runs (the calling frame's stack pointer at its call, the return address, the frame register) and clears `sp` after; every entry keeps the enclosing record and its frame on the native stack during its call and puts the record back (S0013; an amendment of v1 without a bump, Q5) |
+| 14 | `EXIT_RECORD` | host → code | address of the store's exit record `{sp, pc, frame}` of the innermost host call: the bridge writes it before the host runs (the calling frame's stack pointer at its call, the return address, the frame base of the calling wasm frame, the base its site's map refers to) and clears `sp` after; every entry keeps the enclosing record and its frame on the native stack during its call and puts the record back (S0013; an amendment of v1 without a bump, Q5) |
 | 15 | reserved | | zero |
 | 16 … | per memory *i*: `base`, `size_bytes` (2 words) | host ↔ code | imported memories first; an i32 memory's base never moves (4 GiB + 32 MiB reserved, committed on grow; S0006); an i64 memory's base and `size_bytes` may both change during any host call or libcall (a `memory.grow` that moves it; D50, S0009: an amendment of v1 without a bump), so code keeps neither across a call: code that keeps a memory in registers (x86-64: memory 0 in r13/r14; aarch64: x26/x25) reloads them after every host call (and, from S0015 steps 1 and 3, after every call through a function record: a callee may grow an imported memory), any other memory is read here at each access |
 | … | the GC heap: `base`, `size_bytes` (2 words), right after the module's memories | host ↔ code | only in a module that uses GC (GC types or instructions, or a `call_indirect` / `return_call_indirect` to a non-final type; S0013 step 3b, an amendment of v1 without a bump, Q5) or, from S0013 step 6.1, allocates or reads exception objects (a `throw`, or a `try_table` with a `catch` or `catch_ref` clause; a module with only `throw_ref` and `catch_all(_ref)` has none): the store's heap, an i32 memory (4 GiB + 32 MiB reserved, never moves) that `memory.size`, `memory.grow` and the libcall immediates do not count; a module without memories of its own has it as memory 0 (r13/r14, x26/x25). `size_bytes` is the highest committed end; the heap's regions are committed apart, so gaps below it are uncommitted and no code addresses them (D69, an amendment of v1 without a bump) |
@@ -213,7 +220,7 @@ the phase-3 meaning of each word and the register roles are in [S0003](specs/S00
 | … | per tag *t*: 1 word | host → code | the tag's identity: non-zero, unique in the process, imported tags first; an imported tag has its exporter's value, so a `catch` compares identities, never indices (S0012) |
 | … | the GC group: 8 service words | host → code | a module with the GC heap only (above; S0013 step 3b), runtime services with the libcall signature, in this order (operands, then immediates, in slots): 0 `ALLOC` (`[bytes]`: room past the cursor; the code bumps it when it retries), 1 `ARRAY_NEW` (`[value low, high, n, type]` → object), 2 `ARRAY_NEW_DATA` and 3 `ARRAY_NEW_ELEM` (`[offset, n, type, segment]` → object), 4 `ARRAY_FILL` (`[array, i, value low, high, n, type]`), 5 `ARRAY_INIT_DATA` and 6 `ARRAY_INIT_ELEM` (`[array, d, s, n, type, segment]`), 7 reserved, zero (`FUNC_SUBTYPE` until S0013 step 5.6; no code uses it). An element value is always two words (a scalar's second is 0) |
 | … | per RTT *k*: 1 word | host → code | a module with the GC heap only: the offset in the heap of the type-info record of each struct or array type the code allocates inline or casts to (equal for equivalent types of every module of the store), then (S0013 step 6.1) of the exception record of each tag the code throws (by tag index; tags of equal type share the record) |
-| … | `IS_SUBTYPE`: 3 words | host → code | a module with the GC heap only (S0013 step 5.6, an amendment of v1 without a bump, Q5: appended, no word moves): a function record `{code, 0, context}` of the collector module's `is_subtype(q, t: i64) -> i32` in the store's collector instance (x86-64 from S0015 step 1: `code` is its C entry); written when the module's code has a function-subtype site (below), else zero |
+| … | `IS_SUBTYPE`: 3 words | host → code | a module with the GC heap only (S0013 step 5.6, an amendment of v1 without a bump, Q5: appended, no word moves): a function record `{code, 0, context}` of the collector module's `is_subtype(q, t: i64) -> i32` in the store's collector instance (from S0015 steps 1 and 3: `code` is its C entry); written when the module's code has a function-subtype site (below), else zero |
 
 Offsets of the variable part follow from the counts in the artifact, in exactly this order.
 
@@ -271,9 +278,10 @@ entry (equality was tested already) and traps on a malformed record.
 value as for entries; the function writes its results to `slots[0..m)`, then, as its last action, its
 status to `ctx[HOST_ERROR]`: `0`, a trap code, or `13` `HOST_ERROR` (the host keeps the actual
 exception). Its C return value is ignored (D34). Compiled code calls it through the bridge
-(`ctx[HOST_BRIDGE]`), which saves the pool registers the host convention lets a callee clobber,
-presets `ctx[HOST_ERROR]` to 13, returns the word as the call's status and puts back the word's
+(`ctx[HOST_BRIDGE]`), which saves what its compiler needs kept (private to the compiler since S0015), presets `ctx[HOST_ERROR]` to 13, returns the word as the call's status and puts back the word's
 previous value (an enclosing host call's preset): a host function that does not finish fails the call.
+A host function writes only `0`, a public trap code or `13` into `HOST_ERROR`, so no private status
+leaves through a bridge (S0015).
 A host function may enter wasm again; the nested entry's frame starts at `slots + max(n, m)`, right
 above the call's slots, so no value-stack slot above them survives the call. Compiled code keeps
 nothing it reads after a host call there (S0013 B1; the core asserts it at every call site; an
@@ -332,10 +340,11 @@ bytes: the real return address 8 above the stack pointer of that `bl`, the calle
 80 above it.
 
 **Per architecture** (S0004, D38; an amendment of version 1, which phase 5 fixes): what a host that
-provides the bridge or the tail-call trampoline itself must follow. The table is per compiler and
-architecture, keyed by the target in the header's `compiler` field (D64): the columns below are
-`jit-x86_64` and `jit-aarch64`; another compiler (a sljit micro-compiler) states its own table, and
-a host providing the bridge or `tail_switch` follows the table of its Store's compiler. Everything
+provides the bridge or the tail-call trampoline itself must follow. The boundary row is per
+architecture and the same for every compiler (S0015, D70); the other rows (bridge, `tail_switch`,
+exit record, the compiler's own landing pads) belong to a compiler, keyed by the target in the
+header's `compiler` field: the columns below are `jit-x86_64` and `jit-aarch64`; another compiler
+(a sljit micro-compiler) states its own. Everything
 else in this part is the same 64-bit little-endian words for every architecture and compiler.
 
 | | x86-64 | aarch64 |
@@ -346,7 +355,8 @@ else in this part is the same 64-bit little-endian words for every architecture 
 | `tail_switch` | record in `rdx`, return address at `[rsp]`; the first hop and the hops from `restore`, never one from a C entry; restore frame 64 bytes (S0015 step 1, D71) | record in `x16`, return address in `x30`; the same hops; restore frame 80 bytes (S0015 step 3) |
 | exit record (bridge) | `sp` = rsp + 8 at entry (before the `call` pushed), `pc` = `[rsp]`, `frame` = `r12` | `sp` = sp at the `blr`, `pc` = `x30`, `frame` = `x27` |
 | entry's saved block | `[rsp, rsp + 32)` at its `call`: enclosing `{sp, pc, frame}`, then its frame | `[sp + 96, sp + 128)` at its `blr`, the same four words |
-| landing pad | `endbr64` | `bti jc` at the boundary (C entries, `entry`, `sp_stub`; S0015 Q5), `bti c` (bodies, bridge, `tail_switch`), `bti j` (jump-table pads) |
+| landing pad, boundary (per architecture) | `endbr64` | `bti jc` (C entries, `entry`, `sp_stub`; S0015 Q5) |
+| landing pad, the compiler's own | `endbr64` | `bti c` (bodies, bridge, `tail_switch`), `bti j` (jump-table pads) |
 | `CODE` alignment | none | load address ≡ 0 mod 4096 (`adrp`) |
 | instruction cache | coherent | invalidate the loaded range before the first call |
 

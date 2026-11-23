@@ -6,7 +6,7 @@ status: approved
 superseded_by:
 related: [D18, D23, D24, D29, D33, D35, D36, D44, D48, D54, D58, D59, D60, D61, D62, D63, D64, D65, D66, D70, R2, R3, R6, S0003, S0006, S0013, S0015]
 owner: maintainer
-updated: 2026-11-22
+updated: 2026-11-23
 ---
 
 # S0014 JIT artifact format v1 in the ELF64 container
@@ -177,7 +177,7 @@ unchanged). Everything else may change with `format_version`.
 | 80 | u64 | `isa_features`: features above `isa_level` (D24, D33); the registry per architecture is empty in v1, so v1 writers write 0 |
 | 88 | u64 | `features_required`: format amendments a loader must understand (D66; registry empty in v1) |
 | 96 | u64 | `features_optional`: format amendments a loader may ignore (registry empty in v1) |
-| 104 | `str` | `compiler`: `waboros <version> <target> <target version>`, four tokens separated by one space, ASCII, e.g. `waboros 1.2.3 jit-x86_64 0` or, in a development build, `waboros 0.0.1.dev207-b9515381851a1c6b jit-x86_64 0`; `<version>` is the package version of a release, verbatim; a development build (a local part `+...`, a `.devN`, or the fallback `0.0.0`) writes the version without its local part, `-` and the first 16 hex digits of a SHA-256 over its compiler sources (Changes, 2026-11-20), `<target>` the compiler target that D64 keys the part-3 "Per architecture" table by, `<target version>` the target's `version` |
+| 104 | `str` | `compiler`: `waboros <version> <target> <target version>`, four tokens separated by one space, ASCII, e.g. `waboros 1.2.3 jit-x86_64 0` or, in a development build, `waboros 0.0.1.dev207-b9515381851a1c6b jit-x86_64 0`; `<version>` is the package version of a release, verbatim; a development build (a local part `+...`, a `.devN`, or the fallback `0.0.0`) writes the version without its local part, `-` and the first 16 hex digits of a SHA-256 over its compiler sources (Changes, 2026-11-20), `<target>` the compiler target that D64 keys the part-3 "Per architecture" table by (*amended by D70: only the compiler's rows of that table; the boundary row is per architecture*), `<target version>` the target's `version` |
 
 The payload ends after `compiler`.
 
@@ -445,7 +445,10 @@ size, the ids, the reserved bytes, the placement and the ranges, then compares. 
 blobs only through this payload, never through a symbol (D62). Sizes and the file growth are in
 BENCHMARKS.md, "Artifact size".
 
-**One copy per store.** The frame walk recognises the entry's return point and `tail_switch`'s
+**One copy per store.** *(Amended by S0015, D70, 2026-11-23: the rule now covers the compiler's
+blob; the entry is the runtime's and not in the file, the walk knows the set of entries and the
+restore points of each compiler present, and the copy is per compiler string, as the last
+sentence says.)* The frame walk recognises the entry's return point and `tail_switch`'s
 `restore` by address, and `tail_switch` checks for its own `restore`, so every instance of a store
 runs on one copy of the trampolines of the host's convention (part 3; D64 item 5 allows one copy per
 compiler, shared by stores). That copy is the store's (a foreign host: the first module artifact
@@ -529,8 +532,10 @@ fat file is regenerated, below):
    `sh_flags` of `.waboros.*` sections are ignored; sections are found by name (D62).
 4. `.waboros.header` parses exactly.
 5. Compatibility: `e_machine` is the running architecture (a cross-compiled artifact is never run on
-   the compiling host, D35); `ctx_abi_version` is 1; the `compiler` target is the store's compiler
-   (D64) and its versions are acceptable (Q3); `isa_level` and every `isa_features` bit are known
+   the compiling host, D35); `ctx_abi_version` is 1; the `compiler` string is the store's
+   (*D70: until phase 6; from phase 6 the architecture, `format_version` and `ctx_abi_version`
+   decide, S0015 "Compatibility", and the trampoline compare of step 6 moves from `read` to store
+   attach*; D64's "the store's compiler" is gone) and its versions are acceptable (Q3); `isa_level` and every `isa_features` bit are known
    and present on the CPU (part 1; the message names the missing features); every `flags` bit is
    known; `BOUNDS_GUARD` only where this host can run guard code (S0006: a handler for its row,
    installed and ours, and a guard at least `2^GUARD_LOG2`); every `features_required` bit is known.
@@ -591,6 +596,10 @@ authoritative (D18).
   any convention differs by one byte (or whose `bridge`, `restore` or restore numbers are moved) is refused thin and regenerated fat; in a C-style test of the
   store rule, two artifacts loaded into one store share the first one's copy and a cross-instance
   tail call and a walk across both work.
+  S0015 step 4's tests are `tests/artifact/test_trampolines.py` (the 28-byte layout, no runtime
+  trampoline and no global symbol in the file, one copy per store) and `tests/artifact/test_old.py`
+  (the pre-S0015 fixtures refused, the new `v1-s15-*` files run); the compare at store attach
+  waits for phase 6.
 * **The spec suite through files**: `WABOROS_JIT_ARTIFACT=1 uv run python -m tests.spec.run
   --engine jit-x86_64` (every compiled module written, read back and instantiated from the read
   form, with no `ValidModule` behind it), both bounds modes, with `WABOROS_JIT_WALK_CHECK=1` and
@@ -674,7 +683,9 @@ bytes); step 2 measures it.
   artifacts) and **no trampolines in any artifact** (foreign hosts write their own from part 3):
   rejected in Q2.
 * **The trampolines are the runtime's, and no artifact carries them** (Q2 (c), seen from the
-  runtime's side; considered again and rejected 2026-11-21): the trampolines belong to the
+  runtime's side; considered again and rejected 2026-11-21; *partly reversed by S0015, D70,
+  2026-11-23: `entry` and `sp_stub` are the runtime's and leave the file, the bridge and
+  `tail_switch` stay the compiler's; "D64 has one compiler per store" below no longer holds*): the trampolines belong to the
   compiler, not the runtime. D64 has one compiler per store and part 3's register table is per
   compiler (a sljit micro-compiler keeps the context in another register), and a runtime may run
   code from compilers it does not know (D60: micro-compilers of other architectures shipped as
@@ -703,7 +714,8 @@ bytes); step 2 measures it.
    symbols): `.waboros.trampolines` and the blobs in `.text`; a store runs on one copy, and the
    loader checks every later artifact's copy byte for byte against it. (c) was considered again
    on 2026-11-21 as "the trampolines are the runtime's" and rejected: they are the compiler's
-   (D64, D60; "Alternatives considered").
+   (D64, D60; "Alternatives considered"). *Partly reversed for `entry` by S0015 (D70): `entry` and
+   `sp_stub` are the runtime's; the bridge and `tail_switch` remain in every artifact.*
 3. **Which versions the waboros runtime accepts in a thin file.** (a) Only its own `compiler`
    string, exactly (D18 as written; Wasmtime's default): a new waboros release refuses older thin
    files, the cache recompiles. (b) Any file whose `format_version`, `ctx_abi_version`, target and
@@ -1042,3 +1054,7 @@ When approved and implemented (step 7 unless noted):
   local, with `__waboros_centry_<conv>` added and `__waboros_entry_<conv>` and the `sp_stub` symbol
   gone, `sh_info` the symbol count; `read` refuses the 40-byte layout on the payload's size and keeps
   the compare against the process's own blobs; "at least 18 words" no longer comes from the entry.
+* 2026-11-23: S0015 step 5 (docs): marker notes of D70 on the `compiler` field's D64 clause, "One
+  copy per store", the compatibility check of "Semantics: the loader" (the compiler string until
+  phase 6), "Alternatives considered" and Q2 (`entry` partly reversed); the test plan names the
+  S0015 tests. No format change.

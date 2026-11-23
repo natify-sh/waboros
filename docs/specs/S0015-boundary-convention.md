@@ -6,7 +6,7 @@ status: approved
 superseded_by:
 related: [D23, D30, D32, D35, D36, D47, D56, D59, D60, D62, D64, D65, D66, D68, D70, R2, S0003, S0004, S0006, S0013, S0014]
 owner: maintainer
-updated: 2026-11-22
+updated: 2026-11-23
 ---
 
 # S0015 The boundary convention between separately compiled JIT artifacts
@@ -927,6 +927,16 @@ ret
   New v1 files `v1-s15-small-*` beside the pre-S0015 ones. Code bytes unchanged (D35 lists equal
   to HEAD's on both targets); the spec suite through files 64 229 pass, 0 fail (BENCHMARKS.md,
   "Artifact size": the CoreMark files are 536 bytes smaller on x86-64, 168 on aarch64).
+* 2026-11-23: step 5 (the documents of "Docs this changes") done. Markers of D70 on D30, D36,
+  D56, D61 and D64 consequence 3 (D59 and D62 rule 2 had theirs from step 4); ARTIFACT.md's
+  introduction, loader paragraph, rows of words 9 and 14, `HOST_ERROR`, the split landing-pad
+  row; S0003, S0004, S0013, S0014 body text and Changes lines; ARCHITECTURE, RISKS R1 and R2,
+  MICRO-COMPILERS, MICRO-COMPILERS-SHIPPING, SLJIT-BACKEND (a boundary paragraph) and ROADMAP
+  (the D64 line, phase 6's deferred items). Found true against the code without change: S0005,
+  S0012, TESTING, BENCHMARKS, LESSONS, STATIC-BUILDS, ARTIFACT-CONTAINER and
+  `tests/artifact/data/README.md`. Not done by anything yet: the appendix's hex bytes of each
+  reference listing (ARTIFACT.md's introduction names it as planned). Word 9 equal to 0 and the
+  sljit rows are specified, but no compiler uses them and no test covers them.
 
 ## Changes
 * 2026-11-21: created (draft), from D70 and the prototype measured in BENCHMARKS.md.
@@ -1000,3 +1010,4 @@ ret
   builds and ISA-gates both on Linux, the Win64 one checked for its saves and restores of rsi, rdi and
   xmm6-xmm15,
   so the Win64 entry is not left to the Windows runner alone.
+* 2026-11-23: step 5 (docs): see Progress; no change to the contract.

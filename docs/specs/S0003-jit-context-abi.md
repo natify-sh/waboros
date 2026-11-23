@@ -6,7 +6,7 @@ status: implemented
 superseded_by:
 related: [D10, D14, D15, D18, D23, D24, R2, R3, R6, S0002]
 owner: maintainer
-updated: 2026-11-22
+updated: 2026-11-23
 ---
 
 # S0003 JIT context ABI and entry (phase 3, x86-64)
@@ -106,7 +106,7 @@ site check it (`test spl, 15; jnz` → trap) and the encoder tests run with it o
 **value stack** the runtime maps per store (frame overlap as in `w2jit`); every prologue checks
 `r12 + 8·frame_slots ≤ ctx[VSTACK_LIMIT]`. The **native stack** holds only return addresses, pushed
 pins and pads (at most 96 bytes per frame with a function-record call in flight — return address,
-eight pins, pad, the saved context — plus 16 per `tail_switch` restore frame; *x86-64 from S0015 step 1:* at most 176 bytes per frame called through a function record — its own 80, the caller's six saved registers (48), the C entry's frame (40) and its return address — and 64 per restore frame, measured 112 bytes per level of a recursion through `call_indirect` into another compiler's context without pins against 32 before; a record of the caller's own context is called at its body, 16 bytes a level as a direct call, and one of another context of the same compiler at its body with `r15` and a pad saved, a direct call's bytes plus 16 (32 a level without pins; D71) (BENCHMARKS.md, "The boundary convention on `jit-x86_64` (S0015 step 1, 2026-11-22)"); never more than one page at once: no stack probes on Windows,
+eight pins, pad, the saved context — plus 16 per `tail_switch` restore frame; *x86-64 from S0015 step 1:* at most 176 bytes per frame called through a function record — its own 80, the caller's six saved registers (48), the C entry's frame (40) and its return address — and 64 per restore frame, measured 112 bytes per level of a recursion through `call_indirect` into another compiler's context without pins against 32 before; a record of the caller's own context is called at its body, 16 bytes a level as a direct call, and one of another context of the same compiler at its body with `r15` and a pad saved, a direct call's bytes plus 16 (32 a level without pins; D71) (BENCHMARKS.md, "The boundary convention on `jit-x86_64` (S0015 step 1, 2026-11-22)"); the recursion depth until `STACK_OVERFLOW` at the default 512 KiB, measured: a `call_indirect` through the own table 32 765 levels on `jit-x86_64` (16 bytes a level, D71) and 16 382 on `jit-aarch64` (32 bytes, under QEMU; S0015 step 3), a call across instances 16 382 calls on x86-64 and 10 922 on aarch64 (BENCHMARKS.md, the two S0015 sections); never more than one page at once: no stack probes on Windows,
 D23; the SysV red zone is never used). Every prologue checks `rsp ≥ ctx[NSTACK_LIMIT]`. The runtime
 sets that limit at the first JIT entry of the store on the stack, whatever the store's depth:
 `limit = sp − min(max_wasm_stack, (sp − low) / 2)`, `max_wasm_stack` default 512 KiB (Wasmtime's,
@@ -185,7 +185,9 @@ it should.
 **What a second architecture defines** (phase 4), in its own table like the one above: context,
 frame, memory base/size, status, scratch and pool registers; registers no supported OS reserves
 (AArch64: never `x18`; RISC-V: never `gp`/`tp`); entry and bridge per convention (`aapcs64`,
-`win-arm64`; RISC-V psABI) with the callee-saved sets; landing pads (`bti c`) where `endbr64` is
+`win-arm64`; RISC-V psABI) with the callee-saved sets (from S0015 the boundary row is per
+architecture, and the entry is the runtime's; the bridge and `tail_switch` are the compiler's);
+landing pads (`bti c` inside the compiler, `bti jc` at the boundary, S0015 Q5) where `endbr64` is
 used here; stack alignment (16 on both); compares without flags (RISC-V); division checks (AArch64
 and RISC-V do not trap on 0: explicit checks give the wasm traps); shift-count masking; immediate
 and offset ranges; its baseline (ARTIFACT.md part 1) and the disassembler allowlist; encoder tests
@@ -427,3 +429,6 @@ uv run pytest tests/jit -k "entry or trap or reentry or host or interrupt or sta
   S0015's boundary convention (ARTIFACT.md part 3).
 * 2026-11-22: "Two stacks": the native stack of a record call into another context of the same
   compiler (D71).
+* 2026-11-23: S0015 step 5 (docs): "Two stacks" gains the measured recursion depth through
+  `call_indirect` and across instances on both architectures; the second-architecture paragraph
+  names the boundary row per architecture and the `bti jc` pad. No ABI change.

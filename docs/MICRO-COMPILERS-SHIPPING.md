@@ -2,7 +2,7 @@
 title: Shipping pre-compiled micro-compilers - bootstrap becomes a fallback and a check
 kind: reference
 status: draft
-updated: 2026-11-03
+updated: 2026-11-23
 ---
 
 # Shipping pre-compiled micro-compilers: bootstrap as a fallback, not a step
@@ -17,7 +17,9 @@ implementation**: it belongs to the micro-compiler spec, after phase 5 fixes the
 A micro-compiler compiled to native code is an **ordinary JIT artifact** ([ARTIFACT.md](ARTIFACT.md)).
 By D23 an artifact is tied to an architecture and an ISA level, **not to an operating system**: the
 same file runs on Linux, macOS, Windows and Android (the BSDs are not a target now), because our own loader maps it and
-both entry trampolines are inside. So the wheel can carry, as plain data files, one pre-compiled
+the compiler's bridge and `tail_switch` are inside (the `entry` is the runtime's, S0015; D64's
+"one compiler per store" became one boundary ABI per architecture, D70, so a store may hold
+modules of several compilers once phase 6 enables it). So the wheel can carry, as plain data files, one pre-compiled
 micro-compiler per architecture next to its `.wasm`:
 
 ```

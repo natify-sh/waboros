@@ -6,7 +6,7 @@ status: implemented
 superseded_by:
 related: [D10, D14, D23, D24, D25, D26, D29, D30, D31, D32, D34, D35, D36, D37, R2, R3, R6, S0002, S0003]
 owner: maintainer
-updated: 2026-11-22
+updated: 2026-11-23
 ---
 
 # S0004 jit-aarch64, the second architecture (phase 4, integer core)
@@ -84,7 +84,10 @@ pool in order). Whether 13 pays over 8 is measured on CoreMark on the arm64 runn
 Native stack per frame: frame record 16 + pins ≤ 7·16 = **≤ 128 bytes**, plus at a call through a
 record 16 (another context of this compiler: `x28`) or 64 (another compiler's C entry: `x2`–`x8`;
 S0015 step 3), and a C entry's `centry` frame of 48 below the callee; the S0003 budget rule (bytes)
-is unchanged, so the maximum wasm recursion depth on aarch64 is lower for the same budget. Frames
+is unchanged, so the maximum wasm recursion depth on aarch64 is lower for the same budget.
+Measured at 512 KiB (BENCHMARKS.md, "The boundary convention on `jit-aarch64`", under QEMU): a
+direct `call` with one pin and a `call_indirect` through the own table 16 382 levels (32 bytes),
+a call across instances 10 922 calls (48 bytes). Frames
 stay below one page (Windows probes). The most allocated before the next stack check (S0015's
 headroom rule) is 64 + 48 + 128 = 240 bytes through a C path, 80 + 48 + 128 = 256 through
 `tail_switch`'s first hop.
@@ -94,7 +97,8 @@ AAPCS64 (Linux), Apple arm64 and Windows Arm64 agree on everything the trampolin
 in `x0`–`x7`, result in `w0`/`x0`, callee-saved `x19`–`x29`, `sp`, `d8`–`d15`; they differ only in
 what our code never uses (`x18`, Apple's 128-byte red zone and variadic and sub-word argument rules,
 Windows unwind data and stack probes). So **one entry, one bridge, one stub, one `tail_switch` serve
-all of them**; the artifact's `ENTRIES` gives the same offset for `aapcs64` and `win-arm64`.
+all of them** *(from S0015, one runtime `entry` and `sp_stub` and one compiler bridge and
+`tail_switch` per architecture, as below)*; the artifact's `ENTRIES` gives the same offset for `aapcs64` and `win-arm64`.
 From S0015 step 3 the entry and the stub are the runtime's (`aarch64/entry.py`), the bridge and
 `tail_switch` this compiler's (`aarch64/abi.py`), and every function and host thunk has a C entry
 (below); the list describes that state.
@@ -517,3 +521,5 @@ Resolved by the maintainer on 2026-11-01 (see Changes); none open.
   entries and a per-module `centry`; record calls on three paths (D71); `tail_switch` with an
   80-byte restore frame and the hop by `HOST_BRIDGE`; later hops by return-then-jump; frame
   bounds and the headroom numbers.
+* 2026-11-23: S0015 step 5 (docs): the per-frame bounds gain the measured recursion depth
+  (BENCHMARKS.md, step 3); the body text of "Trampolines" says who owns each. No code change.

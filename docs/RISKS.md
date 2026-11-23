@@ -2,7 +2,7 @@
 title: Risks and possible solutions
 kind: log
 status: current
-updated: 2026-11-15
+updated: 2026-11-23
 ---
 
 # Risks and possible solutions
@@ -13,8 +13,8 @@ comes. Decided matters live in DECISIONS.md.
 ## R1. Compiled artifacts moved between machines
 
 **What is possible.** A JIT artifact (ARTIFACT.md) is position-independent, does not depend on the
-Python version (byte-identical output under CPython 3.8 and 3.13) or on the OS when it carries both
-entry trampolines. It runs on another machine with the same architecture, a CPU at or above its
+Python version (byte-identical output under CPython 3.8 and 3.13) or on the OS: the host supplies `entry` (S0015, D70), and the file holds the compiler's bridge
+and `tail_switch` and a C entry per function. It runs on another machine with the same architecture, a CPU at or above its
 declared ISA level, and a loader that knows its format and context-ABI versions.
 
 **What to cache, what to ship — options.**
@@ -67,7 +67,7 @@ integrity that hand-made code must respect.
 | Pyodide / browsers | no native code at all | JIT impossible | `pyc`, or the browser's `WebAssembly` (ROADMAP open question 7) |
 | x86-64 with CET **IBT** | indirect branch targets must start with `endbr64` | the entry trampoline and anything called through a pointer would fault | emit `endbr64` at every indirectly reachable entry (a no-op on older CPUs) |
 | x86-64 with CET **shadow stack** (Linux user space, Windows 11 hardware stack protection) | returns are checked against a hardware stack | the PoC's trap unwinding (reset `rsp`, then `ret`) would fault | unwind by returning through frames (each frame checks a trap flag), or a shadow-stack-aware unwind; never "jump" the stack |
-| aarch64 **BTI** / **PAC** | landing pads (`bti c`) for indirect targets; signed return addresses in some processes (arm64e) | indirect entries fault without pads | emit `bti c` (`bti jc` where a `br` through any register may land: the boundary, S0015 Q5); keep return addresses unsigned unless the host process requires PAC |
+| aarch64 **BTI** / **PAC** | landing pads (`bti c`) for indirect targets; signed return addresses in some processes (arm64e) | indirect entries fault without pads | emit `bti c` on bodies, the bridge and `tail_switch`, and `bti jc` where a `br` through any register may land: C entries and the runtime's `entry` (S0015 Q5); keep return addresses unsigned unless the host process requires PAC |
 
 General answers: W^X always (map writable, write, flip to executable; never both), the probe described
 in TARGETS.md, CFI-compatible code from the first version, and `pyc` as the guaranteed fallback.

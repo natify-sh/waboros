@@ -2,7 +2,7 @@
 title: Roadmap
 kind: reference
 status: current
-updated: 2026-11-22
+updated: 2026-11-23
 ---
 
 # Roadmap
@@ -299,7 +299,7 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29; done 2026-11-03) -> 
   aarch64 under QEMU, `spec_diff` 0 both ways), at CoreMark parity (99-101 %), with no process
   address in the code. If the micro-compilers are our core in C over sljit, the
   oracle becomes behaviour (spec suite, `spec_diff`) instead of bytes. The choice no longer blocks
-  freezing part 3: a Store uses one compiler and each compiler has its own register table (D64).
+  freezing part 3: a Store uses one compiler and each compiler has its own register table (D64; *amended by D70: one boundary ABI per architecture, compilers mix in a store from phase 6, the internal register tables stay each compiler's*).
   Deferred until the same
   check on aarch64: done under QEMU 2026-11-16 (parity with `jit-aarch64` in both bounds modes,
   `poc/sljit/sljit-be/`); left: native arm64 timings, BTI landing pads, and the per-function frame size (sljit fixes the
@@ -343,6 +343,14 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29; done 2026-11-03) -> 
   together when they close, explicit long-lived roots released by `unroot`, generation-checked
   handles. Host conveniences on top (Python: `with store.scope():`, optionally a finalizer that
   marks the entry for release at a safe point), never the mechanism itself.
+* **S0015's deferred items** (D70, [S0015](specs/S0015-boundary-convention.md), "Compatibility"):
+  the per-architecture compatibility rule in the loader (architecture, `format_version`,
+  `ctx_abi_version` instead of the exact `compiler` string; thin files of other compiler versions);
+  mixed stores; executing a foreign compiler's blob (executable memory, W^X, instruction cache);
+  the trampoline compare moved from `read` to store attach; the walk's set of restore points, one
+  per compiler present (`walk.py` takes one `Trampolines` today); the test with a real second
+  compiler in one store (the sljit micro-compiler, D68). The flags that must agree within a store
+  (S0015 Q4) are decided there too.
 * **JIT code visible to debuggers and profilers** (maintainer, 2026-11-10, with S0013 Q3): the GC's
   frame walk uses return addresses and site tables, not a frame-pointer chain, so `perf`, `gdb` and
   native profilers cannot unwind through JIT frames or name them. Options to weigh then: a perf map /

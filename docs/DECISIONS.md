@@ -2,7 +2,7 @@
 title: Decisions
 kind: log
 status: current
-updated: 2026-11-22
+updated: 2026-11-23
 ---
 
 # Decisions
@@ -380,7 +380,10 @@ same store directly through its function record (closed by D32). A `return_call*
 base, drops its native frame and jumps. When the callee's function record has another context, r15
 must change, but a direct `call` site in the original caller relies on r15/r13/r14 being its own
 afterwards. The jump therefore goes through `tail_switch`, one trampoline per process whose address is
-in context word 9 `TAIL_SWITCH`. The first switch of a chain pushes the caller's r15 and makes a real
+in context word 9 `TAIL_SWITCH`. *(Amended by D70, S0015: `tail_switch` is one per compiler, carried
+in its artifacts, and word 9 may be 0 for a compiler that has none; a jump into another compiler's
+record goes to its C entry, by a hop that returns to the module's own C entry or by a sibling
+jump. The restore path is unchanged within a compiler; D71.)* The first switch of a chain pushes the caller's r15 and makes a real
 `call` whose return point (`restore`) pops it and reloads r13/r14. A later switch whose return
 address is already `restore` only changes the context and jumps, so A → B → A → … runs in constant
 stack. Every `ret` returns to its own `call` (CET shadow stacks, R2). This is an amendment of context
@@ -503,6 +506,11 @@ Go, Dart, LuaJIT, …) can load and run it, and that is now a supported use, not
   CoreMark, and must agree with the Python runtime; it also checks that unknown versions are refused.
   It stays a test tool, not a shipped runtime.
 * `pyc` and `mpy` artifacts are interpreter bytecode and run only in their interpreter.
+
+*(Amended by D70, S0015: the host supplies `entry` as machine code, one per architecture and
+convention, not part of the artifact; ARTIFACT.md part 3 gives its contract and a reference
+listing; its third argument is a C entry. `bridge` and `tail_switch` are the compiler's and come
+in the artifact.)*
 Until phase 5 the contract may still change (D30, D32, D34 were amendments of v1); foreign hosts are
 supported from the first fixed version.
 
@@ -1019,7 +1027,10 @@ store must be found without frame pointers or per-call stores:
   of the store's `{sp, pc, frame}`; the bridge writes it before every host call and clears `sp`
   after; every entry keeps the enclosing record and its frame on the native stack while it runs
   and puts the record back. The walk starts there and crosses nested entries by those saved
-  blocks and `tail_switch` restore frames by fixed numbers. Cost: about 1 ns per host call (8
+  blocks and `tail_switch` restore frames by fixed numbers. *(Amended by D70, S0015: the entry is
+  the runtime's, one per convention; the walk knows the set of entry points and the set of restore
+  points, one per compiler present, each with its numbers; a C entry's call into its body is a
+  site of shift 0 without a map.)* Cost: about 1 ns per host call (8
   instructions on x86-64, 6 on aarch64) and about 15 (x86-64) or 10 (aarch64) instructions per
   entry, nothing on a call between wasm functions; not measurable on host calls, entries or
   CoreMark.
@@ -1029,7 +1040,8 @@ store must be found without frame pointers or per-call stores:
   call and compares the walk with the runtime's own record of its entries; CI runs one spec run
   per architecture with it.
 * **ABI v1 amended without a bump** (S0013 Q5, as D34, D50 and D52): no artifact file has been
-  written, the trampolines are the runtime's own, word 14 was reserved, and module code is
+  written, the trampolines are the runtime's own *(amended by D70: `entry` is the runtime's;
+  `bridge` and `tail_switch` are the compiler's, carried in its artifacts)*, word 14 was reserved, and module code is
   byte-identical. The hard rule's test is that a compiled module without its site table is
   refused at instantiation (`ValueError`).
 
@@ -1210,7 +1222,8 @@ Status: accepted (maintainer, 2026-11-15) · Date: 2026-11-15 · Supersedes: —
 Status: accepted (maintainer, 2026-11-15: S0013 "Step 5 decisions" D1-D4 and D6, the step-5.3 design note); written in S0013 step 5.3, function subtyping in step 5.6, closed in step 5.7 (the order measured) · Date: 2026-11-15 · Supersedes: S0013's fixed semispaces A and B · Evidence: S0013 Changes 5.3 and 5.6; spec `gc` and `exceptions` with `WABOROS_JIT_GC_STRESS=1 WABOROS_JIT_GC_POISON=1 WABOROS_JIT_GC_VERIFY=1` on both JITs (0 fail); `tests/jit/test_gc_collect.py`; the Kotlin program runs 100 times in one store at 32 MiB of object space, where it ran out of heap at the 19th run before
 
 * **The collector** is `runtime/gc/collector.wasm` (Cheney, S0013 step 5.2), compiled by the
-  store's JIT once per process and run as a **nested JIT entry** from the allocating service, its
+  store's JIT once per process *(amended by D70, S0015: by the runtime's own compiler for the
+  architecture, never by whichever compiler made the user's modules)* and run as a **nested JIT entry** from the allocating service, its
   frame above the service's slots (ARTIFACT.md "Host functions", B1). Python gathers the roots
   (`jit/common/collect.py`: frames by the walk, reference globals, any- and extern-hierarchy tables
   (exn too from step 6), passive element segments, GC handles, the exception arena's payloads
@@ -1361,7 +1374,9 @@ Consequences:
    Store's compiler is refused, like an `arch` or ISA mismatch; a fat artifact is regenerated from
    its wasm, as for another target today. The AOT cache key already holds `compiler` and
    `config_sha256`.
-3. **Runtime modules** (the collector, D61, and the other D54 modules) are compiled by the Store's
+3. *(Amended by D70, S0015: the runtime's own compiler for the architecture compiles them, not
+   whichever compiler made the user's modules of a mixed store.)* **Runtime modules** (the
+   collector, D61, and the other D54 modules) are compiled by the Store's
    compiler.
 4. **The oracle between compilers is behaviour**: the spec suite, `spec_diff` both ways, the walk
    check, poison. D35 (byte identity, cross-compilation) holds within one compiler, not across.

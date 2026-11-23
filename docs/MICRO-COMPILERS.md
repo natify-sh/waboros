@@ -2,7 +2,7 @@
 title: Micro-compilers - what they are and why
 kind: reference
 status: draft
-updated: 2026-11-19
+updated: 2026-11-23
 ---
 
 # Micro-compilers: what they are and why
@@ -83,7 +83,12 @@ Counts are non-blank lines on `phase0-skeleton` as of SIMD 5f (2026-11-02). The 
 | `jit/aarch64/{backend,encoder,abi}.py` | 1 250 |
 | `jit/aarch64/simd.py` | 416 (1 666 in all) |
 
-`abi.py` belongs to the compiler: the trampolines are bytes inside the artifact.
+`abi.py` belongs to the compiler: its bridge and `tail_switch` are bytes inside the artifact. The
+`entry` is the runtime's (`entry.py` per architecture, S0015). Every function of an artifact has a
+C entry in the boundary ABI of its architecture (D70), so a store may hold a micro-compiler's
+modules next to `jit-x86_64`'s: D64's "one compiler per store" is replaced by one boundary ABI per
+architecture (D70, D71). A mixed store is enabled in phase 6; until then the loader keeps the
+exact `compiler` string.
 
 | stays in the host (runtime / loader) | why |
 |---|---|
@@ -141,7 +146,7 @@ anyone can run: [MICRO-COMPILERS-SHIPPING.md](MICRO-COMPILERS-SHIPPING.md) (main
 * **The oracle depends on the code generator** (maintainer, 2026-11-17): a hand-written port is
   compared byte for byte with the Python JIT of its architecture; a port over sljit cannot be, and
   is compared by behaviour (the spec suite, `spec_diff` both ways, the walk check and poison), as
-  the `poc/sljit/sljit-be/` prototype already is (D60, D64).
+  the `poc/sljit/sljit-be/` prototype already is (D60, D64, D70).
 * **Then the third architecture: `riscv64`**, written as a micro-compiler on the proven core instead
   of a third Python backend; checked by the spec suite under QEMU against `pyc` and Wasmtime (no
   byte oracle exists for it).
