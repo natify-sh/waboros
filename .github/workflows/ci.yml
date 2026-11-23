@@ -219,6 +219,10 @@ jobs:
       - run: uv run python -m tests.spec.run --engine jit-x86_64
         env:
           WABOROS_JIT_BOUNDS: explicit
+      # S0014 test plan: every module instantiated from its artifact (written thin, loaded), guard mode
+      - run: uv run python -m tests.spec.run --engine jit-x86_64
+        env:
+          WABOROS_JIT_ARTIFACT: "1"
       # executable memory forbidden (MDWE): `auto` must warn once and give pyc's numbers
       - run: uv run python tools/no_exec.py -- uv run python -m tests.spec.run --engine auto
   arm64:
@@ -282,6 +286,10 @@ jobs:
       - run: uv run python tests/spec/fetch.py
       - run: uv run python -m tests.spec.run --engine jit-aarch64 --json spec-jit-aarch64.json
       - run: uv run python -m tests.spec.run --engine auto
+      # S0014 test plan: the same through artifact files, natively (written thin, loaded)
+      - run: uv run python -m tests.spec.run --engine jit-aarch64
+        env:
+          WABOROS_JIT_ARTIFACT: "1"
       # S0006 step 2: Linux glibc aarch64 is a verified row (`auto` above gives guard pages
       # there); both modes named, the fault tests natively (foreign faults, chains, two copies),
       # (tests/jit runs in explicit mode above); guard with the frame walk checked (S0013 3a)

@@ -606,8 +606,9 @@ authoritative (D18).
   the GC switches for `gc/` and `exceptions/`; then `uv run python tools/spec_diff.py jit-x86_64
   <the same with the switch>` gives no difference. The same for `jit-aarch64` under QEMU and on
   the native arm64 runner. *(As built, step 7, 2026-11-23: run by hand under QEMU on both JITs, both
-  modes (Progress, step 3); no CI job sets `WABOROS_JIT_ARTIFACT=1` yet and it was not run on the
-  native arm64 runner; open, for step 8 to rule on.)*
+  modes (Progress, step 3); from 2026-11-23 (maintainer) the ci `spec` job runs `jit-x86_64` and
+  the `arm64` job runs `jit-aarch64` natively with `WABOROS_JIT_ARTIFACT=1`, guard mode, with the
+  expected-failures file of each, which the run must meet.)*
 * **CoreMark through a file** on both JITs (`tools/run_coremark_jit.py` with the switch): the self
   check passes; run time alternated with the direct path (no change expected: the code is the
   same bytes); write time, read time, instantiation time and file size recorded in BENCHMARKS.md.
@@ -615,8 +616,9 @@ authoritative (D18).
   same bytes; in CI's arm64 job, the files written there for `jit-aarch64` equal the files written
   on x86-64 (as built: `tools/artifact_dump.py` writes the files and lists their sha256, and the
   `artifacts` / `artifacts-diff` jobs of `platforms.yml` compare six hosts, step 6; `tools/jit_dump.py
-  --files` writes one file per module) and the x86-64-written file runs there (not checked: the
-  files of an architecture run only on that architecture, and the arm64 jobs compare bytes only).
+  --files` writes one file per module) and the x86-64-written file runs there (as built:
+  `test_old.py::test_view_runs` reads and runs `v1-s15-small-aarch64.wbo`, written on x86-64, in
+  the native aarch64 jobs of `platforms.yml`: Linux, macOS and Windows on Arm).
 * **Refusals** (`tests/artifact/test_refuse.py`), each with its message, each thin and fat (fat:
   regenerated and run): wrong magic or OS/ABI (refused even fat); `EI_ABIVERSION` 0 and 2;
   `e_machine` of the other architecture; `ctx_abi_version` 2; `isa_level` 3 on a CPU without AVX2
