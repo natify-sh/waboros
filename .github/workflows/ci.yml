@@ -254,10 +254,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with: { submodules: true }
-      - run: cmake -S native -B build/native && cmake --build build/native && ctest --test-dir build/native --output-on-failure  # S0016 (no BTI here)
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         with: { cache-python: true }  # the managed Pythons too, not only the packages
       - run: uv sync --python 3.13
+      - run: cmake -S native -B build/native && cmake --build build/native && ctest --test-dir build/native --output-on-failure  # S0016 (PROT_BTI only where the CPU has it)
       # llvm-mc and llvm-objcopy for the encoder tests (WABOROS_JIT_REQUIRE=1 below)
       - run: |  # the runner image's own LLVM (installed with its Clang), no apt: Ubuntu's mirrors failed for hours
           for d in $(ls -d /usr/lib/llvm-*/bin 2>/dev/null | sort -V -r); do
