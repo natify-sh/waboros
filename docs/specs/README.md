@@ -25,6 +25,7 @@ lifecycle: [STANDARDS.md](../STANDARDS.md).
 | [S0011](S0011-jit-low-layer.md) | JIT low layer: wasm memory semantics written once over per-architecture operations | implemented | maintainer |
 | [S0012](S0012-exceptions.md) | Exception handling (exnref) on pyc, jit-x86_64 and jit-aarch64 | implemented | maintainer |
 | [S0013](S0013-gc.md) | Garbage collection (Wasm GC) on pyc, jit-x86_64 and jit-aarch64 | implemented | maintainer |
-| [S0014](S0014-artifact-format.md) | JIT artifact format v1 in the ELF64 container | approved | maintainer |
-| [S0015](S0015-boundary-convention.md) | The boundary convention between separately compiled JIT artifacts | approved | maintainer |
+| [S0014](S0014-artifact-format.md) | JIT artifact format v1 in the ELF64 container | implemented | maintainer |
+| [S0015](S0015-boundary-convention.md) | The boundary convention between separately compiled JIT artifacts | implemented | maintainer |
 | [S0016](S0016-sljit-on-the-boundary.md) | jit-sljit on the boundary: the first second compiler in a mixed store | implemented | maintainer |
+| [S0017](S0017-c-reference-loader.md) | The C reference loader | draft | maintainer |

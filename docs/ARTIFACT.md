@@ -232,7 +232,7 @@ the phase-3 meaning of each word and the register roles are in [S0003](specs/S00
 Offsets of the variable part follow from the counts in the artifact, in exactly this order.
 
 **32-bit architectures** (provisions for a future one, which may come only in ABI v2; v1 must not
-block it; "+"maintainer, 2026-11-24"+"): words stay 64 bits wide and little-endian. On a 32-bit architecture the high
+block it; maintainer, 2026-11-24): words stay 64 bits wide and little-endian. On a 32-bit architecture the high
 half of every pointer or size word (bases, sizes, limits, addresses, records) is zero and code may
 read only the low half; canonical type ids and tag identities are below 2³² (the runtime's tag
 counter, `range(1, 1 << 63)` in `targets/jit/common/instance.py`, will need a cap: ROADMAP); a
