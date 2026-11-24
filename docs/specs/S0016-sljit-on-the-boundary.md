@@ -292,16 +292,28 @@ tests/sljit/                   the Python side (development only): backend.py (t
   * The PoC's `lib2.c` puts aarch64 `x30` at `size − 8` above 512 bytes. That is **wrong** for
     sljit 39c508d: measured at `[sp + 8]` up to 4096.
   * A public `sljit_get_return_address_offset()` is to be proposed upstream. No patch for S0016.
-* **Frame size: D67's pre-pass in the Python core, in step 1** (D67 amended: "with the C core"
-  becomes now).
-  * The core scans each body once and passes `func_begin` hints: any call (`call_host` included),
-    calls through a record, `wide`/v128 scratch, bulk copies, the pins.
-  * The Python backends ignore the hints, so their bytes are unchanged (D35 lists).
-  * `jit-sljit` sizes `local` = 8 · (R pins + the context save if it calls a record + 4 for the
-    C-path saves of `SLJIT_R3`–`SLJIT_R6` if it calls a record + scratch), 0 for a simple function.
-    The C-path saves are slots in the frame, never pushes around the call (a push would move the
-    stack pointer the site's `ret_at` is counted from); they may share the scratch slots, which
-    are dead across a call.
+* **Frame size: `local` = 8 · (R pins), known at `func_begin` from the pins alone; no pre-pass**
+  (maintainer, 2026-11-24, step 1's plan; D67 stays "with the C core").
+  * Calls through a record go through two module helpers emitted by sljit next to centry, so no
+    body frame holds the context save or the C-path saves:
+    * **own context** (`[rec+16] == S0`): the body calls `[rec] + 16` directly (`REG_ARG`), a
+      direct call's cost;
+    * **same compiler** (equal `HOST_BRIDGE` words): the body calls **`xcall`**
+      (`REG_ARG|KEEP(3)`, 8 bytes of locals, a 16-byte frame): it saves S0 in its slot, switches
+      S0/S2, calls `[rec] + 16`, restores S0, reloads S2 and returns the status;
+    * **another compiler**: the body calls **`ccall`** (32 bytes of locals): it stores
+      `SLJIT_R3`–`SLJIT_R6` in its frame, makes the C call through the record (`SLJIT_R0` = `[rec+16]`,
+      `SLJIT_R1` = S1), reloads `SLJIT_R3`–`SLJIT_R6` and S2, and returns the status, so every frame's R pins are back
+      before the caller tests it.
+  * The saves are slots in the helpers' frames, never pushes around a call (a push would move the
+    stack pointer the site's `ret_at` is counted from). Each helper's own call is a module site
+    (shift 0, no map), like centry's; the body still has D71's three sites.
+  * `wide` and `_copy` take S2 (memory 0's base, never an operand) as their extra temporary and
+    reload it from the context afterwards, so a body needs no scratch slots either.
+  * Why not slots in every calling frame (the formula this replaces): 8 · (pins + 1 context +
+    4 C-path) gave 64 bytes a level for own-table recursion and across instances, against the
+    16 / 32 of `jit-x86_64` this spec expects (the depth table below).
+  * The core and the Python backends are untouched, so the D35 lists are unchanged trivially.
   * Measured: `REG_ARG|KEEP(3)` with 3 saved registers and no locals is 16 bytes on both
     architectures, `jit-x86_64`'s direct-call cost (D71). The PoC's fixed 9 words gave 96.
 * **Headroom (S0015).** `sljit_emit_enter` pushes and allocates before the first check.
@@ -467,9 +479,9 @@ Scratch experiments, 2026-11-23/24, sljit 39c508d, not committed. Directory
 | path | `jit-x86_64` (D71) | `jit-sljit`, expected |
 |---|---|---|
 | direct recursion, same pins on both | 16 B/level plus its pushed pins | 16 plus the S pins sljit saves, rounded to 16 |
-| own-table `call_indirect` | 16 | the same as direct |
-| across instances, same compiler | 32 | 16 + the context save in its frame |
-| across compilers | 112 a call | its C path: the R saves inside its frame + the callee's centry (32 / 48) |
+| own-table `call_indirect` | 16 | the same as direct (the own-context path calls directly) |
+| across instances, same compiler | 32 | 16 + `xcall`'s 16-byte frame |
+| across compilers | 112 a call | `ccall`'s frame (R saves) + the callee's centry (32 / 48) |
 
 ## Test plan
 x86-64 unless marked; "through files" is `WABOROS_JIT_ARTIFACT=1`.
@@ -526,9 +538,8 @@ x86-64 unless marked; "through files" is `WABOROS_JIT_ARTIFACT=1`.
 * **Depth** at 512 KiB until `STACK_OVERFLOW`, beside Wasmtime 50.0.1, in **step 1** (x86-64) and
   step 5 (aarch64): direct, own-table `call_indirect`, across instances, across compilers both
   ways. The acceptance is the `jit-<arch>` figure of D71 for the first three.
-* **D67 pre-pass**: D35 lists of both Python JITs equal to HEAD's. Compile time of CoreMark and of
-  the corpus (`tools/run_corpus.py` modules), alternated before and after, recorded; the bound is
-  the S0011 precedent, a few per cent.
+* **D35 lists** of both Python JITs equal to HEAD's (the core is not changed). Compile time of
+  CoreMark on `jit-sljit-x86_64` beside `jit-x86_64`, alternated, recorded.
 * **CET/GCS: argued and reviewed**, not tested (no enforcing runner, S0015). The argument:
   * calls and returns pair up, and `CALL_RETURN` releases the frame and jumps with the return
     address as found;
@@ -545,7 +556,7 @@ Each step stops and reports if it needs more than its size.
 | step | goal | agent | acceptance | size (lines) |
 |---|---|---|---|---|
 | 0 | `native/` with the submodule; `CMakeLists.txt` (one TU, one library target, C99, options, `enable_testing`); `waboros_sljit.c` (defines, buffer hooks, baseline CPU features, `waboros_sljit_frame`, constants); ctest (frames, stubs, baseline bytes, BTI); the consumer; CI build steps, the run time of each measured | implementer | the step-0 ctest (frame shapes, baseline bytes, BTI ping-pong under the emulator) and the consumer, x86-64 and aarch64; `pytest -q` unchanged without the library; `check_docs.py` | C ~250, CMake ~120, CI ~50 |
-| 1 | `tests/sljit/` on HEAD's interface, x86-64: stubs, centry, D71's three paths, the hop, `tail_switch` and bridge by sljit, frames from the library; the D67 pre-pass in the core; registration (`complete`, `development`, xfail file, `claims.py`, `_jits`, `test_features.py`); **depth measured** | jit-engineer | the spec suite in-process with walk check and poison, both modes, `spec_diff` empty; `test_boundary.py` on `jit-sljit`; the stub checks; D35 lists unchanged; the depth table's x86-64 column at `jit-x86_64`'s figures; compile time recorded | py ~700 changed of ~1 500, core ~80 |
+| 1 | `tests/sljit/` on HEAD's interface, x86-64: stubs, centry, D71's three paths, the hop, `tail_switch` and bridge by sljit, frames from the library, the `xcall`/`ccall` helpers; the library's accessors (label address, code size, error) and constants; registration (`complete`, `development`, xfail file, `claims.py`, `_jits`, `test_features.py`); **depth measured** | jit-engineer | the spec suite in-process with walk check and poison, both modes, `spec_diff` empty; `test_boundary.py` on `jit-sljit`; the stub checks; D35 lists unchanged; the depth table's x86-64 column at `jit-x86_64`'s figures; compile time recorded | py ~700 changed of ~1 500, C ~15, no core change |
 | 2 | Runtime and loader: the store's set, the walk's sets (`walk`, `collect`, `_checked`), the distinctness check, `artifact.TARGETS` from attributes, `digest_sources()`; the tools' `--target` choices and `isa_all.py`'s gate by architecture; the `win64` blob; the none value removed (`read` refuses `0xFFFFFFFF` in a trampoline record, with a test on both architectures) | jit-engineer | `pytest -q` on both architectures, `tests/sljit/test_win64_bridge.py` included; `tools/isa_all.py --target jit-sljit-x86_64`; the spec suite through files on the three targets at parity; D35 lists unchanged | src ~80, py ~30, tests ~120 |
 | 3 | `tests/jit/test_mixed.py` and the files tests, x86-64 | jit-engineer | the mixed tests in-process and through files, both modes | tests ~380 |
 | 4 | Review of 0-3 without the implementers' reasoning: the boundary table against the code, CET balance, I1, headroom, M5, the sets, the baseline bytes | reviewer | findings closed before step 5 | — |
@@ -657,15 +668,13 @@ In the step that makes each untrue; step 7 for the rest.
   a Changes line.
 * [S0002](S0002-target-interface.md): the Target attributes and method added (`development`,
   `e_machine`, `isa_name`, `digest_sources()`); a Changes line.
-* [S0004](S0004-jit-aarch64.md) (the D39 interface): the D39 amendment for `func_begin`'s hints
-  (D67), approved with this spec, Python backends byte-identical.
 * [ARTIFACT.md](../ARTIFACT.md):
   * part 2's loader paragraph (a store of several compiler strings, each file under its own);
   * part 3's compiler-private rows gain `jit-sljit`;
   * the word-9 row (always a `tail_switch`).
 * [DECISIONS.md](../DECISIONS.md):
   * a new decision recording the design and placement;
-  * markers on D67 (the pre-pass now), D70 (in-process mixed stores before phase 6), D73 (the
+  * markers on D70 (in-process mixed stores before phase 6), D73 (the
     freeze condition without form 2a and the none record);
   * the D61 and D64 consequence 3 markers: "the runtime's own compiler" becomes "any compiler of
     the architecture (by default the target of the instance that first needs the collector)".
@@ -728,7 +737,7 @@ In the step that makes each untrue; step 7 for the rest.
   * the `win64` blob;
   * one translation unit and one library target;
   * the CI details;
-  * the D67 compile-time measurement;
+  * the D67 compile-time measurement (removed later: no pre-pass);
   * the walk check's set;
   * the freeze wording.
 * 2026-11-24: the maintainer's answers: the none value leaves v1 (the open question closed, a step
@@ -745,3 +754,9 @@ In the step that makes each untrue; step 7 for the rest.
 * 2026-11-24: approved by the maintainer.
 * 2026-11-24: "Toward the other sljit architectures" added (maintainer): the per-architecture
   gaps beyond x86-64 and aarch64, riscv64 first; the plan of steps is unchanged.
+* 2026-11-24: frames without a pre-pass (maintainer, from step 1's plan): calls through a record go
+  through two module helpers, `xcall` (same compiler) and `ccall` (another compiler), so a body's
+  `local` is 8 · (R pins); the formula with the context and C-path slots in every calling frame is
+  dropped (it gave 64 bytes a level against the depth table's 16 / 32); D67 stays "with the C
+  core", the D39 amendment and the D67 marker leave the docs list; step 1 adds the library's
+  accessors and constants.
