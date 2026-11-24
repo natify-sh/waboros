@@ -612,5 +612,5 @@ In the step that makes each untrue; step 7 for the rest.
   * the walk check's set;
   * the freeze wording.
 * 2026-11-24: the maintainer's answers: the none value leaves v1 (the open question closed, a step
-  and its test added); the `win64` blob confirmed; no `MANIFEST.in`, the wheel as today (no separate check),
-  `native/` not buildable from an sdist.
+  and its test added); the `win64` blob confirmed; no `MANIFEST.in`, the wheel as today (no
+  separate check), `native/` not buildable from an sdist.
