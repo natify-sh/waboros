@@ -2,7 +2,7 @@
 title: Architecture
 kind: reference
 status: current
-updated: 2026-11-23
+updated: 2026-11-24
 ---
 
 # Architecture
@@ -91,6 +91,10 @@ glue shared by the architectures) and
 MICRO-COMPILERS.md). There is no separate `ir/` yet: the JIT core reads the validated body directly
 (D26) and `pyc` has its own tree builder; HIR and its analyses wait for a measurement that needs
 them. `mpy`, `cache/`, `wasi/`, `cli/` and the public runtime objects do not exist yet; `jit-riscv64` is planned (D48).
+
+`native/` (S0016) holds C built with CMake alone and never shipped in the package: sljit as a git
+submodule (`third_party/sljit`), our one translation unit `sljit/waboros_sljit.c`, ctest self-tests.
+`loader/` and `micro/` (D36, D68) are not created yet.
 
 The PoC files map onto this as follows: `w2py.py` holds the reader, the decoder, the stack-to-tree
 builder, the value-bounds analysis and the `pyc` code generator in one file; `w2jit.py`/`w2jit2.py`

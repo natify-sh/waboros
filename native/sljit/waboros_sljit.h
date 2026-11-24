@@ -1,0 +1,16 @@
+/* The part of the waboros C code that jit-sljit needs (S0016): our functions beside sljit's API. */
+#ifndef WABOROS_SLJIT_H
+#define WABOROS_SLJIT_H
+#ifndef SLJIT_CONFIG_AUTO
+#define SLJIT_CONFIG_AUTO 1
+#endif
+#include "sljitLir.h"
+
+/* The only way to make a compiler: sljit_create_compiler, then the baseline CPU word (x86-64-v1). */
+struct sljit_compiler *waboros_sljit_create(void);
+/* After sljit_emit_enter: bytes from the stack pointer to this frame's own return address, and to
+   the caller's stack pointer at its call. sljit's own SLJIT_GET_RETURN_ADDRESS arithmetic. */
+void waboros_sljit_frame(struct sljit_compiler *c, sljit_sw *ret_at, sljit_sw *up);
+/* A sljit constant by its name (SLJIT_R0, SLJIT_ARGS3(32, P, P, P), ...): 0 and *value, or -1. */
+int waboros_sljit_constant(const char *name, sljit_sw *value);
+#endif

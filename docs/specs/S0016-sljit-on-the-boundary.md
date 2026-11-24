@@ -710,6 +710,11 @@ In the step that makes each untrue; step 7 for the rest.
 * 2026-11-24: reworked to the `jit-x86_64` structure (maintainer).
 * 2026-11-24: the maintainer's answers: the none value removed, the `win64` blob built, the sdist
   unpruned, the wheel as today (only the package).
+* 2026-11-24: step 0 done: `native/` (submodule at 39c508d, `CMakeLists.txt`, `sljit/waboros_sljit.{c,h}`,
+  `tests/test_native.c`, `tests/consumer/`), ctest on x86-64 and on aarch64 under QEMU with BTI, CI
+  build steps in `jit`, `arm64` and the new `sljit` job. Deviations: `waboros_sljit_constant(name,
+  &value)` returns 0 or -1 (a name alone has no way to say "unknown"); DEBUG and VERBOSE are PUBLIC
+  definitions (they change the layout of `struct sljit_compiler`); the tests need the shared build.
 
 ## Changes
 * 2026-11-23: created (draft), with the maintainer's placement, CMake and C99 decisions.

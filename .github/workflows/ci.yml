@@ -85,6 +85,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with: { submodules: true }  # native/third_party/sljit (S0016)
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         with: { cache-python: true }  # the managed Pythons too, not only the packages
       - run: uv sync --python 3.13
@@ -100,7 +101,13 @@ jobs:
           WABOROS_JIT_REQUIRE: "1"  # a missing tool fails the job instead of skipping (tests/jit)
       # S0004: the aarch64 ABI and compiler tests under QEMU user mode, which enforces BTI (the
       # arm64 runner's CPU has none); about 2.5 min with the GC tests (S0013 step 4)
-      - run: sudo apt-get install -y qemu-user libc6-arm64-cross libgcc-s1-arm64-cross
+      - run: sudo apt-get install -y qemu-user libc6-arm64-cross libgcc-s1-arm64-cross gcc-aarch64-linux-gnu
+      # S0016 step 0: native/ cross-built for aarch64, ctest under QEMU with BTI enforced (frames,
+      # stubs, the BTI ping-pong and its SIGILL control, the consumer projects)
+      - run: |
+          cmake -S native -B build/native-a64 -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=aarch64 -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc "-DCMAKE_CROSSCOMPILING_EMULATOR=qemu-aarch64;-cpu;max;-L;/usr/aarch64-linux-gnu"
+          cmake --build build/native-a64
+          ctest --test-dir build/native-a64 --output-on-failure
       - run: uv python install cpython-3.13-linux-aarch64-gnu
       - run: python3 tools/run_arm64.py -m pytest tests/jit/test_abi_aarch64.py tests/jit/test_boundary.py tests/jit/test_compiler.py tests/jit/test_compiler_aarch64.py tests/jit/test_tail.py tests/jit/test_exit_record.py tests/jit/test_walk.py tests/test_gc.py tests/test_collector_module.py tests/jit/test_gc_collect.py tests/jit/test_gc_moving.py tests/jit/test_gc_roots.py tests/jit/test_gc_heap.py tests/jit/test_gc_nested.py tests/jit/test_gc_subtype.py -q
       # S0005: the v128 boundary tests and the NEON operators (5c, 5e1, 5e2) against pyc, BTI
@@ -194,6 +201,18 @@ jobs:
         with:
           name: jit-dump-x86
           path: dump
+  sljit:
+    # S0016: native/ (sljit through CMake alone): the build, ctest (frames, stubs, baseline bytes,
+    # the consumer projects). The spec runs on jit-sljit come with the Python side.
+    needs: dedup
+    if: needs.dedup.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with: { submodules: true }
+      - run: cmake -S native -B build/native
+      - run: cmake --build build/native
+      - run: ctest --test-dir build/native --output-on-failure
   spec:
     needs: dedup
     if: needs.dedup.outputs.skip != 'true'
@@ -234,6 +253,8 @@ jobs:
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with: { submodules: true }
+      - run: cmake -S native -B build/native && cmake --build build/native && ctest --test-dir build/native --output-on-failure  # S0016 (no BTI here)
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         with: { cache-python: true }  # the managed Pythons too, not only the packages
       - run: uv sync --python 3.13

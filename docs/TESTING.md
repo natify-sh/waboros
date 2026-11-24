@@ -2,7 +2,7 @@
 title: Testing
 kind: reference
 status: current
-updated: 2026-11-23
+updated: 2026-11-24
 ---
 
 # Testing
@@ -41,6 +41,7 @@ The D25 parity test (`tests/spec/test_runner.py`) requires every JIT to fail wha
 | pywasm (pip) | a second oracle and a source of ideas: its spec runner (`test/spec.py`) was adapted in the PoC session; it passes the core spec suite (54 006 commands, 0 failures at its pinned spec commit `fffc6e12f`) but treats `assert_invalid` / `assert_malformed` as no-ops |
 | meld | fusing component test programs into core modules for WASI 0.2 |
 | MicroPython unix port, `mpy-cross` | the `mpy` target |
+| CMake >= 3.21, a C99 compiler, `gcc-aarch64-linux-gnu` | `native/` (S0016): sljit as a git submodule (`git submodule update --init`), built by CMake alone; never part of the package. The cross build for aarch64 runs its ctest under `qemu-aarch64 -cpu max` |
 | QEMU user-mode | JIT targets for other architectures in CI; `jit-aarch64` BTI (the arm64 Linux runner has none): `tools/run_arm64.py` in the x86 `jit` job; an SSE2-only x86-64 CPU (`qemu64` without SSE3, SSSE3, SSE4 and popcnt) for the SIMD tests and the `simd` spec run of `jit-x86_64` (S0005) |
 
 The runtime package itself declares **no** dependencies; these live in a development group.
@@ -349,6 +350,22 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   Python thread's progress during a long call.
 * A few larger real modules (e.g. a compression library, a Python-in-wasm build, the ballistics core
   compiled to wasm) for compile time, cache behaviour and speed.
+
+## Native code (`native/`, S0016)
+`cmake -S native -B build/native && cmake --build build/native && ctest --test-dir build/native`
+(Ninja or Make; CMake >= 3.21). `native/tests/test_native.c` checks, against the real return address and
+stack pointer, sljit's frame numbers (`waboros_sljit_frame`: 180 shapes on x86-64, 340 on aarch64,
+saveds up to 6 and 10, `7 | SLJIT_ENTER_FLOAT(3)` scratches, C and `REG_ARG | KEEP(3)` functions, locals 0
+to 4096), the stub shape (16 bytes x86-64, 12 aarch64, body behind it, one shared centry), the baseline
+bytes of `clz`/`ctz`/`select` on x86-64 (no `lzcnt`/`tzcnt`: guards the wrapper `waboros_sljit_create`)
+and on aarch64 a BTI ping-pong of `SLJIT_CALL_RETURN` tail calls with its SIGILL control (the control
+runs only under an emulator). `tests/consumer/` is a tiny project embedding `native/` by
+`add_subdirectory` and by `FetchContent_MakeAvailable` (`SOURCE_SUBDIR native`), configured with
+`--warn-uninitialized -Werror=dev`. The cross build: `-DCMAKE_SYSTEM_NAME=Linux
+-DCMAKE_SYSTEM_PROCESSOR=aarch64 -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc
+"-DCMAKE_CROSSCOMPILING_EMULATOR=qemu-aarch64;-cpu;max;-L;/usr/aarch64-linux-gnu"`. CI: the `sljit` job
+(build, ctest), steps in `jit` (the cross build under QEMU with BTI) and `arm64` (native, no BTI), all
+with `submodules: true`.
 
 ## CI matrix
 
