@@ -85,7 +85,7 @@ Not changed here:
 ### Where it lives (decided, maintainer 2026-11-23)
 ```
 .gitmodules                    native/third_party/sljit -> zherczeg/sljit, pinned commit
-native/                        every C source of the repository
+native/                        all our new C sources (the PoC's C stays in poc/)
   CMakeLists.txt               standalone or as a subproject
   third_party/sljit/           the submodule, unmodified
   sljit/waboros_sljit.c        THE translation unit: our sljit defines, #include "sljitLir.c",
@@ -136,9 +136,10 @@ tests/sljit/                   the Python side (development only): backend.py (t
     packages `waboros` from `src/` (`package-dir`), so nothing under `native/`, `tests/` or `poc/`
     can enter it. No separate check.
   * The sdist may hold everything tracked, `native/` and `poc/` included. It has no `MANIFEST.in`
-    (measured with `uv build --sdist`: every tracked file, `poc/` 151 entries).
+    (measured with `uv build --sdist`: every tracked file, `poc/` 151 entries), and none is added:
+    `poc/` stays in the sdist, so tests that read `poc/**/*.wasm` keep working.
   * The sdist does not carry the submodule's files: setuptools-scm lists tracked files, and a
-    submodule is one gitlink entry (expected; the packaging test checks it). So `native/` cannot be
+    submodule is one gitlink entry (expected, not checked). So `native/` cannot be
     built from an sdist, and that is not supported. It is built from a git checkout with
     `--recurse-submodules`, the simplest rule.
 * **The Python side.**
@@ -254,7 +255,9 @@ tests/sljit/                   the Python side (development only): backend.py (t
     * to `[rec] + STUB` (`REG_ARG`) if word 8 matches;
     * otherwise to the C entry `[rec]` with `SLJIT_R0`/`SLJIT_R1` set.
   * Otherwise, the first hop: it saves the R pins and S0, switches, calls (the same two kinds),
-    binds `restore`, restores, and returns the status.
+    binds `restore`, restores the R pins and S0, **reloads S2 (memory 0's base) from the restored
+    S0**, as `jit-x86_64`'s `tail_switch` reloads its memory registers, and returns the status.
+    The later hop's `CALL_RETURN` leaves S2 to the restore point the same way.
   * `restore_ret_at`/`restore_up` are its frame numbers (below).
   * The gate's `pong2` showed the pieces (return-address compare, `CALL_RETURN` after a released
     frame) on x86-64. The whole of it is expected, tested in step 1.
@@ -284,14 +287,22 @@ tests/sljit/                   the Python side (development only): backend.py (t
     `tail_switch`'s restore frame plus a body.
   * The backend asserts the 768-byte bound and refuses the module (`Unsupported`) above it.
     Expected: no spec module comes near it.
-* **Baseline CPU features, no patch.** Our translation unit sets sljit's `static cpu_feature_list`
-  before the first compile, so sljit's `get_cpu_features()` (cpuid) never runs.
-  * The value is `CPU_FEATURE_DETECTED | CPU_FEATURE_SSE2 | CPU_FEATURE_CMOV`, the x86-64
-    baseline. `DETECTED` is needed because sljit re-detects while the word is 0.
-  * So no LZCNT, TZCNT or AVX: `clz`/`ctz` use the `bsr`/`bsf` sequences, and the bytes do not
-    depend on the host CPU.
-  * aarch64: `#error` if `__ARM_FEATURE_ATOMICS` (sljit picks LSE at build time).
-  * A ctest checks the emitted bytes of `clz`/`ctz`/`select`, and `tools/isa_all.py` runs on
+* **Baseline CPU features, no patch.** sljit keeps them in `static cpu_feature_list`, which our
+  translation unit can write.
+  * The first `sljit_create_compiler` runs `init_compiler()` → `get_cpu_features()` (cpuid)
+    unconditionally (`sljitLir.c` 581-584, `sljitNativeX86_common.c` 3237-3239), so a preset
+    before it is overwritten. Re-review, measured: preset before create gives `lzcnt`; preset
+    after create gives the `bsr` + `cmov` baseline.
+  * So `waboros_sljit_create()` wraps `sljit_create_compiler` and assigns `cpu_feature_list =
+    CPU_FEATURE_DETECTED | CPU_FEATURE_CMOV` (x86-64-v1) after **every** call. The Python glue
+    and later C code create compilers only through it.
+  * `CPU_FEATURE_SSE2` exists only under `SLJIT_DETECT_SSE2` (x86-32), so it is not in the value.
+  * The result: no LZCNT, TZCNT or AVX; `clz`/`ctz` use `bsr`/`bsf` with `cmov`; the bytes do not
+    depend on the host CPU. sljit's AVX paths are reached only with `SLJIT_ENTER_USE_VEX`, which
+    we never use.
+  * `#error` if `__SHSTK__` (sljit's `rdssp`/`incssp` shadow-stack paths) on x86-64, and if
+    `__ARM_FEATURE_ATOMICS` (sljit picks LSE at build time) on aarch64.
+  * A ctest checks the emitted bytes of `clz`/`ctz`/`select` (guarding the wrapper), and `tools/isa_all.py` runs on
     `jit-sljit` files.
   * The wasm micro-compiler's further needs (no `cpuid` inline asm, `sljit_sw` independent of the
     host `long`) belong to ROADMAP "Next" (6)(c): to be proposed upstream first (host ≠ target,
@@ -301,7 +312,7 @@ tests/sljit/                   the Python side (development only): backend.py (t
     their own.
   * aarch64: sljit emits no BTI, so we add custom words: `bti jc` on stubs (S0015 Q5 (a)), bodies
     (`blr`'d by D71's paths, `br x9`'d by `CALL_RETURN`) and `tail_switch` (`br x9`); `bti c` on the
-    bridge (`blr` only).
+    bridge (`blr` only). centry gets none: only the stubs' direct `b` reaches it.
   * No `bti j`: `br_table` is a compare tree (PoC `jump_table`), and sljit emits no other indirect
     jump inside a function (expected; the BTI-enforced spec run shows it).
   * No `paciasp`.
@@ -324,12 +335,17 @@ tests/sljit/                   the Python side (development only): backend.py (t
   * The blobs are bytes; `tail_switch` is identical in both.
   * The `win64` bridge differs only at the host call. sljit's x86-64 build picks one calling
     convention at build time (`_WIN64`), and we use one sljit configuration on every OS
-    (LESSONS 141), so that call is custom bytes: `rcx`/`rdx` arguments, 32 bytes of shadow space
-    inside the frame, an indirect `call`, and a sljit label after it for the exit record. About 20
-    lines.
-  * It runs on no row here. It is checked by bytes: a disassembly test of the call sequence, the
-    ISA gate, and the record compare. That is cheaper than a sysv-only file, which would need an
-    S0014 amendment, a refusal rule and a refusal-corpus case.
+    (LESSONS 141), so that call is custom bytes: `rcx`/`rdx` arguments, an indirect `call`, and a
+    sljit label after it for the exit record. About 20 lines.
+  * The 32-byte shadow space is `[rsp, rsp + 32)` at the call. So the bridge's own locals (the
+    saved R pins and `HOST_ERROR`, at `[SP + 0..40]` in the PoC) move above it, and its frame keeps
+    `rsp` 16-aligned at the call.
+  * It runs on no OS row here, but it is **executed** on Linux. A ctest calls a host function
+    declared `__attribute__((ms_abi))` through the `win64` bridge and checks the arguments, the
+    shadow space (the host writes all 32 bytes), the alignment and the exit record. The disassembly
+    and ISA checks and the record compare come on top.
+  * That is cheaper than a sysv-only file, which would need an S0014 amendment, a refusal rule and
+    a refusal-corpus case.
 * The symbols are as today (`__waboros_bridge_<conv>`, `__waboros_tail_switch_<conv>`,
   `__waboros_centry_<conv>` found through the stub's jump).
 * `features_required`, flags, ISA level: as for the Python JITs, baseline only.
@@ -396,7 +412,8 @@ Scratch experiments, 2026-11-23/24, sljit 39c508d, not committed. Directory
   * Result: 0 wrong on x86-64 and on aarch64 (QEMU).
   * On aarch64 `ret_at` is 8 at every size.
   * The ctest of step 0 adds `7 | SLJIT_ENTER_FLOAT(3)` scratches and aarch64 saveds up to 10.
-* **Frame sizes** (`up`, bytes):
+* **Frame sizes** (`up`, bytes; sljit rounds frames to 16: re-review, `REG_ARG|KEEP(3)` x86-64
+  saveds 4 gives 16, saveds 5 or 6 gives 32, saveds 3 with local 8 gives 16):
 
 | shape | x86-64 | aarch64 |
 |---|---|---|
@@ -422,7 +439,7 @@ Scratch experiments, 2026-11-23/24, sljit 39c508d, not committed. Directory
 
 | path | `jit-x86_64` (D71) | `jit-sljit`, expected |
 |---|---|---|
-| direct recursion | 16 B/level | 16 + 8 per S pin |
+| direct recursion, same pins on both | 16 B/level plus its pushed pins | 16 plus the S pins sljit saves, rounded to 16 |
 | own-table `call_indirect` | 16 | the same as direct |
 | across instances, same compiler | 32 | 16 + the context save in its frame |
 | across compilers | 112 a call | its C path: the R saves inside its frame + the callee's centry (32 / 48) |
@@ -433,7 +450,8 @@ x86-64 unless marked; "through files" is `WABOROS_JIT_ARTIFACT=1`.
   build/native`:
   * the frame shapes above;
   * the stub sizes;
-  * the baseline bytes of `clz`/`ctz`/`select`;
+  * the baseline bytes of `clz`/`ctz`/`select` (compilers made through `waboros_sljit_create()`);
+  * the `win64` bridge executed against an `ms_abi` host function;
   * on aarch64 under the crosscompiling emulator, the BTI ping-pong with its SIGILL control;
   * the consumer project (`add_subdirectory` and `FetchContent_MakeAvailable` with `SOURCE_DIR`
     local), configured with `--warn-uninitialized -Werror=dev`.
@@ -483,7 +501,8 @@ x86-64 unless marked; "through files" is `WABOROS_JIT_ARTIFACT=1`.
   * the hop returns to centry, which jumps;
   * `tail_switch`'s first hop calls and returns.
 * **CoreMark** (`tools/run_coremark_jit.py`) alternated with `jit-x86_64`, `taskset -c 2`, several
-  rounds, self checks pass. The stubs sit where `jit-x86_64`'s do, so the placement matches.
+  rounds, self checks pass. The stubs sit where `jit-x86_64`'s do, but the 128-byte pad before
+  centry differs, so the placement is close, not equal (LESSONS 139).
   aarch64 timing on the native runner.
 
 ## Plan of steps
@@ -582,7 +601,8 @@ In the step that makes each untrue; step 7 for the rest.
   * sljit's `REG_ARG` functions are not C entries;
   * sljit shortens jumps within ±128 bytes, so fixed-size stubs need the pad;
   * sljit's aarch64 return address is at `[sp + 8]`;
-  * an unset `cpu_feature_list` makes sljit run `cpuid` and emit host-specific code.
+  * sljit overwrites a `cpu_feature_list` preset at its first `sljit_create_compiler`, so the
+    baseline is set after every create.
 * [RISKS.md](../RISKS.md) R2: the BTI row for sljit code.
 * `.gitmodules`; `pyproject.toml` unchanged (the wheel takes `src/`); no `MANIFEST.in`;
   `CLAUDE.md`'s commands (the native build, the `jit-sljit` spec run).
