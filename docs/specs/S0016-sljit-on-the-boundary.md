@@ -851,7 +851,8 @@ In the step that makes each untrue; step 7 for the rest.
 * 2026-11-24: step 6 (x86-64): CoreMark on the native library, 5 rounds alternated, `taskset -c 2`,
   guard: `jit-sljit-x86_64` 15 968 vs `jit-x86_64` 16 236 Iterations/Sec (medians), ratio 0.9835;
   explicit: 13 699 vs 13 986, ratio 0.9795; every run passes its self-check (BENCHMARKS, S0016
-  step 6). aarch64: pending the first CI run of the arm64 job (`jit-sljit-aarch64` beside `jit-aarch64`).
+  step 6). aarch64 (native arm64 runner, guard, 3 rounds alternated): `jit-sljit-aarch64` 18 497 vs
+  `jit-aarch64` 19 561 (medians), ratio 0.946, spread under 0.5 % (BENCHMARKS).
 
 ## Changes
 * 2026-11-23: created (draft), with the maintainer's placement, CMake and C99 decisions.

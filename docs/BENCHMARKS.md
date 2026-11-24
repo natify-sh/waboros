@@ -2431,5 +2431,18 @@ explicit:
 * Ratio of medians (`jit-sljit-x86_64` / `jit-x86_64`): guard 0.9835, explicit 0.9795.
 * Spread (min-max over the 5 rounds): guard `jit-x86_64` 14 933-16 880, `jit-sljit-x86_64`
   14 504-16 116; explicit `jit-x86_64` 13 653-15 557, `jit-sljit-x86_64` 13 122-14 164.
-* aarch64: measured on the native arm64 runner in CI (ci.yml, job arm64, S0016 step 6); numbers
-  to be added from the first run.
+* aarch64: the native arm64 runner in CI (ci.yml, job arm64, ubuntu-24.04-arm, guard pages,
+  alternated, 3 rounds each; CI run 45483232518, S0016 step 6, 2026-11-24); every run passes its
+  self-check. Iterations/Sec:
+
+  | round | `jit-aarch64` | `jit-sljit-aarch64` |
+  |---|---|---|
+  | 1 | 19 579.7 | 18 500.2 |
+  | 2 | 19 499.5 | 18 494.5 |
+  | 3 | 19 560.5 | 18 496.8 |
+  | median | 19 560.5 | 18 496.8 |
+
+  Ratio of medians 0.946. The spread within a target is under 0.5 %, so on aarch64 `jit-sljit`
+  is about 5 % slower, unlike x86-64 (0.98, within noise). Not investigated in S0016 (no speed
+  goal for the development target); the code differs from `jit-aarch64`'s in sljit's instruction
+  selection, the pool (S3-S9) and the frame layout.
