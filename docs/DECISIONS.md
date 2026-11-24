@@ -2,7 +2,7 @@
 title: Decisions
 kind: log
 status: current
-updated: 2026-11-23
+updated: 2026-11-24
 ---
 
 # Decisions
@@ -1145,6 +1145,8 @@ words 10-13 anyway), and ARTIFACT.md part 3 states the reservation and the size 
 before the code does. Cost: Wasmtime 50 enables threads by default, so a gap from its defaults stays
 until threads are done; toolchains emit threads only on request (`-pthread`, wasi-threads).
 
+*(2026-11-24, maintainer, 2026-11-24: libcall word 9 is earmarked for an atomic read-modify-write service (an op immediate after the operands) for architectures whose atomics mapping routes atomics to the runtime: no 64-bit or no atomic instructions, such as ARMv6-M, ARMv7-M 64-bit, RV32IMC, mips32, ppc32. Words 6-8 stay for `wait32`, `wait64` and `notify`. Amendment of v1 without a bump.)*
+
 ### D59. The artifact container is ELF64
 Status: accepted (maintainer, 2026-11-15) · Date: 2026-11-15 · Supersedes: — · Evidence: ARTIFACT-CONTAINER.md (option (b)); the prototype `poc/artifact/elf64.py` (standard library only), read back by `readelf`, `objdump`/`llvm-objdump`, `llvm-readobj` and pyelftools 0.32 with no warning; Wasmtime's `.cwasm` is an ELF on every OS
 
@@ -1511,6 +1513,7 @@ Status: accepted (maintainer, 2026-11-17) · Date: 2026-11-17 · Supersedes: the
 * The Python backends stay: they are the reference behaviour, `pyc`'s fallback partners and the
   targets of the Python package until JIT-AS-WASM's decision (after the artifact format).
 
+*(2026-11-24, maintainer, 2026-11-24: the C core generates code through our own thin backend interface, the C counterpart of D39, as the Python core does (`jit-sljit` is a D39 backend). sljit is the main implementation of it for the ISAs sljit supports; other ISAs (Thumb-1 such as RP2040, Xtensa such as ESP32) get hand-written backends behind the same interface. The layer is static inline functions, so LTO inlining, which D68's speed argument rests on, stays.)*
 
 ### D69. The GC heap's regions are committed apart; `size_bytes` is the highest committed end
 Status: accepted (maintainer, 2026-11-20) · Date: 2026-11-20 · Supersedes: D57's "Committed from its start" bullet; amends ARTIFACT.md part 3 (the GC heap's `size_bytes`) without a version bump · Evidence: S0014 step 4.2, BENCHMARKS.md "GC heap: committed bytes"; LESSONS 135

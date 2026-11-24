@@ -160,7 +160,9 @@ anyone can run: [MICRO-COMPILERS-SHIPPING.md](MICRO-COMPILERS-SHIPPING.md) (main
 * Prerequisites: the backend interface frozen (**done**, D39), the artifact format and context ABI
   fixed with a version (**phase 5**, D36), the C reference loader in CI (phase 5).
 * **Superseded in part by D68 (maintainer, 2026-11-17): the micro-compilers are our core in C over
-  sljit, not hand-written ports of the Python backends; the oracle is behaviour, as for
+  sljit (generating code through our own thin backend interface, the C counterpart of D39, as static
+  inline functions so LTO inlining stays; sljit is its main implementation and ISAs it lacks, such as
+  Thumb-1 and Xtensa, get hand-written backends, maintainer, 2026-11-24), not hand-written ports of the Python backends; the oracle is behaviour, as for
   `poc/sljit/sljit-be/`.** The order below is the earlier plan.
 * **First: `aarch64.wasm`, a port of the aarch64 backend** (maintainer, 2026-11-02). The Python
   `jit-aarch64` is a ready oracle: every spec module and CoreMark compared byte for byte, so the

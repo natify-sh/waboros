@@ -6,7 +6,7 @@ status: implemented
 superseded_by:
 related: [D23, D30, D32, D35, D36, D47, D56, D59, D60, D62, D64, D65, D66, D68, D70, D71, D72, R2, S0003, S0004, S0006, S0013, S0014]
 owner: maintainer
-updated: 2026-11-23
+updated: 2026-11-24
 ---
 
 # S0015 The boundary convention between separately compiled JIT artifacts
@@ -896,3 +896,10 @@ Moved to [ARTIFACT.md](../ARTIFACT.md) part 3, "Reference listing of the runtime
 * 2026-11-23: step 6 (final review): the reference listing moved from this spec's appendix to
   ARTIFACT.md part 3 (Q3 (a)); the "Per architecture" table split into fixed and compiler-private
   rows; "Not measured" updated; status `implemented`; see Progress. No change to the contract.
+* 2026-11-24 (maintainer): provisions for 32-bit and microcontroller targets, which may come only in
+  ABI v2 (ARTIFACT.md part 3). Code addresses (records, `HOST_BRIDGE`, `TAIL_SWITCH`, import words)
+  are in the ISA's callable form (bit 0 set on Thumb); the walk clears the ISA's mode bits of a return
+  address before matching `ret` (Thumb bit 0; windowed Xtensa bits 31:30, with the host spilling the
+  register windows before a walk). The headroom numbers (1 KiB, about 768 bytes, `nlimit − 4096`) are
+  the values of x86-64 and aarch64; another architecture states its own in the boundary row. No change
+  for x86-64 and aarch64.

@@ -6,7 +6,7 @@ status: implemented
 superseded_by:
 related: [D18, D23, D24, D29, D33, D35, D36, D44, D48, D54, D58, D59, D60, D61, D62, D63, D64, D65, D66, D70, D73, R2, R3, R6, S0003, S0006, S0013, S0015]
 owner: maintainer
-updated: 2026-11-23
+updated: 2026-11-24
 ---
 
 # S0014 JIT artifact format v1 in the ELF64 container
@@ -456,7 +456,7 @@ conventions):
 
 ```
 u32 n
-n x blob:  u8 id (1 sysv, 2 win64, 3 aapcs64), u8 0, u16 0,
+n x blob:  u8 id (1 sysv, 2 win64, 3 aapcs64; append-only, valid per e_machine), u8 0, u16 0,
            u32 start, u32 size,                        the blob in .text
            u32 bridge,                                 offset in .text
            u32 tail_switch, u32 restore,               offsets in .text; 0xFFFFFFFF for none
@@ -1150,3 +1150,5 @@ When approved and implemented (step 7 unless noted):
   the function-record membership test is a set. The typing rules of constant expressions, the
   container rules and the "Known limitations of v1" are in the normative sections (above).
 * 2026-11-24: ELF64 little-endian stays the container for every target, 32-bit ones included (maintainer); `isa_level` numbers disjoint per width where an `e_machine` covers both.
+* 2026-11-24 (maintainer): convention ids of `.waboros.trampolines` are append-only and valid per
+  `e_machine`; a future architecture's conventions take their own ids under its `e_machine`.

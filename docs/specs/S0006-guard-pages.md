@@ -6,7 +6,7 @@ status: implemented
 superseded_by:
 related: [D10, D23, D25, D29, D31, D33, D35, D36, D37, D39, D42, R2, R3, R6, S0003, S0004, S0005]
 owner: maintainer
-updated: 2026-11-23
+updated: 2026-11-24
 ---
 
 # S0006 Guard pages instead of explicit bounds checks on jit-x86_64 and jit-aarch64
@@ -411,6 +411,8 @@ reservation is a crash, not a trap: the explicit-mode tests and differential run
   review found that remembering the handler under ours as faulthandler's let faulthandler, re-enabled
   on top, take a guard fault and end the process with 139). Every memory is reserved
   4 GiB + 32 MiB in either mode; a memory is registered when a guard instance binds it.
+  *(Since 2026-11-24, maintainer: the reservation is a property of the 64-bit runtime, not of the
+  contract; see the Changes line below.)*
 * 2026-11-02: the maintainer approved two decisions. (1) **The re-send of a sent signal** (step 1's
   deviation): when the saved action is SIG_DFL/SIG_IGN and `si_code <= 0` (a signal sent with
   `kill`/`raise`, not a fault), the handler restores the action with `sigaction` and calls libc's
@@ -871,6 +873,10 @@ reservation is a crash, not a trap: the explicit-mode tests and differential run
 * 2026-11-04 (S0009 step 2b): i64 memories are no longer registered with the guard registry (no
   fault point targets them, and they may move, D50); "never moves the base" holds for 32-bit
   memories, which keep their reservation and registration.
+* 2026-11-24 (maintainer): the "in either mode" reservation and "never moves the base" are the 64-bit
+  runtime's, not the contract's: a non-shared memory's base and size may change at any host call,
+  libcall or record call, for i32 as for i64 (ARTIFACT.md part 3); a shared memory never moves (a
+  32-bit runtime commits it at its maximum). No code change.
 * 2026-11-19: Android limitation recorded (maintainer): a child process started by CPython resets
   libsigchain's entry for SIGSEGV to `SIG_DFL` (LESSONS 134); guard calls are refused with an
   error naming `WABOROS_JIT_BOUNDS=explicit`; no reinstall, no fallback at run time; the race with

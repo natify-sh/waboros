@@ -6,7 +6,7 @@ status: implemented
 superseded_by:
 related: [D23, D24, D25, D27, D29, D35, D36, D37, D39, D44, D45, D47, D48, S0001, S0003, S0006, S0007, R3, R6]
 owner: maintainer
-updated: 2026-11-04
+updated: 2026-11-24
 ---
 
 # S0009 memory64 and table64 (Wasm 3.0) on pyc, jit-x86_64 and jit-aarch64
@@ -30,8 +30,9 @@ Main choices (decided by the maintainer on 2026-11-04 unless marked open, "Open 
   (guard region plus one compare) is optional step 5, taken only after a measurement (Q2).
 * **Memory limits are Wasmtime's** (Q1 (b)). No 65 536-page cap for i64 memories: the JIT reserves
   as Wasmtime 50.0.1 does (measured, "Runtime") and grows an i64 memory past its reservation by
-  **moving** it; `pyc` grows its `bytearray` until allocation fails. An i32 memory never moves, and
-  its code bytes do not change (D35). Tables keep the D27 cap.
+  **moving** it; `pyc` grows its `bytearray` until allocation fails. An i32 memory never moves in the 64-bit
+  runtime (since 2026-11-24 a property of that runtime, not of the contract: ARTIFACT.md part 3),
+  and its code bytes do not change (D35). Tables keep the D27 cap.
 * **Context ABI v1 is amended, not bumped** (Q4): no new word. The libcalls `memory.grow` and
   `table.grow` return −1 at the address width, and the base of an i64 memory may change in a host
   call.
@@ -692,3 +693,7 @@ document to update"):
   exit (an interrupt right after the entry call returned left it for a later call to raise). The
   claim/release window of grow and instantiation is accepted ("Threads"). On PyPy the window stays
   (D51). LESSONS 82.
+* 2026-11-24 (maintainer): ARTIFACT.md's memory row no longer promises that an i32 memory's base never
+  moves: a non-shared memory's base and size may change at any host call, libcall or record call,
+  for i32 as for i64 (code reloads them, as it already does); the 4 GiB + 32 MiB reservation is the
+  64-bit runtime's. No code change.

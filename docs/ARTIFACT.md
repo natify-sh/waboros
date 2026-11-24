@@ -2,7 +2,7 @@
 title: JIT artifact, ISA levels and the context ABI
 kind: reference
 status: current
-updated: 2026-11-23
+updated: 2026-11-24
 ---
 
 # JIT artifact, ISA levels and the context ABI
@@ -198,7 +198,7 @@ the phase-3 meaning of each word and the register roles are in [S0003](specs/S00
 |---|---|---|---|
 | 0 | `SAVED_SP` | internal | zero (traps return through frames, and the guard-page fault handler resumes at a stub, S0006, so neither uses it); kept reserved |
 | 1 | `TRAP_CODE` | code → host | written by the trampoline when it returns a non-zero status |
-| 2 | `INTERRUPT` | host → code | non-zero: the code returns `INTERRUPT` at its next poll (any thread may set it) |
+| 2 | `INTERRUPT` | host → code | non-zero: the code returns `INTERRUPT` at its next poll (any thread may set it); a host sets a value with non-zero low 32 bits, since code may test only the low 32 (32-bit rule below) |
 | 3 | `FUEL` | both | remaining fuel (signed), when compiled with fuel |
 | 4 | `EPOCH_DEADLINE` | host → code | when compiled with epochs |
 | 5 | `VSTACK_LIMIT` | host → code | address the value stack must not cross → `STACK_OVERFLOW` |
@@ -210,12 +210,12 @@ the phase-3 meaning of each word and the register roles are in [S0003](specs/S00
 | 11-13 | reserved | | zero (S0013 step 6.3; the exception arena's refill service, cursor and limit until then, S0012; an amendment of v1 without a bump, Q5) |
 | 14 | `EXIT_RECORD` | host → code | address of the store's exit record `{sp, pc, frame}` of the innermost host call: the bridge writes it before the host runs (the calling frame's stack pointer at its call, the return address, the frame base of the calling wasm frame, the base its site's map refers to) and clears `sp` after; every entry keeps the enclosing record and its frame on the native stack during its call and puts the record back (S0013; an amendment of v1 without a bump, Q5) |
 | 15 | reserved | | zero |
-| 16 … | per memory *i*: `base`, `size_bytes` (2 words) | host ↔ code | imported memories first; an i32 memory's base never moves (4 GiB + 32 MiB reserved, committed on grow; S0006); an i64 memory's base and `size_bytes` may both change during any host call or libcall (a `memory.grow` that moves it; D50, S0009: an amendment of v1 without a bump), so code keeps neither across a call: code that keeps a memory in registers (x86-64: memory 0 in r13/r14; aarch64: x26/x25) reloads them after every host call (and, from S0015 steps 1 and 3, after every call through a function record: a callee may grow an imported memory), any other memory is read here at each access |
-| … | the GC heap: `base`, `size_bytes` (2 words), right after the module's memories | host ↔ code | only in a module that uses GC (GC types or instructions, or a `call_indirect` / `return_call_indirect` to a non-final type; S0013 step 3b, an amendment of v1 without a bump, Q5) or, from S0013 step 6.1, allocates or reads exception objects (a `throw`, or a `try_table` with a `catch` or `catch_ref` clause; a module with only `throw_ref` and `catch_all(_ref)` has none): the store's heap, an i32 memory (4 GiB + 32 MiB reserved, never moves) that `memory.size`, `memory.grow` and the libcall immediates do not count; a module without memories of its own has it as memory 0 (r13/r14, x26/x25). `size_bytes` is the highest committed end; the heap's regions are committed apart, so gaps below it are uncommitted and no code addresses them (D69, an amendment of v1 without a bump) |
+| 16 … | per memory *i*: `base`, `size_bytes` (2 words) | host ↔ code | imported memories first; a non-shared memory's base and `size_bytes` may both change during any host call, libcall or record call, for an i32 memory as for an i64 one (a `memory.grow` that moves it; D50, S0009: an amendment of v1 without a bump; maintainer, 2026-11-24), so code keeps neither across a call; the 4 GiB + 32 MiB reservation of an i32 memory (committed on grow; S0006) is a property of the 64-bit runtime, not of the contract, and a shared memory never moves (a 32-bit runtime commits it at its maximum): code that keeps a memory in registers (x86-64: memory 0 in r13/r14; aarch64: x26/x25) reloads them after every host call (and, from S0015 steps 1 and 3, after every call through a function record: a callee may grow an imported memory), any other memory is read here at each access |
+| … | the GC heap: `base`, `size_bytes` (2 words), right after the module's memories | host ↔ code | only in a module that uses GC (GC types or instructions, or a `call_indirect` / `return_call_indirect` to a non-final type; S0013 step 3b, an amendment of v1 without a bump, Q5) or, from S0013 step 6.1, allocates or reads exception objects (a `throw`, or a `try_table` with a `catch` or `catch_ref` clause; a module with only `throw_ref` and `catch_all(_ref)` has none): the store's heap, an i32 memory (4 GiB + 32 MiB reserved in the 64-bit runtime; its base may change at any host call, libcall or record call, so code reloads it, maintainer, 2026-11-24) that `memory.size`, `memory.grow` and the libcall immediates do not count; a module without memories of its own has it as memory 0 (r13/r14, x26/x25). `size_bytes` is the highest committed end; the heap's regions are committed apart, so gaps below it are uncommitted and no code addresses them (D69, an amendment of v1 without a bump) |
 | … | per table *i*: `base`, `size` (2 words) | host ↔ code | `base`: the element words (one per element), `size`: elements; `table.grow` may move the elements, so code reads both words at each use and never keeps them across a host call. A `funcref` element (and value) is 0 (null) or the address of a function record (below); an `externref` element is 0 (null) or a reference word: a host value is `(h << 2) \| 2`, *h* its 1-based handle in the store (S0013 step 3b; the encoding is the runtime's, no code reads the bits); an `exnref` element is 0 or an exception object's heap offset (S0013 step 6.2) |
 | … | per global *i*: 1 word (2 for v128) | both | imported globals: a pointer to the owner's word instead |
 | … | per function import *i*: 1 word | host → code | address of a host function (signature below) |
-| … | the libcall block: 10 words, per libcall *j* 1 word | host → code | a runtime service, same signature as an import, in a fixed order, all ten words in every context: 0 `memory.grow`, 1 `table.grow`, 2 `table.init`, 3 `elem.drop`, 4 `memory.init`, 5 `data.drop`, 6-9 reserved, zero (D58: threads' `memory.atomic.wait32`, `wait64` and `notify` go there as an amendment of v1; S0014 step 0, an amendment of v1 without a bump: no artifact was written before it, and every word after the block moved by 4); never computation (D25). The operands are in the slots, the instruction's immediates (table, segment) after them; the memory index of `memory.grow` and `memory.init` only when the module has more than one memory. Operands and results have the address width of the memory or table they name (S0009, an amendment of v1 without a bump, Q4): for an i64 memory the delta, the old size and its failure −1 of `memory.grow` and the destination of `memory.init` are 64-bit values (−1 is `2⁶⁴−1`), for an i32 one they are i32 zero-extended as before; `table.grow` and `table.init` of an i64 table the same way (S0009 step 3) |
+| … | the libcall block: 10 words, per libcall *j* 1 word | host → code | a runtime service, same signature as an import, in a fixed order, all ten words in every context: 0 `memory.grow`, 1 `table.grow`, 2 `table.init`, 3 `elem.drop`, 4 `memory.init`, 5 `data.drop`, 6-9 reserved, zero (D58: threads' `memory.atomic.wait32`, `wait64` and `notify` go in words 6-8 as an amendment of v1; word 9 is earmarked for an atomic read-modify-write service, an op immediate after the operands, for architectures whose atomics mapping routes atomics to the runtime (no 64-bit or no atomic instructions: ARMv6-M, ARMv7-M 64-bit, RV32IMC, mips32, ppc32; maintainer, 2026-11-24); S0014 step 0, an amendment of v1 without a bump: no artifact was written before it, and every word after the block moved by 4); never computation (D25). The operands are in the slots, the instruction's immediates (table, segment) after them; the memory index of `memory.grow` and `memory.init` only when the module has more than one memory. Operands and results have the address width of the memory or table they name (S0009, an amendment of v1 without a bump, Q4): for an i64 memory the delta, the old size and its failure −1 of `memory.grow` and the destination of `memory.init` are 64-bit values (−1 is `2⁶⁴−1`), for an i32 one they are i32 zero-extended as before; `table.grow` and `table.init` of an i64 table the same way (S0009 step 3) |
 | … | per signature *k*: 1 word | host → code | the canonical type id of a type the module's `call_indirect`s name (equal for equivalent types of every module of the process, never 0) |
 | … | per function record *r*: 3 words | host → code | `{code address, canonical type id, context address}` of every function import and of every function the module can take a reference to (`ref.func`, segments): a defined one; an import from another instance of the same store (its code and context: a direct call); a host function (the module's thunk, which calls the import's word through the bridge). `call_indirect` checks bounds, null and the type id, then calls `code` with r15 = `context` (and that context's memory words); `call` and `return_call` of an import go through the import's record the same way (D32). *From S0015 steps 1 (x86-64) and 3 (aarch64):* `code` is the callee's **C entry** (a defined function's, an exporter's for an import from another instance, the importing module's host thunk's for a host function); a call through a record saves `rsi rdi r8`–`r11` (the pool registers a C entry may clobber, for every frame above), passes `rdi` = `context` and `rsi` = its frame base + 8 · shift, and restores them and reloads memory 0's words before it tests the status, on every path. A compiler may bypass the C entry for callees it recognises as its own, a private choice (D71): `jit-x86_64` calls a record of the caller's own context at its body (`code + 16`) as a direct call, and one of another context whose word 8 (`HOST_BRIDGE`) equals the caller's (the same compiler) at its body with `r15` saved and switched and memory 0's words the callee's. `jit-aarch64` does the same: it saves `x2`–`x8` around a C entry (`x0` = `context`, `x1` = the frame), calls a body of its own context at `code + 12`, and one of the same compiler with `x28` saved in 16 bytes and switched |
 | … | per tag *t*: 1 word | host → code | the tag's identity: non-zero, unique in the process, imported tags first; an imported tag has its exporter's value, so a `catch` compares identities, never indices (S0012) |
@@ -225,7 +225,20 @@ the phase-3 meaning of each word and the register roles are in [S0003](specs/S00
 
 Offsets of the variable part follow from the counts in the artifact, in exactly this order.
 
-**The GC heap** (S0013 step 3b; the collector and its regions B come with step 5). Offsets in the
+**32-bit architectures** (provisions for a future one, which may come only in ABI v2; v1 must not
+block it; "+"maintainer, 2026-11-24"+"): words stay 64 bits wide and little-endian. On a 32-bit architecture the high
+half of every pointer or size word (bases, sizes, limits, addresses, records) is zero and code may
+read only the low half; canonical type ids and tag identities are below 2³² (the runtime's tag
+counter, `range(1, 1 << 63)` in `targets/jit/common/instance.py`, will need a cap: ROADMAP); a
+host sets `INTERRUPT` to a value with non-zero low 32 bits, and code may test the low 32 bits.
+Big-endian 32-bit ISAs (MIPS BE, PPC32) are accepted as v2 (ROADMAP, phase 8).
+
+**The GC heap** (S0013 step 3b; the collector and its regions B come with step 5). The code's contract
+is heap offsets 0-15 (null, the cursor at 8, the limit at 12, the flag), the object, type-info record
+and reference-word formats and the RTT words; the region layout below (type area, tid map at
+60 MiB, `ROOTS`, the handle report, the semispaces, the 64 MiB start) is private to the runtime and
+its collector module, so a small-memory runtime may differ ([GC-SMALL-MEMORY.md](GC-SMALL-MEMORY.md);
+maintainer, 2026-11-24). Offsets in the
 heap: 0-7 zero (null is 0), the allocation cursor (u32) at 8 and its limit (u32) at 12; the rest
 of the header page belongs to the collector module (S0013 step 5.2, `runtime/gc/collector.wat`):
 at 16 the handle-report overflow flag (u32), 20-2047 reserved, [2 KiB, 4 KiB) the handle report (bit
@@ -345,6 +358,13 @@ provides a compiler's bridge or `tail_switch`; they come from the artifact. The 
 fixed per architecture, the same for every compiler (S0015, D70), and is what a host must follow.
 Everything else in this part is the same 64-bit little-endian words for every architecture and
 compiler.
+
+**Code addresses** (function records, `HOST_BRIDGE`, `TAIL_SWITCH`, import words) are in the ISA's
+callable form (bit 0 set on Thumb, say). The walk clears the ISA's mode bits of a return address
+before matching it against a `ret` (Thumb bit 0; windowed Xtensa bits 31:30, where the host must
+also spill the register windows before a walk). S0015's headroom numbers (1 KiB, 768 bytes,
+`nlimit − 4096`) are per-architecture values of the boundary row; x86-64 and aarch64 keep today's
+(maintainer, 2026-11-24).
 
 | | x86-64 | aarch64 |
 |---|---|---|
