@@ -2,7 +2,7 @@
 title: jit-sljit on the boundary - the first second compiler in a mixed store
 kind: spec
 id: S0016
-status: draft
+status: approved
 superseded_by:
 related: [D23, D30, D35, D39, D47, D56, D59, D60, D61, D64, D66, D67, D68, D70, D71, D73, R2, R3, S0004, S0013, S0014, S0015]
 owner: maintainer
@@ -690,3 +690,4 @@ In the step that makes each untrue; step 7 for the rest.
   plumbing (`_jits`, `claims.py`, the tools); the `win64` bridge as an executed pytest, step 2 to
   the jit-engineer; `test_boundary.py` on `jit-sljit`; S0002, the D39 amendment, SLJIT-BACKEND.md
   rows and S0015 walk item 2 in the docs list; `load()` unchanged; nits.
+* 2026-11-24: approved by the maintainer.
