@@ -48,8 +48,8 @@ The runtime gains a minimal, target-neutral part of phase 6:
 * a store holds instances of several JIT targets of one architecture, each loaded under its own
   exact compiler string;
 * the walk and the walk check use the store's sets of entry and restore points;
-* the GC collector stays as today: compiled by the target of the store's first module that needs
-  the GC heap, which may be `jit-sljit` (any compiler of the architecture will do).
+* the GC collector stays as today: compiled by the target of the instance that first needs it,
+  which may be `jit-sljit` (any compiler of the architecture will do).
 
 Not changed here:
 * the per-architecture loader rule and executing a foreign blob from a file stay in phase 6;
@@ -74,7 +74,8 @@ Not changed here:
     (c). `native/` gets their place in the layout, not their code;
   * shipping `jit-sljit` or any native code in the Python package;
   * cross-compilation with `jit-sljit` (D35): sljit is built for the host here. Determinism (same
-    bytes in two processes, on two CPUs of one ISA) is checked instead;
+    bytes in two processes) is checked instead, and the baseline CPU word makes the bytes independent
+    of the host CPU (the ctest byte check);
   * a byte oracle between compilers (D64 item 4, D68).
 * Rows: no per-OS code (D47). `jit-sljit` runs on Linux glibc only, and on any other OS its probe
   refuses. x86-64 and aarch64 are ISA targets, not D47 rows: the BTI pads and the baseline CPU
@@ -116,7 +117,8 @@ tests/sljit/                   the Python side (development only): backend.py (t
     * options `WABOROS_*`, targets `waboros_*` with `waboros::` aliases;
     * `enable_testing()` (not `include(CTest)`), and tests only when `PROJECT_IS_TOP_LEVEL` or
       `WABOROS_BUILD_TESTS`.
-  * **C99** on our targets only: `C_STANDARD 99`, `C_STANDARD_REQUIRED ON`, `C_EXTENSIONS OFF`.
+  * **C99** on our targets only: `C_STANDARD 99`, `C_STANDARD_REQUIRED ON`, `C_EXTENSIONS OFF`,
+    with `_DEFAULT_SOURCE` defined on the target (strict C99 hides `mmap`'s `MAP_ANONYMOUS`).
     A later C11 need (atomics for D58) is a question for then.
   * **One translation unit.** sljit's own CMakeLists.txt "is incomplete and is only meant as an
     aid" (global `include_directories`, a test executable), so it is not used, and no separate
@@ -150,8 +152,14 @@ tests/sljit/                   the Python side (development only): backend.py (t
     too.
   * Without the library the target is absent and its tests skip. The runtime never names it.
 * **Registration rules for a development target** (Target attributes, not names):
-  * `complete = False`: `auto` never selects it. `tests/spec/test_runner.py` then expects pyc's
-    failures plus `unsupported:` ones only, so it gets `tests/spec/xfail/jit-sljit-<arch>.txt`;
+  * `complete = False`: `auto` never selects it. `tests/spec/test_runner.py`'s `_jits` puts
+    development targets with the complete ones: they must fail exactly what pyc fails (parity), not
+    the incomplete JITs' test, which asserts a non-empty xfail file of `unsupported:` entries (line
+    406). `tests/spec/xfail/jit-sljit-<arch>.txt` is a copy of `jit-<arch>.txt`;
+  * `tests/spec/claims.py` gets `jit-sljit-<arch>` with the claims of `jit-<arch>`;
+  * tools that take `--target` (`tools/isa_all.py`, `tools/jit_dump.py`, `tools/run_coremark_jit.py`,
+    `tools/features.py`) import `tests.sljit` and list it in their choices; `isa_all.py` picks its
+    aarch64 gate by the target's architecture (`e_machine`), not by the name `jit-aarch64`;
   * `development = True`: `tests/test_features.py::test_every_registered_target_has_a_column`
     compares only non-development targets, and FEATURES.md gets no column, since `jit-sljit` is
     not a package target.
@@ -183,13 +191,19 @@ tests/sljit/                   the Python side (development only): backend.py (t
     `digest_sources() -> list[Path]`, default empty, folded into `compiler_string`.
   * `jit-sljit` lists `tests/sljit/*.py`, `native/CMakeLists.txt`, `native/sljit/*` and
     `native/third_party/sljit/sljit_src/*`.
+  * The rule: the digest covers sources, not the built library, so a stale `build/native/` is not
+    detected by it; the harness refuses a library older than any `native/` source (mtime), and CI
+    always builds fresh. A tagged release checkout writes the release version without a digest, as
+    for every target; `jit-sljit` files are never released, so that case only matters locally.
 * **`HOST_BRIDGE` (word 8)**: the bridge of `jit-sljit`'s own in-process blob copy, one per target
   and process, never another target's. D71's test (equal word 8 = same compiler) holds.
 * **`TAIL_SWITCH` (word 9)**: its own `tail_switch`, never 0.
 * **The GC collector (D61), unchanged** (maintainer, 2026-11-24):
-  * `collect.py` compiles it with the target of the first module that needs the GC heap
-    (`TARGETS[inst.owner]`, cached by target and bounds mode), so in a mixed store it may be
-    `jit-sljit`'s code;
+  * `collect._collector` compiles it with `TARGETS[inst.owner]` (cached by target and bounds mode)
+    for the instance that first needs the **collector**: the first module with a function-subtype
+    site, at its instantiation (`c.subtype`, `instance.py` 1067-1070), or the instance whose service
+    runs the first collection (`collect.py` 138). It is not the first module that needs the heap.
+    So in a mixed store it may be `jit-sljit`'s code;
   * any compiler of the architecture is acceptable, because the boundary is one per architecture
     (S0015);
   * mixed stores are expected to be rare: the input is wasm in almost all cases.
@@ -216,14 +230,15 @@ tests/sljit/                   the Python side (development only): backend.py (t
     (`int3`/zero words) before centry keeps every stub's jump long.
   * The writer's `Target.centry()` reads the jump exactly as `jit-x86_64`'s and `jit-aarch64`'s
     do (the same instruction at the same offset).
-  * After generation the backend checks every stub's bytes and refuses the module if one differs.
+  * After generation the backend checks every stub's bytes, and that each body label is at
+    stub + 16 / + 12, and refuses the module if one differs.
 * **centry**:
   * `enter(0, ARGS3)`, saved S0–S2;
   * moves the body address to a scratch register, loads S2 from the context, and calls the body
     (`SLJIT_CALL_REG_ARG` through the register);
   * the label after that call is a **site with shift 0 and no map** (`c_entry_shared()` returns
     1, as `jit-x86_64`);
-  * then the hop test: status equal to `HOP` (`0x80000001`) means the record is in S2, so centry
+  * then the hop test: the status compared in 32 bits (`SLJIT_32`) with `HOP` (`0x80000001`); equal means the record is in S2, so centry
     sets `SLJIT_R0` = `[S2 + 16]` and `SLJIT_R1` = S1 and emits `SLJIT_CALL | SLJIT_CALL_RETURN`
     with `ARGS2` to `[S2]`: a C sibling call. Otherwise it returns the status.
   * It takes `HOP` only from its own module's bodies (S0015 M5).
@@ -234,9 +249,9 @@ tests/sljit/                   the Python side (development only): backend.py (t
     frame, S0 and S2 the callee's, a `REG_ARG` call to `[rec] + STUB`, then ours back (the PoC's
     `_call_record`);
   * another compiler: a C call to `[rec]` with `SLJIT_R0` = the record's context and `SLJIT_R1` =
-    S1 + 8·shift. Around it, `SLJIT_R3`–`SLJIT_R6` are saved and restored on every path before the
-    status test (S0015 A3); these are x86-64 `rcx r8 r11 r10`, aarch64 `x3`–`x6`. S0–S5 are
-    callee-saved in C.
+    S1 + 8·shift. Around it, `SLJIT_R3`–`SLJIT_R6` are stored to and reloaded from four frame
+    slots (x86-64 `rcx r8 r11 r10`, aarch64 `x3`–`x6`), and S2 is reloaded from the context, on
+    every path before the status test (S0015 A3). S0–S5 are callee-saved in C.
 * **Direct calls** stay `REG_ARG` calls to the body label, as in the PoC.
 * **Host calls** go through `jit-sljit`'s bridge, which saves `SLJIT_R3`–`SLJIT_R6` itself (PoC).
   A host thunk's C entry is its stub; behind it the thunk calls the bridge.
@@ -281,8 +296,11 @@ tests/sljit/                   the Python side (development only): backend.py (t
   * The core scans each body once and passes `func_begin` hints: any call (`call_host` included),
     calls through a record, `wide`/v128 scratch, bulk copies, the pins.
   * The Python backends ignore the hints, so their bytes are unchanged (D35 lists).
-  * `jit-sljit` sizes `local` = 8 · (R pins + the context save if it calls a record + scratch), 0
-    for a simple function.
+  * `jit-sljit` sizes `local` = 8 · (R pins + the context save if it calls a record + 4 for the
+    C-path saves of `SLJIT_R3`–`SLJIT_R6` if it calls a record + scratch), 0 for a simple function.
+    The C-path saves are slots in the frame, never pushes around the call (a push would move the
+    stack pointer the site's `ret_at` is counted from); they may share the scratch slots, which
+    are dead across a call.
   * Measured: `REG_ARG|KEEP(3)` with 3 saved registers and no locals is 16 bytes on both
     architectures, `jit-x86_64`'s direct-call cost (D71). The PoC's fixed 9 words gave 96.
 * **Headroom (S0015).** `sljit_emit_enter` pushes and allocates before the first check.
@@ -338,15 +356,18 @@ tests/sljit/                   the Python side (development only): backend.py (t
   * The blobs are bytes; `tail_switch` is identical in both.
   * The `win64` bridge differs only at the host call. sljit's x86-64 build picks one calling
     convention at build time (`_WIN64`), and we use one sljit configuration on every OS
-    (LESSONS 141), so that call is custom bytes: `rcx`/`rdx` arguments, an indirect `call`, and a
-    sljit label after it for the exit record. About 20 lines.
+    (LESSONS 141), so that call is custom bytes: `rcx`/`rdx` arguments and an indirect `call`.
+    About 20 lines. The exit record's `pc` is the bridge caller's return address, as in the `sysv`
+    bridge, not a label in the bridge.
   * The 32-byte shadow space is `[rsp, rsp + 32)` at the call. So the bridge's own locals (the
     saved R pins and `HOST_ERROR`, at `[SP + 0..40]` in the PoC) move above it, and its frame keeps
     `rsp` 16-aligned at the call.
-  * It runs on no OS row here, but it is **executed** on Linux. A ctest calls a host function
-    declared `__attribute__((ms_abi))` through the `win64` bridge and checks the arguments, the
-    shadow space (the host writes all 32 bytes), the alignment and the exit record. The disassembly
-    and ISA checks and the record compare come on top.
+  * It runs on no OS row here, but it is **executed** on Linux. The bridge is emitted by
+    `tests/sljit/backend.py`, and `native/` has no Python, so the test is a pytest
+    (`tests/sljit/test_win64_bridge.py`). It calls an `__attribute__((ms_abi))` function exported by
+    the library through the `win64` bridge via ctypes, and checks the arguments, the shadow space
+    (the host writes all 32 bytes), the alignment and the exit record. The disassembly and ISA
+    checks and the record compare come on top.
   * That is cheaper than a sysv-only file, which would need an S0014 amendment, a refusal rule and
     a refusal-corpus case.
 * The symbols are as today (`__waboros_bridge_<conv>`, `__waboros_tail_switch_<conv>`,
@@ -366,8 +387,9 @@ Each item is data from a `Target` or its `Trampolines`:
      `inst.tramp`. About 25 lines.
 3. **One compiler string per bridge address** (D71's precondition), checked at instantiation.
 4. **Loader.**
-   * `load(b, target=…)` takes the compiler named in each file. Every file passes the exact-string
-     rule and `read`'s compare against its own target's `conventions()`.
+   * `load(b, target=…)` is unchanged: the caller passes each file's own target, as today, and the
+     loader does not dispatch on the file's compiler string. Every file then passes the
+     exact-string rule and `read`'s compare against that target's `conventions()`.
    * D70's rule needs no relaxation, and no foreign blob is executed: both compilers are in the
      process.
    * `artifact.TARGETS` (name → `e_machine`, ISA name) comes from Target attributes `e_machine` and
@@ -394,7 +416,8 @@ It keeps:
   * aarch64 keeps the PoC's guard-mode access rules.
 * **Exceptions**: status 14 and word 10, passed through; `landing` and `throw_ref` as in the PoC.
 * **Interrupts, epoch, stack limits**: polled in prologues and loop heads, as in the PoC.
-* **The collector** comes from the first GC module's target (above), `jit-sljit` included.
+* **The collector** comes from the target of the instance that first needs it (above),
+  `jit-sljit` included.
 * **I1**: no reference in a register at a site; references never pinned (the PoC passed the walk
   check with poison, D68).
 
@@ -483,10 +506,15 @@ x86-64 unless marked; "through files" is `WABOROS_JIT_ARTIFACT=1`.
   * walk and GC: host → A → B → A → host import with a reference live in each frame, under the
     walk check; collections started from each compiler's frames and inside a mixed tail chain
     forward every reference;
-  * GC in a mixed store with either compiler's module first to need the heap (so the collector is
-    `jit-x86_64`'s in one case and `jit-sljit`'s in the other): collections are correct both ways,
-    under the walk check, poison and `WABOROS_JIT_GC_VERIFY=1`;
+  * GC in a mixed store, the order of the modules controlling who compiles the collector: one case
+    where a `jit-sljit` instance first needs it, one where a `jit-x86_64` instance does, each
+    covering both triggers (a function-subtype site at instantiation, and the first collection).
+    The test asserts which target compiled the collector, and that collections are correct both
+    ways under the walk check, poison and `WABOROS_JIT_GC_VERIFY=1`;
   * distinct `HOST_BRIDGE` per compiler; a forced equal word is refused at instantiation.
+* **`tests/jit/test_boundary.py` on `jit-sljit` too**: the clobbering C entry (with a trap and a
+  status-14 landing pad, A3), the 32-bit status test, the ping-pong and the walk tests, parametrised
+  over the native JIT and the host's `jit-sljit`.
 * **Files**:
   * `tests/artifact/` cases for the second compiler string (read, inventory, thin and fat);
   * cross-refusal by compiler string both ways;
@@ -515,13 +543,13 @@ Each step stops and reports if it needs more than its size.
 
 | step | goal | agent | acceptance | size (lines) |
 |---|---|---|---|---|
-| 0 | `native/` with the submodule; `CMakeLists.txt` (one TU, one library target, C99, options, `enable_testing`); `waboros_sljit.c` (defines, buffer hooks, baseline CPU features, `waboros_sljit_frame`, constants); ctest (frames, stubs, baseline bytes, BTI); the consumer; CI build steps, the run time of each measured | implementer | the Native commands and `pytest -q` without the library, x86-64 and under the emulator; `pytest -q` unchanged; `check_docs.py` | C ~250, CMake ~120, CI ~50 |
-| 1 | `tests/sljit/` on HEAD's interface, x86-64: stubs, centry, D71's three paths, the hop, `tail_switch` and bridge by sljit, frames from the library; the D67 pre-pass in the core; registration (`complete`, `development`, xfail file); **depth measured** | jit-engineer | the spec suite in-process with walk check and poison, both modes, `spec_diff` empty; D35 lists unchanged; the depth table's x86-64 column at `jit-x86_64`'s figures; compile time recorded | py ~700 changed of ~1 500, core ~80 |
-| 2 | Runtime and loader: the store's set, the walk's sets (`walk`, `collect`, `_checked`), the distinctness check, `artifact.TARGETS` from attributes, `digest_sources()`; the `win64` blob; the none value removed (`read` refuses `0xFFFFFFFF` in a trampoline record, with a test on both architectures) | implementer | `pytest -q` on both architectures; the spec suite through files on the three targets at parity; D35 lists unchanged | src ~80, py ~30, tests ~120 |
+| 0 | `native/` with the submodule; `CMakeLists.txt` (one TU, one library target, C99, options, `enable_testing`); `waboros_sljit.c` (defines, buffer hooks, baseline CPU features, `waboros_sljit_frame`, constants); ctest (frames, stubs, baseline bytes, BTI); the consumer; CI build steps, the run time of each measured | implementer | the step-0 ctest (frame shapes, baseline bytes, BTI ping-pong under the emulator) and the consumer, x86-64 and aarch64; `pytest -q` unchanged without the library; `check_docs.py` | C ~250, CMake ~120, CI ~50 |
+| 1 | `tests/sljit/` on HEAD's interface, x86-64: stubs, centry, D71's three paths, the hop, `tail_switch` and bridge by sljit, frames from the library; the D67 pre-pass in the core; registration (`complete`, `development`, xfail file, `claims.py`, `_jits`, `test_features.py`); **depth measured** | jit-engineer | the spec suite in-process with walk check and poison, both modes, `spec_diff` empty; `test_boundary.py` on `jit-sljit`; the stub checks; D35 lists unchanged; the depth table's x86-64 column at `jit-x86_64`'s figures; compile time recorded | py ~700 changed of ~1 500, core ~80 |
+| 2 | Runtime and loader: the store's set, the walk's sets (`walk`, `collect`, `_checked`), the distinctness check, `artifact.TARGETS` from attributes, `digest_sources()`; the tools' `--target` choices and `isa_all.py`'s gate by architecture; the `win64` blob; the none value removed (`read` refuses `0xFFFFFFFF` in a trampoline record, with a test on both architectures) | jit-engineer | `pytest -q` on both architectures, `tests/sljit/test_win64_bridge.py` included; `tools/isa_all.py --target jit-sljit-x86_64`; the spec suite through files on the three targets at parity; D35 lists unchanged | src ~80, py ~30, tests ~120 |
 | 3 | `tests/jit/test_mixed.py` and the files tests, x86-64 | jit-engineer | the mixed tests in-process and through files, both modes | tests ~380 |
 | 4 | Review of 0-3 without the implementers' reasoning: the boundary table against the code, CET balance, I1, headroom, M5, the sets, the baseline bytes | reviewer | findings closed before step 5 | — |
 | 5 | aarch64: pads, frames, the pool (S3-S9), guard rules; the mixed tests with `jit-aarch64`; the depth column | jit-engineer | QEMU explicit with BTI, the arm64 runner guard; mixed tests | py ~120 |
-| 6 | CoreMark both architectures; BENCHMARKS rows | runner | alternated rounds recorded | — |
+| 6 | CoreMark both architectures (`tools/run_coremark_jit.py --target jit-sljit-<arch>`); BENCHMARKS rows | runner | alternated rounds recorded | — |
 | 7 | Docs ("Docs this changes"), the none value's documents | orchestrator | `python3 tools/check_docs.py` | — |
 | 8 | Final review | reviewer | findings closed | — |
 
@@ -571,14 +599,20 @@ In the step that makes each untrue; step 7 for the rest.
   * the C-entry paragraph (a sljit compiler's functions are its C entries only in sljit's C
     convention; `jit-sljit` uses stubs and centry);
   * "What sljit-based compilers must add" (frame numbers from our translation unit, the baseline
-    CPU word, BTI as measured);
+    CPU word, BTI as measured), and walk item 2's "one of D60's sljit patches or an upstream API"
+    (our translation unit, an upstream proposal);
   * Compatibility and its deferred list (items done here);
   * the walk section's "runtime modules are compiled by the runtime's own compiler" becomes "by
-    any compiler of the architecture (by default the first GC module's target)";
+    any compiler of the architecture (by default the target of the instance that first needs the
+    collector)";
   * the none value removed (form 2a only beside a `tail_switch`, no word 9 = 0);
   * a Changes line.
 * [S0014](S0014-artifact-format.md): the record's offset rule without `0xFFFFFFFF`, `read` refuses it;
   a Changes line.
+* [S0002](S0002-target-interface.md): the Target attributes and method added (`development`,
+  `e_machine`, `isa_name`, `digest_sources()`); a Changes line.
+* [S0004](S0004-jit-aarch64.md) (the D39 interface): the D39 amendment for `func_begin`'s hints
+  (D67), approved with this spec, Python backends byte-identical.
 * [ARTIFACT.md](../ARTIFACT.md):
   * part 2's loader paragraph (a store of several compiler strings, each file under its own);
   * part 3's compiler-private rows gain `jit-sljit`;
@@ -588,7 +622,7 @@ In the step that makes each untrue; step 7 for the rest.
   * markers on D67 (the pre-pass now), D70 (in-process mixed stores before phase 6), D73 (the
     freeze condition without form 2a and the none record);
   * the D61 and D64 consequence 3 markers: "the runtime's own compiler" becomes "any compiler of
-    the architecture (by default the first GC module's target)".
+    the architecture (by default the target of the instance that first needs the collector)".
 * [ROADMAP.md](../ROADMAP.md): "Next" (6) item (a) progress and the remaining condition (b); phase
   6's S0015 list without the items done here.
 * [ARCHITECTURE.md](../ARCHITECTURE.md): `native/` (C, CMake only, never in the package);
@@ -602,10 +636,14 @@ In the step that makes each untrue; step 7 for the rest.
   * the CI matrix.
 * [TARGETS.md](../TARGETS.md): development targets (not selected by `auto`, not shipped, no
   FEATURES column).
-* [SLJIT-BACKEND.md](../SLJIT-BACKEND.md): the boundary paragraph (stubs, centry, D71 paths, its
-  `tail_switch`), CPU features, the build under `native/`, "Nothing is built yet".
-* `poc/sljit/sljit-be/SLJIT-BACKEND-RESULTS.md`: moved to `tests/sljit/`; `lib2.c`'s aarch64
-  branch above 512 is wrong; the PoC runs at its base commit only.
+* [SLJIT-BACKEND.md](../SLJIT-BACKEND.md): the table rows at lines 70-71 (trampolines; "the C entry
+  … the function itself"), the boundary paragraph (stubs, centry, D71 paths, its `tail_switch`),
+  CPU features, the build under `native/`, "Nothing is built yet".
+* `poc/sljit/sljit-be/SLJIT-BACKEND-RESULTS.md`: a note that the backend moved to `tests/sljit/`,
+  that `lib2.c`'s aarch64 branch above 512 is wrong, and that the PoC runs at its base commit only.
+  This is a deliberate exception to CLAUDE.md's "keep `poc/` runnable for comparisons": the
+  PoC's backend predates S0014/S0015 and cannot run on HEAD (measured), and `jit-sljit` replaces
+  it as the comparison point.
 * [BENCHMARKS.md](../BENCHMARKS.md): the depth table, CoreMark, D67's compile time.
 * [LESSONS.md](../LESSONS.md):
   * sljit's `REG_ARG` functions are not C entries;
@@ -646,3 +684,8 @@ In the step that makes each untrue; step 7 for the rest.
 * 2026-11-24: the collector rule (maintainer): no `runtime_compiler`; the collector stays the
   first GC module's target's, any compiler of the architecture; a mixed-store GC test with either
   compiler first; the D61, D64 and S0015 markers reworded.
+* 2026-11-24: the final review's findings: the C-path save slots in the frame formula; the real
+  collector rule (the instance that first needs the collector) and its test; the registration
+  plumbing (`_jits`, `claims.py`, the tools); the `win64` bridge as an executed pytest, step 2 to
+  the jit-engineer; `test_boundary.py` on `jit-sljit`; S0002, the D39 amendment, SLJIT-BACKEND.md
+  rows and S0015 walk item 2 in the docs list; `load()` unchanged; nits.
