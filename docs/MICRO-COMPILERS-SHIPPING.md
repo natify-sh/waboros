@@ -163,7 +163,9 @@ only (D29).
    also v2/v3 variants (D42)? Baseline only is the default; variants are compiled locally on demand.
 2. Main wheel or an optional extra for the pre-compiled files.
 3. Where the cache lives and how it is keyed (waboros version, architecture, ISA level, format
-   version), shared with the module cache of phase 6.
+   version), shared with the module cache of phase 6. *(A proposal, maintainer 2026-11-24: ROADMAP, "The micro-compiler in the
+   Python package": an environment variable, then `<venv>/.waboros-cache`, then the user's cache
+   directory, then memory.)*
 4. Whether the Python compilers stay the default on x86-64/aarch64 once a native micro-compiler for
    them ships (MICRO-COMPILERS.md: only after arm64 and riscv64 have shown the cost of two
    implementations).
