@@ -63,8 +63,9 @@ The maintainer has already decided the following (2026-11-23 and 2026-11-24; ROA
   * threads (D58: words 6-8 of the libcall block stay zero, and a shared memory is refused);
   * fuel and epochs (no flag in v1: words 3 and 4 stay 0);
   * `isa_level` above 1 (as the Python loader: S0014, "Known limitations of v1");
-  * 32-bit hosts, MCUs, macOS, Windows and Android in the first version ("Rows").
-* Rows (D47): only Linux glibc, x86-64 and aarch64, in the first version (Q2). The per-OS code
+  * 32-bit hosts, MCUs and Android in the first version ("Rows"; macOS and Windows are in, Q2).
+* Rows (D47): Linux glibc, macOS and Windows, x86-64 and aarch64, before the final freeze (Q2, decided (b));
+  the rest of this paragraph predates Q2 and is to be revised. The per-OS code
   (executable memory, reservations, stack bounds, the fault handler) is in one file, so another
   row adds that file's counterpart and touches nothing else.
 
@@ -541,6 +542,10 @@ Ranked; the first two block step 0; Q7 waits for step 6.1's measurement.
      is required, not faster; about 300 lines each, plus `entry`'s Win64 listing, which has never
      run on Windows: ARTIFACT.md, "Checked").
    * Recommendation: **(a)**; (b) when an embedder needs it.
+   * **Decided (maintainer, 2026-11-24): (b).** macOS (x86-64, arm64) and Windows (x64, ARM64)
+     are in scope before the final freeze, next to Linux glibc; each beyond Linux under D47
+     exception (a) with its evidence. The Goals, Rows, CMake/CI and Plan of steps are to be
+     updated for it (open: whether Linux musl and Android come too).
 3. **The test harness**: (a), (b) or (c) of "The harness". Recommendation: **(c)**.
 4. **Host functions without closures**.
    * (a) A fixed pool of preprocessor-made dispatchers (`WABOROS_HOST_SLOTS`, default 4 096 per
@@ -612,3 +617,4 @@ When approved and implemented:
   inputs; Q7: whether the no-compiler and no-GC builds stay is decided after it.
 * 2026-11-24: Q1 decided (maintainer): a test tool for now with an internal API; the C loader is a future
   product, not yet fixed.
+* 2026-11-24: Q2 decided (maintainer): (b), macOS and Windows before the final freeze.
