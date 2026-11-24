@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+    <g transform="translate(12 12) scale(1.15)">
+        <path
+            d="
+                M -0.85 -9.51
+                Q 0 -10 0.85 -9.51
+                L 7.81 -5.49
+                Q 8.66 -5 8.66 -4.02
+                L 8.66 4.02
+                Q 8.66 5 7.81 5.49
+                L 0.85 9.51
+                Q 0 10 -0.85 9.51
+                L -7.81 5.49
+                Q -8.66 5 -8.66 4.02
+                L -8.66 -4.02
+                Q -8.66 -5 -7.81 -5.49
+                Z
+            "
+            fill="none" stroke="#654FF0" stroke-width="0.87" stroke-linecap="round"
+            stroke-linejoin="round" />
+
+        <polygon points="0,-8.27 7.16,-4.135 7.16,4.135 0,8.27 -7.16,4.135 -7.16,-4.135"
+            fill="#654FF0" />
+
+        <text x="0" y="0" fill="#fff" font-family="system-ui, -apple-system, sans-serif"
+            font-size="6.6" font-weight="700" letter-spacing="-0.3" text-anchor="middle"
+            dominant-baseline="central">WA</text>
+    </g>
+</svg>
