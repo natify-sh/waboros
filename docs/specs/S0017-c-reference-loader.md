@@ -579,6 +579,10 @@ Ranked; the first two block step 0; Q7 waits for step 6.1's measurement.
    * (c) Run time only (`waboros_engine_set_collector`).
    * Recommendation: **(b)** for `collector.wasm`, **(a)** for `WABOROS_COLLECTOR_WBO`, with
      S0016's rule read as "no generator outside CMake".
+   * **Decided (maintainer, 2026-11-24): as recommended.** A committed `.c` array of
+     `collector.wasm` tied to the `.wasm` by a test; CMake's `file(READ … HEX)` for a collector
+     `.wbo` in the no-compiler build; (c) stays available at run time. S0016's rule reads "no
+     generator outside CMake" (S0016 gets a marker).
 6. **Agreement on refusals: how fine.**
    * (a) Accept or refuse per file, plus the dumped inventory of every accepted file.
    * (b) Also the check number of the first failure (S0014's order), which Python's
@@ -635,3 +639,4 @@ When approved and implemented:
 * 2026-11-24: Q3 decided (maintainer): ctypes for the spec suite and the refusal corpus, plus `waboros_run`
   under sanitizers without Python; the C wast runner later, with the embedded compiler.
 * 2026-11-24: Q4 decided (maintainer): D75, the bridge passes the import's context-word index.
+* 2026-11-24: Q5 decided (maintainer): a committed array for `collector.wasm`, CMake-generated for a `.wbo`.
