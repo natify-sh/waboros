@@ -564,6 +564,11 @@ Ranked; the first two block step 0; Q7 waits for step 6.1's measurement.
      the loader where a nested entry's frame starts.
    * Recommendation: **(a)**: portable C, it gives the nested-frame rule its `n`, and a limit
      that is a build option.
+   * **Decided (maintainer, 2026-11-24): (d), as D75.** The bridge passes the context-word index
+     as a third argument; the C loader has one static dispatcher `dispatch(ctx, slots, word)` (no
+     pool, no limit), and the embedder's host function is `int32_t f(void *env, uint64_t *slots)`.
+     D75 is implemented as its own step before this spec's step 3; "The C API", the plan and the
+     committed-file expectations are to be revised.
 5. **How a `.wbo` or `collector.wasm` becomes data in the build.** S0016 says "No Python, no
    generated sources".
    * (a) CMake generates a `.c` byte array at configure time (`file(READ … HEX)`); this is
@@ -629,3 +634,4 @@ When approved and implemented:
 * 2026-11-24: Q2 decided (maintainer): (b), macOS and Windows before the final freeze.
 * 2026-11-24: Q3 decided (maintainer): ctypes for the spec suite and the refusal corpus, plus `waboros_run`
   under sanitizers without Python; the C wast runner later, with the embedded compiler.
+* 2026-11-24: Q4 decided (maintainer): D75, the bridge passes the import's context-word index.

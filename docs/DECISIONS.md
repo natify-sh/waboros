@@ -1807,3 +1807,31 @@ separate, later thing; this is the D39 backend of the PoC, moved to the S0015 st
 * **Rejected**: every function a sljit C function with word 9 = 0 (48 bytes a level with one pin
   against 16); per-function C entries (a same-context tail call grows the stack); a sysv-only
   x86-64 blob; the whole phase-6 loader rule now.
+
+### D75. A host call carries the import's identity: the bridge passes the context-word index
+Status: accepted (maintainer, 2026-11-24; not implemented yet) · Date: 2026-11-24 · Supersedes: — · Evidence: S0017 Q4; scratch probes of 2026-11-24 (the bridge patched in memory: the spec suite 64 229 / 0 on `jit-x86_64` and `jit-sljit-x86_64`, the word right for a direct call, `call_indirect`, a nested entry and a libcall; a shim module for host functions no module imports, both compilers both ways)
+
+Under v1 a host is called as `host(ctx, slots)` and nothing identifies the import, so a C host
+cannot use the C idiom `f(void *env, uint64_t *slots)` without a pool of dispatchers or run-time
+thunks (S0017 Q4 (a)-(c)). Decision (option d3): the compiler's bridge passes the context-word
+index it already holds as a third argument, `host(ctx, slots, word)` (`uint32_t`; SysV `edx`,
+Win64 `r8d`, AAPCS64 `w2`; the same for libcalls, which may ignore it). The host maps `word` to its
+import through the context layout it built. Thunks, the context layout, the walk, the exit record,
+stack maps, nested entries (B1) and the status protocol (D34) do not change; the Python runtime
+needs no change (its callbacks ignore the third argument).
+* A working-freeze amendment of v1 (no version bump): ARTIFACT.md part 3 ("Host functions" and the
+  per-architecture table, a fixed row for every compiler's bridge), S0015's bridge rows, S0003's
+  `host` prototype, D34 and D32 markers; the bridges of `jit-x86_64`, `jit-aarch64` and `jit-sljit`;
+  a test of the word per import on every JIT target; the committed `v1-s15-*` files are refused by
+  their bridge bytes (as `tests/artifact/data/README.md` foresees) and a new committed set with a
+  host import pins the new bridge. Old files are not refused by a `features_required` bit: the C
+  loader's dispatcher checks the word's range and `ctx[word]`.
+* Host functions that no module imports (phase 6, Wasmtime's `Func::new`) need no further contract
+  change: the runtime gives each one the record of a tiny shim module that imports it (one shim per
+  compiler serves every signature; a C loader without a compiler gets it as one more AOT file).
+* Rejected: (d4) the import word pointing to a closure object `{fn, env, n, m}`: a wider contract
+  change, one more load per call, and the shim is still needed because the record's context must
+  be module-shaped (read by the thunk, D71's test and `tail_switch`); the import index from the
+  thunk (d2): thunk changes in every compiler for a semantically similar result.
+* Open: a host function that throws a wasm exception (status 14) is a separate later change.
+
