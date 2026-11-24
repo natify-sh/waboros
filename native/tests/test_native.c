@@ -6,6 +6,10 @@
 #include <sys/mman.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <stdlib.h>
+#ifdef __aarch64__
+#include <sys/auxv.h>
+#endif
 #include "waboros_sljit.h"
 
 #if defined(__aarch64__) && !defined(PROT_BTI)
@@ -17,11 +21,22 @@ typedef sljit_sw (*fn2)(sljit_sw, sljit_sw);
 static int fails;
 static sljit_sw g_ra, g_after;
 
+static int has_bti(void) {
+#ifdef __aarch64__
+	return (getauxval(AT_HWCAP2) & (1UL << 17)) != 0;
+#else
+	return 0;
+#endif
+}
+
 static char *exec_copy(struct sljit_compiler *c, void *code, int bti) {
 	size_t n = sljit_get_generated_code_size(c), len = (n + 4095) & ~(size_t)4095;
 	char *p = mmap(0, len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	if (p == MAP_FAILED) { perror("mmap"); exit(2); }
 	memcpy(p, code, n);
-	mprotect(p, len, PROT_READ | PROT_EXEC | (bti ? PROT_BTI : 0));
+	/* PROT_BTI only where the CPU has BTI (AT_HWCAP2 bit 17), as execmem.py: the kernel refuses it
+	   elsewhere (EINVAL), and the page would stay non-executable */
+	if (mprotect(p, len, PROT_READ | PROT_EXEC | (bti && has_bti() ? PROT_BTI : 0))) { perror("mprotect"); exit(2); }
 	__builtin___clear_cache(p, p + n);
 	return p;
 }
@@ -209,9 +224,11 @@ static int test_bti(int pad) {
 #endif
 
 int main(int argc, char **argv) {
+	setvbuf(stdout, NULL, _IONBF, 0);  /* the output survives a crash */
 #ifdef SLJIT_CONFIG_ARM_64
 	if (argc > 2 && strcmp(argv[1], "bti") == 0) {
 		int st = 0;
+		printf("BTI: %s\n", has_bti() ? "yes" : "no (PROT_BTI not used)");
 		if (argv[2][0] == '1') return test_bti(1);
 		if (fork() == 0) return test_bti(0);  /* the control: no pad is SIGILL on an enforcing emulator */
 		wait(&st);
