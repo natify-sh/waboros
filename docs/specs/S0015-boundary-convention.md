@@ -48,11 +48,12 @@ and artifact format stay version 1, amended before their freeze ("Versions").
     its row when its backend exists, D48).
 * Deferred to phase 6:
   * the per-architecture compatibility rule in the waboros loader: thin files of another compiler
-    or another compiler version, mixed stores, and executing a foreign compiler's blob
-    ("Compatibility");
-  * the mixed-compiler test ("Test plan").
+    or another compiler version, and executing a foreign compiler's blob ("Compatibility");
+  * *(Done in-process by S0016: mixed stores of several JIT targets of one architecture, and the
+    mixed-compiler test, `tests/jit/test_mixed.py`.)*
 * Deferred until the micro-compiler exists (D68): a real store that mixes `jit-x86_64` and sljit
-  code. Until then, a scratch experiment shows the mechanics ("Measurements").
+  code. *(Done by S0016 with `jit-sljit`, our Python core over sljit; the D68 micro-compiler stays
+  later.)* Until then, a scratch experiment showed the mechanics ("Measurements").
 * Rows (D47): no per-OS code beyond what exists, except the Win64 `entry`'s saves of `rsi`, `rdi`
   and `xmm6`–`xmm15`. These fall under **exception (a)**: without them a SysV C entry would
   corrupt registers the Win64 host expects preserved. The boundary is one convention per
@@ -149,6 +150,10 @@ int32_t f(uint64_t *ctx, uint64_t *frame);
     calls the body ("Measurements");
   * a compiler whose internal convention is the boundary convention (sljit's C functions) needs
     no stub: its function **is** its C entry.
+    *(Superseded by S0016 for `jit-sljit`: its `REG_ARG` functions are not C entries, so it has
+    `jit-x86_64`'s structure, a stub before each body and one `centry` per module, all emitted by
+    sljit. The statement stays true only for a compiler whose functions use sljit's C convention
+    inside.)*
 * **Function records** keep their three words `{code, canonical type id, context}`; `code` is now
   the callee's C entry:
   * a defined function: its C entry;
@@ -262,8 +267,10 @@ their layout. The interface is:
      from `.waboros.trampolines`). A restore frame has shift 0.
 2. **A compiler provides `ret_at` and `up` for each site**: the site is the address after the call
    instruction, and the numbers follow from its frame. sljit has no public API for its frame size
-   (the scratch gate and `poc/sljit/sljit-be/` read internal fields), so this is one of D60's
-   sljit patches or an upstream API.
+   (the scratch gate and `poc/sljit/sljit-be/` read internal fields). *(S0016: `jit-sljit` gets
+   them from `waboros_sljit_frame` in our own translation unit, which uses sljit's
+   `SLJIT_GET_RETURN_ADDRESS` expressions and is checked by a ctest; an upstream
+   `sljit_get_return_address_offset()` is to be proposed, no patch.)*
 3. **A C entry's internal call is a site** of its own artifact, with shift 0 and no map
    (`nslots` 0). The prototype's `centry` call is one site per module (`ret_at` 40, `up` 48 on
    x86-64). A compiler whose C entry is the body itself has no internal call and so no such site.
@@ -290,6 +297,11 @@ Runtime modules (the collector, D61) are compiled by the **runtime's own compile
 architecture. In a phase-6 mixed store they are not compiled by whichever compiler made the
 user's modules. This amends D64 consequence 3 ("compiled by the Store's compiler") and D61 ("by
 the store's JIT").
+*(Superseded by S0016, maintainer 2026-11-24: there is no "runtime's own compiler". The collector
+is compiled by any compiler of the architecture, by default the target of the instance that first
+needs it: the first module with a function-subtype site at its instantiation, or the instance
+whose service runs the first collection. In a mixed store that may be `jit-sljit`'s code. Tested
+for both triggers, either compiler first.)*
 
 ### Traps, interrupts and the guard handler
 * **Traps are status returns** through every frame and every C entry, as today. No signal,
@@ -370,8 +382,12 @@ itself does not change; three rules hold for every compiler of an architecture n
 provided by the runtime, so they do not depend on the compiler.
 
 ### What sljit-based compilers must add (D60's patch set)
+*(Superseded by S0016 where marked: `jit-sljit` needs no sljit patch. Frame numbers come from our
+translation unit, the baseline CPU word is set by `waboros_sljit_create()`, and BTI is custom words
+as measured.)*
 From the scratch gate (x86-64; "Measurements") and SLJIT-BACKEND.md:
-* `ret_at` and `up` per site: a public frame-size API or a patch (walk interface item 2);
+* `ret_at` and `up` per site: a public frame-size API or a patch (walk interface item 2); *(S0016:
+  `waboros_sljit_frame`, checked by a ctest)*;
 * build with `SLJIT_CONFIG_X86_CET=1` (`endbr64` and shadow-stack-correct code);
 * a native frame of at most about 768 bytes before the first `NSTACK_LIMIT` check:
   `sljit_emit_enter` allocates `local_size` before any code of ours runs, so a larger frame breaks
@@ -385,14 +401,18 @@ From the scratch gate (x86-64; "Measurements") and SLJIT-BACKEND.md:
 * **Until phase 6** the waboros loader keeps the **exact `compiler` string** (S0014 Q3 (a)): a thin
   file of another compiler or another compiler version is refused, and a fat file is regenerated
   with the store's compiler. A store then holds one compiler's code, and the trampoline compare
-  stays in `read`, against the runtime's own blobs (S0014 "`.waboros.trampolines`").
+  stays in `read`, against the runtime's own blobs (S0014 "`.waboros.trampolines`"). *(S0016: a
+  store may hold instances of several JIT targets of one architecture; `load(b, target=...)`
+  takes each file's own target and applies the exact-string rule and `read`'s compare against
+  that target's blobs, and no foreign blob is executed, both compilers being in the process.)*
 * **Specified now, enabled in phase 6 together with mixed stores:**
   * an artifact is compatible when `e_machine` is the running architecture and `format_version`
     and `ctx_abi_version` are ones the loader reads; the ISA level and features, the flags (Q4)
     and `features_required` are checked as today;
   * the `compiler` string stays the **cache key**, not the compatibility rule;
   * D64's refusal "the compiler target is not the store's" is gone.
-* **What enabling it needs** (phase 6):
+* **What enabling it needs** (phase 6; *the walk's sets and the distinctness of bridge addresses
+  are done by S0016 in-process, the rest stays*):
   * executing a foreign compiler's blob: mapping it executable under W^X and invalidating the
     instruction cache on aarch64, as for module code;
   * the trampoline compare moving from `read` to **store attach**. The store keeps one copy of
@@ -911,3 +931,7 @@ Moved to [ARTIFACT.md](../ARTIFACT.md) part 3, "Reference listing of the runtime
   `tail_switch` leaves v1. Word 9 is never 0, case 2a exists only beside a `tail_switch`, and the
   trampoline record has no `0xFFFFFFFF` offset (`read` refuses it). The walk and the walk check
   take the store's sets of entry and restore points (walk item 7), not one instance's.
+* 2026-11-24 (S0016 step 7, docs): the C-entry paragraph, walk item 2, the collector paragraph,
+  "What sljit-based compilers must add", the deferred lists and "Compatibility" are marked as
+  superseded or done in part by S0016 (`jit-sljit` has stubs and a `centry`; frame numbers from
+  `native/`; no "runtime's own compiler"; in-process mixed stores). No change to the contract.

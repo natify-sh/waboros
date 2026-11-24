@@ -4,7 +4,7 @@ kind: spec
 id: S0016
 status: approved
 superseded_by:
-related: [D23, D30, D35, D39, D47, D56, D59, D60, D61, D64, D66, D67, D68, D70, D71, D73, R2, R3, S0004, S0013, S0014, S0015]
+related: [D23, D30, D35, D39, D47, D56, D59, D60, D61, D64, D66, D67, D68, D70, D71, D73, D74, R2, R3, S0004, S0013, S0014, S0015]
 owner: maintainer
 updated: 2026-11-24
 ---
@@ -592,37 +592,50 @@ Each row is marked:
 * **measured**: by a run;
 * **expected**: not checked.
 
+The riscv64 rows were corrected by a research run on 2026-11-24 (scratch probes and 420 frame shapes
+under QEMU user-mode, rv64gc lp64d); a corrected statement is marked **measured under QEMU**.
+
 | item | what each architecture needs | riscv64 | the others | status, source |
 |---|---|---|---|---|
 | boundary row (S0015 table) | C convention (the `ctx`/`frame` argument registers, status register, callee-saved set, never-touched registers), stack alignment, red zone, frame record, CPU-state rules (FP control, vector state) | LP64D: `a0`/`a1`, status in `a0` (32 bits used), callee-saved `s0`–`s11` and `fs0`–`fs11`, `sp` 16-aligned, no red zone; never touch `gp` and `tp` (`x3`, `x4`: absent from sljit's RISC-V `reg_map`); `fcsr` rounding RNE, no flags required; RVV state off | one row each; s390x and big-endian MIPS/PPC also need byte order (below) | known (S0015 table as the model; the psABIs), read (`reg_map`) |
 | landing pads | an indirect-branch pad on C entries if the platform enforces one | none at the baseline. Zicfilp's `lpad` and Zicfiss shadow stacks are optional extensions; a row is added when Linux enforces them for our process | none on the others but x86-32 CET (`endbr32`, sljit's CET config) | expected; known (R2 for BTI and CET) |
 | the runtime's `entry` and `sp_stub` | a reference listing per architecture in ARTIFACT.md part 3 (S0015's five steps), assembled by `targets/jit/<arch>/entry.py` | about 40 instructions, with `a0`–`a2` arguments and the saved block at a fixed `sp` offset | the same per architecture | expected (S0015 "The runtime's `entry`") |
-| C-entry stub and centry | a fixed-size stub (pad, body address in the C convention's third argument, a jump to centry) | `auipc a2, 0; addi a2, a2, 12; jal x0, centry`: 12 bytes. `jal` reaches ±1 MiB, so a larger module needs `auipc` + `jalr` (16 bytes), or sljit's choice checked per stub as on x86-64 | MIPS branches reach 128 KiB: a long-branch form or a function-size limit | expected; known (SLJIT-BACKEND.md, "Position independence") |
+| C-entry stub and centry | a fixed-size stub (pad, body address in the C convention's third argument, a jump to centry) | **Not fixed-size with sljit's jumps**: sljit chooses `c.j`, `jal` or `auipc` + `jalr` by distance, so a stub ending in a sljit jump varies. Two forms work: a fixed 20-byte stub made of two sljit `MOV_ADDR` (`auipc` + `addi` each) plus a custom `jr`; or 16 bytes with our own patch of sljit. (The earlier "12 bytes, `jal`" was wrong.) | MIPS branches reach 128 KiB: a long-branch form or a function-size limit | measured under QEMU (riscv64); expected (the others); known (SLJIT-BACKEND.md, "Position independence") |
 | headroom | the worst case before the first check (S0015: 1 KiB, a 768-byte first frame) | from sljit's RISC-V prologue: saved registers plus `local`, measured with the frame self-test | the same | expected |
-| `ret_at` / `up` | the frame expression next to `#include "sljitLir.c"`, checked by the ctest | `ret_at` = `local_size − 8` (sljit's RISC-V `SLJIT_GET_RETURN_ADDRESS` reads `[sp + local_size − 8]`), `up` = `local_size` | about 20 lines per ISA; Thumb-2: the top slot of the push; ppc64 and s390x not checked | read (riscv64); known (SLJIT-BACKEND.md "Frames (D56)") |
+| `ret_at` / `up` | the frame expression next to `#include "sljitLir.c"`, checked by the ctest | `ret_at` = `local_size − 8`, `up` = `local_size` (sljit's RISC-V `SLJIT_GET_RETURN_ADDRESS` reads `[sp + local_size − 8]`); `waboros_sljit_frame` needs a riscv branch; 420 shapes measured | about 20 lines per ISA; Thumb-2: the top slot of the push; ppc64 and s390x not checked | measured under QEMU (riscv64, 420 shapes); known (SLJIT-BACKEND.md "Frames (D56)") |
 | `e_machine` | the ELF machine in the header, and the reader's target table | `EM_RISCV` (243) | LoongArch 258, s390x 22, ppc64 21, MIPS 8, ARM 40, i386 3 | known (ELF) |
 | container | v1 is ELF64 little-endian only (D73) | fits | s390x and big-endian MIPS/PPC need a big-endian amendment; 32-bit targets need words and pointers of 32 bits in the context and the records (part 3 has 64-bit words), so an amendment by a `features_required` bit (D66) | known (D73, D66) |
-| ISA level | the baseline the portable file uses, and the `isa_features` bits above it | the baseline `rv64gc` (IMAFDC). Zba/Zbb/V only at a declared level. sljit reads `__riscv_zba`, `__riscv_zbb`, `__riscv_vector`, `__riscv_compressed` and `__riscv_atomic` at build time, so our translation unit sets each `SLJIT_CONFIG_RISCV_*` explicitly (`#error` on a mismatch), as the x86-64 CPU word is fixed | LoongArch and s390x query `getauxval` and `cpucfg`, MIPS `cfc1`, PPC64 inline assembly: host = target, so a configuration word replaces each | read (`sljitNativeRISCV_common.c` 27-112; `sljitNativeLOONGARCH_64.c` 399-401, `sljitNativeS390X.c` 332, `sljitNativeMIPS_common.c` 436); known (SLJIT-BACKEND.md "Host equals target") |
+| ISA level | the baseline the portable file uses, and the `isa_features` bits above it | the baseline `rv64gc` (IMAFDC). Zba/Zbb/V only at a declared level. sljit picks the riscv features at build time from `__riscv_*` macros, **Zicond included**, so our translation unit pins `SLJIT_CONFIG_RISCV_*` (VECTOR, BITMANIP_A and BITMANIP_B, ICOND off) and has `#error` unless the build is rv64gc lp64d, as the x86-64 CPU word is fixed | LoongArch and s390x query `getauxval` and `cpucfg`, MIPS `cfc1`, PPC64 inline assembly: host = target, so a configuration word replaces each | read (`sljitNativeRISCV_common.c` 27-112; `sljitNativeLOONGARCH_64.c` 399-401, `sljitNativeS390X.c` 332, `sljitNativeMIPS_common.c` 436); known (SLJIT-BACKEND.md "Host equals target"); the riscv64 build-time pick measured under QEMU |
 | trampoline record | a convention id per host convention in `.waboros.trampolines` (1 `sysv`, 2 `win64`, 3 `aapcs64` today) | `lp64d`, a new id: an S0014 amendment under the working freeze | one id per psABI | known (S0014) |
 | sljit: helper calls | no absolute address in the code (D59); helpers through context words | none needed by the scalar core on riscv64 | ARM v6/v7 without hardware divide calls `__aeabi_*divmod` at an absolute address; MIPS32 makes every `SLJIT_CALL` absolute: helpers through context words, or never emitting `SLJIT_DIV` without IDIV | known (SLJIT-BACKEND.md "Five targets do not build", "Position independence") |
-| sljit: 32-bit operations | D39's zero-extended i32 (LESSONS 5) | every 32-bit result sign-extends: a `MOV_U32` after each (a backend flag) | the same check per ISA | known (SLJIT-BACKEND-RESULTS, "What carries over") |
+| sljit: 32-bit operations | D39's zero-extended i32 (LESSONS 5) | sljit's RV64 code keeps an i32 sign-extended: `MOV_U32` after every 32-bit result and `MOV_S32` of the operands of compares and div/rem (13 of 25 probe cases were wrong without them); about 20 lines of the backend keep D39's zero-extended i32 as the v1 rule (maintainer, 2026-11-24: confirmed, D73 marker) | the same check per ISA | measured under QEMU (riscv64); known (SLJIT-BACKEND-RESULTS, "What carries over") |
 | sljit: i64 on 32-bit targets | register pairs, a D39 amendment | — | ARM32, x86-32, RISC-V32, MIPS32, PPC32: about 1.5 kloc (Walrus's size), plus libcalls for div/rem and conversions | known (SLJIT-BACKEND.md "What it would cost") |
-| per-ISA custom words (D68's list) | SIMD lowering, `sqrt`, the `tail_switch` pieces sljit cannot express, the frame helper, fault-point guards | `fsqrt.d`/`fsqrt.s` as one custom word. No SIMD at the baseline (RVV is above it): v128 modules are `Unsupported` and run on `pyc` until a scalar v128 lowering exists. `tail_switch` is sljit code (this spec), so nothing per ISA | SIMD by custom words only where we write a lowering (Walrus: 1.5-2.5 kloc per ISA); atomics 8/16 by masking on RISC-V, MIPS, PPC and s390x (about 300 lines) | known (D68; SLJIT-BACKEND.md "SIMD", "Atomics"); expected (riscv64 SIMD) |
+| per-ISA custom words (D68's list) | SIMD lowering, `sqrt`, the `tail_switch` pieces sljit cannot express, the frame helper, fault-point guards | `fsqrt.d`/`fsqrt.s` as one custom word. `MOV_ADDR` is pc-relative (`auipc`), so code is copy-safe with no page rule; the 4 GiB refusal is x86-only. No SIMD at the baseline (RVV is above it): v128 modules are `Unsupported` and run on `pyc` until a scalar v128 lowering exists. `tail_switch` is sljit code (this spec), so nothing per ISA | SIMD by custom words only where we write a lowering (Walrus: 1.5-2.5 kloc per ISA); atomics 8/16 by masking on RISC-V, MIPS, PPC and s390x (about 300 lines) | known (D68; SLJIT-BACKEND.md "SIMD", "Atomics"); expected (riscv64 SIMD) |
 | bounds mode | guard pages need a per-architecture and per-OS fault handler (S0006) | explicit checks only (D29 for new architectures); no handler | the same; guard mode later by its own S0006 row | known (SLJIT-BACKEND.md "Traps and bounds", D29) |
 | walk and stack maps | site numbers from the frame expression; I1; the walk check | as on aarch64: no new walk code | the same | expected |
 | CI rows | an emulator job (D47: not a per-OS row) | QEMU user-mode riscv64 exists for `pyc` (the `exotic` job of `platforms.yml`); it gains the native build (`gcc-riscv64-linux-gnu`, the crosscompiling emulator), ctest and the spec suite in explicit mode; no native runner | the `exotic` jobs exist for ppc64le and s390x | known (TESTING.md CI matrix) |
 | Wasmtime parity | the oracle on that host | Cranelift supports riscv64 | s390x Cranelift; LoongArch, ppc64le, MIPS and the 32-bit hosts get Pulley, Wasmtime's interpreter (still an oracle, slow) | known (D48 evidence) |
 
-**riscv64 as the next architecture** (expected, not measured):
+**riscv64 as the next architecture** (the research of 2026-11-24, measured under QEMU where a row says so; the code size is an estimate):
 * **Docs and contracts:** an S0015 row, an ARTIFACT.md part 3 listing of `entry`, an S0014
-  convention id and `EM_RISCV` in the reader. About 150 lines of documents.
-* **Runtime:** `targets/jit/riscv64/entry.py` with `entry` and `sp_stub`, and its executable-memory
-  and I-cache flush, which phase 8 needs for the hand-written JIT anyway. About 120 lines.
-* **The `jit-sljit` backend:** the riscv64 parts are the frame expression, the stub, `fsqrt`, the
-  `MOV_U32` flag and the `SLJIT_CONFIG_RISCV_*` defines. About 150 lines of Python and 30 of C.
-* **CI:** one QEMU job extended, about 30 lines.
-* **Not needed:** no SIMD (`Unsupported`), no guard pages, no landing pads.
-* **Total:** about 300 lines of code and 150 of documents. Nothing changes on x86-64 or aarch64.
+  convention id (`lp64d`) and `EM_RISCV` (243) in the reader. About 150 lines of documents.
+  Nothing in it changes the v1 contract: all of it is additive (`e_machine` 243, the convention
+  id, `isa_level` numbering).
+* **Runtime (the larger piece):** `targets/jit/riscv64/entry.py` with `entry` and `sp_stub`, the
+  riscv64 encoder, a runtime-only base target (a target that carries no compiler), and the
+  executable-memory and I-cache flush (phase 8 needs the last for the hand-written JIT anyway).
+* **The `jit-sljit` backend:** the frame expression (`waboros_sljit_frame` needs a riscv branch), the
+  stub (20 bytes from two `MOV_ADDR` and a custom `jr`, or 16 with our own patch), `fsqrt`, the
+  `MOV_U32`/`MOV_S32` rule and the pinned `SLJIT_CONFIG_RISCV_*` defines.
+* **CI:** one QEMU job extended.
+* **Not needed:** no SIMD (`Unsupported`), no guard pages, no landing pads at the baseline.
+* **Total:** about 500-550 lines of code and 150 of documents (above the 300 expected before the
+  research). Nothing changes on x86-64 or aarch64.
+* **Order:** riscv64 can go in parallel with or after the C-loader work, and it is not a prerequisite
+  of the final freeze of v1 (ROADMAP "Next" (6)).
+* **Open questions for its spec:** the sign of the C-entry status on riscv64 (a 32-bit result
+  leaves `a0` sign-extended), `lpad` (Zicfilp) in C entries, the stub form, and where the
+  runtime-only base target lives.
 * **Wasmtime as the oracle:** under QEMU.
 
 ## Alternatives considered
@@ -853,6 +866,18 @@ In the step that makes each untrue; step 7 for the rest.
   explicit: 13 699 vs 13 986, ratio 0.9795; every run passes its self-check (BENCHMARKS, S0016
   step 6). aarch64 (native arm64 runner, guard, 3 rounds alternated): `jit-sljit-aarch64` 18 497 vs
   `jit-aarch64` 19 561 (medians), ratio 0.946, spread under 0.5 % (BENCHMARKS).
+* 2026-11-24: step 7 (docs): S0015 (the C-entry paragraph, walk item 2, the collector paragraph,
+  "What sljit-based compilers must add", the deferred lists and "Compatibility" marked as superseded
+  or done in part, a Changes line); D61 and D64 consequence 3 (any compiler of the architecture);
+  D73 (the zero-extension confirmation) and the new D74; ARTIFACT.md (part 3's zero-extension rule,
+  the `jit-sljit-aarch64` note); SLJIT-BACKEND.md (the table row, the boundary paragraph, the PoC
+  note); the PoC's SLJIT-BACKEND-RESULTS.md (a note); ROADMAP (the "Next" (6) progress and the
+  riscv64 note, phase 6's list, a phase 8 pointer); ARCHITECTURE.md, TARGETS.md, RISKS.md R2;
+  this spec's riscv64 rows (corrected by the research), `related` gains D74. The others of "Docs
+  this changes" were done in steps 1-6 (S0014, S0002, ARTIFACT.md parts 2-3, D70, TESTING.md,
+  BENCHMARKS.md, LESSONS.md, `.gitmodules`). `CLAUDE.md`'s commands (the native build, the
+  `jit-sljit` spec run) are not changed: outside the step's `docs/` scope. The spec's status stays
+  `approved` until step 8.
 
 ## Changes
 * 2026-11-23: created (draft), with the maintainer's placement, CMake and C99 decisions.
@@ -892,3 +917,8 @@ In the step that makes each untrue; step 7 for the rest.
 * 2026-11-24: aarch64 without `xcall` (maintainer, step 5's depth gate): the same-compiler path
   pushes S0 around the call in the body (16 bytes, in the site's numbers), for parity with
   `jit-aarch64` (48 bytes a crossing, not 64).
+* 2026-11-24 (step 7): "Toward the other sljit architectures": the riscv64 rows corrected by the
+  research under QEMU (a stub cannot be fixed-size with sljit jumps, the build-time feature pick
+  including Zicond, `MOV_U32`/`MOV_S32`, `MOV_ADDR` pc-relative, the riscv branch of
+  `waboros_sljit_frame`) and the estimate of about 500-550 lines of code plus 150 of documents;
+  the maintainer confirms D39's zero-extended i32 as the v1 rule (D73 marker).

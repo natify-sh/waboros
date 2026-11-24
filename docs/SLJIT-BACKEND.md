@@ -2,7 +2,7 @@
 title: sljit as a backend for the long tail - our core over sljit, as a micro-compiler
 kind: reference
 status: draft
-updated: 2026-11-23
+updated: 2026-11-24
 ---
 
 # sljit as a backend for the long tail: our core over sljit, as a micro-compiler
@@ -68,23 +68,33 @@ D39 is already shaped like sljit: three-operand ops, compares fused with branch 
 | explicit bounds check, trap | compare + jump to a shared trap label (D29: new architectures use explicit checks; no signal handler) |
 | direct call / `call_indirect` / libcalls | `sljit_emit_call` / `sljit_emit_icall` |
 | trampolines (host bridge, `tail_switch` if any) | generated with sljit itself (`emit_enter`, `emit_icall`); the `entry` is the runtime's (S0015) |
-| C entry of every function and host thunk | the function itself: sljit's functions are C functions, so a record's `code` is the function (S0015, D70) |
+| C entry of every function and host thunk | a stub before the body and one `centry` per module, as `jit-x86_64` (S0016, D74). *(S0015's first reading, "the function itself", holds only for a compiler that uses sljit's C convention inside; `jit-sljit`'s `REG_ARG` bodies are not C functions)* |
 
 The context ABI, trap codes, libcalls and artifact format stay the same, so the same loader and the
 same behaviour hold on every architecture.
 
-**At the boundary** ([S0015](specs/S0015-boundary-convention.md), D70): a sljit compiler's
-functions are its C entries, `int32_t f(ctx, frame)` in the architecture's convention, so a call
-through a function record needs no stub and a C entry has no internal call, hence no site of shift
-0. Tail calls across the boundary are sibling jumps (form 2a): `SLJIT_CALL_RETURN` to the record's
-C entry, with no private status. *(Superseded by S0016: `jit-sljit` has `jit-x86_64`'s structure,
-stubs and a shared centry, and ships its own `tail_switch`; word 9 is never 0 in v1.)* What the compiler must add
-to sljit is S0015's "What sljit-based compilers must add" (D60's patch set): `ret_at` and `up`
-per site, `SLJIT_CONFIG_X86_CET=1`, a native frame of at most about 768 bytes before the first
-`NSTACK_LIMIT` check, on aarch64 a `bti jc` custom word at the start of every C entry (no change to
-`SLJIT_CALL_RETURN`'s `x9`), and one configuration for every OS. Its internal register map stays
-its own (D70): sljit keeps `ctx` in `rbx`, which the boundary preserves. Nothing is built yet:
-the sljit gate of S0015 ("Measurements") is the only evidence.
+**At the boundary** ([S0015](specs/S0015-boundary-convention.md), D70, and
+[S0016](specs/S0016-sljit-on-the-boundary.md), D74): `jit-sljit` has the structure of `jit-x86_64`,
+all of it emitted by sljit:
+* a fixed stub before each function and thunk body (16 bytes on x86-64, 12 on aarch64: the
+  C entry, `int32_t f(ctx, frame)`) and one `centry` per module behind a pad of 128 bytes, because
+  sljit shortens a jump within +-128 bytes;
+* the internal convention is `SLJIT_ENTER_REG_ARG | SLJIT_ENTER_KEEP(3)`, so a body is not a C
+  function; D71's three record-call paths (own context: the body; same compiler: `xcall`, or a
+  push of S0 on aarch64; another compiler: `ccall`, the C path);
+* its own bridge and its own `tail_switch` (form 2b, a private hop status, return-then-jump);
+  word 9 is never 0 in v1.
+Nothing of D60's patch set is patched into sljit. `ret_at` and `up` come from
+`waboros_sljit_frame` and the baseline CPU word from `waboros_sljit_create()`, both in our one
+translation unit under `native/` (sljit is an unmodified submodule); `SLJIT_CONFIG_X86_CET=1`, a
+native frame of at most about 768 bytes before the first `NSTACK_LIMIT` check (the backend refuses
+above it), on aarch64 custom `bti jc` words (stubs, bodies, `tail_switch`; `bti c` on the bridge),
+and one configuration for every OS. Its internal register map stays its own (D70): sljit keeps
+`ctx` in S0, which the boundary preserves. The backend is `tests/sljit/` (development only, never
+in the package); the build is `native/`'s CMake alone. A sljit micro-compiler in C (D68) is not
+built yet.
+*(The PoC's `waboros_sljit.py` under `poc/sljit/sljit-be/` is the starting point, not the current
+structure: it predates S0014 and S0015 and runs at its base commit only.)*
 
 ### D39 is our LIR vocabulary; sljit is its second consumer
 
@@ -358,6 +368,10 @@ about 70 % of our backend, find out why before adding architectures; then ppc64l
 The maintainer did it outside the package (`poc/sljit/sljit-be/`: `waboros_sljit.py` registers a
 target `jit-sljit` from outside; the core, the runtime, the context ABI and the guard registry are
 unchanged; full write-up in `poc/sljit/sljit-be/SLJIT-BACKEND-RESULTS.md`):
+
+*(S0016, D74: the backend has moved to `tests/sljit/` with `native/`, and has the structure of the
+Python JITs; the PoC's version predates S0014 and S0015 and runs at its base commit only. The
+numbers below are the PoC's.)*
 
 * **Correctness: spec parity with `jit-x86_64`.** Every claimed directory but SIMD (core 20 509,
   bulk-memory 7 483, multi-memory 912, wide-arithmetic 109): 0 commands differ in either direction

@@ -1226,8 +1226,9 @@ Status: accepted (maintainer, 2026-11-15) · Date: 2026-11-15 · Supersedes: —
 Status: accepted (maintainer, 2026-11-15: S0013 "Step 5 decisions" D1-D4 and D6, the step-5.3 design note); written in S0013 step 5.3, function subtyping in step 5.6, closed in step 5.7 (the order measured) · Date: 2026-11-15 · Supersedes: S0013's fixed semispaces A and B · Evidence: S0013 Changes 5.3 and 5.6; spec `gc` and `exceptions` with `WABOROS_JIT_GC_STRESS=1 WABOROS_JIT_GC_POISON=1 WABOROS_JIT_GC_VERIFY=1` on both JITs (0 fail); `tests/jit/test_gc_collect.py`; the Kotlin program runs 100 times in one store at 32 MiB of object space, where it ran out of heap at the 19th run before
 
 * **The collector** is `runtime/gc/collector.wasm` (Cheney, S0013 step 5.2), compiled by the
-  store's JIT once per process *(amended by D70, S0015: by the runtime's own compiler for the
-  architecture, never by whichever compiler made the user's modules)* and run as a **nested JIT entry** from the allocating service, its
+  store's JIT once per process *(amended by D70, S0015, and by S0016, 2026-11-24: by any compiler of
+  the architecture, by default the target of the instance that first needs the collector, which
+  may be `jit-sljit`'s code; there is no "runtime's own compiler")* and run as a **nested JIT entry** from the allocating service, its
   frame above the service's slots (ARTIFACT.md "Host functions", B1). Python gathers the roots
   (`jit/common/collect.py`: frames by the walk, reference globals, any- and extern-hierarchy tables
   (exn too from step 6), passive element segments, GC handles, the exception arena's payloads
@@ -1378,7 +1379,8 @@ Consequences:
    Store's compiler is refused, like an `arch` or ISA mismatch; a fat artifact is regenerated from
    its wasm, as for another target today. The AOT cache key already holds `compiler` and
    `config_sha256`.
-3. *(Amended by D70, S0015: the runtime's own compiler for the architecture compiles them, not
+3. *(Amended by D70, S0015, and by S0016, 2026-11-24: any compiler of the architecture compiles
+   them (by default the target of the instance that first needs the collector), not necessarily
    whichever compiler made the user's modules of a mixed store.)* **Runtime modules** (the
    collector, D61, and the other D54 modules) are compiled by the Store's
    compiler.
@@ -1758,3 +1760,44 @@ artifact-format spec". The byte-level definition stays in S0014; this is the lis
 *(S0016 step 2, 2026-11-24: the "none" value is gone from v1 under the working freeze. Word 9 is never 0, a trampoline record has no `0xFFFFFFFF` offset and `read` refuses one (tested on x86-64 and aarch64); the final-freeze condition no longer names form-2a sibling tail calls or a record without `tail_switch`. If a compiler ever needs it, it returns as a `features_required` bit (D66).)*
 
 *(2026-11-24, maintainer: ELF64 little-endian is the container for every target, 32-bit ones included, should they come (a data format, embedded as a blob, never linked by the system linker); where one `e_machine` covers both widths, the 32-bit ISA's `isa_level` numbers are disjoint from the 64-bit ones. S0014 identification table.)*
+
+*(2026-11-24, maintainer, confirmation for the v1 freeze: "an i32 in a frame slot and in a result is zero-extended on every architecture" stays the rule (D39, ARTIFACT.md part 3). A backend whose ISA sign-extends 32-bit results, riscv64, zero-extends them itself: the riscv64 research found sljit's RV64 code keeps an i32 sign-extended, and about 20 lines of `MOV_U32`/`MOV_S32` in the backend keep D39. Nothing in the v1 contract changes. S0016 "Toward the other sljit architectures".)*
+
+### D74. `jit-sljit` is a development target: our core over sljit, with the structure of the Python JITs
+Status: accepted (maintainer, 2026-11-23 and 2026-11-24: S0016 approved, with the amendments of its Changes) · Date: 2026-11-24 · Supersedes: — · Evidence: S0016 (steps 0-6; Progress and Changes), `native/` ctest, `tests/sljit/`, `tests/jit/test_mixed.py`, `tests/jit/test_boundary.py`, BENCHMARKS.md "`jit-sljit-x86_64` on the boundary", "`jit-sljit-aarch64` on the boundary", "jit-sljit CoreMark"
+
+Records the design and the placement of the first second compiler. D68's micro-compiler is a
+separate, later thing; this is the D39 backend of the PoC, moved to the S0015 structure.
+* **What it is**: `jit-sljit-x86_64` and `jit-sljit-aarch64` (one name per architecture, since the
+  header's compiler target must match `e_machine`), our unchanged Python core over sljit through
+  ctypes (D39, D68's parity). A **development target** (`development = True`, `complete = False`):
+  never selected by `auto`, not shipped, no FEATURES column, runs on Linux glibc only (no D47 row).
+  It is a step towards D73's final freeze, not part of its condition, and the oracle the C core is
+  compared with later. The PoC's `jit-sljit` is retired (it did not run on HEAD).
+* **Structure of S0015, code by sljit**: a 16-byte (x86-64) or 12-byte (aarch64) stub before each
+  body and one shared `centry` per module behind a 128-byte pad (sljit shortens near jumps); D71's
+  three record-call paths; its own bridge and its own `tail_switch` (form 2b, a private hop status,
+  return-then-jump), never word 9 = 0. A record call in another context goes through the module
+  helpers `xcall` (same compiler) and `ccall` (another compiler), so a body's frame is 8 · (R pins)
+  with no pre-pass (D67 stays "with the C core"): the depth equals `jit-x86_64`'s.
+* **aarch64 pushes instead of `xcall`** (step 5's depth gate): sljit's aarch64 frame is a 16-byte
+  record plus locals rounded to 16, so an `xcall` would cost 64 bytes a crossing against 48 of
+  `jit-aarch64`. The body pushes S0 itself around the same-compiler call, in the site's numbers
+  `(ret_at + 16, up + 16)`. Its pool is S3-S9 (x22-x28), no R pin.
+* **x86-64 writes `sysv` and `win64` blobs** (D23); the `win64` bridge's host call is custom bytes,
+  executed on Linux by `tests/sljit/test_win64_bridge.py`.
+* **Frame numbers and CPU features without a sljit patch**: `waboros_sljit_frame` and
+  `waboros_sljit_create()` (baseline x86-64-v1 word after every create) in our one translation
+  unit, which `#include`s `sljitLir.c`; upstream proposals first (D60's patch set is not needed).
+* **Placement** (maintainer, 2026-11-23): sljit is a git submodule at a pinned commit under
+  `native/third_party/sljit`; our C lives in `native/`, built by CMake alone (3.21, C99, one
+  translation unit, one library target `waboros_sljit`, usable as a subproject), with room for
+  `loader/` and `micro/` (D36, D68); the Python side is `tests/sljit/`. The wheel holds the package
+  only; the sdist is unpruned and does not carry the submodule's files; `native/` is built from a
+  git checkout with `--recurse-submodules`. "No runtime dependencies" holds.
+* **The runtime part** is target-neutral (D70 marker): the store's sets of entry and restore points,
+  the distinctness of bridge addresses, `artifact.targets()` from Target attributes, the collector
+  by any compiler of the architecture (D61 marker). The "none" `tail_switch` leaves v1 (D73 marker).
+* **Rejected**: every function a sljit C function with word 9 = 0 (48 bytes a level with one pin
+  against 16); per-function C entries (a same-context tail call grows the stack); a sysv-only
+  x86-64 blob; the whole phase-6 loader rule now.

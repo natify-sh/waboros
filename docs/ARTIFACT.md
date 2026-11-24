@@ -187,7 +187,9 @@ frame record (`x19`–`x24`, `x29` and `d8`–`d15` its bodies keep), sets up th
 and calls the body (a site with shift 0 and no map: `ret_at` 8, `up` 48).
 
 * `frame` points into the host-allocated **value stack**; the arguments are written to `frame[0..n)`,
-  the results come back in `frame[0..m)`, one 64-bit slot per value (i32 zero-extended in the low half;
+  the results come back in `frame[0..m)`, one 64-bit slot per value (i32 zero-extended in the low half,
+  on every architecture, in a frame slot and in a result: a backend whose ISA sign-extends 32-bit
+  results, such as riscv64, zero-extends them itself (maintainer, 2026-11-24; D73);
   i64 as is; f32/f64 as bit patterns; v128 takes two slots, the low 64 bits (bytes 0–7) in the first
   slot or word, as for a v128 global; references as pointer-sized values).
 * The return value is `0` or a trap code (below). On a trap the machine stack is unwound to the
@@ -390,6 +392,10 @@ every OS) as information (another compiler, a sljit micro-compiler, states its o
 | `tail_switch` | record in `rdx`, return address at `[rsp]`; the first hop and the hops from `restore`, never one from a C entry; restore frame 64 bytes (S0015 step 1, D71) | record in `x16`, return address in `x30`; the same hops; restore frame 80 bytes (S0015 step 3) | record in `rax`, return address at `[rsp]`; the same hops; restore frame 48 bytes (`restore_ret_at` 40) |
 | exit record (bridge): `frame` | `r12` | `x27` | `r15` |
 | landing pad, the compiler's own | `endbr64` | `bti c` (bodies, bridge, `tail_switch`), `bti j` (jump-table pads) | `endbr64` |
+
+`jit-sljit-aarch64` (S0016 step 5) is not tabulated: its pool is `x22`–`x28` (sljit's S3–S9, all saved
+by sljit's enter), `x18` is never used, its stubs are `bti jc; adr x2, #8; b centry` (12 bytes),
+`bti jc` is on its bodies, host-thunk bodies and `tail_switch` and `bti c` on its bridge.
 
 **Reference listing of the runtime's `entry`** (S0015, Q3 (a); moved here from the spec's appendix).
 A listing for the C loader and for review, not the waboros runtime's bytes. `EXIT` is

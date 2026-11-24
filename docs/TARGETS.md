@@ -2,7 +2,7 @@
 title: Targets
 kind: reference
 status: current
-updated: 2026-11-16
+updated: 2026-11-24
 ---
 
 # Targets
@@ -69,6 +69,12 @@ For `"auto"`, the engine probes in this order and takes the first that is ok:
 
 Platforms that restrict run-time code (and CPU control-flow integrity: CET, BTI) are listed with
 possible answers in RISKS.md, R2.
+
+**Development targets** (S0016, D74): a target with `development = True` and `complete = False`, such
+as `jit-sljit-x86_64` and `jit-sljit-aarch64` (our core over sljit, `tests/sljit/`, built from
+`native/`), is registered only when its library exists. `auto` never selects it, the package does
+not ship it and FEATURES.md has no column for it; it must fail exactly what `pyc` fails, and a store
+may mix it with the architecture's Python JIT.
 
 The choice depends on the environment only, never on a module's content (D25): one target per engine
 and store, no per-module fallback. A JIT is selected by `auto` only when its expected failures equal

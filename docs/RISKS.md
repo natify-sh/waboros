@@ -2,7 +2,7 @@
 title: Risks and possible solutions
 kind: log
 status: current
-updated: 2026-11-23
+updated: 2026-11-24
 ---
 
 # Risks and possible solutions
@@ -51,7 +51,7 @@ known-bad versions can force recompilation.
 **Status at HEAD: partly mitigated.** Mitigated on x86-64 Linux: the W^X executable-memory probe and the
 fallback to `pyc` with `JitUnavailableWarning` (D31; proved with executable memory forbidden by
 `tools/no_exec.py` in the CI `spec` job and `tests/test_fallback.py`); CET IBT (`endbr64` at every
-indirectly reachable entry, `backend.py`) and CET shadow stacks (traps return through frames, S0003). aarch64: `bti c` landing pads are emitted (`bti jc` at the boundary: C entries and the runtime's `entry`, S0015) and the tests run under QEMU with BTI enforced; PAC is not used (S0004). macOS `MAP_JIT` under a hardened runtime: answered for python.org CPython (the JIT runs, row below; the macOS cells of `platforms.yml` keep checking it). Android: answered for x86_64 in an `untrusted_app` process (the JIT runs, row below; the Android cell of `platforms.yml`); arm64 is built but not run (no emulator on arm64 runners), so it stays explicit. Open: Windows ACG (the Windows cells of `platforms.yml` run `tests/jit` in a default process, which does not enable ACG).
+indirectly reachable entry, `backend.py`) and CET shadow stacks (traps return through frames, S0003). aarch64: `bti c` landing pads are emitted (`bti jc` at the boundary: C entries and the runtime's `entry`, S0015) and the tests run under QEMU with BTI enforced; PAC is not used (S0004). macOS `MAP_JIT` under a hardened runtime: answered for python.org CPython (the JIT runs, row below; the macOS cells of `platforms.yml` keep checking it). Android: answered for x86_64 in an `untrusted_app` process (the JIT runs, row below; the Android cell of `platforms.yml`); arm64 is built but not run (no emulator on arm64 runners), so it stays explicit. Open: Windows ACG (the Windows cells of `platforms.yml` run `tests/jit` in a default process, which does not enable ACG). sljit code (the development target `jit-sljit`, S0016): sljit emits no BTI, so `bti jc` custom words are on its stubs, bodies and `tail_switch` and `bti c` on its bridge (the stub's direct `b` is the only way into `centry`, which has none); measured under QEMU `-cpu max` on `PROT_BTI` pages (a body without the pad gives SIGILL), and the full spec suite runs that way; x86-64 builds sljit with `SLJIT_CONFIG_X86_CET=1`.
 
 The direction is clear: more systems forbid writable-and-executable memory, and CPUs add control-flow
 integrity that hand-made code must respect.

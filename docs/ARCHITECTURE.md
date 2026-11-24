@@ -96,6 +96,14 @@ them. `mpy`, `cache/`, `wasi/`, `cli/` and the public runtime objects do not exi
 submodule (`third_party/sljit`), our one translation unit `sljit/waboros_sljit.c`, ctest self-tests.
 `loader/` and `micro/` (D36, D68) are not created yet.
 
+A **development target** (`development = True`, `complete = False`) is registered by `tests/`, never
+shipped and never selected by `auto`: `jit-sljit-<arch>` (`tests/sljit/`, D74), our Python core with
+sljit as the encoder, built from `native/`. A **store may hold instances of several JIT targets of
+one architecture**, each loaded under its own exact compiler string; the walk and the walk check
+use the store's sets of entry and restore points, and two targets never share a bridge address
+(S0016, D70). The GC collector is compiled by any compiler of the architecture, by default the
+target of the instance that first needs it (D61).
+
 The PoC files map onto this as follows: `w2py.py` holds the reader, the decoder, the stack-to-tree
 builder, the value-bounds analysis and the `pyc` code generator in one file; `w2jit.py`/`w2jit2.py`
 hold the assembler, the executable-memory and ctypes bridge and the x86-64 lowering. Splitting them

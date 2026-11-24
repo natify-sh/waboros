@@ -155,6 +155,8 @@ uv run python tools/fuzz.py --targets pyc,jit,wasmtime --minutes 5   # different
 uv run python tools/bench_throw.py         # throw cost per target (S0012)
 uv run python tools/run_corpus.py          # corpus of real C libraries against hashlib/zlib/Wasmtime
 uv run python tools/no_exec.py -- <cmd>    # run <cmd> with executable memory forbidden (Linux >= 6.3, MDWE)
+cmake -S native -B build/native && cmake --build build/native && ctest --test-dir build/native   # native/: sljit (git submodule) + ctest (S0016)
+uv run python -m tests.spec.run --engine jit-sljit-x86_64   # the development target over sljit (needs build/native; S0016)
 ```
 
 PoC (for comparisons):

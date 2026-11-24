@@ -2,7 +2,7 @@
 title: sljit backend under our core - the "first step" of SLJIT-BACKEND.md, done and measured
 kind: reference
 status: draft
-updated: 2026-11-16
+updated: 2026-11-24
 ---
 
 # sljit backend under our core: measured
@@ -12,6 +12,14 @@ implemented on sljit's API (`waboros_sljit.py`), driven by **our unchanged one-p
 (`common/compiler.py`), running in **our unchanged runtime** (`common/instance.py`, same context
 ABI, same host functions, same guard registry), on x86-64. Branch `phase5` at `2458d86` (re-checked at `00d07c8`, below); nothing in
 the repository was changed (the backend registers a target `jit-sljit` from outside).
+
+*(S0016 note, 2026-11-24: the backend moved to `tests/sljit/`, with `native/`, and now has the structure of
+the Python JITs (stubs, a shared centry, D71's paths, its own `tail_switch`; D74). This directory's
+backend predates S0014 and S0015 and runs at its base commit only, not on HEAD (measured: every module
+fails with a missing `c_entry`); it is a deliberate exception to "keep `poc/` runnable for comparisons",
+and `jit-sljit` replaces it as the comparison point. Also: `lib2.c`'s aarch64 branch, which puts `x30`
+at `size - 8` above 512 bytes of frame, is wrong for sljit 39c508d: the return address is at
+`[sp + 8]` up to 4096 bytes. The numbers below are the PoC's.)*
 
 Result: **spec parity and speed parity with our hand-written x86-64 backend.** The stop rule
 ("below about 70 %: find out why") is not reached; it is at about 100 %.
