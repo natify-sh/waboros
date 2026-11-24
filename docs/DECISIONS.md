@@ -505,7 +505,9 @@ Go, Dart, LuaJIT, …) can load and run it, and that is now a supported use, not
 * **A C reference loader is part of the test suite and runs in CI** (phase 5, together with fixing the
   format): it loads artifacts written by waboros, provides the services, runs a set of spec modules and
   CoreMark, and must agree with the Python runtime; it also checks that unknown versions are refused.
-  It stays a test tool, not a shipped runtime.
+  It stays a test tool, not a shipped runtime. *(Amended, maintainer 2026-11-24, S0017 Q1: a test
+  tool for now with an internal C API; the same sources are the future C variant and product (the
+  loader with or without its embedded compiler, MICRO-COMPILERS.md "The C variant"), not yet fixed.)*
 * `pyc` and `mpy` artifacts are interpreter bytecode and run only in their interpreter.
 
 *(Amended by D70, S0015: the host supplies `entry` as machine code, one per architecture and

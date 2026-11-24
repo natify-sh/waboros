@@ -531,6 +531,9 @@ Ranked; the first two block step 0; Q7 waits for step 6.1's measurement.
      That is phase-6 work in C.
    * Recommendation: **(a)**, with D36 amended to say the same sources later become the C
      variant. The API here is shaped so that (b) adds to it and removes nothing.
+   * **Decided (maintainer, 2026-11-24): (a) for now.** The C loader is a future product, not
+     fixed yet: its C API stays internal (no stability promise, no `find_package`/install) until a
+     later decision; D36 gets a marker that the same sources become the C variant and the product.
 2. **Rows of the first version** (D47).
    * (a) Linux glibc x86-64 and aarch64 only. The freeze condition names the architectures, not
      the OSes.
@@ -607,3 +610,5 @@ When approved and implemented:
   at instantiation when none is present; no collector and no heap without GC.
 * 2026-11-24: build sizes of the four builds as a measurement (step 6.1), with the orchestrator's
   inputs; Q7: whether the no-compiler and no-GC builds stay is decided after it.
+* 2026-11-24: Q1 decided (maintainer): a test tool for now with an internal API; the C loader is a future
+  product, not yet fixed.
