@@ -557,6 +557,51 @@ Each step stops and reports if it needs more than its size.
 About 1 100 lines of Python (mostly ported), 250 of C, 120 of CMake, 190 of runtime and loader,
 500 of tests.
 
+## Toward the other sljit architectures
+This spec stays on x86-64 and aarch64: the plan of steps does not change. This section lists what
+`jit-sljit`, and later the C micro-compiler (D68), would need on the other architectures sljit
+supports: riscv64 first (D48), then LoongArch64, s390x, ppc64le and MIPS64, then 32-bit ARM, x86
+and RISC-V32.
+
+Each row is marked:
+* **known**: written in a document or decision;
+* **read**: read in sljit 39c508d's sources for this spec;
+* **measured**: by a run;
+* **expected**: not checked.
+
+| item | what each architecture needs | riscv64 | the others | status, source |
+|---|---|---|---|---|
+| boundary row (S0015 table) | C convention (the `ctx`/`frame` argument registers, status register, callee-saved set, never-touched registers), stack alignment, red zone, frame record, CPU-state rules (FP control, vector state) | LP64D: `a0`/`a1`, status in `a0` (32 bits used), callee-saved `s0`–`s11` and `fs0`–`fs11`, `sp` 16-aligned, no red zone; never touch `gp` and `tp` (`x3`, `x4`: absent from sljit's RISC-V `reg_map`); `fcsr` rounding RNE, no flags required; RVV state off | one row each; s390x and big-endian MIPS/PPC also need byte order (below) | known (S0015 table as the model; the psABIs), read (`reg_map`) |
+| landing pads | an indirect-branch pad on C entries if the platform enforces one | none at the baseline. Zicfilp's `lpad` and Zicfiss shadow stacks are optional extensions; a row is added when Linux enforces them for our process | none on the others but x86-32 CET (`endbr32`, sljit's CET config) | expected; known (R2 for BTI and CET) |
+| the runtime's `entry` and `sp_stub` | a reference listing per architecture in ARTIFACT.md part 3 (S0015's five steps), assembled by `targets/jit/<arch>/entry.py` | about 40 instructions, with `a0`–`a2` arguments and the saved block at a fixed `sp` offset | the same per architecture | expected (S0015 "The runtime's `entry`") |
+| C-entry stub and centry | a fixed-size stub (pad, body address in the C convention's third argument, a jump to centry) | `auipc a2, 0; addi a2, a2, 12; jal x0, centry`: 12 bytes. `jal` reaches ±1 MiB, so a larger module needs `auipc` + `jalr` (16 bytes), or sljit's choice checked per stub as on x86-64 | MIPS branches reach 128 KiB: a long-branch form or a function-size limit | expected; known (SLJIT-BACKEND.md, "Position independence") |
+| headroom | the worst case before the first check (S0015: 1 KiB, a 768-byte first frame) | from sljit's RISC-V prologue: saved registers plus `local`, measured with the frame self-test | the same | expected |
+| `ret_at` / `up` | the frame expression next to `#include "sljitLir.c"`, checked by the ctest | `ret_at` = `local_size − 8` (sljit's RISC-V `SLJIT_GET_RETURN_ADDRESS` reads `[sp + local_size − 8]`), `up` = `local_size` | about 20 lines per ISA; Thumb-2: the top slot of the push; ppc64 and s390x not checked | read (riscv64); known (SLJIT-BACKEND.md "Frames (D56)") |
+| `e_machine` | the ELF machine in the header, and the reader's target table | `EM_RISCV` (243) | LoongArch 258, s390x 22, ppc64 21, MIPS 8, ARM 40, i386 3 | known (ELF) |
+| container | v1 is ELF64 little-endian only (D73) | fits | s390x and big-endian MIPS/PPC need a big-endian amendment; 32-bit targets need words and pointers of 32 bits in the context and the records (part 3 has 64-bit words), so an amendment by a `features_required` bit (D66) | known (D73, D66) |
+| ISA level | the baseline the portable file uses, and the `isa_features` bits above it | the baseline `rv64gc` (IMAFDC). Zba/Zbb/V only at a declared level. sljit reads `__riscv_zba`, `__riscv_zbb`, `__riscv_vector`, `__riscv_compressed` and `__riscv_atomic` at build time, so our translation unit sets each `SLJIT_CONFIG_RISCV_*` explicitly (`#error` on a mismatch), as the x86-64 CPU word is fixed | LoongArch and s390x query `getauxval` and `cpucfg`, MIPS `cfc1`, PPC64 inline assembly: host = target, so a configuration word replaces each | read (`sljitNativeRISCV_common.c` 27-112; `sljitNativeLOONGARCH_64.c` 399-401, `sljitNativeS390X.c` 332, `sljitNativeMIPS_common.c` 436); known (SLJIT-BACKEND.md "Host equals target") |
+| trampoline record | a convention id per host convention in `.waboros.trampolines` (1 `sysv`, 2 `win64`, 3 `aapcs64` today) | `lp64d`, a new id: an S0014 amendment under the working freeze | one id per psABI | known (S0014) |
+| sljit: helper calls | no absolute address in the code (D59); helpers through context words | none needed by the scalar core on riscv64 | ARM v6/v7 without hardware divide calls `__aeabi_*divmod` at an absolute address; MIPS32 makes every `SLJIT_CALL` absolute: helpers through context words, or never emitting `SLJIT_DIV` without IDIV | known (SLJIT-BACKEND.md "Five targets do not build", "Position independence") |
+| sljit: 32-bit operations | D39's zero-extended i32 (LESSONS 5) | every 32-bit result sign-extends: a `MOV_U32` after each (a backend flag) | the same check per ISA | known (SLJIT-BACKEND-RESULTS, "What carries over") |
+| sljit: i64 on 32-bit targets | register pairs, a D39 amendment | — | ARM32, x86-32, RISC-V32, MIPS32, PPC32: about 1.5 kloc (Walrus's size), plus libcalls for div/rem and conversions | known (SLJIT-BACKEND.md "What it would cost") |
+| per-ISA custom words (D68's list) | SIMD lowering, `sqrt`, the `tail_switch` pieces sljit cannot express, the frame helper, fault-point guards | `fsqrt.d`/`fsqrt.s` as one custom word. No SIMD at the baseline (RVV is above it): v128 modules are `Unsupported` and run on `pyc` until a scalar v128 lowering exists. `tail_switch` is sljit code (this spec), so nothing per ISA | SIMD by custom words only where we write a lowering (Walrus: 1.5-2.5 kloc per ISA); atomics 8/16 by masking on RISC-V, MIPS, PPC and s390x (about 300 lines) | known (D68; SLJIT-BACKEND.md "SIMD", "Atomics"); expected (riscv64 SIMD) |
+| bounds mode | guard pages need a per-architecture and per-OS fault handler (S0006) | explicit checks only (D29 for new architectures); no handler | the same; guard mode later by its own S0006 row | known (SLJIT-BACKEND.md "Traps and bounds", D29) |
+| walk and stack maps | site numbers from the frame expression; I1; the walk check | as on aarch64: no new walk code | the same | expected |
+| CI rows | an emulator job (D47: not a per-OS row) | QEMU user-mode riscv64 exists for `pyc` (the `exotic` job of `platforms.yml`); it gains the native build (`gcc-riscv64-linux-gnu`, the crosscompiling emulator), ctest and the spec suite in explicit mode; no native runner | the `exotic` jobs exist for ppc64le and s390x | known (TESTING.md CI matrix) |
+| Wasmtime parity | the oracle on that host | Cranelift supports riscv64 | s390x Cranelift; LoongArch, ppc64le, MIPS and the 32-bit hosts get Pulley, Wasmtime's interpreter (still an oracle, slow) | known (D48 evidence) |
+
+**riscv64 as the next architecture** (expected, not measured):
+* **Docs and contracts:** an S0015 row, an ARTIFACT.md part 3 listing of `entry`, an S0014
+  convention id and `EM_RISCV` in the reader. About 150 lines of documents.
+* **Runtime:** `targets/jit/riscv64/entry.py` with `entry` and `sp_stub`, and its executable-memory
+  and I-cache flush, which phase 8 needs for the hand-written JIT anyway. About 120 lines.
+* **The `jit-sljit` backend:** the riscv64 parts are the frame expression, the stub, `fsqrt`, the
+  `MOV_U32` flag and the `SLJIT_CONFIG_RISCV_*` defines. About 150 lines of Python and 30 of C.
+* **CI:** one QEMU job extended, about 30 lines.
+* **Not needed:** no SIMD (`Unsupported`), no guard pages, no landing pads.
+* **Total:** about 300 lines of code and 150 of documents. Nothing changes on x86-64 or aarch64.
+* **Wasmtime as the oracle:** under QEMU.
+
 ## Alternatives considered
 * **Every function a sljit C function, form 2a only, word 9 = 0** (the first draft).
   * Simpler: no stubs, no hop, no `tail_switch`.
@@ -624,6 +669,8 @@ In the step that makes each untrue; step 7 for the rest.
     freeze condition without form 2a and the none record);
   * the D61 and D64 consequence 3 markers: "the runtime's own compiler" becomes "any compiler of
     the architecture (by default the target of the instance that first needs the collector)".
+* [ROADMAP.md](../ROADMAP.md) phase 8 (more architectures): a pointer line to "Toward the other
+  sljit architectures" (riscv64 first, its size).
 * [ROADMAP.md](../ROADMAP.md): "Next" (6) item (a) progress and the remaining condition (b); phase
   6's S0015 list without the items done here.
 * [ARCHITECTURE.md](../ARCHITECTURE.md): `native/` (C, CMake only, never in the package);
@@ -691,3 +738,5 @@ In the step that makes each untrue; step 7 for the rest.
   the jit-engineer; `test_boundary.py` on `jit-sljit`; S0002, the D39 amendment, SLJIT-BACKEND.md
   rows and S0015 walk item 2 in the docs list; `load()` unchanged; nits.
 * 2026-11-24: approved by the maintainer.
+* 2026-11-24: "Toward the other sljit architectures" added (maintainer): the per-architecture
+  gaps beyond x86-64 and aarch64, riscv64 first; the plan of steps is unchanged.
