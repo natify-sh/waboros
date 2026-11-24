@@ -769,6 +769,18 @@ In the step that makes each untrue; step 7 for the rest.
   `isa_all.py` 954 blobs clean on `jit-sljit-x86_64` (and on `jit-x86_64`; 931 on `jit-aarch64`);
   D35 lists of both Python JITs byte-identical to HEAD's in both modes; `artifact_dump.py` lists
   identical to HEAD's with the version and the package digest pinned.
+* 2026-11-24: step 3 done (x86-64): `tests/jit/test_mixed.py` (pairs from `TARGETS`, both
+  directions; D71's paths read from the walk, frames labelled by return address against centry;
+  the collector's compiler asserted for both triggers; INTERRUPT from a thread bounded by a counted
+  loop; the forced equal `HOST_BRIDGE` stays `tests/sljit/test_store.py`'s), `tests/artifact/
+  test_sljit.py` (cross-refusal both ways, fat regenerated, the same bytes from two processes),
+  `test_roundtrip.py` over the development targets; the `win64` call sequence stays
+  `test_win64_bridge.py`'s (bytes and execution, no disassembly). No core change. Numbers (this
+  machine): `test_mixed.py` 42 pass in about 1 s (both bounds modes), in-process and through files,
+  with and without the walk check, poison and verify; with `tests/artifact` 207 pass in about 70 s
+  serially; `tools/elf_readers.py` clean on a `jit-sljit-x86_64` CoreMark file. Controls: a
+  same-compiler record sent to ccall fails the D71 test; ccall's site with a wrong frame size
+  fails the walk test; the collector always compiled by `jit-x86_64` fails its two sljit-first cases.
 
 ## Changes
 * 2026-11-23: created (draft), with the maintainer's placement, CMake and C99 decisions.

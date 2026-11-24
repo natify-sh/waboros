@@ -233,6 +233,14 @@ jobs:
           WABOROS_JIT_WALK_CHECK: "1"
           WABOROS_JIT_GC_POISON: "1"
       - run: uv run pytest -q tests/jit/test_boundary.py tests/spec/test_runner.py --jit-bounds guard,explicit
+      # mixed stores (S0016 step 3) and the files of both compilers, in-process and through files
+      - run: |
+          uv run pytest -q -n auto tests/jit/test_mixed.py tests/artifact --jit-bounds guard,explicit
+          WABOROS_JIT_ARTIFACT=1 uv run pytest -q -n auto tests/jit/test_mixed.py tests/artifact --jit-bounds guard,explicit
+        env:
+          WABOROS_JIT_WALK_CHECK: "1"
+          WABOROS_JIT_GC_POISON: "1"
+          WABOROS_JIT_GC_VERIFY: "1"
       # through artifact files (written, loaded, instantiated), parity on the reports (S0016 step 2)
       - run: |
           for b in guard explicit; do

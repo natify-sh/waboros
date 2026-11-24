@@ -92,7 +92,8 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in C
   also with the walk check and the GC switches on `gc exceptions`. It cannot be combined with the
   switches that change code (`WABOROS_JIT_NOPIN`, `NOLIVE`, `PAD`, `LOOP_ALIGN`: `write` refuses).
   The artifact tests (`tests/artifact/`, S0014): `test_roundtrip.py` (every module of the pinned suite
-  that the JITs compile, both JITs, both bounds modes, thin and fat, and CoreMark: the inventory's
+  that the JITs compile, both JITs and every registered development target (`jit-sljit-<arch>`), both
+  bounds modes, thin and fat, and CoreMark: the inventory's
   fields equal, `write(read(b)) == b`, written twice identical), `test_format.py` (the bytes of each
   payload, every constant-expression operation, a malformed file refused with a message),
   `test_strict.py` (the pinned container layout, one refusal per rule, a byte-flip loop),
@@ -387,6 +388,24 @@ of the library (arguments, the call's 16-byte alignment, the 32-byte shadow spac
 the host, the bridge's saved registers and `HOST_ERROR` preset surviving it, the exit record and the
 walk from it); `tests/sljit/test_store.py` covers `artifact.targets()`, the digest fold, the store's
 sets of trampolines and the refusal of two targets on one bridge address.
+
+Mixed stores (S0016 step 3): `tests/jit/test_mixed.py` puts the machine's JIT and each development
+compiler of its architecture in one store, both directions (pairs from `TARGETS`; aarch64 joins in
+step 5); it skips without the library. It covers calls of every value type (NaN payloads, v128,
+externref and funcref by identity, a struct and an i31 made in the caller) through an import,
+`call_indirect` and `call_ref` into the other compiler's table; D71's paths, read from the walk at a
+host import (each frame labelled `body`, `centry`, `xcall` or `ccall` by its return address against
+the module's centry, and the restore frames crossed): each compiler calls its own records at the
+body and the other's at its C entry; tail ping-pong in S0015's three entry shapes (10^6 round trips
+in 256 KiB, the shape at the end of the chain checked, the call-instead-of-tail control); every
+public status through one and two C entries, and INTERRUPT from another thread while the callee
+loops (bounded: a lost interrupt ends the loop after 2^32 - 1 rounds and fails); the walk with the
+GC switches across both compilers and a mixed tail chain, with the collector's compiler asserted
+(the second-instantiated module's, made for its function-subtype site or by the first collection
+its frames run). `tests/artifact/test_sljit.py`: a file refused by the other compiler's loader on
+its compiler string both ways (thin), regenerated when fat, and the same bytes from two processes.
+The `sljit` CI job runs both, with `tests/artifact`, in both bounds modes, with the walk check,
+poison and `WABOROS_JIT_GC_VERIFY=1`, in-process and through files.
 
 ## CI matrix
 

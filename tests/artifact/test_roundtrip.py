@@ -1,6 +1,6 @@
 # pyright: reportUnknownVariableType=false, reportUnknownArgumentType=false, reportUnknownMemberType=false, reportArgumentType=false, reportPrivateUsage=false
 """S0014 step 2: `read(write(c))` has every field the instance reads (the inventory), and
-`write(read(b)) == b`, on every module of the pinned spec suite that a JIT compiles (both targets,
+`write(read(b)) == b`, on every module of the pinned spec suite that a JIT compiles (every target,
 both bounds modes), on CoreMark and on hand-written modules; thin and fat."""
 
 import hashlib
@@ -19,7 +19,10 @@ from waboros.targets import base
 from waboros.targets.jit.common import artifact
 
 ROOT = Path(__file__).resolve().parents[2]
-TARGETS = ("jit-x86_64", "jit-aarch64")
+# and the development compilers registered here (jit-sljit-<arch>, S0016)
+TARGETS = ("jit-x86_64", "jit-aarch64") + tuple(
+    n for n, t in base.TARGETS.items() if getattr(t(), "development", False)
+)
 MODES = ("explicit", "guard")
 INVENTORY = ("tdefs types imports ttypes taddr maddr mems funcs tables tinit globals tags exports "
              "start elem_info elem_mode datas data_mem").split()  # fmt: skip

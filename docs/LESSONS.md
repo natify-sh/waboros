@@ -1191,3 +1191,15 @@ What went wrong or surprised us while building the PoC, so it is not found again
     bridge keeping its locals there. `waboros_sljit_test_win64_host` writes them last; the control
     (the `win64` bridge with its locals at `[SP + 0]`) fails the test with a wrong result.
     Found: S0016 step 2, 2026-11-24.
+149. **Under `WABOROS_JIT_GC_STRESS=1` the first allocation of a heap does not collect.** A test
+    that wanted the first collection run from A's frames called A's `top`, whose `struct.new` was
+    the heap's first allocation; the first collection then ran in B's frames and the collector was
+    B's compiler. Rule: when a test asserts who runs the first collection, start it with at least
+    two allocations in the frames that must run it, and assert the collector before and after.
+    Found: S0016 step 3, 2026-11-24.
+150. **The compiler string's version comes from the metadata the import finds first.**
+    `waboros.__version__` is `importlib.metadata.version("waboros")`; a child process that put
+    `src/` first on `sys.path` found a stale `src/waboros.egg-info` (dev324) while the parent found
+    the venv's dist-info (dev207), so the two processes wrote different files from the same code.
+    Rule: a test comparing bytes across processes gives the children the parent's `sys.path`.
+    Found: S0016 step 3, 2026-11-24.
