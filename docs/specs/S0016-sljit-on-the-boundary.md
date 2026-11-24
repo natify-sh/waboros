@@ -2,7 +2,7 @@
 title: jit-sljit on the boundary - the first second compiler in a mixed store
 kind: spec
 id: S0016
-status: approved
+status: implemented
 superseded_by:
 related: [D23, D30, D35, D39, D47, D56, D59, D60, D61, D64, D66, D67, D68, D70, D71, D73, D74, R2, R3, S0004, S0013, S0014, S0015]
 owner: maintainer
@@ -247,7 +247,9 @@ tests/sljit/                   the Python side (development only): backend.py (t
     with `ARGS2` to `[S2]`: a C sibling call. Otherwise it returns the status.
   * It takes `HOP` only from its own module's bodies (S0015 M5).
   * The frame is 32 bytes on x86-64 and 48 on aarch64 (C function, saveds 3; measured).
-* **Record calls: D71's three paths** (`record_sites` = 3, one map):
+* **Record calls: D71's three paths** (*superseded in part by "Frame size" below: the same-compiler
+  path goes through `xcall` on x86-64 and pushes S0 in the body on aarch64, the other-compiler path
+  through `ccall`, which holds the R3-R6 saves; no body frame has those slots*) (`record_sites` = 3, one map):
   * own context (`[rec + 16]` = S0): a `REG_ARG` call to `[rec] + STUB`, as a direct call;
   * same compiler (`[[rec + 16] + 8·HOST_BRIDGE]` = `[S0 + 8·HOST_BRIDGE]`): S0 saved in the
     frame, S0 and S2 the callee's, a `REG_ARG` call to `[rec] + STUB`, then ours back (the PoC's
@@ -480,13 +482,14 @@ Scratch experiments, 2026-11-23/24, sljit 39c508d, not committed. Directory
 * **Spec run time**: `uv run python -m tests.spec.run --engine jit-x86_64` takes 19.8 s wall and
   42 s CPU here, 64 229 pass.
 * **sdist**: every tracked file today, `poc/` 151 entries, no `MANIFEST.in`.
-* **Not measured, expected:**
+* **Not measured, expected** (measured since: `tail_switch` and the depth in Progress, steps 1, 2
+  and 5, CoreMark in step 6, all in BENCHMARKS.md; only the last item stays unmeasured):
   * `tail_switch` in sljit as a whole;
   * CoreMark (D68's parity is the baseline: the internal convention is the PoC's);
   * the depth table below;
   * CET/GCS balance on enforcing hardware (none exists in CI).
 
-**Expected depth at 512 KiB** (measured in step 1, recorded beside Wasmtime 50.0.1):
+**Expected depth at 512 KiB** (measured in step 1, recorded beside Wasmtime 50.0.1; the measured depth of both architectures is in Progress, steps 2 and 5, and in BENCHMARKS.md, "`jit-sljit-x86_64` on the boundary" and "`jit-sljit-aarch64` on the boundary"):
 
 | path | `jit-x86_64` (D71) | `jit-sljit`, expected |
 |---|---|---|
@@ -875,9 +878,15 @@ In the step that makes each untrue; step 7 for the rest.
   riscv64 note, phase 6's list, a phase 8 pointer); ARCHITECTURE.md, TARGETS.md, RISKS.md R2;
   this spec's riscv64 rows (corrected by the research), `related` gains D74. The others of "Docs
   this changes" were done in steps 1-6 (S0014, S0002, ARTIFACT.md parts 2-3, D70, TESTING.md,
-  BENCHMARKS.md, LESSONS.md, `.gitmodules`). `CLAUDE.md`'s commands (the native build, the
-  `jit-sljit` spec run) are not changed: outside the step's `docs/` scope. The spec's status stays
-  `approved` until step 8.
+  BENCHMARKS.md, `.gitmodules`); the four LESSONS entries (155-158) came in step 8's review.
+  `CLAUDE.md`'s commands (the native build, the `jit-sljit` spec run) were added in the commit
+  after this step, which is outside `docs/`. The spec's status stays `approved` until step 8.
+* 2026-11-24: step 8: final review, findings closed: LESSONS 155-158, the amendment markers (S0013,
+  S0014, D68's "left" list, ROADMAP, this spec's record-calls bullet), ARTIFACT.md's
+  `jit-sljit-aarch64` column, the headroom check of `func_begin` (112 bytes, a foreign compiler's C
+  path before a sljit centry), two CI steps (`gc` and `exceptions` under stress on
+  `jit-sljit-x86_64`; `test_mixed.py` through files under QEMU), TESTING.md's job descriptions
+  and CI matrix. Status `implemented`.
 
 ## Changes
 * 2026-11-23: created (draft), with the maintainer's placement, CMake and C99 decisions.
@@ -922,3 +931,7 @@ In the step that makes each untrue; step 7 for the rest.
   including Zicond, `MOV_U32`/`MOV_S32`, `MOV_ADDR` pc-relative, the riscv branch of
   `waboros_sljit_frame`) and the estimate of about 500-550 lines of code plus 150 of documents;
   the maintainer confirms D39's zero-extended i32 as the v1 rule (D73 marker).
+* 2026-11-24 (step 8, the final review): the findings closed as above; `func_begin`'s headroom check
+  counts 112 bytes before a sljit centry (the most a foreign compiler's C path pushes, 64, plus
+  centry's 48); the "Record calls" bullet is marked superseded by "Frame size"; the `approved` status
+  becomes `implemented`.

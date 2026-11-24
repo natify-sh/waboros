@@ -1513,6 +1513,10 @@ Status: accepted (maintainer, 2026-11-17) · Date: 2026-11-17 · Supersedes: the
   frame helper and fault-point guards.
 * **Left before the micro-compilers:** the frame size (D67's pre-pass), BTI landing pads on
   aarch64, a sljit API for `ret_at` (read from sljit's internals today), native arm64 timings.
+  *(S0016, 2026-11-24: settled for `jit-sljit`: native arm64 CoreMark 0.946 of `jit-aarch64`; `bti jc` /
+  `bti c` custom words; `ret_at` and `up` from `waboros_sljit_frame` in our translation unit, checked
+  by ctest, so no sljit API is needed; 16 bytes a level without a pre-pass through `xcall` /
+  `ccall`. D67's pre-pass itself stays "with the C core".)*
 * The Python backends stay: they are the reference behaviour, `pyc`'s fallback partners and the
   targets of the Python package until JIT-AS-WASM's decision (after the artifact format).
 

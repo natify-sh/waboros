@@ -1228,3 +1228,25 @@ What went wrong or surprised us while building the PoC, so it is not found again
     assert sp % 16 where the code can see it (the exit record's sp at a host call,
     `test_boundary.py`), since only the native runner would fault. Found: S0016 step 5,
     2026-11-24.
+155. **sljit `REG_ARG` functions are not C entries.** A function entered with `SLJIT_ARG_TYPE_...`
+    in the `REG_ARG` convention takes its arguments in sljit's own registers and returns its
+    result there, so a C caller (another compiler, the host, ctypes) cannot call it, and an
+    attempt to make every Wasm function one gave a second ABI to maintain. Rule: a sljit compiler
+    exports a stub plus one shared C function (`centry`) and calls its own bodies in `REG_ARG`
+    (S0016 "The compiler"). Found: S0016 steps 0-1, 2026-11-24.
+156. **sljit shortens a jump within +-128 bytes, so fixed-size stubs need a pad (x86-64).**
+    `detect_near_jump_type` turns a `jmp rel32` into `jmp rel8` when the target is near, so a
+    stub that ends in a sljit jump to `centry` is 16 bytes only when `centry` is far. Rule: put
+    128 bytes (`int3`) before `centry`, and check every stub's bytes after generation (the
+    backend refuses a module where one differs). Found: S0016 step 1, 2026-11-24.
+157. **sljit's aarch64 return address is at `[sp + 8]` at every frame size.** The PoC's `lib2.c`
+    puts `x30` at `size - 8` above 512 bytes, which is wrong for sljit 39c508d (measured up to
+    4096 bytes of locals, 90 shapes per architecture). Rule: take `ret_at` and `up` from
+    `waboros_sljit_frame` (checked by ctest against the real return address and stack pointer),
+    not from a formula in Python. Found: S0016 step 0, 2026-11-24.
+158. **sljit's first `sljit_create_compiler` overwrites a `cpu_feature_list` preset.** It runs
+    `init_compiler()` and cpuid unconditionally, so a baseline set before the first create is
+    lost and sljit emits `lzcnt` (above x86-64-v1). Measured: a preset before create gives
+    `lzcnt`, after create the `bsr` + `cmov` baseline. Rule: set the baseline after every create
+    (`waboros_sljit_create` wraps it), and create compilers only through it. Found: S0016
+    step 0, 2026-11-24.

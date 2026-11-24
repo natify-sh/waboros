@@ -156,6 +156,12 @@ jobs:
           WABOROS_JIT_BOUNDS: explicit
           WABOROS_JIT_WALK_CHECK: "1"
           WABOROS_JIT_GC_POISON: "1"
+      # S0016 step 8: the mixed-store tests through artifact files (written, loaded, instantiated)
+      - run: WABOROS_JIT_ARTIFACT=1 python3 tools/run_arm64.py -m pytest -q tests/jit/test_mixed.py
+        env:
+          WABOROS_JIT_BOUNDS: explicit
+          WABOROS_JIT_WALK_CHECK: "1"
+          WABOROS_JIT_GC_POISON: "1"
       # S0006: guard pages, named explicitly although `auto` (the default, D44) gives them here,
       # so a regression in the verified-row check cannot silently turn them off: the spec suite
       # with the fault handler doing the bounds checks, then the fault tests (foreign faults, a
@@ -270,6 +276,16 @@ jobs:
           WABOROS_JIT_WALK_CHECK: "1"
           WABOROS_JIT_GC_POISON: "1"
       - run: uv run python tools/isa_all.py --target jit-sljit-x86_64
+      # S0016 step 8: `gc` and `exceptions` on jit-sljit-x86_64 as the jit job runs them on
+      # jit-x86_64 (every allocation collecting, old space poisoned, collections verified, the walk
+      # checked); explicit bounds
+      - run: uv run python -m tests.spec.run --engine jit-sljit-x86_64 gc exceptions
+        env:
+          WABOROS_JIT_BOUNDS: explicit
+          WABOROS_JIT_GC_STRESS: "1"
+          WABOROS_JIT_GC_POISON: "1"
+          WABOROS_JIT_GC_VERIFY: "1"
+          WABOROS_JIT_WALK_CHECK: "1"
   spec:
     needs: dedup
     if: needs.dedup.outputs.skip != 'true'

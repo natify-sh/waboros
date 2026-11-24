@@ -413,7 +413,7 @@ class Backend(Emitter):
         assert all(r in SPOOL for r in pins[:ns]), pins
         self.pad(BTI_JC)
         self.enter(REG_ENTER, "ARGS0(32)", SCRATCHES, 3 + ns, 8 * len(f.rpins))
-        if self.up + 48 + 32 > HEADROOM:
+        if self.up + 112 > HEADROOM:  # a foreign compiler's C path (64) + a sljit centry (48)
             raise Unsupported(f"jit-sljit-{ARCH}", "a native frame above the headroom (S0015)")
         for i, r in enumerate(f.rpins):
             self.op1(g("MOV"), (MEM1(SP), 8 * i), (r, 0))

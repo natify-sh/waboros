@@ -368,11 +368,12 @@ runs only under an emulator). `tests/consumer/` is a tiny project embedding `nat
 (build, ctest; then `jit-sljit-x86_64` in-process with the walk check and poison in both bounds
 modes, `tools/spec_diff.py` both ways against `jit-x86_64` on the JSON reports, and
 `tests/jit/test_boundary.py`, `tests/sljit/` and the parity test of `tests/spec/test_runner.py`; the suite through artifact
-files with `spec_diff` both ways, and `tools/isa_all.py --target jit-sljit-x86_64`), steps in `jit` (the cross build under QEMU with BTI) and `arm64` (native, no BTI), all
+files with `spec_diff` both ways, and `tools/isa_all.py --target jit-sljit-x86_64`; since step 8 also `gc` and `exceptions` on `jit-sljit-x86_64` in explicit mode with `WABOROS_JIT_GC_STRESS`, `_GC_POISON`, `_GC_VERIFY` and the walk check, as the `jit` job runs them on `jit-x86_64`), steps in `jit` (the cross build under QEMU with BTI) and `arm64` (native, no BTI), all
 with `submodules: true`. Since step 5 `jit` also runs `jit-sljit-aarch64` under
 `tools/run_arm64.py` (explicit bounds, BTI enforced, the walk check and poison): the suite
 in-process and through files against `jit-aarch64`'s report with `spec_diff` both ways, and
-`test_mixed.py`, `test_boundary.py`, `tests/sljit/` and `tests/artifact/test_sljit.py`; `arm64`
+`test_mixed.py`, `test_boundary.py`, `tests/sljit/` and `tests/artifact/test_sljit.py`, and (step 8)
+`test_mixed.py` again through artifact files (`WABOROS_JIT_ARTIFACT=1`); `arm64`
 runs its suite natively in guard mode against `jit-aarch64`'s report, the same tests in both modes
 and `tools/isa_all.py --target jit-sljit-aarch64` (`jit-sljit` does not cross-compile, so the gate
 runs on an aarch64 host; locally `python3 tools/run_arm64.py tools/isa_all.py --target
@@ -436,6 +437,7 @@ poison and `WABOROS_JIT_GC_VERIFY=1`, in-process and through files.
 | Python | `ci` job `test`: CPython 3.11, 3.12, 3.13, 3.14, 3.15, 3.15t (free-threaded); PyPy 3.11 (D19). `platforms.yml`: a narrower set per platform (`ci/harness/pyproject.toml`: the oldest and the newest free-threaded, 3.14 on Linux x86_64 glibc, 3.13 for musl, i686, armv7l, Android and Pyodide) |
 | OS | Linux x86-64 (all jobs of `ci`, and `platforms.yml`: glibc, musl, i686); Linux arm (`ubuntu-24.04-arm`: job `arm64` of `ci`, and aarch64 and armv7l in `platforms.yml`); Windows x64 (`windows-latest`), macOS x64 (`macos-26-intel`), Windows ARM64 (`windows-11-arm`) and macOS arm64 (`macos-26`) only in `platforms.yml` (cibuildwheel, below) |
 | target | `pyc` everywhere; `jit-*` where the machine matches; `mpy` with the MicroPython unix port (phase 7, not in CI yet) |
+| development targets | `jit-sljit-x86_64` (job `sljit`: in-process and through files, both bounds modes, `gc` and `exceptions` under stress); `jit-sljit-aarch64` in `jit` (QEMU, explicit, BTI enforced) and in `arm64` (native, guard); never selected by `auto`, not in `platforms.yml` (S0016) |
 | native arm64 | `jit-aarch64` on GitHub's arm64 runners: `ubuntu-24.04-arm` (job `arm64` of `ci`, and `platforms.yml`), `macos-26` (macOS arm64, `MAP_JIT`) and `windows-11-arm` (`platforms.yml`; labels per actions/runner-images) |
 | python.org macOS | the macOS cells of `platforms.yml` run the python.org framework CPython (hardened runtime) that cibuildwheel installs, on Apple Silicon (`macos-26`) and Intel; the JIT tests and the spec suite pass there, and a refusal by the hardened runtime would show as a failed cell (RISKS R2). The separate `macos-pythonorg` job, with its entitlements printout, is gone |
 | Android | the Android cell of `platforms.yml`: CPython's testbed app on a managed x86_64 emulator (cibuildwheel; `arm64_v8a` is built only), `python -m pytest tests --jit-bounds=guard,explicit` inside the app with every test that needs no wasmtime as an oracle (no wasmtime there; WAT comes from the WAT cache, below), among them `tests/jit/test_android.py` (Android only: the SELinux context, the probe and `auto`, guard faults through ART's libsigchain with a module written in binary, CoreMark's self-check; S0006 step 5); no arm64 test (RISKS R2). The `android` job and `tools/android_check.py` are gone |

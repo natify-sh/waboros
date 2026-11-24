@@ -601,6 +601,7 @@ fat file is regenerated, below):
 **Fat files (D18).** A fat file is never refused for any reason in steps 2-6: the loader finds
 `.waboros.wasm` through the frozen part, checks SHA-256 of its bytes against `module_sha256`
 (a mismatch is a refusal: the file is corrupt), and compiles the wasm with the store's compiler
+*(amended by S0016: with the target passed to `load()`; a store may hold several compilers)*
 and the loader's own options (it may cache the result). A thin file is refused at the first
 failing check. Foreign hosts (D36) refuse in both cases: they have no compiler.
 
@@ -1157,3 +1158,6 @@ When approved and implemented (step 7 unless noted):
   record's offsets leaves v1. Every offset lies inside its blob; `read` refuses `0xFFFFFFFF` by
   name, tested on x86-64 and aarch64 (`tests/artifact/test_trampolines.py`). No file written
   before carried it, so no version bump.
+* 2026-11-24 (S0016 step 8): a fat file is compiled with the target passed to `load()`, not "the
+  store's compiler" (a store holds several compilers since S0016); marked in "Fat files". No
+  format change.

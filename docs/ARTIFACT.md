@@ -382,20 +382,16 @@ also spill the register windows before a walk). S0015's headroom numbers (1 KiB,
 | instruction cache | coherent | invalidate the loaded range before the first call |
 
 Compiler-private rows, keyed by the target in the header's `compiler` field, given for `jit-x86_64`,
-`jit-aarch64` and the development target `jit-sljit-x86_64` (S0016, sljit's SysV register map on
+`jit-aarch64` and the development targets `jit-sljit-x86_64` and `jit-sljit-aarch64` (S0016, sljit's SysV register map on
 every OS) as information (another compiler, a sljit micro-compiler, states its own):
 
-| | x86-64 | aarch64 | `jit-sljit-x86_64` |
-|---|---|---|---|
-| bridge call | `eax` = word, `rdx` = slots; `call` | `x0` = word, `x1` = slots; `blr x16` | `rax` = word, `rsi` = slots; `call` |
-| bridge preserves | pool (`rbx rbp rsi rdi r8–r11`), `r12`–`r15` | `x2`–`x8`, `x19`–`x28`, `x29`, `sp` | `rbx rbp r12`–`r15`, and `rcx r8 r10 r11` saved in its frame (`win64`: above the 32-byte shadow space, the host call custom bytes `mov rcx, rbx; mov rdx, rsi; call r13`) |
-| `tail_switch` | record in `rdx`, return address at `[rsp]`; the first hop and the hops from `restore`, never one from a C entry; restore frame 64 bytes (S0015 step 1, D71) | record in `x16`, return address in `x30`; the same hops; restore frame 80 bytes (S0015 step 3) | record in `rax`, return address at `[rsp]`; the same hops; restore frame 48 bytes (`restore_ret_at` 40) |
-| exit record (bridge): `frame` | `r12` | `x27` | `r15` |
-| landing pad, the compiler's own | `endbr64` | `bti c` (bodies, bridge, `tail_switch`), `bti j` (jump-table pads) | `endbr64` |
-
-`jit-sljit-aarch64` (S0016 step 5) is not tabulated: its pool is `x22`–`x28` (sljit's S3–S9, all saved
-by sljit's enter), `x18` is never used, its stubs are `bti jc; adr x2, #8; b centry` (12 bytes),
-`bti jc` is on its bodies, host-thunk bodies and `tail_switch` and `bti c` on its bridge.
+| | x86-64 | aarch64 | `jit-sljit-x86_64` | `jit-sljit-aarch64` |
+|---|---|---|---|---|
+| bridge call | `eax` = word, `rdx` = slots; `call` | `x0` = word, `x1` = slots; `blr x16` | `rax` = word, `rsi` = slots; `call` | `x0` = word, `x1` = slots; `blr` |
+| bridge preserves | pool (`rbx rbp rsi rdi r8–r11`), `r12`–`r15` | `x2`–`x8`, `x19`–`x28`, `x29`, `sp` | `rbx rbp r12`–`r15`, and `rcx r8 r10 r11` saved in its frame (`win64`: above the 32-byte shadow space, the host call custom bytes `mov rcx, rbx; mov rdx, rsi; call r13`) | `x19`–`x28` through sljit's enter (the host keeps the callee-saved ones); no R pins, the pool is `x22`–`x28` (sljit's S3–S9), so nothing is saved in a frame |
+| `tail_switch` | record in `rdx`, return address at `[rsp]`; the first hop and the hops from `restore`, never one from a C entry; restore frame 64 bytes (S0015 step 1, D71) | record in `x16`, return address in `x30`; the same hops; restore frame 80 bytes (S0015 step 3) | record in `rax`, return address at `[rsp]`; the same hops; restore frame 48 bytes (`restore_ret_at` 40) | record in `x0`, return address in `x30`; the same hops; restore frame 32 bytes (`restore_ret_at` 8) |
+| exit record (bridge): `frame` | `r12` | `x27` | `r15` | `x20` (sljit's S1) |
+| landing pad, the compiler's own | `endbr64` | `bti c` (bodies, bridge, `tail_switch`), `bti j` (jump-table pads) | `endbr64` | `bti jc` (bodies, host-thunk bodies, `tail_switch`), `bti c` (bridge); stubs `bti jc; adr x2, #8; b centry` (12 bytes) |
 
 **Reference listing of the runtime's `entry`** (S0015, Q3 (a); moved here from the spec's appendix).
 A listing for the C loader and for review, not the waboros runtime's bytes. `EXIT` is

@@ -2,7 +2,7 @@
 title: Specifications index
 kind: index
 status: current
-updated: 2026-11-23
+updated: 2026-11-24
 ---
 
 # Specifications
@@ -27,4 +27,4 @@ lifecycle: [STANDARDS.md](../STANDARDS.md).
 | [S0013](S0013-gc.md) | Garbage collection (Wasm GC) on pyc, jit-x86_64 and jit-aarch64 | implemented | maintainer |
 | [S0014](S0014-artifact-format.md) | JIT artifact format v1 in the ELF64 container | approved | maintainer |
 | [S0015](S0015-boundary-convention.md) | The boundary convention between separately compiled JIT artifacts | approved | maintainer |
-| [S0016](S0016-sljit-on-the-boundary.md) | jit-sljit on the boundary: the first second compiler in a mixed store | approved | maintainer |
+| [S0016](S0016-sljit-on-the-boundary.md) | jit-sljit on the boundary: the first second compiler in a mixed store | implemented | maintainer |
