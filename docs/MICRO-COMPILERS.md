@@ -132,7 +132,7 @@ stays pure Python (`py3-none-any`, never a binary wheel):
    the Python JIT.
 
 Shipping a ready `.wbo` saves that first second, but ties the wheel to the exact compiler string
-until phase 6. Where no executable memory exists (Pyodide, iOS, MDWE) neither the Python JIT nor a
+until phase 6. A shipped `.wbo` also emits code for the context ABI it was built against: when the runtime moves to another `ctx_abi_version` (or a GC-related `features_required` bit), its files no longer match the store's GC heap and collector and are refused, so the runtime must then rebuild the micro-compiler from the `.wasm` (an argument for shipping `.wasm` and keeping `.wbo` only as the cache; maintainer, 2026-11-24). Where no executable memory exists (Pyodide, iOS, MDWE) neither the Python JIT nor a
 micro-compiler can run and `pyc` remains. Bootstrapping through an interpreter (wasm3, `pyc`) is
 for hosts without the Python JIT but with executable memory (a C loader without an embedded
 compiler); for the Python package the bootstrap is the Python JIT. The native C variant needs no bootstrap at all: there the micro-compiler is compiled into the C loader for the loader's own architecture (ROADMAP "Next" (6) item (c)), and the wasm form matters only for the other hosts. The other reasons below

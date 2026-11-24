@@ -353,7 +353,7 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29; done 2026-11-03) -> 
   the trampoline compare moved from `read` to store attach; the walk's set of restore points, one
   per compiler present (`walk.py` takes one `Trampolines` today); the test with a real second
   compiler in one store (the sljit micro-compiler, D68). The flags that must agree within a store
-  (S0015 Q4) are decided there too. Also deferred from S0015's review (step 6):
+  (S0015 Q4) are decided there too, together with what the shared GC heap and collector need (maintainer, 2026-11-24): every module of a store agrees on `ctx_abi_version` (the heap layout, the GC and RTT words, `IS_SUBTYPE` and the stack-map format are part of it) and on every `features_required` bit that touches the GC heap or the collector; a file compatible on its own is refused in a store whose heap it does not match. Also deferred from S0015's review (step 6):
   * before a foreign C entry runs in a store, a C entry that takes a private hop status from its
     body must be sure the status came from its own body (M5: true today by construction);
   * D71's precondition: a blob copy is never shared between compiler strings, enforced at store
