@@ -48,7 +48,8 @@ The runtime gains a minimal, target-neutral part of phase 6:
 * a store holds instances of several JIT targets of one architecture, each loaded under its own
   exact compiler string;
 * the walk and the walk check use the store's sets of entry and restore points;
-* the GC collector is compiled by the architecture's runtime compiler.
+* the GC collector stays as today: compiled by the target of the store's first module that needs
+  the GC heap, which may be `jit-sljit` (any compiler of the architecture will do).
 
 Not changed here:
 * the per-architecture loader rule and executing a foreign blob from a file stay in phase 6;
@@ -185,11 +186,13 @@ tests/sljit/                   the Python side (development only): backend.py (t
 * **`HOST_BRIDGE` (word 8)**: the bridge of `jit-sljit`'s own in-process blob copy, one per target
   and process, never another target's. D71's test (equal word 8 = same compiler) holds.
 * **`TAIL_SWITCH` (word 9)**: its own `tail_switch`, never 0.
-* **The architecture's runtime compiler**: new Target attribute `runtime_compiler`, defaulting to
-  the target's own name; `jit-sljit-<arch>` names `jit-<arch>`. `collect.py` compiles the collector
-  (D61) with `TARGETS[TARGETS[inst.owner].runtime_compiler]`, not `TARGETS[inst.owner]` (line 40
-  today). So a store whose first GC module is `jit-sljit` still runs the runtime's collector, as
-  S0015 says.
+* **The GC collector (D61), unchanged** (maintainer, 2026-11-24):
+  * `collect.py` compiles it with the target of the first module that needs the GC heap
+    (`TARGETS[inst.owner]`, cached by target and bounds mode), so in a mixed store it may be
+    `jit-sljit`'s code;
+  * any compiler of the architecture is acceptable, because the boundary is one per architecture
+    (S0015);
+  * mixed stores are expected to be rare: the input is wasm in almost all cases.
 
 ### The compiler: the structure of `jit-x86_64`, code by sljit
 * **Internal convention: the PoC's** `SLJIT_ENTER_REG_ARG | SLJIT_ENTER_KEEP(3)`.
@@ -369,7 +372,7 @@ Each item is data from a `Target` or its `Trampolines`:
      process.
    * `artifact.TARGETS` (name → `e_machine`, ISA name) comes from Target attributes `e_machine` and
      `isa_name` (about 10 lines).
-5. `compiler_string` folds in `digest_sources()`; `runtime_compiler` as above.
+5. `compiler_string` folds in `digest_sources()`.
 
 ROADMAP phase 6 loses the items done here:
 * mixed stores in-process;
@@ -391,7 +394,7 @@ It keeps:
   * aarch64 keeps the PoC's guard-mode access rules.
 * **Exceptions**: status 14 and word 10, passed through; `landing` and `throw_ref` as in the PoC.
 * **Interrupts, epoch, stack limits**: polled in prologues and loop heads, as in the PoC.
-* **The collector** comes from the runtime's compiler (above), never `jit-sljit`.
+* **The collector** comes from the first GC module's target (above), `jit-sljit` included.
 * **I1**: no reference in a register at a site; references never pinned (the PoC passed the walk
   check with poison, D68).
 
@@ -480,7 +483,9 @@ x86-64 unless marked; "through files" is `WABOROS_JIT_ARTIFACT=1`.
   * walk and GC: host → A → B → A → host import with a reference live in each frame, under the
     walk check; collections started from each compiler's frames and inside a mixed tail chain
     forward every reference;
-  * a store whose first GC module is `jit-sljit` runs the collector compiled by `jit-<arch>`;
+  * GC in a mixed store with either compiler's module first to need the heap (so the collector is
+    `jit-x86_64`'s in one case and `jit-sljit`'s in the other): collections are correct both ways,
+    under the walk check, poison and `WABOROS_JIT_GC_VERIFY=1`;
   * distinct `HOST_BRIDGE` per compiler; a forced equal word is refused at instantiation.
 * **Files**:
   * `tests/artifact/` cases for the second compiler string (read, inventory, thin and fat);
@@ -512,9 +517,9 @@ Each step stops and reports if it needs more than its size.
 |---|---|---|---|---|
 | 0 | `native/` with the submodule; `CMakeLists.txt` (one TU, one library target, C99, options, `enable_testing`); `waboros_sljit.c` (defines, buffer hooks, baseline CPU features, `waboros_sljit_frame`, constants); ctest (frames, stubs, baseline bytes, BTI); the consumer; CI build steps, the run time of each measured | implementer | the Native commands and `pytest -q` without the library, x86-64 and under the emulator; `pytest -q` unchanged; `check_docs.py` | C ~250, CMake ~120, CI ~50 |
 | 1 | `tests/sljit/` on HEAD's interface, x86-64: stubs, centry, D71's three paths, the hop, `tail_switch` and bridge by sljit, frames from the library; the D67 pre-pass in the core; registration (`complete`, `development`, xfail file); **depth measured** | jit-engineer | the spec suite in-process with walk check and poison, both modes, `spec_diff` empty; D35 lists unchanged; the depth table's x86-64 column at `jit-x86_64`'s figures; compile time recorded | py ~700 changed of ~1 500, core ~80 |
-| 2 | Runtime and loader: the store's set, the walk's sets (`walk`, `collect`, `_checked`), the distinctness check, `runtime_compiler`, `artifact.TARGETS` from attributes, `digest_sources()`; the `win64` blob; the none value removed (`read` refuses `0xFFFFFFFF` in a trampoline record, with a test on both architectures) | implementer | `pytest -q` on both architectures; the spec suite through files on the three targets at parity; D35 lists unchanged | src ~80, py ~30, tests ~120 |
+| 2 | Runtime and loader: the store's set, the walk's sets (`walk`, `collect`, `_checked`), the distinctness check, `artifact.TARGETS` from attributes, `digest_sources()`; the `win64` blob; the none value removed (`read` refuses `0xFFFFFFFF` in a trampoline record, with a test on both architectures) | implementer | `pytest -q` on both architectures; the spec suite through files on the three targets at parity; D35 lists unchanged | src ~80, py ~30, tests ~120 |
 | 3 | `tests/jit/test_mixed.py` and the files tests, x86-64 | jit-engineer | the mixed tests in-process and through files, both modes | tests ~380 |
-| 4 | Review of 0-3 without the implementers' reasoning: the boundary table against the code, CET balance, I1, headroom, M5, the sets, the collector rule, the baseline bytes | reviewer | findings closed before step 5 | — |
+| 4 | Review of 0-3 without the implementers' reasoning: the boundary table against the code, CET balance, I1, headroom, M5, the sets, the baseline bytes | reviewer | findings closed before step 5 | — |
 | 5 | aarch64: pads, frames, the pool (S3-S9), guard rules; the mixed tests with `jit-aarch64`; the depth column | jit-engineer | QEMU explicit with BTI, the arm64 runner guard; mixed tests | py ~120 |
 | 6 | CoreMark both architectures; BENCHMARKS rows | runner | alternated rounds recorded | — |
 | 7 | Docs ("Docs this changes"), the none value's documents | orchestrator | `python3 tools/check_docs.py` | — |
@@ -568,6 +573,8 @@ In the step that makes each untrue; step 7 for the rest.
   * "What sljit-based compilers must add" (frame numbers from our translation unit, the baseline
     CPU word, BTI as measured);
   * Compatibility and its deferred list (items done here);
+  * the walk section's "runtime modules are compiled by the runtime's own compiler" becomes "by
+    any compiler of the architecture (by default the first GC module's target)";
   * the none value removed (form 2a only beside a `tail_switch`, no word 9 = 0);
   * a Changes line.
 * [S0014](S0014-artifact-format.md): the record's offset rule without `0xFFFFFFFF`, `read` refuses it;
@@ -578,12 +585,15 @@ In the step that makes each untrue; step 7 for the rest.
   * the word-9 row (always a `tail_switch`).
 * [DECISIONS.md](../DECISIONS.md):
   * a new decision recording the design and placement;
-  * markers on D67 (the pre-pass now), D70 (in-process mixed stores before phase 6), D61 and D64
-    consequence 3 (`runtime_compiler`), D73 (the freeze condition without form 2a and the none record).
+  * markers on D67 (the pre-pass now), D70 (in-process mixed stores before phase 6), D73 (the
+    freeze condition without form 2a and the none record);
+  * the D61 and D64 consequence 3 markers: "the runtime's own compiler" becomes "any compiler of
+    the architecture (by default the first GC module's target)".
 * [ROADMAP.md](../ROADMAP.md): "Next" (6) item (a) progress and the remaining condition (b); phase
   6's S0015 list without the items done here.
 * [ARCHITECTURE.md](../ARCHITECTURE.md): `native/` (C, CMake only, never in the package);
-  development targets; a store of several compilers; the runtime compiler rule.
+  development targets; a store of several compilers; the collector by any compiler of the
+  architecture.
 * [TESTING.md](../TESTING.md):
   * development dependencies (CMake ≥ 3.21, a C99 compiler, `gcc-aarch64-linux-gnu`);
   * the `sljit` job and the new steps of `jit` and `arm64`;
@@ -623,7 +633,6 @@ In the step that makes each untrue; step 7 for the rest.
     now a rejected alternative;
   * one open question on the "none" value;
   * baseline CPU features without a patch;
-  * the collector's runtime compiler;
   * the registration rules of a development target;
   * the `win64` blob;
   * one translation unit and one library target;
@@ -634,3 +643,6 @@ In the step that makes each untrue; step 7 for the rest.
 * 2026-11-24: the maintainer's answers: the none value leaves v1 (the open question closed, a step
   and its test added); the `win64` blob confirmed; no `MANIFEST.in`, the wheel as today (no
   separate check), `native/` not buildable from an sdist.
+* 2026-11-24: the collector rule (maintainer): no `runtime_compiler`; the collector stays the
+  first GC module's target's, any compiler of the architecture; a mixed-store GC test with either
+  compiler first; the D61, D64 and S0015 markers reworded.
