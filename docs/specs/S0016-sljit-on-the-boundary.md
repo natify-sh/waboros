@@ -41,8 +41,8 @@ reads and runs the committed files.
   its C entries, D71's "another compiler → C path" from both sides, cross-compiler hops, and sljit
   code behind `entry` and the walk.
 * Item (b), the C loader, remains.
-* With Q1 (a) the marker's "form-2a sibling tail calls and a record with no `tail_switch`" are no
-  longer conditions (Q1).
+* The marker's "form-2a sibling tail calls and a record with no `tail_switch`" are no longer
+  conditions: the "none" value of `tail_switch` leaves v1 ("The none value leaves v1").
 
 The runtime gains a minimal, target-neutral part of phase 6:
 * a store holds instances of several JIT targets of one architecture, each loaded under its own
@@ -53,7 +53,7 @@ The runtime gains a minimal, target-neutral part of phase 6:
 Not changed here:
 * the per-architecture loader rule and executing a foreign blob from a file stay in phase 6;
 * the context ABI stays v1 as it is;
-* the format stays v1, except Q1.
+* the format stays v1, with one value removed under the working freeze (no version bump).
 
 ## Goals / Non-goals
 * Goals:
@@ -97,7 +97,6 @@ native/                        every C source of the repository
 tests/sljit/                   the Python side (development only): backend.py (the D39 backend,
                                ported from the PoC), __init__.py (registers the target when the
                                library exists)
-MANIFEST.in                    prune native ; prune poc
 ```
 * **C build with CMake only.** No Python, no generated sources, no configure-time patching.
   * sljit's constants come from an exported function (`waboros_sljit_constant(name)`), replacing
@@ -132,12 +131,16 @@ MANIFEST.in                    prune native ; prune poc
       label addresses are rip-relative;
     * `SLJIT_UTIL_STACK=0`;
     * `SLJIT_VERBOSE=0` and `SLJIT_DEBUG=0` (`WABOROS_SLJIT_DEBUG` switches both).
-* **Packaging.** The wheel holds `waboros/` and `waboros-<version>.dist-info/` only.
-  * The sdist today holds every tracked file. Measured with `uv build --sdist`: `poc/` has 151
-    entries, its C sources included.
-  * A new `MANIFEST.in` prunes `native/` and `poc/`. The PoC is reference code, not package
-    material, and its C sources would otherwise ship.
-  * `tests/sljit/` is Python and stays in the sdist with the other tests.
+* **Packaging** (maintainer, 2026-11-24): only the **wheel** must carry just the package.
+  * The wheel holds `waboros/` and `waboros-<version>.dist-info/` only, as today: setuptools
+    packages `waboros` from `src/` (`package-dir`), so nothing under `native/`, `tests/` or `poc/`
+    can enter it. No separate check.
+  * The sdist may hold everything tracked, `native/` and `poc/` included. It has no `MANIFEST.in`
+    (measured with `uv build --sdist`: every tracked file, `poc/` 151 entries).
+  * The sdist does not carry the submodule's files: setuptools-scm lists tracked files, and a
+    submodule is one gitlink entry (expected; the packaging test checks it). So `native/` cannot be
+    built from an sdist, and that is not supported. It is built from a git checkout with
+    `--recurse-submodules`, the simplest rule.
 * **The Python side.**
   * `tests/sljit/__init__.py` loads the library from `WABOROS_SLJIT_LIB` (default `build/native/`).
   * If it is there, it registers `jit-sljit-<host arch>` in `base.TARGETS` and in the artifact
@@ -434,11 +437,7 @@ x86-64 unless marked; "through files" is `WABOROS_JIT_ARTIFACT=1`.
   * on aarch64 under the crosscompiling emulator, the BTI ping-pong with its SIGILL control;
   * the consumer project (`add_subdirectory` and `FetchContent_MakeAvailable` with `SOURCE_DIR`
     local), configured with `--warn-uninitialized -Werror=dev`.
-* **Packaging**:
-  * `uv build`;
-  * `tar tzf dist/*.tar.gz | grep -cE '/(native|poc)/'` gives 0;
-  * the wheel has nothing outside `waboros/` and its dist-info;
-  * `pytest -q` passes without the library (the `jit-sljit` tests skip).
+* **Without the library**: `pytest -q` passes (the `jit-sljit` tests skip).
 * **Spec suite on `jit-sljit`**, in-process and through files, `WABOROS_JIT_WALK_CHECK=1
   WABOROS_JIT_GC_POISON=1`, guard and explicit:
   * 64 229 pass, 0 fail;
@@ -492,14 +491,14 @@ Each step stops and reports if it needs more than its size.
 
 | step | goal | agent | acceptance | size (lines) |
 |---|---|---|---|---|
-| 0 | `native/` with the submodule; `CMakeLists.txt` (one TU, one library target, C99, options, `enable_testing`); `waboros_sljit.c` (defines, buffer hooks, baseline CPU features, `waboros_sljit_frame`, constants); ctest (frames, stubs, baseline bytes, BTI); the consumer; `MANIFEST.in`; CI build steps, the run time of each measured | implementer | the Native and Packaging commands, x86-64 and under the emulator; `pytest -q` unchanged; `check_docs.py` | C ~250, CMake ~120, CI ~50 |
+| 0 | `native/` with the submodule; `CMakeLists.txt` (one TU, one library target, C99, options, `enable_testing`); `waboros_sljit.c` (defines, buffer hooks, baseline CPU features, `waboros_sljit_frame`, constants); ctest (frames, stubs, baseline bytes, BTI); the consumer; CI build steps, the run time of each measured | implementer | the Native commands and `pytest -q` without the library, x86-64 and under the emulator; `pytest -q` unchanged; `check_docs.py` | C ~250, CMake ~120, CI ~50 |
 | 1 | `tests/sljit/` on HEAD's interface, x86-64: stubs, centry, D71's three paths, the hop, `tail_switch` and bridge by sljit, frames from the library; the D67 pre-pass in the core; registration (`complete`, `development`, xfail file); **depth measured** | jit-engineer | the spec suite in-process with walk check and poison, both modes, `spec_diff` empty; D35 lists unchanged; the depth table's x86-64 column at `jit-x86_64`'s figures; compile time recorded | py ~700 changed of ~1 500, core ~80 |
-| 2 | Runtime and loader: the store's set, the walk's sets (`walk`, `collect`, `_checked`), the distinctness check, `runtime_compiler`, `artifact.TARGETS` from attributes, `digest_sources()`; the `win64` blob | implementer | `pytest -q` on both architectures; the spec suite through files on the three targets at parity; D35 lists unchanged | src ~80, py ~30, tests ~120 |
+| 2 | Runtime and loader: the store's set, the walk's sets (`walk`, `collect`, `_checked`), the distinctness check, `runtime_compiler`, `artifact.TARGETS` from attributes, `digest_sources()`; the `win64` blob; the none value removed (`read` refuses `0xFFFFFFFF` in a trampoline record, with a test on both architectures) | implementer | `pytest -q` on both architectures; the spec suite through files on the three targets at parity; D35 lists unchanged | src ~80, py ~30, tests ~120 |
 | 3 | `tests/jit/test_mixed.py` and the files tests, x86-64 | jit-engineer | the mixed tests in-process and through files, both modes | tests ~380 |
 | 4 | Review of 0-3 without the implementers' reasoning: the boundary table against the code, CET balance, I1, headroom, M5, the sets, the collector rule, the baseline bytes | reviewer | findings closed before step 5 | — |
 | 5 | aarch64: pads, frames, the pool (S3-S9), guard rules; the mixed tests with `jit-aarch64`; the depth column | jit-engineer | QEMU explicit with BTI, the arm64 runner guard; mixed tests | py ~120 |
 | 6 | CoreMark both architectures; BENCHMARKS rows | runner | alternated rounds recorded | — |
-| 7 | Docs ("Docs this changes"), Q1's answer applied | orchestrator | `python3 tools/check_docs.py` | — |
+| 7 | Docs ("Docs this changes"), the none value's documents | orchestrator | `python3 tools/check_docs.py` | — |
 | 8 | Final review | reviewer | findings closed | — |
 
 About 1 100 lines of Python (mostly ported), 250 of C, 120 of CMake, 190 of runtime and loader,
@@ -527,25 +526,20 @@ About 1 100 lines of Python (mostly ported), 250 of C, 120 of CMake, 190 of runt
 * **Phase 6's whole loader rule now**: not needed while both compilers are in the process, and it
   would open the foreign-blob path before W^X and the instruction cache are specified for it.
 
+## The none value leaves v1 (decided, maintainer 2026-11-24)
+With this design no compiler needs a `tail_switch` of "none", so the value is removed from v1 under
+the working freeze (D73 marker), with no version bump:
+* S0014's trampoline record: every offset lies inside its blob, with no `0xFFFFFFFF` exception;
+  `read` refuses `0xFFFFFFFF` (`NO_START`), tested on both architectures (step 2);
+* S0015: "word 9 = 0" and form 2a without a `tail_switch` go; a compiler always ships a
+  `tail_switch`, and form 2a stays possible only beside one;
+* ARTIFACT.md's word-9 row: always a `tail_switch`;
+* the final-freeze condition "form-2a sibling tail calls and a record with no `tail_switch`" goes
+  (D73 marker, ROADMAP "Next" (6));
+* if a compiler ever needs it, it returns as a `features_required` bit (D66).
+
 ## Open questions
-1. **The "none" value of `tail_switch` in v1.** With this design no compiler needs it.
-   * (a) Remove it now under the working freeze (D73 marker): no version bump.
-     * S0014's record says every offset lies in its blob, with no `0xFFFFFFFF` exception;
-       `read` refuses `NO_START`.
-     * S0015 drops "word 9 = 0", and form 2a stays allowed only for a compiler that still ships a
-       `tail_switch`.
-     * ARTIFACT.md's word-9 row changes; a test refuses a none record.
-     * The final-freeze condition "form-2a sibling tail calls and a record with no `tail_switch`"
-       drops (D73 marker, ROADMAP "Next" (6)).
-     * If a compiler ever needs it, it returns as a `features_required` bit (D66).
-     * Cost about 10 lines of docs per document and 2 tests.
-   * (b) Keep it: implement the writer and reader cases (today `_text` writes `o + 0xFFFFFFFF` and
-     `_trampolines` compares `x − start`, both wrong for none), and write only the symbols that
-     exist (no `__waboros_tail_switch_<conv>` for none). Then it stays untested by any compiler
-     until one uses it.
-   * Recommendation: **(a)**. The format should not carry a value no producer writes and no test
-     runs, and it can return by a feature bit.
-   * Nothing else in this spec depends on the answer.
+None left: the maintainer answered the last one (above).
 
 ## Docs this changes
 In the step that makes each untrue; step 7 for the rest.
@@ -555,17 +549,18 @@ In the step that makes each untrue; step 7 for the rest.
   * "What sljit-based compilers must add" (frame numbers from our translation unit, the baseline
     CPU word, BTI as measured);
   * Compatibility and its deferred list (items done here);
-  * Q1's answer;
+  * the none value removed (form 2a only beside a `tail_switch`, no word 9 = 0);
   * a Changes line.
-* [S0014](S0014-artifact-format.md): Q1's answer (the record's offset rule, `read`); a Changes line.
+* [S0014](S0014-artifact-format.md): the record's offset rule without `0xFFFFFFFF`, `read` refuses it;
+  a Changes line.
 * [ARTIFACT.md](../ARTIFACT.md):
   * part 2's loader paragraph (a store of several compiler strings, each file under its own);
   * part 3's compiler-private rows gain `jit-sljit`;
-  * the word-9 row (Q1).
+  * the word-9 row (always a `tail_switch`).
 * [DECISIONS.md](../DECISIONS.md):
   * a new decision recording the design and placement;
   * markers on D67 (the pre-pass now), D70 (in-process mixed stores before phase 6), D61 and D64
-    consequence 3 (`runtime_compiler`), D73 (the freeze condition; Q1).
+    consequence 3 (`runtime_compiler`), D73 (the freeze condition without form 2a and the none record).
 * [ROADMAP.md](../ROADMAP.md): "Next" (6) item (a) progress and the remaining condition (b); phase
   6's S0015 list without the items done here.
 * [ARCHITECTURE.md](../ARCHITECTURE.md): `native/` (C, CMake only, never in the package);
@@ -589,7 +584,7 @@ In the step that makes each untrue; step 7 for the rest.
   * sljit's aarch64 return address is at `[sp + 8]`;
   * an unset `cpu_feature_list` makes sljit run `cpuid` and emit host-specific code.
 * [RISKS.md](../RISKS.md) R2: the BTI row for sljit code.
-* `MANIFEST.in` (new), `.gitmodules`; `pyproject.toml` unchanged (the wheel takes `src/`);
+* `.gitmodules`; `pyproject.toml` unchanged (the wheel takes `src/`); no `MANIFEST.in`;
   `CLAUDE.md`'s commands (the native build, the `jit-sljit` spec run).
 * FEATURES.md: none (`development` targets have no column; `tests/test_features.py` changes).
 * [specs/README.md](README.md): this spec's row.
@@ -597,6 +592,8 @@ In the step that makes each untrue; step 7 for the rest.
 ## Progress
 * 2026-11-23: draft.
 * 2026-11-24: reworked to the `jit-x86_64` structure (maintainer).
+* 2026-11-24: the maintainer's answers: the none value removed, the `win64` blob built, the sdist
+  unpruned, the wheel as today (only the package).
 
 ## Changes
 * 2026-11-23: created (draft), with the maintainer's placement, CMake and C99 decisions.
@@ -609,9 +606,11 @@ In the step that makes each untrue; step 7 for the rest.
   * the collector's runtime compiler;
   * the registration rules of a development target;
   * the `win64` blob;
-  * `MANIFEST.in` prunes `poc/` too;
   * one translation unit and one library target;
   * the CI details;
   * the D67 compile-time measurement;
   * the walk check's set;
   * the freeze wording.
+* 2026-11-24: the maintainer's answers: the none value leaves v1 (the open question closed, a step
+  and its test added); the `win64` blob confirmed; no `MANIFEST.in`, the wheel as today (no separate check),
+  `native/` not buildable from an sdist.
