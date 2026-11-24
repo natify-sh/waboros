@@ -74,7 +74,7 @@ its target-endian ELF (we are little-endian only, D48) are not taken either.
 | offset | field | value |
 |---|---|---|
 | 0 | `EI_MAG0..3` | `7F 45 4C 46` |
-| 4 | `EI_CLASS` | 2 (`ELFCLASS64`); the only class (D48: no 32-bit JIT) |
+| 4 | `EI_CLASS` | 2 (`ELFCLASS64`); the only class (D48: no 32-bit JIT). *(2026-11-24, maintainer: it stays the only class for every target, 32-bit ones included, should they come: the file is a data format, a 32-bit target's code is position-independent and is embedded as a blob, not linked by the system linker; where one `e_machine` covers both widths (RISC-V, MIPS) the `isa_level` numbers of the 32-bit ISA are disjoint from the 64-bit ones.)* |
 | 5 | `EI_DATA` | 1 (`ELFDATA2LSB`); the only byte order (D48) |
 | 6 | `EI_VERSION` | 1 |
 | 7 | `EI_OSABI` | **0xCB**, private (Q1) |
@@ -1149,3 +1149,4 @@ When approved and implemented (step 7 unless noted):
   table above 2^32-1 / 2^64-1), and a signature word that is not a function type are refused;
   the function-record membership test is a set. The typing rules of constant expressions, the
   container rules and the "Known limitations of v1" are in the normative sections (above).
+* 2026-11-24: ELF64 little-endian stays the container for every target, 32-bit ones included (maintainer); `isa_level` numbers disjoint per width where an `e_machine` covers both.
