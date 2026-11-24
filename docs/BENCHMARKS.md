@@ -2393,3 +2393,43 @@ control are the three-path record calls (about 31 instructions each, 9 before).
 * Reading: `jit-sljit-aarch64`'s frames cost what `jit-aarch64`'s do on all three rows (one level
   more at each size: the entry's frames differ). Across compilers one measurement covers both
   directions. No timing is claimed (QEMU; CoreMark on the native runner: S0016 step 6).
+
+## jit-sljit CoreMark (S0016 step 6, 2026-11-24)
+* Date: 2026-11-24
+* Commit: 0fc2f30 (branch `gc`), working tree on top of it: no source change (the CI step only)
+* Machine: Intel Xeon @ 2.10 GHz, 4 vCPU (the sandbox); the run is pinned with `taskset -c 2`
+* Python: CPython 3.13.17; sljit 39c508d (`native/`, built fresh with `cmake --build build/native`)
+* Command: `WABOROS_JIT_BOUNDS=$bounds taskset -c 2 uv run python tools/run_coremark_jit.py
+  poc/in/core.wasm --target $target`, for `$bounds` in guard, explicit and `$target` in
+  `jit-x86_64`, `jit-sljit-x86_64`; 5 rounds, alternated (guard then explicit within a round, the
+  two targets alternated within each bounds mode). Raw output: the session's scratchpad
+  `s16-6/x86.txt`. Every one of the 20 runs printed "Correct operation validated".
+* Result, Iterations/Sec (CoreMark 1.0, `zig cc` wasm32 -O3 STATIC):
+
+guard:
+
+| round | `jit-x86_64` | `jit-sljit-x86_64` |
+|---|---|---|
+| 1 | 14 933.17 | 15 968.06 |
+| 2 | 16 235.52 | 15 488.27 |
+| 3 | 16 879.54 | 16 091.40 |
+| 4 | 16 687.53 | 14 504.32 |
+| 5 | 15 677.67 | 16 116.04 |
+| median | 16 235.52 | 15 968.06 |
+
+explicit:
+
+| round | `jit-x86_64` | `jit-sljit-x86_64` |
+|---|---|---|
+| 1 | 14 642.36 | 13 698.63 |
+| 2 | 13 807.39 | 14 164.31 |
+| 3 | 15 556.94 | 13 891.78 |
+| 4 | 13 986.01 | 13 212.66 |
+| 5 | 13 652.81 | 13 121.64 |
+| median | 13 986.01 | 13 698.63 |
+
+* Ratio of medians (`jit-sljit-x86_64` / `jit-x86_64`): guard 0.9835, explicit 0.9795.
+* Spread (min-max over the 5 rounds): guard `jit-x86_64` 14 933-16 880, `jit-sljit-x86_64`
+  14 504-16 116; explicit `jit-x86_64` 13 653-15 557, `jit-sljit-x86_64` 13 122-14 164.
+* aarch64: measured on the native arm64 runner in CI (ci.yml, job arm64, S0016 step 6); numbers
+  to be added from the first run.

@@ -848,6 +848,10 @@ In the step that makes each untrue; step 7 for the rest.
   direct call; generated 16 bytes off a page with the refusal bypassed, the test fails (32
   bytes apart: tail_switch's restore frame). Wasmtime 50.0.1 under the same QEMU: 32 756 /
   16 378 / 21 838 levels at 512 KiB (BENCHMARKS).
+* 2026-11-24: step 6 (x86-64): CoreMark on the native library, 5 rounds alternated, `taskset -c 2`,
+  guard: `jit-sljit-x86_64` 15 968 vs `jit-x86_64` 16 236 Iterations/Sec (medians), ratio 0.9835;
+  explicit: 13 699 vs 13 986, ratio 0.9795; every run passes its self-check (BENCHMARKS, S0016
+  step 6). aarch64: pending the first CI run of the arm64 job (`jit-sljit-aarch64` beside `jit-aarch64`).
 
 ## Changes
 * 2026-11-23: created (draft), with the maintainer's placement, CMake and C99 decisions.

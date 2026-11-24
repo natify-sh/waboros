@@ -354,6 +354,12 @@ jobs:
             echo "== $b run $i"
             WABOROS_JIT_BOUNDS=$b uv run python tools/run_coremark_jit.py poc/in/core.wasm --target jit-aarch64 | grep -E "Iterations/Sec|Correct"
           done; done
+      # S0016 step 6: jit-sljit-aarch64 beside jit-aarch64, alternated (the native library is built earlier in this job)
+      - run: |
+          for i in 1 2 3; do for t in jit-aarch64 jit-sljit-aarch64; do
+            echo "== $t run $i"
+            WABOROS_JIT_BOUNDS=guard uv run python tools/run_coremark_jit.py poc/in/core.wasm --target $t | grep -E "Iterations/Sec|Correct"
+          done; done
       # S0004 4c/4e: the spec suite on jit-aarch64 (0 unexpected) and with `auto` (selects
       # jit-aarch64 since 4e); MDWE (`auto` falls back to pyc), the ISA gate on the runner's own compile,
       # and D35 in both directions against the x86-64 job's lists
