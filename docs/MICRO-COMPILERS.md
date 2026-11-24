@@ -135,7 +135,7 @@ Shipping a ready `.wbo` saves that first second, but ties the wheel to the exact
 until phase 6. Where no executable memory exists (Pyodide, iOS, MDWE) neither the Python JIT nor a
 micro-compiler can run and `pyc` remains. Bootstrapping through an interpreter (wasm3, `pyc`) is
 for hosts without the Python JIT but with executable memory (a C loader without an embedded
-compiler); for the Python package the bootstrap is the Python JIT. The other reasons below
+compiler); for the Python package the bootstrap is the Python JIT. The native C variant needs no bootstrap at all: there the micro-compiler is compiled into the C loader for the loader's own architecture (ROADMAP "Next" (6) item (c)), and the wasm form matters only for the other hosts. The other reasons below
 (hosts in other languages, cross-compilation, determinism) stand as well.
 
 ## Bootstrap paths
