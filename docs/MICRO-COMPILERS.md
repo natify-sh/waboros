@@ -2,7 +2,7 @@
 title: Micro-compilers - what they are and why
 kind: reference
 status: draft
-updated: 2026-11-23
+updated: 2026-11-24
 ---
 
 # Micro-compilers: what they are and why
@@ -118,6 +118,25 @@ Language choice is about safety and ergonomics, not architecture: Zig (already i
 **Decided: C** (D60, maintainer, 2026-11-15): it embeds anywhere; a native runtime embeds its own
 architecture's micro-compiler compiled ahead of time and takes the others as `.wasm` for
 cross-compilation.
+
+## The main use: a fast compiler inside a pure-Python package (maintainer, 2026-11-24)
+
+The strongest reason for a micro-compiler delivered as wasm is the Python package itself, which
+stays pure Python (`py3-none-any`, never a binary wheel):
+1. The wheel carries `<arch>.wasm` (or a precompiled `.wbo`; which one is ROADMAP "Next" (6)
+   item (c)) as data.
+2. On the first use on a machine, the Python JIT compiles that wasm once to a native `.wbo` and
+   caches it (expected about a second for a few hundred KB of compiler at the Python JIT's
+   0.6-0.8 MB/s; to be measured).
+3. Every later wasm module goes through the cached native micro-compiler, many times faster than
+   the Python JIT.
+
+Shipping a ready `.wbo` saves that first second, but ties the wheel to the exact compiler string
+until phase 6. Where no executable memory exists (Pyodide, iOS, MDWE) neither the Python JIT nor a
+micro-compiler can run and `pyc` remains. Bootstrapping through an interpreter (wasm3, `pyc`) is
+for hosts without the Python JIT but with executable memory (a C loader without an embedded
+compiler); for the Python package the bootstrap is the Python JIT. The other reasons below
+(hosts in other languages, cross-compilation, determinism) stand as well.
 
 ## Bootstrap paths
 
