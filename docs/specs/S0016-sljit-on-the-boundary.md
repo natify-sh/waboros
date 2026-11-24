@@ -33,16 +33,16 @@ Placement (maintainer, 2026-11-23):
 * `jit-sljit` is a development and CI target, outside the Python package. "No runtime
   dependencies" holds.
 
-**What it does for the final freeze of v1.** D73's marker and ROADMAP "Next" (6) ask that the
-first sljit-based compiler compiles code across the S0015 boundary and that the C loader (D36)
-reads and runs the committed files.
-* This spec covers the first part with `jit-sljit`: our Python core with sljit as the encoder,
-  not the D68 micro-compiler (our core in C). It proves the boundary with a second code generator:
+**What it does for the final freeze of v1.** The condition (maintainer, 2026-11-24; D73 marker,
+ROADMAP "Next" (6)) is the first real micro-compiler, our core in C over sljit (D68) compiled to
+wasm, producing files across the S0015 boundary, and the C reference loader (D36) reading and
+running them and the committed files.
+* This spec is a step towards it, not part of it: `jit-sljit` is our Python core with sljit as the
+  encoder, not the D68 micro-compiler. It proves the boundary early with a second code generator:
   its C entries, D71's "another compiler → C path" from both sides, cross-compiler hops, and sljit
-  code behind `entry` and the walk.
-* Item (b), the C loader, remains.
-* The marker's "form-2a sibling tail calls and a record with no `tail_switch`" are no longer
-  conditions: the "none" value of `tail_switch` leaves v1 ("The none value leaves v1").
+  code behind `entry` and the walk; and it is the oracle the C core is later compared with.
+* The "none" value of `tail_switch` leaves v1 ("The none value leaves v1"), so the condition no
+  longer names form 2a or a record without `tail_switch`.
 
 The runtime gains a minimal, target-neutral part of phase 6:
 * a store holds instances of several JIT targets of one architecture, each loaded under its own

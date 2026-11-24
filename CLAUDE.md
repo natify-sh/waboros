@@ -32,7 +32,7 @@ The maintainer communicates in Ukrainian; code, comments, commit messages and do
   or the ISA policy bumps its version, updates the document and `docs/DECISIONS.md`, and adds a test
   that an old artifact is refused or still runs. Portable artifacts never use instructions above the
   architecture's baseline without a declared level. Until the final freeze of v1 (ROADMAP "Next" (6): after
-  the first sljit micro-compiler and the C loader, before the merge to `main`) v1 is a working
+  the first micro-compiler in C over sljit, compiled to wasm, and the C loader, before the merge to `main`) v1 is a working
   freeze: a change goes through a spec or a decision and updates the documents and the tests, without
   a version bump.
 * **The IR stays thin** (`docs/ARCHITECTURE.md`, "The IR"): HIR shared by all targets, LIR shared by
