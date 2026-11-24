@@ -547,6 +547,15 @@ Ranked; the first two block step 0; Q7 waits for step 6.1's measurement.
      exception (a) with its evidence. The Goals, Rows, CMake/CI and Plan of steps are to be
      updated for it (open: whether Linux musl and Android come too).
 3. **The test harness**: (a), (b) or (c) of "The harness". Recommendation: **(c)**.
+   * **Decided (maintainer, 2026-11-24): a compromise.** The spec suite and the refusal corpus
+     drive the C loader in-process through a thin ctypes shim (an S0001 engine `cloader-<target>`,
+     so `spec_diff` works unchanged; each `.wast` file already runs in its own child process, so a
+     crash costs one file); and a small C tool `waboros_run` (load a file, call an export; no
+     `--serve` mode) runs CoreMark and the committed v1 files under ASan/UBSan in CI with no Python
+     in the process, which also covers the guard handler without Python's own handlers beside it.
+     `waboros_run` is the seed of the product's CLI. A C wast runner (option (b)) comes later,
+     together with the embedded micro-compiler, when the whole path (compile and run) can be
+     tested without Python. "The harness", the Test plan and the Plan of steps are to be revised.
 4. **Host functions without closures**.
    * (a) A fixed pool of preprocessor-made dispatchers (`WABOROS_HOST_SLOTS`, default 4 096 per
      process), each bound at instantiation to `(f, env, n, m)`.
@@ -618,3 +627,5 @@ When approved and implemented:
 * 2026-11-24: Q1 decided (maintainer): a test tool for now with an internal API; the C loader is a future
   product, not yet fixed.
 * 2026-11-24: Q2 decided (maintainer): (b), macOS and Windows before the final freeze.
+* 2026-11-24: Q3 decided (maintainer): ctypes for the spec suite and the refusal corpus, plus `waboros_run`
+  under sanitizers without Python; the C wast runner later, with the embedded compiler.
