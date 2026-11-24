@@ -1203,3 +1203,10 @@ What went wrong or surprised us while building the PoC, so it is not found again
     the venv's dist-info (dev207), so the two processes wrote different files from the same code.
     Rule: a test comparing bytes across processes gives the children the parent's `sys.path`.
     Found: S0016 step 3, 2026-11-24.
+151. **A register the C convention keeps hides a missing reload across compilers.** `jit-sljit`
+    holds memory 0's base in S2, callee-saved in C, so after a call through another compiler's C
+    entry the caller's base comes back even if ccall's reload is removed, and the spec suite and
+    the mixed tests passed without it (S0016 step-4 review). Only a callee that moves the memory
+    (an i64 memory past a small reservation) makes the stale base visible, as a segfault. Rule: test
+    a reload with a case where the saved value is wrong (the memory moved), not only one where
+    another value was put in the register. Found: S0016 step 4, 2026-11-24.

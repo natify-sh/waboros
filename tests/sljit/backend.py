@@ -294,6 +294,12 @@ class Emitter:
         code = lib.sljit_generate_code(self.c, 0, None)
         if not code:
             raise RuntimeError(f"sljit_generate_code failed ({lib.waboros_sljit_error(self.c)})")
+        if code <= 0xFFFFFFFF:  # sljit then forms SLJIT_MOV_ADDR as an absolute `mov r32, imm32`,
+            # which our copy of the code would not relocate (centry_ret, restore)
+            lib.sljit_free_code(code, None)
+            raise RuntimeError(
+                f"sljit generated code at {code:#x}, below 4 GiB: not position-independent"
+            )
         return code, lib.waboros_sljit_code_size(self.c)
 
     def offsets(self, code: int) -> list[int]:

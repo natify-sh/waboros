@@ -9,8 +9,10 @@
 #include <string.h>
 #include <sys/mman.h>
 
-/* Code is generated into plain writable memory and copied out by the caller. The mmap buffer lies
-   above 4 GiB on x86-64, where sljit forms a label address rip-relative (PoC lib2.c). */
+/* Code is generated into plain writable memory and copied out by the caller. Above 4 GiB sljit forms
+   a label address (SLJIT_MOV_ADDR) rip-relative on x86-64, below it as an absolute imm32 that the
+   copy would not relocate; mmap is not guaranteed to give an address above 4 GiB, so the caller
+   checks it (tests/sljit/backend.py, Emitter.generate, refuses a buffer below 4 GiB). */
 static void *wsl_map(size_t size) {
 	size_t *p = mmap(NULL, size + 16, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	if (p == MAP_FAILED) return NULL;
@@ -32,7 +34,8 @@ static void wsl_unmap(void *ptr) { size_t *p = (size_t *)((char *)ptr - 16); mun
 struct sljit_compiler *waboros_sljit_create(void) {
 	struct sljit_compiler *c = sljit_create_compiler(NULL);
 #if defined(SLJIT_CONFIG_X86_64) && SLJIT_CONFIG_X86_64
-	/* init_compiler() runs cpuid at every create and overwrites a preset, so this is after it */
+	/* the feature list is detected once, by init_compiler() at the first create (sljitLir.c
+	   581-584), so it is set after that create; setting it after every create is harmless */
 	cpu_feature_list = CPU_FEATURE_DETECTED | CPU_FEATURE_CMOV;
 #endif
 	return c;

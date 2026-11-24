@@ -158,8 +158,9 @@ tests/sljit/                   the Python side (development only): backend.py (t
     the incomplete JITs' test, which asserts a non-empty xfail file of `unsupported:` entries (line
     406). `tests/spec/xfail/jit-sljit-<arch>.txt` is a copy of `jit-<arch>.txt`;
   * `tests/spec/claims.py` gets `jit-sljit-<arch>` with the claims of `jit-<arch>`;
-  * tools that take `--target` (`tools/isa_all.py`, `tools/jit_dump.py`, `tools/run_coremark_jit.py`,
-    `tools/features.py`) import `tests.sljit` and list it in their choices; `isa_all.py` picks its
+  * tools that take `--target` (`tools/isa_all.py`, `tools/jit_dump.py`, `tools/run_coremark_jit.py`)
+    import `tests.sljit` and list it in their choices (`tools/features.py` takes no `--target`; a
+    development target has no FEATURES column); `isa_all.py` picks its
     aarch64 gate by the target's architecture (`e_machine`), not by the name `jit-aarch64`;
   * `development = True`: `tests/test_features.py::test_every_registered_target_has_a_column`
     compares only non-development targets, and FEATURES.md gets no column, since `jit-sljit` is
@@ -743,7 +744,10 @@ In the step that makes each untrue; step 7 for the rest.
     | direct `call` | 8 189 / 32 765 (16) | 8 190 / 32 766 (16) | 32 762 |
     | `call_indirect`, own table | 8 189 / 32 765 (16) | 8 190 / 32 766 (16) | 16 381 |
     | across instances (calls) | 4 096 / 16 384 (32) | 4 096 / 16 384 (32) | 21 842 |
-    | across compilers, either way (calls) | 1 260 / 5 042 (104: 112 + 96 a pair) | | |
+    | across compilers, either way (calls) | 1 260 / 5 042 (104) | (the same pairs) | |
+
+    The last row is one measurement of mixed pairs, not one per column: a call from `jit-x86_64`
+    into `jit-sljit-x86_64` (112 bytes) and back (96 bytes) average 104 bytes a call.
 
   * CoreMark compile (`TARGETS[t]().compile`, 7 rounds alternated, `taskset -c 2`, median): guard
     41 ms `jit-x86_64` / 42 ms `jit-sljit-x86_64` (code 34 879 / 35 617 bytes); explicit 68 / 63 ms
@@ -781,6 +785,14 @@ In the step that makes each untrue; step 7 for the rest.
   serially; `tools/elf_readers.py` clean on a `jit-sljit-x86_64` CoreMark file. Controls: a
   same-compiler record sent to ccall fails the D71 test; ccall's site with a wrong frame size
   fails the walk test; the collector always compiled by `jit-x86_64` fails its two sljit-first cases.
+* 2026-11-24: step 4's review findings closed (tests and one guard; the generated code unchanged):
+  memory 0's base after xcall, ccall and tail_switch's restore (`test_boundary.py` and
+  `test_mixed.py`: another instance's memory, a call and a first hop, and an i64 memory moved by
+  the callee; each reload removed fails one test, ccall's and the cross-compiler restore's as a
+  segfault, LESSONS 151); `Emitter.generate` refuses code generated below 4 GiB (sljit's
+  `SLJIT_MOV_ADDR` is then absolute; tested by reporting the buffer at a low address); CI runs
+  `tests/sljit`; the native comments (the buffer above 4 GiB checked, not guaranteed; the CPU
+  features detected at the first create) and `test_native.c`'s baseline line.
 
 ## Changes
 * 2026-11-23: created (draft), with the maintainer's placement, CMake and C99 decisions.

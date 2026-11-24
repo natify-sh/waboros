@@ -16,8 +16,17 @@ from typing import Any
 
 import pytest
 
-from tests.jit.test_boundary import BOTTOM, GA, GB, KINDS, through
+from tests.jit.test_boundary import (
+    BOTTOM,
+    GA,
+    GB,
+    KINDS,
+    memory_base_comes_back,
+    moved_memory_is_reloaded,
+    through,
+)
 from tests.jit.test_compiler import JIT, build, trap_of, wat
+from tests.jit.test_memory64 import small
 from tests.jit.test_tables import call, provider
 from tests.jit.test_tail import PING, PONG, _small_thread
 from waboros.runtime.store import StoreState
@@ -27,6 +36,7 @@ from waboros.targets.jit.common.context import HOST_BRIDGE
 from waboros.targets.jit.common.instance import _stacks
 
 M32 = 0xFFFFFFFF
+_ = small  # the fixture: i64 memories that move early
 # the machine's JIT and each development compiler of its architecture (aarch64: step 5)
 PAIRS = [
     (JIT, n)
@@ -182,6 +192,23 @@ def test_each_compiler_calls_its_own_records_at_the_body(tx: str, ts: str) -> No
             assert seen[-1] == ([("B" + tb, "body")] * 2 + cen + helper + top, []), (ta, tb)
         assert a("own", 6) == [6]
         assert seen[-1] == ([("A" + ta, "body")] * 2 + top, [])
+
+
+# ------------------------------------------------------------------ memory 0's base after a call
+@pytest.mark.parametrize("how", ["call", "tail"])
+@pytest.mark.parametrize(("ta", "tb"), WAYS, ids=IDS)
+def test_memory_base_comes_back_from_the_other_compiler(ta: str, tb: str, how: str) -> None:
+    """test_boundary's case across compilers: the caller's memory 0 base after a C entry of the
+    other compiler and after tail_switch's first hop into it. The C convention keeps S2 here, so
+    a missing reload (ccall's, the restore's) shows only when the memory moved (the next test)."""
+    memory_base_comes_back(ta, tb, how)
+
+
+@pytest.mark.usefixtures("small")
+@pytest.mark.parametrize("how", ["call", "tail"])
+@pytest.mark.parametrize(("ta", "tb"), WAYS, ids=IDS)
+def test_a_memory_moved_by_the_other_compiler_is_reloaded(ta: str, tb: str, how: str) -> None:
+    moved_memory_is_reloaded(ta, tb, how)
 
 
 # ------------------------------------------------------------------ tail ping-pong

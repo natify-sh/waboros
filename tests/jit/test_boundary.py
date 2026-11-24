@@ -19,6 +19,7 @@ import pytest
 from tests.jit import native
 from tests.jit.test_compiler import JIT, Inst, trap_of, wat
 from tests.jit.test_compiler import build as _build
+from tests.jit.test_memory64 import small
 from tests.jit.test_tables import provider
 from tests.jit.test_tail import PING, PONG, _small_thread
 from waboros.runtime.store import StoreState
@@ -39,6 +40,7 @@ JITS = [JIT] + [
 RUNTIME_ONLY = {"test_a_br_through_x9_needs_the_bti_jc_pad",
                 "test_x86_runtime_entry_builds_and_passes_the_isa_gate_on_any_host"}  # fmt: skip
 CUR = [JIT]
+_ = small  # the fixture: i64 memories that move early
 
 
 def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
@@ -308,6 +310,62 @@ def test_the_walk_crosses_modules_and_hop_chains(
     assert a("hopsd", 1001) == [7 + 2000]
     assert seen[-1] == [[1] * (2 + c) + [1] * 2]
     assert _stacks(store).heap.collections > 0  # type: ignore[union-attr]
+
+
+# ------------------------------------------------------------------ memory 0's base after a call
+MB = r"""(module (memory (export "m") 1) (data (i32.const 0) "\22")
+  (func (export "f") (param i32) (result i32)
+    (i32.add (local.get 0) (i32.load8_u (i32.const 0)))))"""
+MA = r"""(module (import "b" "f" (func $f (param i32) (result i32))) (memory 1)
+  (data (i32.const 0) "\11")
+  (func $t (param i32) (result i32) (return_call $f (local.get 0)))
+  (func (export "call") (result i32) (drop (call $f (i32.const 0))) (i32.load8_u (i32.const 0)))
+  (func (export "tail") (result i32) (drop (call $t (i32.const 0))) (i32.load8_u (i32.const 0))))"""
+M64B = """(module (memory (export "m") i64 1)
+  (func (export "grow") (param i64) (result i64) (memory.grow (local.get 0))))"""
+M64A = """(module (import "b" "m" (memory i64 1))
+  (import "b" "grow" (func $g (param i64) (result i64)))
+  (func $t (param i64) (result i64) (return_call $g (local.get 0)))
+  (func (export "call") (result i64) (call $go (i32.const 0)))
+  (func (export "tail") (result i64) (call $go (i32.const 1)))
+  (func $go (param i32) (result i64) (i64.store (i64.const 8) (i64.const 0x1234))
+    (drop (if (result i64) (local.get 0) (then (call $t (i64.const 16)))
+      (else (call $g (i64.const 16)))))
+    (i64.store (i64.const 0x10F000) (i64.const 7))
+    (i64.add (i64.load (i64.const 8)) (i64.load (i64.const 0x10F000)))))"""
+
+
+def memory_base_comes_back(ta: str, tb: str, how: str) -> None:
+    """A (`ta`, memory 0 holding 0x11) calls B (`tb`, its own memory 0 holding 0x22) through an
+    import (`call`), or through a direct call of a function that `return_call`s it (`tail`: a
+    first hop, tail_switch's restore frame), then loads its memory 0: 0x11, A's base back."""
+    store = StoreState()
+    b = _build(wat(MB), tb, store=store)
+    a = _build(wat(MA), ta, {"b": provider(b)}, store)
+    assert a(how) == [0x11]
+
+
+def moved_memory_is_reloaded(ta: str, tb: str, how: str) -> None:
+    """B (`tb`) grows its i64 memory, which A (`ta`) imports as memory 0, past its reservation
+    (test_memory64's `small`): the memory moves under A's call (`call`, or `tail`: a first hop);
+    A then stores and loads at the new base, beyond the old size."""
+    store = StoreState()
+    b = _build(wat(M64B), tb, store=store)
+    a = _build(wat(M64A), ta, {"b": provider(b)}, store)
+    addr = b.inst.memories[0].res.addr  # type: ignore[attr-defined]
+    assert a(how) == [0x1234 + 7]
+    assert b.inst.memories[0].res.addr != addr  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("how", ["call", "tail"])
+def test_memory_base_comes_back_from_another_instance(how: str, compiler: str) -> None:
+    memory_base_comes_back(compiler, compiler, how)  # jit-sljit: xcall, tail_switch's restore
+
+
+@pytest.mark.usefixtures("small")
+@pytest.mark.parametrize("how", ["call", "tail"])
+def test_a_memory_moved_by_another_instance_is_reloaded(how: str, compiler: str) -> None:
+    moved_memory_is_reloaded(compiler, compiler, how)
 
 
 # ------------------------------------------------------------------ hand-assembled C entries

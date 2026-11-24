@@ -232,7 +232,7 @@ jobs:
         env:
           WABOROS_JIT_WALK_CHECK: "1"
           WABOROS_JIT_GC_POISON: "1"
-      - run: uv run pytest -q tests/jit/test_boundary.py tests/spec/test_runner.py --jit-bounds guard,explicit
+      - run: uv run pytest -q tests/jit/test_boundary.py tests/sljit tests/spec/test_runner.py --jit-bounds guard,explicit
       # mixed stores (S0016 step 3) and the files of both compilers, in-process and through files
       - run: |
           uv run pytest -q -n auto tests/jit/test_mixed.py tests/artifact --jit-bounds guard,explicit

@@ -94,3 +94,28 @@ def test_a_library_older_than_its_sources_is_refused(
         sljit._library()  # pyright: ignore[reportPrivateUsage]
     os.utime(old)  # now: newer than every source
     assert sljit._library() == old  # pyright: ignore[reportPrivateUsage]
+
+
+def test_code_generated_below_4_gib_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Below 4 GiB sljit forms a label address (SLJIT_MOV_ADDR: centry's return point, the
+    restore point) as an absolute imm32, which the copy of the code would not relocate: the
+    buffer is freed and the compile refused. Simulated: the real buffer reported at a low
+    address."""
+    real_lib, real, freed, low = backend.lib, [], [], 0x10000000
+
+    class Lib:
+        def __getattr__(self, n: str) -> Any:
+            return getattr(real_lib, n)
+
+        def sljit_generate_code(self, c: int, a: int, b: Any) -> int:
+            real.append(real_lib.sljit_generate_code(c, a, b))
+            return low
+
+        def sljit_free_code(self, code: int, d: Any) -> None:
+            freed.append(code)
+            real_lib.sljit_free_code(real[-1], d)
+
+    monkeypatch.setattr(backend, "lib", Lib())
+    with pytest.raises(RuntimeError, match="below 4 GiB"):
+        TARGETS[NAME]().compile(module())
+    assert len(real) == 1 and real[0] > 0xFFFFFFFF and freed == [low]

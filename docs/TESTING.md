@@ -367,7 +367,7 @@ runs only under an emulator). `tests/consumer/` is a tiny project embedding `nat
 "-DCMAKE_CROSSCOMPILING_EMULATOR=qemu-aarch64;-cpu;max;-L;/usr/aarch64-linux-gnu"`. CI: the `sljit` job
 (build, ctest; then `jit-sljit-x86_64` in-process with the walk check and poison in both bounds
 modes, `tools/spec_diff.py` both ways against `jit-x86_64` on the JSON reports, and
-`tests/jit/test_boundary.py` and the parity test of `tests/spec/test_runner.py`; the suite through artifact
+`tests/jit/test_boundary.py`, `tests/sljit/` and the parity test of `tests/spec/test_runner.py`; the suite through artifact
 files with `spec_diff` both ways, and `tools/isa_all.py --target jit-sljit-x86_64`), steps in `jit` (the cross build under QEMU with BTI) and `arm64` (native, no BTI), all
 with `submodules: true`.
 
@@ -387,7 +387,10 @@ executes the `win64` bridge on Linux against `waboros_sljit_test_win64_host`, an
 of the library (arguments, the call's 16-byte alignment, the 32-byte shadow space written whole by
 the host, the bridge's saved registers and `HOST_ERROR` preset surviving it, the exit record and the
 walk from it); `tests/sljit/test_store.py` covers `artifact.targets()`, the digest fold, the store's
-sets of trampolines and the refusal of two targets on one bridge address.
+sets of trampolines and the refusal of two targets on one bridge address; `tests/sljit/test_refusals.py`
+the refusals (a shortened stub jump, a frame above the headroom, a stale library, no compiler left
+behind, and code generated below 4 GiB, where sljit would form `SLJIT_MOV_ADDR` as an absolute
+address that the copy does not relocate).
 
 Mixed stores (S0016 step 3): `tests/jit/test_mixed.py` puts the machine's JIT and each development
 compiler of its architecture in one store, both directions (pairs from `TARGETS`; aarch64 joins in
@@ -398,7 +401,10 @@ host import (each frame labelled `body`, `centry`, `xcall` or `ccall` by its ret
 the module's centry, and the restore frames crossed): each compiler calls its own records at the
 body and the other's at its C entry; tail ping-pong in S0015's three entry shapes (10^6 round trips
 in 256 KiB, the shape at the end of the chain checked, the call-instead-of-tail control); every
-public status through one and two C entries, and INTERRUPT from another thread while the callee
+public status through one and two C entries; memory 0's base after a call and after
+tail_switch's first hop into another instance (its own memory) and after an i64 memory moved by the
+callee (the same two cases in `test_boundary.py` within one compiler: `jit-sljit`'s xcall,
+ccall and restore reloads each fail one of them when removed); and INTERRUPT from another thread while the callee
 loops (bounded: a lost interrupt ends the loop after 2^32 - 1 rounds and fails); the walk with the
 GC switches across both compilers and a mixed tail chain, with the collector's compiler asserted
 (the second-instantiated module's, made for its function-subtype site or by the first collection

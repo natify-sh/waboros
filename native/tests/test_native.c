@@ -168,7 +168,7 @@ static void test_stubs(void) {
    or tzcnt (F3 [REX] 0F BD / BC), whatever the host CPU has. */
 static void test_baseline(void) {
 	struct sljit_compiler *c = waboros_sljit_create();
-	unsigned char *p; size_t i, n, bsr = 0, bsf = 0, cmov = 0;
+	unsigned char *p; size_t i, n, bsr = 0, bsf = 0, cmov = 0, lz = 0;
 	sljit_emit_enter(c, 0, SLJIT_ARGS2(W, W, W), 3, 2, 0);
 	sljit_emit_op1(c, SLJIT_CLZ32, SLJIT_R0, 0, SLJIT_S0, 0);
 	sljit_emit_op1(c, SLJIT_CTZ, SLJIT_R1, 0, SLJIT_S1, 0);
@@ -183,14 +183,15 @@ static void test_baseline(void) {
 		int rex = (p[i - 1] & 0xf0) == 0x40;
 		if (p[i] != 0x0f) continue;
 		if (p[i + 1] == 0xbd || p[i + 1] == 0xbc) {
-			if (p[i - 1] == 0xf3 || (rex && p[i - 2] == 0xf3)) { fails++; printf("  WRONG: lzcnt/tzcnt at %zu\n", i); }
+			if (p[i - 1] == 0xf3 || (rex && p[i - 2] == 0xf3)) { fails++; lz++; printf("  WRONG: lzcnt/tzcnt at %zu\n", i); }
 			else if (p[i + 1] == 0xbd) bsr++; else bsf++;
 		}
 		if ((p[i + 1] & 0xf0) == 0x40) cmov++;
 	}
 	if (!bsr || !bsf || !cmov) { fails++; printf("  WRONG: bsr %zu bsf %zu cmov %zu\n", bsr, bsf, cmov); }
 	sljit_free_compiler(c);
-	printf("baseline: %zu bytes, bsr %zu bsf %zu cmov %zu, no lzcnt/tzcnt\n", n, bsr, bsf, cmov);
+	sljit_free_code(p, NULL);
+	printf("baseline: %zu bytes, bsr %zu bsf %zu cmov %zu%s\n", n, bsr, bsf, cmov, lz ? "" : ", no lzcnt/tzcnt");
 }
 #else
 static void test_baseline(void) { printf("baseline: x86-64 only\n"); }
