@@ -459,15 +459,16 @@ u32 n
 n x blob:  u8 id (1 sysv, 2 win64, 3 aapcs64; append-only, valid per e_machine), u8 0, u16 0,
            u32 start, u32 size,                        the blob in .text
            u32 bridge,                                 offset in .text
-           u32 tail_switch, u32 restore,               offsets in .text; 0xFFFFFFFF for none
+           u32 tail_switch, u32 restore,               offsets in .text
            u16 restore_ret_at, u16 restore_up          the restore frame (S0015)
 ```
 
 28 bytes per blob. x86-64 writes `sysv` then `win64`; aarch64 writes `aapcs64` (one convention on
 Linux, macOS and Windows); riscv64 defines its own with its baseline. `restore_ret_at` and `restore_up`
 are the bytes from the stack pointer at `tail_switch`'s call to the real return address and to the
-caller's stack pointer (x86-64 56 and 64, aarch64 8 and 80). Every offset lies inside its blob (or is
-`0xFFFFFFFF`); `start` of the first blob is the end of the data area. The reader checks the payload's
+caller's stack pointer (x86-64 56 and 64, aarch64 8 and 80). Every offset lies inside its blob, with
+no exception: a compiler always ships a `tail_switch`, and the reader refuses `0xFFFFFFFF` (the "none"
+value, removed from v1 by S0016) by name; `start` of the first blob is the end of the data area. The reader checks the payload's
 size, the ids, the reserved bytes, the placement and the ranges, then compares. A loader finds the
 blobs only through this payload, never through a symbol (D62). Sizes and the file growth are in
 BENCHMARKS.md, "Artifact size".
@@ -1152,3 +1153,7 @@ When approved and implemented (step 7 unless noted):
 * 2026-11-24: ELF64 little-endian stays the container for every target, 32-bit ones included (maintainer); `isa_level` numbers disjoint per width where an `e_machine` covers both.
 * 2026-11-24 (maintainer): convention ids of `.waboros.trampolines` are append-only and valid per
   `e_machine`; a future architecture's conventions take their own ids under its `e_machine`.
+* 2026-11-24 (S0016, maintainer, under the working freeze): the "none" value of a trampoline
+  record's offsets leaves v1. Every offset lies inside its blob; `read` refuses `0xFFFFFFFF` by
+  name, tested on x86-64 and aarch64 (`tests/artifact/test_trampolines.py`). No file written
+  before carried it, so no version bump.

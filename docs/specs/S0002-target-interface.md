@@ -80,6 +80,11 @@ class TargetInstance(Protocol):
   `development` (default False, on `JitTarget`; True: a development target outside the package,
   registered by `tests/`, with no FEATURES.md column, and held to pyc's expected failures like a
   complete JIT; S0016).
+* `JitTarget` also gives what the artifact format needs (S0016 step 2): `e_machine` and `isa_name`
+  (the file's ELF machine and the name of ISA level 1; `artifact.targets()` is built from them,
+  so a target registered later writes and reads files too) and `digest_sources() -> list[Path]`
+  (default empty): files outside the package that make the compiler's code, folded into a
+  development build's `compiler` string (one 16-digit digest with the package's).
 * `ValidModule` is what the front end's validator returns (decoded sections, function types,
   per-function bodies already validated). No target ever sees an invalid module. While the validator
   does not cover a construct (typed function references, tags, some table instructions), it ends
@@ -296,3 +301,5 @@ weights itself until then.
   (`jit-sljit-<arch>`, registered by `tests/sljit/` where `native/` is built) is never selected by
   `auto` (`complete = False`), has no FEATURES.md column, and its expected failures must equal
   pyc's (`tests/spec/test_runner.py` `_jits`).
+* 2026-11-24 (S0016 step 2): `e_machine`, `isa_name` and `digest_sources()` on `JitTarget`;
+  `artifact.targets()` replaces the fixed `TARGETS` table of `artifact.py`.

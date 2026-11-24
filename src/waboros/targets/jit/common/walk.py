@@ -47,10 +47,12 @@ def _site(store: Any, st: Any, pc: int) -> tuple[Any, gc.SiteMap]:
     return inst, site
 
 
-def walk(store: Any, st: Any, tramp: Any) -> list[tuple[list[Frame], int]]:
+def walk(store: Any, st: Any) -> list[tuple[list[Frame], int]]:
     """Segments, innermost first: (frames innermost first, the frame the entry was given). No
     stack word is read outside [the store's native limit - 4 KiB, the thread's stack top): a frame
-    sits above the native limit but for its pushes, and the walker runs below every frame."""
+    sits above the native limit but for its pushes, and the walker runs below every frame. Entry
+    and restore points are the store's sets (S0015 walk item 7, S0016): every instance's
+    trampolines, whichever compiler made them."""
     from waboros.targets.jit.common.instance import stack_top  # (instance imports this module)
 
     lo, hi = st.nlimit - 4096, stack_top()
@@ -62,6 +64,7 @@ def walk(store: Any, st: Any, tramp: Any) -> list[tuple[list[Frame], int]]:
             raise RuntimeError(f"JIT walk: stack address {addr:#x} outside [{lo:#x}, {hi:#x})")
         return _word(addr)
 
+    entries, restores = st.entries, st.restores
     sp, pc, base = (_word(ctypes.addressof(st.exit) + 8 * i) for i in range(3))
     segments: list[tuple[list[Frame], int]] = []
     frames: list[Frame] = []
@@ -72,14 +75,16 @@ def walk(store: Any, st: Any, tramp: Any) -> list[tuple[list[Frame], int]]:
         frames.append((inst, site, sp, base))
         _, ret_at, up, _, _, _ = site
         pc, nsp = read(sp + ret_at), sp + up
-        if pc == tramp.restore:  # one restore frame at most; the tail-called frame keeps the base
-            pc, nsp = read(nsp + tramp.restore_ret_at), nsp + tramp.restore_up
-            if pc == tramp.restore:
+        r = restores.get(pc)
+        if r is not None:  # one restore frame at most; the tail-called frame keeps the base
+            pc, nsp = read(nsp + r[0]), nsp + r[1]
+            if pc in restores:
                 raise RuntimeError("JIT walk: a restore frame returns to another")
         if nsp <= sp:
             raise RuntimeError(f"JIT walk: stack pointer {nsp:#x} not above {sp:#x}")
-        if pc == tramp.entry_ret:
-            saved = nsp + tramp.saved
+        k = entries.get(pc)
+        if k is not None:
+            saved = nsp + k
             if read(saved + 24) != base:
                 raise RuntimeError(f"JIT walk: frame base {base:#x} is not its entry's")
             segments.append((frames, base))
@@ -97,7 +102,7 @@ def walk(store: Any, st: Any, tramp: Any) -> list[tuple[list[Frame], int]]:
         sp, base = nsp, base - 8 * site[0]
 
 
-def check(store: Any, st: Any, tramp: Any, slots: int) -> None:
+def check(store: Any, st: Any, slots: int) -> None:
     """At a host call (check mode): the record was written for this call, the walk crosses exactly
     the active entries, each segment ends at the frame the runtime gave its entry; the dead
     reference slots (`refs` but not `live`) are nulled, as a collection does (D65), and every
@@ -105,7 +110,7 @@ def check(store: Any, st: Any, tramp: Any, slots: int) -> None:
     sp, _, frame = st.exit
     if not sp or frame > slots:
         raise RuntimeError(f"JIT walk check: exit record not written ({sp:#x}, {frame:#x})")
-    segments = walk(store, st, tramp)
+    segments = walk(store, st)
     entries = [st.vstack.addr, *st.walk_vsp]  # outermost first
     found = [b for _, b in reversed(segments)]
     if found != entries:

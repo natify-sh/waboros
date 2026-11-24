@@ -77,7 +77,8 @@ same behaviour hold on every architecture.
 functions are its C entries, `int32_t f(ctx, frame)` in the architecture's convention, so a call
 through a function record needs no stub and a C entry has no internal call, hence no site of shift
 0. Tail calls across the boundary are sibling jumps (form 2a): `SLJIT_CALL_RETURN` to the record's
-C entry, with no `tail_switch` (word 9 stays 0) and no private status. What the compiler must add
+C entry, with no private status. *(Superseded by S0016: `jit-sljit` has `jit-x86_64`'s structure,
+stubs and a shared centry, and ships its own `tail_switch`; word 9 is never 0 in v1.)* What the compiler must add
 to sljit is S0015's "What sljit-based compilers must add" (D60's patch set): `ret_at` and `up`
 per site, `SLJIT_CONFIG_X86_CET=1`, a native frame of at most about 768 bytes before the first
 `NSTACK_LIMIT` check, on aarch64 a `bti jc` custom word at the start of every C entry (no change to

@@ -69,7 +69,14 @@ class JitSljitX86_64Target(JitX86_64Target):
     def conventions(self) -> dict[str, tuple[bytes, tuple[int, ...], tuple[int, int]]]:
         from tests.sljit.backend import trampoline_blob
 
-        return {"sysv": trampoline_blob()}  # win64: step 2
+        return {c: trampoline_blob(c) for c in ("sysv", "win64")}  # S0014's x86-64 conventions
+
+    def digest_sources(self) -> list[Path]:
+        native = ROOT / "native"
+        files = [*(ROOT / "tests" / "sljit").glob("*.py"), native / "CMakeLists.txt"]
+        files += (native / "sljit").glob("*")
+        files += (native / "third_party" / "sljit" / "sljit_src").glob("*")
+        return [f for f in files if f.is_file()]
 
     def trampolines(self) -> "Trampolines":
         return _trampolines()

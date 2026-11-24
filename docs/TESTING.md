@@ -366,7 +366,8 @@ runs only under an emulator). `tests/consumer/` is a tiny project embedding `nat
 "-DCMAKE_CROSSCOMPILING_EMULATOR=qemu-aarch64;-cpu;max;-L;/usr/aarch64-linux-gnu"`. CI: the `sljit` job
 (build, ctest; then `jit-sljit-x86_64` in-process with the walk check and poison in both bounds
 modes, `tools/spec_diff.py` both ways against `jit-x86_64` on the JSON reports, and
-`tests/jit/test_boundary.py` and the parity test of `tests/spec/test_runner.py`), steps in `jit` (the cross build under QEMU with BTI) and `arm64` (native, no BTI), all
+`tests/jit/test_boundary.py` and the parity test of `tests/spec/test_runner.py`; the suite through artifact
+files with `spec_diff` both ways, and `tools/isa_all.py --target jit-sljit-x86_64`), steps in `jit` (the cross build under QEMU with BTI) and `arm64` (native, no BTI), all
 with `submodules: true`.
 
 `tests/sljit/` registers the development target `jit-sljit-<arch>` when the library is built
@@ -374,6 +375,18 @@ with `submodules: true`.
 source (rebuild with `cmake --build build/native`). A development target (`development = True`,
 `complete = False`) is never chosen by `auto`, has no FEATURES column, and joins the complete JITs
 in the parity test (it fails exactly what `pyc` fails).
+
+Its files (S0016 step 2): `WABOROS_JIT_ARTIFACT=1 uv run python -m tests.spec.run --engine
+jit-sljit-x86_64` runs the suite through artifact files with its own compiler string (the package
+digest folded with `digest_sources()`: `tests/sljit/*.py` and `native/`'s sources) and both blobs,
+`sysv` and `win64`; `tools/isa_all.py --target jit-sljit-x86_64` gates its code and blobs (the
+x86-64 allowlist has the SSE/SSE2 spellings sljit emits, `cmpeqss`, `cmpeqsd`, `unpcklps`,
+`unpcklpd`, and objdump's `rex` for a REX prefix with no bits). `tests/sljit/test_win64_bridge.py`
+executes the `win64` bridge on Linux against `waboros_sljit_test_win64_host`, an `ms_abi` function
+of the library (arguments, the call's 16-byte alignment, the 32-byte shadow space written whole by
+the host, the bridge's saved registers and `HOST_ERROR` preset surviving it, the exit record and the
+walk from it); `tests/sljit/test_store.py` covers `artifact.targets()`, the digest fold, the store's
+sets of trampolines and the refusal of two targets on one bridge address.
 
 ## CI matrix
 

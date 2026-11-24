@@ -1462,20 +1462,36 @@ class Backend(Emitter):
         return at
 
 
+def _win64_call(fn: int) -> bytes:
+    """`mov rcx, <S0>; mov rdx, <R1>; call <fn>`: the host call of the win64 bridge as custom
+    bytes, as sljit is built for SysV on every OS (LESSONS 141); registers from sljit's map."""
+    ctx, slots, f = (lib.sljit_get_register_index(0, r) for r in (S0, R1, fn))  # SLJIT_GP_REGISTER
+
+    def mov(d: int, s: int) -> bytes:  # mov r64 d, r64 s (89 /r)
+        return bytes((0x48 | (s >> 3) << 2 | d >> 3, 0x89, 0xC0 | (s & 7) << 3 | (d & 7)))
+
+    call = bytes((0x41,) if f >= 8 else ()) + bytes((0xFF, 0xD0 | (f & 7)))  # call r64 (FF /2)
+    return mov(1, ctx) + mov(2, slots) + call
+
+
 @cache
-def trampoline_blob() -> tuple[bytes, tuple[int, ...], tuple[int, int]]:
-    """This compiler's blob (S0015 `bridge` and `tail_switch`, S0016): the bridge, then
-    tail_switch; their offsets and `restore`'s; tail_switch's restore-frame numbers."""
+def trampoline_blob(conv: str = "sysv") -> tuple[bytes, tuple[int, ...], tuple[int, int]]:
+    """This compiler's blob for `conv` (S0015 `bridge` and `tail_switch`, S0016): the bridge,
+    then tail_switch; their offsets and `restore`'s; tail_switch's restore-frame numbers. The
+    `win64` bridge differs only at the host call (custom bytes) and keeps its locals above the
+    call's 32-byte shadow space; tail_switch is the same bytes in both."""
+    home = {"sysv": 0, "win64": 32}[conv]
     e = Emitter()
     # bridge: R0 = the context word of the host function, R1 = its slots. Calls host(ctx,
     # slots) with ctx[HOST_ERROR] preset to 13, returns the word, puts the enclosing preset
     # back; R3-R6 saved for all frames above (LESSONS 2); the store's exit record {the caller's
     # stack pointer at its call, the return address, the frame} written before the host runs
-    # and its sp cleared after (S0013 3a). Locals: R3-R6, then the preset.
+    # and its sp cleared after (S0013 3a). Locals: R3-R6, then the preset (win64: above the
+    # shadow space, [SP, SP + 32) at the call, which the host owns).
     bridge = e.mark()
-    e.enter(REG_ENTER, "ARGS0(32)", 7, 4, 8 * 5)
+    e.enter(REG_ENTER, "ARGS0(32)", 7, 4, home + 8 * 5)
     for i, r in enumerate(RSAVE):
-        e.op1(g("MOV"), (MEM1(SP), 8 * i), (r, 0))
+        e.op1(g("MOV"), (MEM1(SP), home + 8 * i), (r, 0))
     e.op1(g("MOV"), (R2, 0), (MEM1(CTX), 8 * EXIT_RECORD))
     lib.sljit_emit_op_dst(e.c, g("GET_RETURN_ADDRESS"), S3, 0)
     e.op1(g("MOV"), (MEM1(R2), 8), (S3, 0))
@@ -1483,18 +1499,21 @@ def trampoline_blob() -> tuple[bytes, tuple[int, ...], tuple[int, int]]:
     e.op1(g("MOV"), (MEM1(R2), 0), (S3, 0))
     e.op1(g("MOV"), (MEM1(R2), 16), (FRM, 0))
     e.op1(g("MOV"), (R2, 0), (MEM1(CTX), 8 * HOST_ERROR))
-    e.op1(g("MOV"), (MEM1(SP), 32), (R2, 0))
+    e.op1(g("MOV"), (MEM1(SP), home + 32), (R2, 0))
     e.op1(g("MOV"), (MEM1(CTX), 8 * HOST_ERROR), (IMM, STATUS_HOST_ERROR))
     e.op1(g("MOV"), (S3, 0), (MEM2(CTX, R0), 3))
-    e.op1(g("MOV"), (R0, 0), (CTX, 0))
-    lib.sljit_emit_icall(e.c, g("CALL"), g("ARGS2V(P, P)"), S3, 0)
+    if conv == "win64":
+        e.custom(_win64_call(S3))
+    else:
+        e.op1(g("MOV"), (R0, 0), (CTX, 0))
+        lib.sljit_emit_icall(e.c, g("CALL"), g("ARGS2V(P, P)"), S3, 0)
     e.op1(g("MOV"), (R1, 0), (MEM1(CTX), 8 * EXIT_RECORD))  # no wasm frame waits in a host call
     e.op1(g("MOV"), (MEM1(R1), 0), (IMM, 0))
     e.op1(g("MOV_U32"), (R0, 0), (MEM1(CTX), 8 * HOST_ERROR))
-    e.op1(g("MOV"), (R1, 0), (MEM1(SP), 32))
+    e.op1(g("MOV"), (R1, 0), (MEM1(SP), home + 32))
     e.op1(g("MOV"), (MEM1(CTX), 8 * HOST_ERROR), (R1, 0))
     for i, r in enumerate(RSAVE):
-        e.op1(g("MOV"), (r, 0), (MEM1(SP), 8 * i))
+        e.op1(g("MOV"), (r, 0), (MEM1(SP), home + 8 * i))
     lib.sljit_emit_return(e.c, g("MOV32"), R0, 0)
     # tail_switch (S0015 form 2b): reached by a tail call (SLJIT_CALL_RETURN) with R0 = a record
     # of another context, the arguments at S1, its return address the tail caller's. A return

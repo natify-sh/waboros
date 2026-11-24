@@ -24,6 +24,10 @@ sys.path.insert(0, str(ROOT))
 
 
 def main() -> int:
+    try:
+        import tests.sljit  # noqa: F401  (registers jit-sljit-<arch> with native/'s library, S0016)
+    except RuntimeError as e:  # a stale library must not stop the Python JITs
+        print(f"jit-sljit not registered: {e}", file=sys.stderr)
     from tests.spec.fetch import CACHE_DIR
     from waboros.frontend.binary import parse
     from waboros.frontend.validate import validate
@@ -32,7 +36,7 @@ def main() -> int:
     from waboros.targets.jit.common.compiler import Compiled
 
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--target", required=True, choices=["jit-x86_64", "jit-aarch64"])
+    ap.add_argument("--target", required=True, choices=[n for n in base.TARGETS if n[:4] == "jit-"])
     ap.add_argument("out", type=Path)
     ap.add_argument("--files", type=Path)
     args = ap.parse_args()

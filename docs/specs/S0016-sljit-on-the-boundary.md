@@ -748,6 +748,27 @@ In the step that makes each untrue; step 7 for the rest.
   * CoreMark compile (`TARGETS[t]().compile`, 7 rounds alternated, `taskset -c 2`, median): guard
     41 ms `jit-x86_64` / 42 ms `jit-sljit-x86_64` (code 34 879 / 35 617 bytes); explicit 68 / 63 ms
     (43 876 / 47 094 bytes). CoreMark passes its self-check on `jit-sljit-x86_64` (speed: step 6).
+* 2026-11-24: step 2 done (x86-64): the runtime and loader. `_StoreStacks` keeps the store's
+  trampolines (`attach`: entry points → the saved block, restore points → their numbers, bridge
+  address → target); `walk.walk`, `walk.check`, `_checked` and the collector's gathering read those
+  sets instead of one instance's `tramp`. Instantiation refuses two targets sharing one bridge
+  address (`RuntimeError`); in-process the target name stands for the compiler string (one
+  version per target in a process). `artifact.targets()` comes from `JitTarget.e_machine` and
+  `isa_name`; `digest_sources()` is folded into a development build's compiler string (one
+  16-digit digest, paths relative to the files' common directory); a file whose compiler target is
+  not registered is refused saying so. `jit-sljit-x86_64` writes `sysv` and `win64` blobs: the
+  `win64` bridge's host call is custom bytes (`mov rcx, rbx; mov rdx, rsi; call r13`) and its
+  locals sit above the shadow space (`tests/sljit/test_win64_bridge.py` executes it against an
+  `ms_abi` function of the library, patching `HOST_BRIDGE` and the import word of a normal
+  instance). The "none" value left `read` (refused by name, x86-64 and aarch64). The tools take
+  `--target jit-sljit-<arch>`; `isa_all.py` picks the aarch64 gate by `e_machine`; `isa_check.py`'s
+  allowlist gained `cmpeqss cmpeqsd unpcklps unpcklpd` and objdump's `rex` (baseline SSE/SSE2 that
+  sljit emits). Numbers (this machine): through files `jit-x86_64` and `jit-sljit-x86_64` 64 229
+  pass, 0 fail each, `spec_diff` empty both ways; `jit-sljit-x86_64` through files with the walk
+  check and poison, guard and explicit, 64 229 each; `jit-aarch64` through files under QEMU 64 229;
+  `isa_all.py` 954 blobs clean on `jit-sljit-x86_64` (and on `jit-x86_64`; 931 on `jit-aarch64`);
+  D35 lists of both Python JITs byte-identical to HEAD's in both modes; `artifact_dump.py` lists
+  identical to HEAD's with the version and the package digest pinned.
 
 ## Changes
 * 2026-11-23: created (draft), with the maintainer's placement, CMake and C99 decisions.

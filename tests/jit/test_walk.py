@@ -53,7 +53,7 @@ def make(text: str, store: StoreState, providers: Any = None) -> Inst:
 def shape(store: StoreState) -> list[list[int]]:
     """Frames per segment (innermost first) and the instances' order, as ids."""
     st = _stacks(store)
-    segs = walk.walk(store, st, store.instances[0].tramp)  # type: ignore[attr-defined]
+    segs = walk.walk(store, st)
     return [[store.instances.index(f[0]) for f in frames] for frames, _ in segs]
 
 
@@ -66,7 +66,7 @@ def recheck(store: StoreState, slots: int) -> None:
     st = _stacks(store)
     mine = st.walk_vsp.pop()
     try:
-        walk.check(store, st, store.instances[0].tramp, slots)  # type: ignore[attr-defined]
+        walk.check(store, st, slots)
     finally:
         st.walk_vsp.append(mine)
 
@@ -282,7 +282,7 @@ def test_a_corrupt_record_is_an_error_not_a_crash(bad: str) -> None:
             return jit("run", args[0] - 1)
         st = _stacks(store)
         tramp = store.instances[0].tramp  # type: ignore[attr-defined]
-        frames, _ = walk.walk(store, st, tramp)[0]
+        frames, _ = walk.walk(store, st)[0]
         _, site, sp, _ = frames[-1]
         nsp = sp + site[2]
         at = ctypes.addressof(st.exit) if bad == "exit record" else nsp + tramp.saved
@@ -290,7 +290,7 @@ def test_a_corrupt_record_is_an_error_not_a_crash(bad: str) -> None:
         old, word.value = word.value, 0x10 if bad == "exit record" else BAD_SAVED[bad](nsp)
         try:
             with pytest.raises(RuntimeError, match="JIT walk"):
-                walk.walk(store, st, tramp)
+                walk.walk(store, st)
         finally:
             word.value = old
         hits.append(1)

@@ -283,7 +283,7 @@ def test_the_walk_crosses_modules_and_hop_chains(
     store, seen = StoreState(), []
 
     def h(args: Sequence[Raw]) -> list[Raw]:
-        segs = walk.walk(store, _stacks(store), store.instances[0].tramp)  # type: ignore[attr-defined]
+        segs = walk.walk(store, _stacks(store))
         seen.append([[store.instances.index(f[0]) for f in fr] for fr, _ in segs])
         return [args[0]]
 

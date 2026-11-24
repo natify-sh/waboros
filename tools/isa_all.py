@@ -5,8 +5,9 @@ each as an artifact file, then read the files back and run tools/isa_check.py on
 (`.text` up to the first trampoline blob, its data area excluded) and on every trampoline blob.
 Identical blobs are checked once.
 
-    python3 tools/isa_all.py [--target jit-x86_64|jit-aarch64] [--level v1|v2] [--dump DIR]
-        # DIR: check the `.wbo` files there only
+    python3 tools/isa_all.py [--target jit-x86_64|jit-aarch64|jit-sljit-x86_64] [--level v1|v2]
+        [--dump DIR]
+        # DIR: check the `.wbo` files there only; jit-sljit-*: with native/'s library (S0016)
 
 Both targets compile with tools/jit_dump.py, which never runs the code, so it
 works on any host (cross-compiling on x86-64, D35); `--target jit-aarch64` gates the blobs against
@@ -26,6 +27,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 COLLECTOR = """import sys
 import hashlib
+try:
+    import tests.sljit  # registers jit-sljit-<arch> when native/'s library exists (S0016)
+except RuntimeError:
+    pass  # a stale library: the parent warned, and only the Python JITs are offered
 from waboros.frontend.binary import parse
 from waboros.frontend.validate import validate
 from waboros.targets import base
@@ -64,8 +69,16 @@ def blobs(path: Path) -> list[tuple[str, bytes, int]]:
 
 
 def main() -> int:
+    sys.path[:0] = [str(ROOT / "src"), str(ROOT)]
+    try:
+        import tests.sljit  # noqa: F401  (registers jit-sljit-<arch> with native/'s library, S0016)
+    except RuntimeError as e:  # a stale library must not stop the Python JITs
+        print(f"jit-sljit not registered: {e}", file=sys.stderr)
+    from waboros.targets import base
+
+    jits = [n for n in base.TARGETS if n.startswith("jit-")]
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--target", default="jit-x86_64", choices=["jit-x86_64", "jit-aarch64"])
+    ap.add_argument("--target", default="jit-x86_64", choices=jits)
     ap.add_argument("--level", default="v1", choices=["v1", "v2"])
     ap.add_argument("--dump", type=Path)
     args = ap.parse_args()
@@ -73,8 +86,8 @@ def main() -> int:
         out = args.dump or Path(tmp)
         if not args.dump:
             dump(out, args.target)
-        sys.path.insert(0, str(ROOT / "src"))
         checked = failed = 0
+        a64 = base.TARGETS[args.target]().e_machine == 183  # the gate by architecture (EM_AARCH64)
         seen: set[str] = set()
         for wbo in sorted(out.glob("*.wbo")):
             for label, raw, ds in blobs(wbo):
@@ -86,17 +99,13 @@ def main() -> int:
                 blob.write_bytes(raw)
                 cmd = [sys.executable, str(ROOT / "tools/isa_check.py"), str(blob)]
                 cmd += ["--data", f"{ds}:{len(raw)}"] if ds >= 0 else []
-                cmd += (
-                    ["--arch", "aarch64"]
-                    if args.target == "jit-aarch64"
-                    else ["--level", args.level]
-                )
+                cmd += ["--arch", "aarch64"] if a64 else ["--level", args.level]
                 p = subprocess.run(cmd, capture_output=True, text=True)
                 checked += 1
                 if p.returncode:
                     failed += 1
                     print(f"{label}: exit {p.returncode}\n{p.stdout[:1500]}{p.stderr[:500]}")
-    level = "ARMv8.0-A" if args.target == "jit-aarch64" else args.level
+    level = "ARMv8.0-A" if a64 else args.level
     print(f"isa_all: {checked} blobs checked, {failed} failed ({level})")
     return 1 if failed or not checked else 0
 

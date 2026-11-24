@@ -383,7 +383,8 @@ afterwards. The jump therefore goes through `tail_switch`, one trampoline per pr
 in context word 9 `TAIL_SWITCH`. *(Amended by D70, S0015: `tail_switch` is one per compiler, carried
 in its artifacts, and word 9 may be 0 for a compiler that has none; a jump into another compiler's
 record goes to its C entry, by a hop that returns to the module's own C entry or by a sibling
-jump. The restore path is unchanged within a compiler; D71.)* The first switch of a chain pushes the caller's r15 and makes a real
+jump. The restore path is unchanged within a compiler; D71. Amended by S0016, 2026-11-24: word 9
+is never 0, every compiler ships a `tail_switch`; D73's marker.)* The first switch of a chain pushes the caller's r15 and makes a real
 `call` whose return point (`restore`) pops it and reloads r13/r14. A later switch whose return
 address is already `restore` only changes the context and jumps, so A → B → A → … runs in constant
 stack. Every `ret` returns to its own `call` (CET shadow stacks, R2). This is an amendment of context
@@ -1605,6 +1606,10 @@ compatibility between architectures is asked for.
 * **Scope now:** x86-64 and aarch64, both Python backends, the spec, the conformance test, the v1
   regeneration (amended: the new v1 files). **Deferred:** thin files of other compiler versions (phase 6); a real store
   mixing the Python JIT and sljit (when the micro-compiler exists).
+  *(S0016 step 2, 2026-11-24: in-process mixed stores come before phase 6. A store keeps the
+  trampolines of every compiler in it (the walk's sets of entry and restore points), instantiation
+  refuses two targets sharing one bridge address, and each file is loaded under its own target's
+  exact string; the foreign-blob path and the per-architecture rule stay in phase 6.)*
 
 Measured (prototype on `jit-x86_64` alone, every call through a record on the C path; BENCHMARKS.md):
 a cross-instance call 2.6 → 4.4 ns, a `call_indirect` 3.0 (the placement control) → 4.5 ns
@@ -1749,5 +1754,7 @@ artifact-format spec". The byte-level definition stays in S0014; this is the lis
 *(Amended 2026-11-24, maintainer: the final freeze of v1 comes once the first real micro-compiler, our core in C over sljit (D68), compiled to wasm, produces files across the S0015 boundary and the C reference loader (D36) reads and runs them and the committed files; S0016's `jit-sljit` is a step towards it, not part of the condition; the "none" `tail_switch` value leaves v1 (S0016), so the condition no longer names form 2a or a record without `tail_switch`.)*
 
 *(Amended again 2026-11-24, maintainer: the final freeze of v1 comes once the micro-compiler from our C sources (D68) is built to wasm and natively, the C reference loader with the native compiler embedded (x86-64, aarch64) compiles and runs modules, and the same loader built without the compiler runs files cross-compiled by the wasm build and the committed files.)*
+
+*(S0016 step 2, 2026-11-24: the "none" value is gone from v1 under the working freeze. Word 9 is never 0, a trampoline record has no `0xFFFFFFFF` offset and `read` refuses one (tested on x86-64 and aarch64); the final-freeze condition no longer names form-2a sibling tail calls or a record without `tail_switch`. If a compiler ever needs it, it returns as a `features_required` bit (D66).)*
 
 *(2026-11-24, maintainer: ELF64 little-endian is the container for every target, 32-bit ones included, should they come (a data format, embedded as a blob, never linked by the system linker); where one `e_machine` covers both widths, the 32-bit ISA's `isa_level` numbers are disjoint from the 64-bit ones. S0014 identification table.)*

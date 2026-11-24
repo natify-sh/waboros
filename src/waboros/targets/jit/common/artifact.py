@@ -32,8 +32,6 @@ FORMAT_VERSION, OSABI, NO_START = 1, 0xCB, 0xFFFFFFFF
 I32, I64, V128 = 0x7F, 0x7E, 0x7B
 NUMS = (0x7F, 0x7E, 0x7D, 0x7C, 0x7B)
 KINDS = ("func", "table", "mem", "global", "tag")  # import and export kinds 0-4
-# target -> (e_machine, isa name of level 1); a new architecture adds a row
-TARGETS = {"jit-x86_64": (62, "x86-64-v1"), "jit-aarch64": (183, "armv8.0-a")}
 SWITCHES = ("WABOROS_JIT_NOPIN", "WABOROS_JIT_NOLIVE", "WABOROS_JIT_PAD", "WABOROS_JIT_LOOP_ALIGN")
 ORDER = ("header", "text", "types", "imports", "funcs", "tables", "memories", "globals", "tags",
          "exports", "segments", "context", "stackmaps", "traps", "trampolines", "wasm")  # fmt: skip
@@ -125,15 +123,38 @@ def _own_digest() -> str:
     return _source_digest(Path(__file__).parents[3])
 
 
+def targets() -> dict[str, tuple[int, str]]:
+    """Registered JIT target -> (e_machine, isa name of level 1), from the Target attributes (a
+    development target registers later than this module is imported, S0016)."""
+    ts: list[tuple[str, Any]] = [(n, make()) for n, make in base.TARGETS.items() if n[:4] == "jit-"]
+    return {n: (t.e_machine, t.isa_name) for n, t in ts if getattr(t, "e_machine", 0)}
+
+
+@functools.cache
+def _files_digest(files: tuple[Path, ...]) -> str:
+    """SHA-256 over `files` (a target's `digest_sources()`), sorted by their path relative to
+    their common directory, each as that path, NUL, bytes."""
+    h = hashlib.sha256()
+    top = Path(os.path.commonpath([f.parent for f in files]))
+    for f in sorted(files, key=lambda f: f.relative_to(top).as_posix()):
+        h.update(f.relative_to(top).as_posix().encode() + b"\0" + f.read_bytes())
+    return h.hexdigest()
+
+
 def compiler_string(target: str) -> str:
     """`waboros <version> <target> <target version>` as this process writes it and the loader
     requires it (Q3). A release writes its version; a development build (a setuptools-scm local
     part `+g...`, a `.devN`, or the fallback 0.0.0 of an uninstalled tree) writes the version
-    without its local part, `-` and `_own_digest()`, so an edit to a compiler source changes it."""
+    without its local part, `-` and `_own_digest()`, so an edit to a compiler source changes it.
+    A target with `digest_sources()` (S0016) folds them in: one 16-digit digest over both."""
+    t: Any = base.TARGETS[target]()
     v = __version__
     if "+" in v or ".dev" in v or v == "0.0.0":
-        v = f"{v.split('+')[0]}-{_own_digest()}"
-    return f"waboros {v} {target} {base.TARGETS[target]().version}"
+        d, extra = _own_digest(), t.digest_sources()
+        if extra:
+            d = hashlib.sha256((d + _files_digest(tuple(extra))).encode()).hexdigest()[:16]
+        v = f"{v.split('+')[0]}-{d}"
+    return f"waboros {v} {target} {t.version}"
 
 
 def _u(fmt: str, *a: int) -> bytes:
@@ -359,19 +380,19 @@ def write(
     wasm: bytes | None = None,
 ) -> bytes:
     """The artifact of a `Compiled` (or a `ModuleView`) for the compiler `target` (a key of
-    `TARGETS`; `Compiled` does not carry it). The bounds mode is `c.flags` (the writer does not look
-    at the host, Q12). The hash of the wasm bytes is `module_sha256`, or taken from `wasm`, which
-    makes the file fat (D18). Raises ValueError for a test switch that changes code (Q11)."""
+    `targets()`; `Compiled` does not carry it). The bounds mode is `c.flags` (the writer does not
+    look at the host, Q12). The hash of the wasm bytes is `module_sha256`, or taken from `wasm`,
+    which makes the file fat (D18). Raises ValueError for a test switch that changes code (Q11)."""
     on = [n for n in SWITCHES if os.environ.get(n)]
     if on:
         raise ValueError(f"cannot write an artifact while {', '.join(on)} is set (S0014 Q11)")
-    if target not in TARGETS:
+    if target not in targets():
         raise ValueError(f"unknown target {target!r}")
     if wasm is not None:
         module_sha256 = hashlib.sha256(wasm).digest()
     if module_sha256 is None or len(module_sha256) != 32:
         raise ValueError("write needs wasm= or a 32-byte module_sha256=")
-    mach, isa = TARGETS[target]
+    mach, isa = targets()[target]
     guard = c.flags & 1
     if c.flags & ~0xFF01 or bool(guard) != bool(c.flags >> 8 & 0xFF):
         raise ValueError(f"invalid artifact flags {c.flags:#x}")
@@ -716,7 +737,9 @@ def _trampolines(text: bytes, b: bytes, target: str) -> bytes:
                 r.fail("the first blob is not at a multiple of 16 inside .text")
         elif start != pos + -pos % 16 or any(text[pos:start]):
             r.fail(f"the {name} blob is not at the next multiple of 16, after zero bytes")
-        if any(x != NO_START and not start <= x < start + size for x in rest):
+        if NO_START in rest:  # the none value left v1 (S0016): a compiler ships a tail_switch
+            r.fail(f"an offset of the {name} record is {NO_START:#x} (no tail_switch: not v1)")
+        if any(not start <= x < start + size for x in rest):
             r.fail(f"an offset of the {name} record is not inside its blob")
         got = (size, text[start : start + size], tuple(x - start for x in rest), nu)
         if got != (len(blob), blob, offs, nums):
@@ -840,7 +863,10 @@ def _head(b: bytes) -> tuple[dict[str, bytes], SimpleNamespace]:
     if (len(parts) != 4 or not all(parts) or parts[0] != "waboros" or not compiler.isascii()
         or not parts[3].isdigit() or len(parts[3]) > 9):  # fmt: skip
         h.fail("the compiler string is not 'waboros <version> <target> <target version>'")
-    if TARGETS.get(parts[2], (0,))[0] != mach:
+    known = targets()
+    if parts[2] not in known:
+        h.fail(f"compiler target {parts[2]} is not registered in this process")
+    if known[parts[2]][0] != mach:
         h.fail(f"compiler target {parts[2]} does not match the ELF machine {mach}")
     return s, SimpleNamespace(
         target=parts[2], target_version=int(parts[3]), compiler=compiler, machine=mach,
@@ -1092,12 +1118,11 @@ def _compatible(v: Any, target: str) -> None:
     from waboros.targets.jit.common import guard
 
     t: Any = base.TARGETS[target]()
-    mine: list[Any] = [base.TARGETS[n]() for n in TARGETS]  # the target of this host's machine
+    known = targets()
+    mine: list[Any] = [base.TARGETS[n]() for n in known]  # the target of this host's machine
     mine = [x for x in mine if platform.machine().lower() in x.machines]
-    if not mine or TARGETS[mine[0].name][0] != v.machine:
-        _no(
-            "e_machine", v.machine, f"runs {TARGETS[mine[0].name][0] if mine else 'no JIT machine'}"
-        )
+    if not mine or mine[0].e_machine != v.machine:
+        _no("e_machine", v.machine, f"runs {mine[0].e_machine if mine else 'no JIT machine'}")
     if why := mine[0].foreign():  # a 32-bit process on a 64-bit kernel
         _no("e_machine", v.machine, f"cannot run it in this process ({why})")
     if v.ctx_abi_version != 1:
@@ -1105,7 +1130,7 @@ def _compatible(v: Any, target: str) -> None:
     if v.compiler != compiler_string(target):
         _no("compiler", repr(v.compiler), f"requires {compiler_string(target)!r}")
     if v.isa_level != 1:
-        _no("isa_level", v.isa_level, f"runs level 1 ({TARGETS[target][1]})")
+        _no("isa_level", v.isa_level, f"runs level 1 ({known[target][1]})")
     if v.isa_features:
         _no("isa_features", hex(v.isa_features), "knows none")
     log2 = v.flags >> 8 & 0xFF
@@ -1132,7 +1157,7 @@ def load(b: bytes, *, target: str) -> Any:
     module view when every rule of "Semantics: the loader" holds, else, for a fat file (D18), the
     wasm compiled by this process; a thin file is refused with `ArtifactError`. A file that is not
     ours is refused either way, and so is a fat file whose wasm is not `module_sha256`."""
-    if target not in TARGETS:
+    if target not in targets():
         raise ValueError(f"unknown target {target!r}")
     b = bytes(b)
     _ident(b)

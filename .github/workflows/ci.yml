@@ -233,6 +233,18 @@ jobs:
           WABOROS_JIT_WALK_CHECK: "1"
           WABOROS_JIT_GC_POISON: "1"
       - run: uv run pytest -q tests/jit/test_boundary.py tests/spec/test_runner.py --jit-bounds guard,explicit
+      # through artifact files (written, loaded, instantiated), parity on the reports (S0016 step 2)
+      - run: |
+          for b in guard explicit; do
+            WABOROS_JIT_BOUNDS=$b uv run python -m tests.spec.run --engine jit-sljit-x86_64 --json spec-sljit-files-$b.json
+            uv run python tools/spec_diff.py spec-jit-x86_64.json spec-sljit-files-$b.json
+            uv run python tools/spec_diff.py spec-sljit-files-$b.json spec-jit-x86_64.json
+          done
+        env:
+          WABOROS_JIT_ARTIFACT: "1"
+          WABOROS_JIT_WALK_CHECK: "1"
+          WABOROS_JIT_GC_POISON: "1"
+      - run: uv run python tools/isa_all.py --target jit-sljit-x86_64
   spec:
     needs: dedup
     if: needs.dedup.outputs.skip != 'true'

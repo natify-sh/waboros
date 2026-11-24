@@ -1177,3 +1177,17 @@ What went wrong or surprised us while building the PoC, so it is not found again
     through its own `lib2.c`. `native/`'s translation unit exports them as `waboros_sljit_*`.
     After `sljit_generate_code` the compiler's error is `SLJIT_ERR_COMPILED` (1), not 0: check
     the error before generating. Found: S0016 step 1, 2026-11-24.
+147. **A table copied at import time does not see a target registered later.** `artifact.py`
+    kept its own `TARGETS` dict (name → `e_machine`, ISA name) beside `base.TARGETS`; `tests.sljit`
+    registers `jit-sljit-x86_64` after `artifact` is imported, so the spec suite through files
+    failed every module with "unknown target" while the in-process suite passed. Rule: derive such
+    tables from the registry when they are read (`artifact.targets()`, from Target attributes),
+    and run a new target through every path that names targets (files, tools), not only
+    in-process. Found: S0016 step 2, 2026-11-24.
+148. **A shadow-space test must write the home area after the host's last use of its
+    arguments.** GCC at `-O0` spills an `ms_abi` function's `rcx`/`rdx` into its own home area
+    (`[rbp + 16]`, `[rbp + 24]`) and reloads them from there, so a test host that filled the 32
+    bytes first would corrupt its own arguments, and one that never wrote them would not catch a
+    bridge keeping its locals there. `waboros_sljit_test_win64_host` writes them last; the control
+    (the `win64` bridge with its locals at `[SP + 0]`) fails the test with a wrong result.
+    Found: S0016 step 2, 2026-11-24.

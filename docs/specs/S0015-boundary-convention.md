@@ -236,8 +236,8 @@ ARTIFACT.md part 3, "Reference listing of the runtime's `entry`".
   save its pool, read its context register and know its frame register. They are **not** part of
   this interface. They travel in the compiler's artifacts (`.waboros.trampolines`).
 * Each instance's context words 8 `HOST_BRIDGE` and 9 `TAIL_SWITCH` point to the copy of its own
-  compiler. Both words already exist per context; no word moves. A compiler without a
-  `tail_switch` ("Tail calls", case 2a) leaves word 9 zero.
+  compiler. Both words already exist per context; no word moves. Every compiler ships a
+  `tail_switch`, so word 9 is never 0 (S0016: the "none" value left v1).
 * **What every bridge must do:**
   * write the store's exit record (word 14) before the host runs and clear its `sp` after, with
     the meaning fixed here:
@@ -280,6 +280,9 @@ their layout. The interface is:
    map. No frame-pointer chain, no unwind data, no compiler identity per frame.
 7. The walk knows the **set** of entry points (the runtime's, one per convention in the process)
    and the set of restore points (one per compiler present in the store, each with its numbers).
+   *(S0016: each target seals its own copy of the runtime's blob, so the entry points are one per
+   compiler too; the store keeps both sets, added at each instantiation, and `walk.walk`,
+   `walk.check` and the collector read them.)*
 
 The GC heap, its object layout, the type-info and RTT records and the collector's root buffer are
 part 3's and shared already: every compiler allocates and casts against the same store heap.
@@ -314,7 +317,8 @@ gets there is its own; two forms meet the interface:
    * **(a) A direct C sibling jump**, for a compiler whose functions are their C entries, or whose
      internal convention keeps across calls only registers the boundary also keeps. Its frame is
      torn down and it jumps to the record's C entry with `ctx` and `frame` set and the return
-     address as its own caller left it. No `tail_switch` and no private status are needed. sljit
+     address as its own caller left it. It needs no private status, but a compiler using it still
+     ships a `tail_switch` (S0016: the "none" value left v1, so 2a exists only beside one). sljit
      does this with `SLJIT_CALL_RETURN`; the scratch gate ran 10⁵ such hops between sljit and
      Python-JIT functions in a 256 KiB thread.
    * **(b) First hop, then return-then-jump**, for a compiler whose internals keep registers the
@@ -413,14 +417,14 @@ From the scratch gate (x86-64; "Measurements") and SLJIT-BACKEND.md:
   n x blob:  u8 id (1 sysv, 2 win64, 3 aapcs64), u8 0, u16 0,
              u32 start, u32 size,            the blob in .text
              u32 bridge,                     offset in .text
-             u32 tail_switch, u32 restore,   offsets in .text; 0xFFFFFFFF for none (case 2a)
+             u32 tail_switch, u32 restore,   offsets in .text
              u16 restore_ret_at, u16 restore_up
   ```
   * 28 bytes per blob. x86-64 writes `sysv` then `win64`; aarch64 writes `aapcs64`.
   * `restore_ret_at` is the number of bytes from the stack pointer at `tail_switch`'s call to the
     real return address; `restore_up` the same to the caller's stack pointer: x86-64 56 and 64,
-    aarch64 8 and 80. Both are 0 when `tail_switch` is none.
-  * Every offset lies inside its blob, except `0xFFFFFFFF` (none).
+    aarch64 8 and 80.
+  * Every offset lies inside its blob; `0xFFFFFFFF` is refused (S0016: no "none" value in v1).
 * **`.text`:** the code and data area as today, then each blob at the next multiple of 16 in record
   order, the gaps zero.
 * **Symbols:**
@@ -903,3 +907,7 @@ Moved to [ARTIFACT.md](../ARTIFACT.md) part 3, "Reference listing of the runtime
   register windows before a walk). The headroom numbers (1 KiB, about 768 bytes, `nlimit − 4096`) are
   the values of x86-64 and aarch64; another architecture states its own in the boundary row. No change
   for x86-64 and aarch64.
+* 2026-11-24 (S0016 step 2, maintainer's decision under the working freeze): the "none" value of
+  `tail_switch` leaves v1. Word 9 is never 0, case 2a exists only beside a `tail_switch`, and the
+  trampoline record has no `0xFFFFFFFF` offset (`read` refuses it). The walk and the walk check
+  take the store's sets of entry and restore points (walk item 7), not one instance's.

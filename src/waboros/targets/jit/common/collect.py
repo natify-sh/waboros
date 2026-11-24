@@ -77,7 +77,7 @@ def _gather(inst: Any, st: Any, coll: Any) -> tuple[list[tuple[int, int]], list[
         back.append((items, a))
         runs.append((ctypes.addressof(a), len(items)))
 
-    for frames, _ in walk.walk(inst.store, st, inst.tramp):
+    for frames, _ in walk.walk(inst.store, st):
         for owner, (_, _, _, n, refs, live), _, base in frames:
             assert owner is not coll, "the walk met a collector frame"
             if refs and not st.vstack.addr <= base <= st.vtop - 8 * n:  # as walk.check

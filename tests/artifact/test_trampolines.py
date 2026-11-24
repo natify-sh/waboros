@@ -58,7 +58,8 @@ def test_runs_on_the_process_copy() -> None:
 @pytest.mark.parametrize("how", ["blob byte", "bridge moved", "tail_switch none",
                                  "restore moved", "restore_ret_at", "restore_up"])  # fmt: skip
 def test_a_mismatch_is_refused_thin_and_regenerated_fat(conv: int, how: str) -> None:
-    """Any convention (Q4 (b)): the running one and, on x86-64, the other one too."""
+    """Any convention (Q4 (b)): the running one and, on x86-64, the other one too. A tail_switch
+    of 0xFFFFFFFF (the none value, out of v1 since S0016) is refused on both architectures."""
     native(JIT)
     if conv >= len(records(small(JIT))):
         pytest.skip("one convention on this architecture")
@@ -75,7 +76,8 @@ def test_a_mismatch_is_refused_thin_and_regenerated_fat(conv: int, how: str) -> 
             return put(b, at + 20, struct.pack("<I", r[6] + 1))
         return put(b, at + (24 if how == "restore_ret_at" else 26), struct.pack("<H", 1))
 
-    both(patch, "trampolines differ from this compiler's")
+    # S0016: the none value left v1, so 0xFFFFFFFF is refused as such, not as a mismatch
+    both(patch, "no tail_switch: not v1" if how == "tail_switch none" else "trampolines differ")
 
 
 def test_layout_is_strict(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -159,7 +161,7 @@ def test_one_copy_per_store_from_the_first_file(monkeypatch: pytest.MonkeyPatch)
 
     def host(args: Any) -> list[int]:
         st = _stacks(store)
-        segs = walk.walk(store, st, tramp)
+        segs = walk.walk(store, st)
         seen.append([[store.instances.index(f[0]) for f in fr] for fr, _ in segs])
         return [args[0]]
 

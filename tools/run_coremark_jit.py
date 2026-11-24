@@ -1,19 +1,26 @@
 # pyright: reportUnknownVariableType=false, reportUnknownMemberType=false
 """Run CoreMark (wasm) on a JIT target:
-python tools/run_coremark_jit.py core.wasm [--target jit-aarch64] (default jit-x86_64)"""
+python tools/run_coremark_jit.py core.wasm [--target jit-aarch64] (default jit-x86_64)
+`--target jit-sljit-<arch>` needs native/'s library (S0016)."""
 
 import ctypes
 import sys
 import time
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
-from waboros.frontend.binary import parse
-from waboros.frontend.validate import validate
-from waboros.runtime import link
-from waboros.runtime.store import StoreState
-from waboros.targets import base
-from waboros.targets.base import HostFunc, Raw
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+try:
+    import tests.sljit  # noqa: E402, F401  (registers jit-sljit-<arch> with native/'s library)
+except RuntimeError as e:  # a stale library must not stop the Python JITs
+    print(f"jit-sljit not registered: {e}", file=sys.stderr)
+from waboros.frontend.binary import parse  # noqa: E402
+from waboros.frontend.validate import validate  # noqa: E402
+from waboros.runtime import link  # noqa: E402
+from waboros.runtime.store import StoreState  # noqa: E402
+from waboros.targets import base  # noqa: E402
+from waboros.targets.base import HostFunc, Raw  # noqa: E402
 
 GOOD_CRCS = {
     "seedcrc": "0xe9f5",

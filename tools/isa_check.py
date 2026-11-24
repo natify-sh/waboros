@@ -48,6 +48,8 @@ _SSE = (
     " punpcklqdq pshuflw pmulhw pmulhuw cvttps2dq cvttpd2dq cmpunordps cmpunordpd"
     # and of class L (step 5d3): shuffles by one instruction, byte shifts
     " pshufhw shufps psrldq pslldq"
+    # and what sljit emits for jit-sljit (S0016): cmpss/cmpsd's predicate-0 spelling, unpacks
+    " cmpeqss cmpeqsd unpcklps unpcklpd"
 ).split()
 V1 = frozenset(
     _INT + _SSE + [p + c for p in ("j", "set", "cmov") for c in _CC + _CC_ALIASES]
@@ -84,6 +86,8 @@ _THREE_OK = {"shld", "shrd"}  # legacy forms with a third (cl) register operand
 def why_not(raw: bytes, text: str, allowed: frozenset[str] = V1) -> str | None:
     """None if the instruction is in the `allowed` level (default x86-64-v1), else the reason."""
     mnem, _, ops = text.partition(" ")
+    if mnem == "rex" and raw[:1] == b"\x40":  # objdump's word for a REX with no bits (sljit's)
+        mnem, _, ops = ops.partition(" ")
     if mnem not in allowed:
         return "mnemonic"
     i = 0

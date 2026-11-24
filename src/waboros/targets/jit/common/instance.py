@@ -249,6 +249,26 @@ class _StoreStacks:
         self.exit = (ctypes.c_uint64 * 3)()
         self.walk_ranges: Any = None  # walk.py: the store's code ranges, built at the first walk
         self.walk_vsp: list[int] = []  # check mode: the frames of the nested entries (walk.check)
+        # the store's trampolines, of every compiler in it (S0016): the walk's entry points (each
+        # target seals its own copy of the runtime's blob) -> the entry's saved block, its restore
+        # points -> (restore_ret_at, restore_up), and each bridge address -> its target (D71)
+        self.entries: dict[int, int] = {}
+        self.restores: dict[int, tuple[int, int]] = {}
+        self.bridges: dict[int, str] = {}
+
+    def attach(self, tramp: Trampolines, owner: str | None = None) -> None:
+        """Add an instance's trampolines to the store's sets. With `owner` (a compiled module's
+        target), first D71's precondition: one compiler per bridge address (in-process the target
+        name stands for the compiler string)."""
+        if owner is not None:
+            other = self.bridges.setdefault(tramp.bridge, owner)
+            if other != owner:
+                raise RuntimeError(
+                    f"targets {other} and {owner} share one bridge address {tramp.bridge:#x} in "
+                    "a store (D71: word 8 must identify the compiler)"
+                )
+        self.entries[tramp.entry_ret] = tramp.saved
+        self.restores[tramp.restore] = (tramp.restore_ret_at, tramp.restore_up)
 
     def to_raw(self, k: RefType, v: object) -> int:
         """A host value for reference type `k` (`reftypes`) -> its word, or `TypeError` before
@@ -376,16 +396,14 @@ def _stacks(store: StoreState) -> _StoreStacks:
     return store.target_state
 
 
-def _checked(
-    store: StoreState, tramp: Trampolines, cb: Callable[[int, int], int], n: int
-) -> Callable[[int, int], int]:
+def _checked(store: StoreState, cb: Callable[[int, int], int], n: int) -> Callable[[int, int], int]:
     """Check mode (S0013 3a, walk.py): walk the store's frames before serving a host call; a nested
     entry of this call gets the frame slots + 8n, which the check of a deeper call expects."""
 
     def checked(ctx: int, slots: int) -> int:
         st = _stacks(store)
         try:
-            walk.check(store, st, tramp, slots)
+            walk.check(store, st, slots)
         except BaseException as e:
             store.pending = e
             ctypes.c_uint64.from_address(ctx + 8 * HOST_ERROR).value = STATUS_HOST_ERROR
@@ -714,6 +732,7 @@ class Instance:
         self.ctx[HOST_BRIDGE] = tramp.bridge
         self.ctx[TAIL_SWITCH] = tramp.tail_switch
         st = _stacks(store)  # call_indirect may enter this context without `call`: limits now
+        st.attach(tramp)  # its entry returns to this copy's entry_ret (hand-assembled code too)
         self.ctx[NSTACK_LIMIT], self.ctx[VSTACK_LIMIT] = st.nlimit, st.vtop
         # S0012: in every context (throw_ref needs no tag); words 11-13 reserved, zero
         self.ctx[EXCEPTION] = ctypes.addressof(st.exn)
@@ -899,7 +918,7 @@ class Instance:
                 ctypes.c_uint64.from_address(ctx + 8 * HOST_ERROR).value = status  # last
             return 0
 
-        return _checked(store, self.tramp, callback, n) if self.walk else callback
+        return _checked(store, callback, n) if self.walk else callback
 
     def interrupt(self) -> None:
         """Any thread: the next poll of this instance's code returns INTERRUPT."""
@@ -997,6 +1016,7 @@ class JitInstance(Instance):
         types = mod["types"]
         self.owner = owner
         st = _stacks(store)
+        st.attach(tramp, owner)  # before anything of the instance is in the store
         hosts: list[tuple[HostFunc, int, Sequence[int]]] = []
         self.hosts: list[HostFunc] = []
         memories: list[Memory] = []

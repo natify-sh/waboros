@@ -31,11 +31,18 @@ class JitTarget:
     name: str
     arch: str  # in messages: "x86-64", "aarch64"
     machines: tuple[str, ...]  # platform.machine().lower() values of this architecture
+    e_machine: int  # the ELF machine of its artifact files (S0014)
+    isa_name: str  # the name of ISA level 1 in a file's configuration (S0014)
     version = 0
     complete = True  # False: `auto` does not select it (D25, S0004)
     development = False  # True: a development target outside the package (S0016)
     guard_rows: frozenset[str] = frozenset()  # host rows with a fault handler (S0006)
     verified: frozenset[str] = frozenset()  # rows where WABOROS_JIT_BOUNDS=auto gives guard
+
+    def digest_sources(self) -> list[Path]:
+        """Files outside the package that make this compiler's code, folded into a development
+        build's compiler string (S0016; `artifact.compiler_string`)."""
+        return []
 
     def probe_code(self) -> bytes:
         """A function `int f(void)` returning 42."""

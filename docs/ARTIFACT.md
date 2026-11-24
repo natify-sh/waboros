@@ -132,7 +132,11 @@ limitations of v1"). A loader refuses an artifact whose ELF identification,
 `format_version` (`EI_ABIVERSION`), `ctx_abi_version`, `e_machine` or ISA it does not support, or whose `compiler`
 string is not the store's (D70: until phase 6 the exact string, which is the cache key; from
 phase 6 the rule follows the architecture, `format_version` and `ctx_abi_version`, S0015
-"Compatibility") — it never "tries".
+"Compatibility") — it never "tries". A store may hold modules of several compilers of one
+architecture in one process (S0016): each file is loaded under its own target's exact string (the
+caller passes the target; the loader does not dispatch on the string), and instantiation refuses
+two targets that share one bridge address (D71). The trampoline record never holds `0xFFFFFFFF`
+(no "none" value in v1, S0016); `read` refuses it.
 `Module.serialize()` writes this format; the cache stores it.
 
 **Thin and fat files (D18).** A thin file (no `.waboros.wasm`) is refused on any mismatch. A fat file is
@@ -205,7 +209,7 @@ the phase-3 meaning of each word and the register roles are in [S0003](specs/S00
 | 6 | `NSTACK_LIMIT` | host → code | lowest native stack address allowed → `STACK_OVERFLOW` |
 | 7 | `HOST_ERROR` | host → code | the status of the current host call: the bridge presets 13, the host function writes its status last (D34) |
 | 8 | `HOST_BRIDGE` | host → code | address of the host-call bridge for the host's calling convention; one copy per compiler, so `jit-x86_64` also compares it to recognise a context of its own code (D71, from S0015 step 1); a copy is never shared between compiler strings, even with identical bytes: equal addresses mean the same compiler string and internal convention |
-| 9 | `TAIL_SWITCH` | host → code | address of the cross-context tail-call trampoline (below; D30) of the context's own compiler (S0015, D70); 0 for a compiler that has none (it jumps to a foreign C entry itself, S0015 "Tail calls", form 2a) |
+| 9 | `TAIL_SWITCH` | host → code | address of the cross-context tail-call trampoline (below; D30) of the context's own compiler (S0015, D70); never 0: every compiler ships a `tail_switch` (the "none" value left v1, S0016; form 2a only beside one) |
 | 10 | `EXCEPTION` | host → code | address of the store's pending-exception word: the exnref of the exception in flight, valid only while status 14 propagates (S0012); from S0013 step 6.2 it holds 0 or the zero-extended u32 heap offset of the last exception thrown, and the word is a root of every collection |
 | 11-13 | reserved | | zero (S0013 step 6.3; the exception arena's refill service, cursor and limit until then, S0012; an amendment of v1 without a bump, Q5) |
 | 14 | `EXIT_RECORD` | host → code | address of the store's exit record `{sp, pc, frame}` of the innermost host call: the bridge writes it before the host runs (the calling frame's stack pointer at its call, the return address, the frame base of the calling wasm frame, the base its site's map refers to) and clears `sp` after; every entry keeps the enclosing record and its frame on the native stack during its call and puts the record back (S0013; an amendment of v1 without a bump, Q5) |
@@ -375,16 +379,17 @@ also spill the register windows before a walk). S0015's headroom numbers (1 KiB,
 | `.text` alignment | none | load address ≡ 0 mod 4096 (`adrp`) |
 | instruction cache | coherent | invalidate the loaded range before the first call |
 
-Compiler-private rows, keyed by the target in the header's `compiler` field, given for `jit-x86_64`
-and `jit-aarch64` as information (another compiler, a sljit micro-compiler, states its own):
+Compiler-private rows, keyed by the target in the header's `compiler` field, given for `jit-x86_64`,
+`jit-aarch64` and the development target `jit-sljit-x86_64` (S0016, sljit's SysV register map on
+every OS) as information (another compiler, a sljit micro-compiler, states its own):
 
-| | x86-64 | aarch64 |
-|---|---|---|
-| bridge call | `eax` = word, `rdx` = slots; `call` | `x0` = word, `x1` = slots; `blr x16` |
-| bridge preserves | pool (`rbx rbp rsi rdi r8–r11`), `r12`–`r15` | `x2`–`x8`, `x19`–`x28`, `x29`, `sp` |
-| `tail_switch` | record in `rdx`, return address at `[rsp]`; the first hop and the hops from `restore`, never one from a C entry; restore frame 64 bytes (S0015 step 1, D71) | record in `x16`, return address in `x30`; the same hops; restore frame 80 bytes (S0015 step 3) |
-| exit record (bridge): `frame` | `r12` | `x27` |
-| landing pad, the compiler's own | `endbr64` | `bti c` (bodies, bridge, `tail_switch`), `bti j` (jump-table pads) |
+| | x86-64 | aarch64 | `jit-sljit-x86_64` |
+|---|---|---|---|
+| bridge call | `eax` = word, `rdx` = slots; `call` | `x0` = word, `x1` = slots; `blr x16` | `rax` = word, `rsi` = slots; `call` |
+| bridge preserves | pool (`rbx rbp rsi rdi r8–r11`), `r12`–`r15` | `x2`–`x8`, `x19`–`x28`, `x29`, `sp` | `rbx rbp r12`–`r15`, and `rcx r8 r10 r11` saved in its frame (`win64`: above the 32-byte shadow space, the host call custom bytes `mov rcx, rbx; mov rdx, rsi; call r13`) |
+| `tail_switch` | record in `rdx`, return address at `[rsp]`; the first hop and the hops from `restore`, never one from a C entry; restore frame 64 bytes (S0015 step 1, D71) | record in `x16`, return address in `x30`; the same hops; restore frame 80 bytes (S0015 step 3) | record in `rax`, return address at `[rsp]`; the same hops; restore frame 48 bytes (`restore_ret_at` 40) |
+| exit record (bridge): `frame` | `r12` | `x27` | `r15` |
+| landing pad, the compiler's own | `endbr64` | `bti c` (bodies, bridge, `tail_switch`), `bti j` (jump-table pads) | `endbr64` |
 
 **Reference listing of the runtime's `entry`** (S0015, Q3 (a); moved here from the spec's appendix).
 A listing for the C loader and for review, not the waboros runtime's bytes. `EXIT` is

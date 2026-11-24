@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 class JitX86_64Target(JitTarget):
     name = "jit-x86_64"
     arch = "x86-64"
+    e_machine, isa_name = 62, "x86-64-v1"  # the artifact's ELF machine and level-1 ISA (S0014)
     machines = ("x86_64", "amd64")
 
     def probe_code(self) -> bytes:

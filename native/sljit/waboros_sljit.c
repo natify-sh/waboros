@@ -93,3 +93,15 @@ int waboros_sljit_constant(const char *name, sljit_sw *value) {
 		if (strcmp(t[i].name, name) == 0) { *value = t[i].value; return 0; }
 	return -1;
 }
+
+#if defined(__x86_64__) && defined(__GNUC__)
+static void (*wsl_seen)(void *, void *, sljit_uw);
+void waboros_sljit_test_win64_set(void (*seen)(void *, void *, sljit_uw)) { wsl_seen = seen; }
+__attribute__((ms_abi)) void waboros_sljit_test_win64_host(void *ctx, void *slots) {
+	/* the frame pointer (forced by the builtin) + 16: the caller's rsp at its call, the shadow
+	   space's start; written last, after the arguments' last use */
+	unsigned char *home = (unsigned char *)__builtin_frame_address(0) + 16;
+	if (wsl_seen) wsl_seen(ctx, slots, (sljit_uw)home);
+	memset(home, 0xA5, 32);
+}
+#endif

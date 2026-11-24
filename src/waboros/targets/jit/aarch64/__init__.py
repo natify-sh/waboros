@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 class JitAarch64Target(JitTarget):
     name = "jit-aarch64"
     arch = "aarch64"
+    e_machine, isa_name = 183, "armv8.0-a"  # the artifact's ELF machine and level-1 ISA (S0014)
     machines = ("aarch64", "arm64")
     complete = True
 

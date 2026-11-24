@@ -443,7 +443,7 @@ T16C = """(module (import "env" "h" (func $h))
 def slots(store: StoreState) -> list[int]:
     """From a host function: slots 0 and 1 of the frame whose map has both, as 64-bit words."""
     st = _stacks(store)
-    segs = walk.walk(store, st, store.instances[0].tramp)  # type: ignore[attr-defined]
+    segs = walk.walk(store, st)
     base = next(f[3] for fs, _ in segs for f in fs if f[1][4] == 3)
     return [ctypes.c_uint64.from_address(base + 8 * k).value for k in (0, 1)]
 
