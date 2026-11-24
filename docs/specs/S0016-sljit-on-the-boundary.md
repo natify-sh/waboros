@@ -34,9 +34,10 @@ Placement (maintainer, 2026-11-23):
   dependencies" holds.
 
 **What it does for the final freeze of v1.** The condition (maintainer, 2026-11-24; D73 marker,
-ROADMAP "Next" (6)) is the first real micro-compiler, our core in C over sljit (D68) compiled to
-wasm, producing files across the S0015 boundary, and the C reference loader (D36) reading and
-running them and the committed files.
+ROADMAP "Next" (6)) is the micro-compiler from our C sources (D68) built to wasm and natively, the
+C reference loader (D36) with the native compiler embedded (x86-64, aarch64) compiling and running
+modules, and the same loader built without the compiler running files cross-compiled by the wasm
+build and the committed files.
 * This spec is a step towards it, not part of it: `jit-sljit` is our Python core with sljit as the
   encoder, not the D68 micro-compiler. It proves the boundary early with a second code generator:
   its C entries, D71's "another compiler → C path" from both sides, cross-compiler hops, and sljit

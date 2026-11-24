@@ -138,6 +138,10 @@ for hosts without the Python JIT but with executable memory (a C loader without 
 compiler); for the Python package the bootstrap is the Python JIT. The native C variant needs no bootstrap at all: there the micro-compiler is compiled into the C loader for the loader's own architecture (ROADMAP "Next" (6) item (c)), and the wasm form matters only for the other hosts. The other reasons below
 (hosts in other languages, cross-compilation, determinism) stand as well.
 
+## The C variant
+
+(Maintainer, 2026-11-24.) One set of C sources (our core over sljit) builds two ways: to wasm, for bootstrap, precompiling and cross-compiling on any wasm runtime; and natively, statically embedded in the C loader for the architecture the loader is built for (x86-64 and aarch64 for now; no compiler `.wbo` for the C loader). The C loader has a build option without the compiler, for small memory (microcontrollers, microservices): it then runs only AOT files cross-compiled for it on a PC by the wasm build of the same compiler. The GC collector stays a wasm module and takes the same path as any module: compiled on first need by the embedded compiler, or, without the compiler, supplied as one more AOT file (or its `.wbo` linked into the binary as data); a build option without GC leaves the collector and the GC heap out for devices whose modules use no GC. When this works, a tool or written instructions help build a C loader without the compiler together with a wasm module's AOT file and the GC collector to embed.
+
 ## Bootstrap paths
 
 Shipping the native micro-compilers pre-compiled, with bootstrap as the fallback and a check
