@@ -405,6 +405,11 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29; done 2026-11-03) -> 
   * a test switch that moves an i32 memory on every grow (explicit mode) and the GC heap at every
     `ALLOC`, run over the spec `gc/` and `exceptions/` directories, to prove that code reloads the
     base (code, later).
+* **ISA extensions above the baseline** (maintainer, 2026-11-24: after v1, in this backlog): a
+  compatible addition under v1 (an artifact already declares `isa_level`/`isa_features`), each
+  variant with its own spec and a measurement (D24, D33, D42); the candidates per level are in
+  [ISA-LEVELS.md](ISA-LEVELS.md). For `jit-sljit` a level sets sljit's `cpu_feature_list` from the
+  declared level, never from the running CPU.
 
 ## Open questions
 1. **Minimum Python.** Resolved by D19: 3.11 (the PoC's 3.8 and 3.4 `--legacy` measurements stay as
