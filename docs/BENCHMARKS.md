@@ -2363,3 +2363,33 @@ control are the three-path record calls (about 31 instructions each, 9 before).
   frames cost what `jit-x86_64`'s do (S0016 "Frame size": the record helpers keep the context
   and C-path saves out of the body frames); its compile time is within the spread of
   `jit-x86_64`'s. No run-time speed is claimed here (CoreMark: S0016 step 6).
+
+## `jit-sljit-aarch64` on the boundary: depth (S0016 step 5, 2026-11-24)
+* Date: 2026-11-24
+* Commit: the S0016 step-5 working tree (`tests/sljit/` aarch64 paths, `native/`'s page-aligned
+  buffer and constants; no change to the core or to the Python backends)
+* Machine: QEMU 8.2.2 user mode on the Intel Xeon @ 2.10 GHz host (4 vCPU), CPython 3.13.18
+  aarch64; a native stack's arithmetic does not depend on the emulator
+* Command: `python3 tools/run_arm64.py depth.py`, step 1's scratch driver (not committed) with the
+  pair `jit-aarch64` / `jit-sljit-aarch64`: `DEPTH` (own-table `call_indirect`), its direct twin
+  and `XA` + `XB` of `tests/jit/test_boundary.py`, `StoreState(max_wasm_stack=128 << 10)` and
+  `512 << 10`, `f(0)` until `STACK_OVERFLOW`, the level count from `$n` (across instances and
+  compilers: twice `XA`'s count). Both targets in one session, the same modules. Wasmtime
+  50.0.1 (wasmtime-py for aarch64, `.cache/arm64-site`) under the same QEMU with
+  `Config.max_wasm_stack = 512 << 10` (step 1's `depth_wt.py` through `tools/run_arm64.py`).
+* Result (levels at 128 KiB / 512 KiB, bytes a level):
+
+| recursion | `jit-aarch64` | `jit-sljit-aarch64` | Wasmtime 50.0.1 (512 KiB) |
+|---|---|---|---|
+| direct `call` (one pin) | 4 094 / 16 382 (32) | 4 095 / 16 383 (32) | 32 756 |
+| `call_indirect`, own table | 4 094 / 16 382 (32) | 4 095 / 16 383 (32) | 16 378 |
+| across instances (calls) | 2 730 / 10 922 (48) | 2 730 / 10 922 (48) | 21 838 |
+| across compilers, either way (calls) | 1 092 / 4 370 (120) | (the same chains) | — |
+
+* Before the step-5 amendment ("aarch64 has no xcall"), with an `xcall` helper as on x86-64, the
+  same run gave 2 048 / 8 192 (64) across instances: sljit's aarch64 frame is a 16-byte record
+  plus locals rounded to 16, so `xcall`'s one slot made it 32 bytes (LESSONS 153). The body now
+  pushes S0 around that call (16 bytes, in the site's numbers), as `jit-aarch64` pushes x28.
+* Reading: `jit-sljit-aarch64`'s frames cost what `jit-aarch64`'s do on all three rows (one level
+  more at each size: the entry's frames differ). Across compilers one measurement covers both
+  directions. No timing is claimed (QEMU; CoreMark on the native runner: S0016 step 6).

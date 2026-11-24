@@ -25,7 +25,7 @@ from tests.jit.test_tail import PING, PONG, _small_thread
 from waboros.runtime.store import StoreState
 from waboros.targets.base import TARGETS, Raw, Trap, TrapCode
 from waboros.targets.jit.common import instance, walk
-from waboros.targets.jit.common.context import HOST_BRIDGE, TRAP_CODE
+from waboros.targets.jit.common.context import EXIT_RECORD, HOST_BRIDGE, TRAP_CODE
 from waboros.targets.jit.common.execmem import ExecMem, load
 from waboros.targets.jit.common.instance import JitFunc, _stacks
 
@@ -298,9 +298,12 @@ def test_the_walk_crosses_modules_and_hop_chains(
     assert a("top", 5) == [5 + 1000 + 10 + 105]
     # A's thunk and $back, then B's g (and its C entry), then A's top with its C entry (called
     # from the host; S0015); jit-sljit calls a record of another context through a module
-    # helper with a frame of its own (xcall, ccall: S0016), B's below $back and A's below g
-    x = int(compiler != JIT)
-    assert seen[-1] == [[1] * 2 + [0] * x + [0] * (1 + c) + [1] * x + [1] * 2]
+    # helper with a frame of its own (xcall, ccall: S0016), B's below $back and A's below g;
+    # (B's to A is this compiler's other context: xcall, which aarch64 has not, S0 pushed in the
+    # calling body; A's to B the same, or ccall on the C path)
+    xb = int(compiler != JIT and getattr(TARGETS[compiler](), "xcall", True))
+    xa = int(compiler != JIT and (c or xb))
+    assert seen[-1] == [[1] * 2 + [0] * xb + [0] * (1 + c) + [1] * xa + [1] * 2]
     assert a("own", 5) == [5 + 1000 + 205]  # A's own table: the body, no C entry between
     assert seen[-1] == [[1] * 4]  # the thunk, $back, own and its C entry
     assert a("hops", 1001) == [7 + 2000]
@@ -620,6 +623,30 @@ def test_the_cross_context_body_call_keeps_the_pins() -> None:
         assert trap_of(p, outer, 1) is TrapCode.UNREACHABLE
         assert p(outer, 2) == [(7 + SUM) & M32]
         assert p(outer, 3) == [(8 + inner + SUM) & M32]
+
+
+SB = """(module (import "env" "h" (func $h (param i32) (result i32)))
+  (func (export "g") (param i32) (result i32) (call $h (local.get 0))))"""
+SA = """(module (import "b" "g" (func $g (param i32) (result i32)))
+  (func (export "f") (param i32) (result i32) (call $g (local.get 0))))"""
+
+
+def test_the_stack_is_aligned_at_a_host_call_across_instances() -> None:
+    """A calls B's function (this compiler's other context: jit-sljit's xcall, or on aarch64 S0
+    pushed in A's body, S0016), which calls the host: the stack pointer at the bridge call (the
+    exit record's first word) is 16-byte aligned. QEMU does not check sp alignment (hardware
+    does, SCTLR_EL1.SA0), so an 8-byte push shows only here."""
+    store, seen = StoreState(), []
+
+    def h(args: Sequence[Raw]) -> list[Raw]:
+        rec = b.inst.ctx[EXIT_RECORD]  # type: ignore[attr-defined]
+        seen.append(ctypes.c_uint64.from_address(rec).value % 16)
+        return [args[0]]
+
+    b = build(wat(SB), imports={"env": {"h": h}}, store=store)
+    a = build(wat(SA), imports={"b": provider(b)}, store=store)
+    assert a("f", 3) == [3] and b("g", 4) == [4]
+    assert seen == [0, 0]
 
 
 def harness(win64: bool) -> int:

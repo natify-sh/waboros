@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from tests.jit.test_compiler import build, wat
+from tests.jit.test_compiler import JIT, build, wat
 from waboros.frontend.binary import parse
 from waboros.frontend.validate import validate
 from waboros.runtime.store import StoreState
@@ -19,7 +19,7 @@ from waboros.targets.base import TARGETS
 from waboros.targets.jit.common import artifact as A
 from waboros.targets.jit.common.instance import _stacks
 
-NAME = "jit-sljit-x86_64"
+NAME = f"jit-sljit-{JIT[4:]}"  # the host's
 if NAME not in TARGETS:
     pytest.skip(f"{NAME} is not registered here (no native/ build)", allow_module_level=True)
 
@@ -28,7 +28,7 @@ SRC = wat('(module (func (export "f") (param i32) (result i32) (local.get 0)))')
 
 def test_targets_from_attributes() -> None:
     known = A.targets()
-    assert known[NAME] == known["jit-x86_64"] == (62, "x86-64-v1")
+    assert known[NAME] == known[JIT] and known["jit-x86_64"] == (62, "x86-64-v1")
     assert known["jit-aarch64"] == (183, "armv8.0-a") and "pyc" not in known
 
 
@@ -37,7 +37,7 @@ def test_digest_sources_fold_into_the_compiler_string(
 ) -> None:
     monkeypatch.setattr(A, "__version__", "0.0.0")
     monkeypatch.setattr(A, "_own_digest", lambda: "0123456789abcdef")
-    assert A.compiler_string("jit-x86_64").split(" ")[1] == "0.0.0-0123456789abcdef"
+    assert A.compiler_string(JIT).split(" ")[1] == "0.0.0-0123456789abcdef"
     files = [tmp_path / "a" / "x.c", tmp_path / "b" / "y.py"]
     for f in files:
         f.parent.mkdir()
@@ -55,19 +55,19 @@ def test_digest_sources_fold_into_the_compiler_string(
 
 def test_a_store_keeps_each_compilers_trampolines() -> None:
     store = StoreState()
-    a, b = (build(SRC, n, store=store) for n in ("jit-x86_64", NAME))
+    a, b = (build(SRC, n, store=store) for n in (JIT, NAME))
     st = _stacks(store)
-    ta, tb = (TARGETS[n]().trampolines() for n in ("jit-x86_64", NAME))
+    ta, tb = (TARGETS[n]().trampolines() for n in (JIT, NAME))
     assert st.entries.keys() == {ta.entry_ret, tb.entry_ret}
     assert st.restores.keys() == {ta.restore, tb.restore}
-    assert st.bridges == {ta.bridge: "jit-x86_64", tb.bridge: NAME}
+    assert st.bridges == {ta.bridge: JIT, tb.bridge: NAME}
     assert a("f", 5) == [5] and b("f", 6) == [6]
 
 
 def test_two_targets_on_one_bridge_are_refused(monkeypatch: pytest.MonkeyPatch) -> None:
     store = StoreState()
-    a = build(SRC, "jit-x86_64", store=store)
-    shared: Any = TARGETS["jit-x86_64"]().trampolines()
+    a = build(SRC, JIT, store=store)
+    shared: Any = TARGETS[JIT]().trampolines()
     monkeypatch.setattr(type(TARGETS[NAME]()), "trampolines", lambda _: shared)
     with pytest.raises(RuntimeError, match="share one bridge address"):
         build(SRC, NAME, store=store)

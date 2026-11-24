@@ -5,9 +5,10 @@ each as an artifact file, then read the files back and run tools/isa_check.py on
 (`.text` up to the first trampoline blob, its data area excluded) and on every trampoline blob.
 Identical blobs are checked once.
 
-    python3 tools/isa_all.py [--target jit-x86_64|jit-aarch64|jit-sljit-x86_64] [--level v1|v2]
+    python3 tools/isa_all.py [--target jit-x86_64|jit-aarch64|jit-sljit-<arch>] [--level v1|v2]
         [--dump DIR]
-        # DIR: check the `.wbo` files there only; jit-sljit-*: with native/'s library (S0016)
+        # DIR: check the `.wbo` files there only; jit-sljit-*: with native/'s library (S0016),
+        # the host's only (aarch64 under QEMU: python3 tools/run_arm64.py tools/isa_all.py ...)
 
 Both targets compile with tools/jit_dump.py, which never runs the code, so it
 works on any host (cross-compiling on x86-64, D35); `--target jit-aarch64` gates the blobs against
@@ -22,6 +23,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+from functools import cache
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -42,15 +44,28 @@ c = base.TARGETS[sys.argv[1]]().compile(m)
 open(sys.argv[2] + "/collector.wbo", "wb").write(artifact.write(c, target=sys.argv[1], wasm=w))"""
 
 
+@cache
+def python(host: bool = False) -> list[str]:
+    """This interpreter as a child: itself, or under QEMU user mode without binfmt
+    (tools/run_arm64.py sets QEMU_LD_PREFIX) through qemu-aarch64; `host`: the machine's own
+    `python3` instead (isa_check.py, standard library only, on any host)."""
+    try:
+        subprocess.run([sys.executable, "-c", "0"], check=True, capture_output=True)
+        return [sys.executable]
+    except OSError:
+        prefix = os.environ.get("QEMU_LD_PREFIX")
+        if not prefix:
+            raise
+        return ["python3"] if host else ["qemu-aarch64", "-L", prefix, sys.executable]
+
+
 def dump(out: Path, target: str) -> None:
     env = {**os.environ, "PYTHONPATH": str(ROOT)}
-    cmd = [sys.executable, str(ROOT / "tools/jit_dump.py"), "--target", target, str(out / "list")]
+    cmd = [*python(), str(ROOT / "tools/jit_dump.py"), "--target", target, str(out / "list")]
     subprocess.run(cmd + ["--files", str(out)], cwd=ROOT, env=env, check=True)
     # the runtime's collector module (S0013 step 5.2), outside the D35 lists of jit_dump
     env["PYTHONPATH"] += os.pathsep + str(ROOT / "src")
-    subprocess.run(
-        [sys.executable, "-c", COLLECTOR, target, str(out)], cwd=ROOT, env=env, check=True
-    )
+    subprocess.run([*python(), "-c", COLLECTOR, target, str(out)], cwd=ROOT, env=env, check=True)
 
 
 def blobs(path: Path) -> list[tuple[str, bytes, int]]:
@@ -97,7 +112,7 @@ def main() -> int:
                 seen.add(key)
                 blob = out / f"{key}.bin"
                 blob.write_bytes(raw)
-                cmd = [sys.executable, str(ROOT / "tools/isa_check.py"), str(blob)]
+                cmd = [*python(host=True), str(ROOT / "tools/isa_check.py"), str(blob)]
                 cmd += ["--data", f"{ds}:{len(raw)}"] if ds >= 0 else []
                 cmd += ["--arch", "aarch64"] if a64 else ["--level", args.level]
                 p = subprocess.run(cmd, capture_output=True, text=True)

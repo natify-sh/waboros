@@ -369,10 +369,18 @@ runs only under an emulator). `tests/consumer/` is a tiny project embedding `nat
 modes, `tools/spec_diff.py` both ways against `jit-x86_64` on the JSON reports, and
 `tests/jit/test_boundary.py`, `tests/sljit/` and the parity test of `tests/spec/test_runner.py`; the suite through artifact
 files with `spec_diff` both ways, and `tools/isa_all.py --target jit-sljit-x86_64`), steps in `jit` (the cross build under QEMU with BTI) and `arm64` (native, no BTI), all
-with `submodules: true`.
+with `submodules: true`. Since step 5 `jit` also runs `jit-sljit-aarch64` under
+`tools/run_arm64.py` (explicit bounds, BTI enforced, the walk check and poison): the suite
+in-process and through files against `jit-aarch64`'s report with `spec_diff` both ways, and
+`test_mixed.py`, `test_boundary.py`, `tests/sljit/` and `tests/artifact/test_sljit.py`; `arm64`
+runs its suite natively in guard mode against `jit-aarch64`'s report, the same tests in both modes
+and `tools/isa_all.py --target jit-sljit-aarch64` (`jit-sljit` does not cross-compile, so the gate
+runs on an aarch64 host; locally `python3 tools/run_arm64.py tools/isa_all.py --target
+jit-sljit-aarch64`).
 
 `tests/sljit/` registers the development target `jit-sljit-<arch>` when the library is built
-(`WABOROS_SLJIT_LIB`, default `build/native/`), and refuses a library older than any `native/`
+(`WABOROS_SLJIT_LIB`, default the first of `build/native/` and `build/native-a64/` built for
+this machine, by its ELF `e_machine`: under QEMU the cross build is found), and refuses a library older than any `native/`
 source (rebuild with `cmake --build build/native`). A development target (`development = True`,
 `complete = False`) is never chosen by `auto`, has no FEATURES column, and joins the complete JITs
 in the parity test (it fails exactly what `pyc` fails).
@@ -390,21 +398,29 @@ walk from it); `tests/sljit/test_store.py` covers `artifact.targets()`, the dige
 sets of trampolines and the refusal of two targets on one bridge address; `tests/sljit/test_refusals.py`
 the refusals (a shortened stub jump, a frame above the headroom, a stale library, no compiler left
 behind, and code generated below 4 GiB, where sljit would form `SLJIT_MOV_ADDR` as an absolute
-address that the copy does not relocate).
+address that the copy does not relocate, or on aarch64 off a page, where a label address beyond
++-1 MiB is a page-relative `adrp`; a stub without its second word); on aarch64 a module with a
+tail site 1.1 MiB before centry checks that the `adrp` is there and that the hop is taken (the
+host sees the same stack pointer as for a direct call).
 
 Mixed stores (S0016 step 3): `tests/jit/test_mixed.py` puts the machine's JIT and each development
-compiler of its architecture in one store, both directions (pairs from `TARGETS`; aarch64 joins in
-step 5); it skips without the library. It covers calls of every value type (NaN payloads, v128,
+compiler of its architecture in one store, both directions (pairs from `TARGETS`: `jit-x86_64`
+with `jit-sljit-x86_64`, `jit-aarch64` with `jit-sljit-aarch64` under QEMU and on the arm64
+runner); it skips without the library. It covers calls of every value type (NaN payloads, v128,
 externref and funcref by identity, a struct and an i31 made in the caller) through an import,
 `call_indirect` and `call_ref` into the other compiler's table; D71's paths, read from the walk at a
 host import (each frame labelled `body`, `centry`, `xcall` or `ccall` by its return address against
-the module's centry, and the restore frames crossed): each compiler calls its own records at the
+the module's centry, and the restore frames crossed; aarch64 has no `xcall`, its body pushes S0
+around that call): each compiler calls its own records at the
 body and the other's at its C entry; tail ping-pong in S0015's three entry shapes (10^6 round trips
 in 256 KiB, the shape at the end of the chain checked, the call-instead-of-tail control); every
 public status through one and two C entries; memory 0's base after a call and after
 tail_switch's first hop into another instance (its own memory) and after an i64 memory moved by the
-callee (the same two cases in `test_boundary.py` within one compiler: `jit-sljit`'s xcall,
-ccall and restore reloads each fail one of them when removed); and INTERRUPT from another thread while the callee
+callee (the same two cases in `test_boundary.py` within one compiler: `jit-sljit`'s xcall (on
+aarch64 the reload after the pushed call), ccall and restore reloads each fail one of them when
+removed; `test_boundary.py`'s `test_the_stack_is_aligned_at_a_host_call_across_instances` reads the
+exit record's stack pointer, 16-byte aligned, behind a cross-instance call: QEMU does not check sp
+alignment, so an 8-byte push on aarch64 shows only there); and INTERRUPT from another thread while the callee
 loops (bounded: a lost interrupt ends the loop after 2^32 - 1 rounds and fails); the walk with the
 GC switches across both compilers and a mixed tail chain, with the collector's compiler asserted
 (the second-instantiated module's, made for its function-subtype site or by the first collection

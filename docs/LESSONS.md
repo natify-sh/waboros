@@ -1210,3 +1210,21 @@ What went wrong or surprised us while building the PoC, so it is not found again
     (an i64 memory past a small reservation) makes the stale base visible, as a segfault. Rule: test
     a reload with a case where the saved value is wrong (the memory moved), not only one where
     another value was put in the register. Found: S0016 step 4, 2026-11-24.
+152. **sljit's aarch64 label address is page-relative beyond 1 MiB.** `SLJIT_MOV_ADDR` is `adr`
+    within +-1 MiB, `adrp` + `add` up to 4 GiB (sljitNativeARM_64.c, `mov_addr_get_length`), and
+    `adrp` counts pages from the buffer sljit generated into. Our code is copied out to an address
+    = 0 mod 4096, so a buffer at a page + 16 (the old size header) would have given a wrong
+    centry return point in any module whose tail site is more than 1 MiB from centry, and no spec
+    module is that large. Rule: generate into a page-aligned buffer (`wsl_map`), refuse another
+    (`Emitter.generate`), and test with a module made that large (`tests/sljit/test_refusals.py`). Found: S0016 step 5, 2026-11-24.
+153. **One 8-byte local doubles a small sljit frame on aarch64.** sljit's aarch64 frame is the
+    16-byte frame record plus saved registers and locals, rounded to 16, so a helper with one
+    slot is 32 bytes where x86-64's is 16; `xcall` made a crossing cost 64 bytes against
+    `jit-aarch64`'s 48. Rule: count an aarch64 frame in 16-byte steps before adding a helper; the
+    body pushes S0 itself there (S0016 "aarch64 has no xcall"). Found: S0016 step 5, 2026-11-24.
+154. **QEMU user mode does not check stack-pointer alignment.** An 8-byte push around a call
+    (sp misaligned for the callee's first `stp` through sp, a fault on hardware with Linux's
+    SCTLR_EL1.SA0) passed the whole QEMU run of the mixed and boundary tests. Rule: on aarch64
+    assert sp % 16 where the code can see it (the exit record's sp at a host call,
+    `test_boundary.py`), since only the native runner would fault. Found: S0016 step 5,
+    2026-11-24.

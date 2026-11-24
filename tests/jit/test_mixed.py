@@ -51,8 +51,13 @@ IDS = [f"{a[4:]}>{b[4:]}" for a, b in WAYS]
 
 
 def helpers(target: str) -> bool:
-    """`jit-sljit` calls another context's record through a module helper with its own frame."""
+    """`jit-sljit` calls another compiler's record through a module helper with its own frame."""
     return target.startswith("jit-sljit")
+
+
+def xcall(target: str) -> bool:
+    """... and another context of its own through one (`xcall`; not on aarch64, S0016)."""
+    return bool(getattr(TARGETS[target](), "xcall", False))
 
 
 @pytest.fixture(autouse=True)
@@ -72,8 +77,9 @@ def public_statuses(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
 def frames(store: StoreState, names: dict[Any, str]) -> tuple[list[tuple[str, str]], list[str]]:
     """The walk from a host call: per frame, innermost first, (instance name, kind), kind being
-    `body` below the module's centry, else `centry` and then (`jit-sljit`) `xcall`, `ccall` in
-    emission order; and the compilers of the restore frames (tail_switch) the walk crossed."""
+    `body` below the module's centry, else `centry` and then (`jit-sljit`) `xcall` (where the
+    module has its site: three after centry), `ccall` in emission order; and the compilers of the
+    restore frames (tail_switch) the walk crossed."""
     pcs: list[tuple[Any, int]] = []
     hits: list[str] = []
     real, st = walk._site, _stacks(store)
@@ -101,7 +107,8 @@ def frames(store: StoreState, names: dict[Any, str]) -> tuple[list[tuple[str, st
         code = ctypes.string_at(inst.code.addr, inst.code.size)
         cen = TARGETS[inst.owner]().centry(code, min(o for o, _ in inst.funcs))
         after = sorted(o for o in inst.walk_sites if o >= cen)
-        kind = "body" if off < cen else ("centry", "xcall", "ccall")[after.index(off)]
+        kinds = ("centry", "xcall", "ccall") if len(after) == 3 else ("centry", "ccall")
+        kind = "body" if off < cen else kinds[after.index(off)]
         out.append((names[inst], kind))
     return out, hits
 
@@ -166,7 +173,8 @@ PA = """(module (type $t (func (param i32) (result i32)))
 @pytest.mark.parametrize(("tx", "ts"), PAIRS, ids=[f"{x[4:]}+{s[4:]}" for x, s in PAIRS])
 def test_each_compiler_calls_its_own_records_at_the_body(tx: str, ts: str) -> None:
     """D71 in a store of both compilers: a record of this compiler's (its HOST_BRIDGE word is
-    ours) is called at its body, through `jit-sljit`'s xcall for another context; another
+    ours) is called at its body, through `jit-sljit`'s xcall for another context (aarch64: from
+    the calling body, S0 pushed); another
     compiler's at its C entry (the callee's centry frame), through `jit-sljit`'s ccall; the
     caller's own table at the body, no helper. The walk from B's host import shows which."""
     store, seen = StoreState(), []
@@ -189,6 +197,7 @@ def test_each_compiler_calls_its_own_records_at_the_body(tx: str, ts: str) -> No
             assert a(exp, 5) == [5]
             cen = [] if tb == ta else [("B" + tb, "centry")]
             helper = [("A" + ta, "xcall" if tb == ta else "ccall")] if helpers(ta) else []
+            helper = [] if tb == ta and not xcall(ta) else helper
             assert seen[-1] == ([("B" + tb, "body")] * 2 + cen + helper + top, []), (ta, tb)
         assert a("own", 6) == [6]
         assert seen[-1] == ([("A" + ta, "body")] * 2 + top, [])

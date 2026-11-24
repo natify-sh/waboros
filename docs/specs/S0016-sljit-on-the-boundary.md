@@ -214,9 +214,11 @@ tests/sljit/                   the Python side (development only): backend.py (t
 * **Internal convention: the PoC's** `SLJIT_ENTER_REG_ARG | SLJIT_ENTER_KEEP(3)`.
   * S0 is the context, S1 the frame, S2 memory 0's base, all kept from the caller.
   * `SLJIT_R0` holds the status.
-  * The pool is S3–S5 (saved by `sljit_emit_enter`) and `SLJIT_R3`–`SLJIT_R6`, which a function
-    that pins them saves in its own frame. That makes them callee-saved inside the compiler.
-  * On aarch64 the pool choice (S3–S9) is step 5's.
+  * The pool on x86-64 is S3–S5 (saved by `sljit_emit_enter`) and `SLJIT_R3`–`SLJIT_R6`, which a
+    function that pins them saves in its own frame. That makes them callee-saved inside the
+    compiler.
+  * On aarch64 the pool is S3–S9 (x22–x28, step 5), all saved by `sljit_emit_enter`: no R pin, so
+    nothing below saves `SLJIT_R3`–`SLJIT_R6` there.
 * **Module layout**, as `jit-x86_64`/`jit-aarch64`. Per function and host thunk a fixed **stub**,
   the body right behind it, and one shared **centry** per module after the last body, behind a
   pad:
@@ -251,11 +253,12 @@ tests/sljit/                   the Python side (development only): backend.py (t
     frame, S0 and S2 the callee's, a `REG_ARG` call to `[rec] + STUB`, then ours back (the PoC's
     `_call_record`);
   * another compiler: a C call to `[rec]` with `SLJIT_R0` = the record's context and `SLJIT_R1` =
-    S1 + 8·shift. Around it, `SLJIT_R3`–`SLJIT_R6` are stored to and reloaded from four frame
-    slots (x86-64 `rcx r8 r11 r10`, aarch64 `x3`–`x6`), and S2 is reloaded from the context, on
+    S1 + 8·shift. Around it, on x86-64, `SLJIT_R3`–`SLJIT_R6` are stored to and reloaded from four
+    frame slots (`rcx r8 r11 r10`; nothing on aarch64, whose pool has no R pin), and S2 is reloaded from the context, on
     every path before the status test (S0015 A3). S0–S5 are callee-saved in C.
 * **Direct calls** stay `REG_ARG` calls to the body label, as in the PoC.
-* **Host calls** go through `jit-sljit`'s bridge, which saves `SLJIT_R3`–`SLJIT_R6` itself (PoC).
+* **Host calls** go through `jit-sljit`'s bridge, which on x86-64 saves `SLJIT_R3`–`SLJIT_R6`
+  itself (PoC).
   A host thunk's C entry is its stub; behind it the thunk calls the bridge.
 * **Tail calls**, as `jit-x86_64` (S0015 forms 1 and 2b; D71):
   * own context: move the arguments down, restore the R pins, `CALL_RETURN` (`REG_ARG`) to
@@ -268,8 +271,8 @@ tests/sljit/                   the Python side (development only): backend.py (t
     * otherwise: `CALL_RETURN` to `tail_switch` (context word 9) with the record in `SLJIT_R0`.
 * **`tail_switch`** is a sljit `REG_ARG | KEEP(3)` function in the compiler's blob, reached by
   `CALL_RETURN`, so its return address is the tail-caller's.
-  * Its prologue makes the restore frame: saved registers plus locals for `SLJIT_R3`–`SLJIT_R6`
-    and S0.
+  * Its prologue makes the restore frame: saved registers plus locals for S0 and, on x86-64,
+    `SLJIT_R3`–`SLJIT_R6`.
   * Its return address equal to its own `restore` label: a later hop. It switches S0 and S2 and
     `CALL_RETURN`s:
     * to `[rec] + STUB` (`REG_ARG`) if word 8 matches;
@@ -309,6 +312,14 @@ tests/sljit/                   the Python side (development only): backend.py (t
   * The saves are slots in the helpers' frames, never pushes around a call (a push would move the
     stack pointer the site's `ret_at` is counted from). Each helper's own call is a module site
     (shift 0, no map), like centry's; the body still has D71's three sites.
+  * **aarch64 has no `xcall`** (maintainer, 2026-11-24, step 5's depth gate): sljit's aarch64
+    frame is a 16-byte record plus locals rounded to 16, so an `xcall` with one 8-byte slot is 32
+    bytes and a crossing cost 64 against `jit-aarch64`'s 48. The body's same-compiler path pushes
+    S0 itself, as `jit-aarch64` does with x28: `stp x19, xzr, [sp, #-16]!` before the call and
+    `ldp x19, xzr, [sp], #16` after (custom words around sljit's `blr`), and that site's numbers
+    are `(ret_at + 16, up + 16)`. The walk reads the push like any frame size, so "no push around a
+    call" is an x86-64 rule; on aarch64 the push is in the site's numbers. Depth across instances is
+    then `jit-aarch64`'s.
   * `wide` and `_copy` take S2 (memory 0's base, never an operand) as their extra temporary and
     reload it from the context afterwards, so a body needs no scratch slots either.
   * Why not slots in every calling frame (the formula this replaces): 8 · (pins + 1 context +
@@ -793,6 +804,50 @@ In the step that makes each untrue; step 7 for the rest.
   `SLJIT_MOV_ADDR` is then absolute; tested by reporting the buffer at a low address); CI runs
   `tests/sljit`; the native comments (the buffer above 4 GiB checked, not guaranteed; the CPU
   features detected at the first create) and `test_native.c`'s baseline line.
+* 2026-11-24: step 5 done (aarch64): `jit-sljit-aarch64` in `tests/sljit/` (a shared `_Sljit`
+  mixin over `JitX86_64Target`/`JitAarch64Target`; the library found by its ELF machine, so the
+  cross build `build/native-a64` serves `tools/run_arm64.py`). The backend's aarch64 rows:
+  * the pool is S3-S9 (x22-x28), all saved by sljit's enter: no R pin, so bodies have no locals
+    and ccall, the bridge and tail_switch's restore frame save no R3-R6 (the compiler section says
+    so);
+  * stubs `bti jc; adr x2, #8; b centry` (12 bytes, checked in `finish`); `bti jc` on bodies,
+    host-thunk bodies and tail_switch, `bti c` on the bridge; x18 never used;
+  * no `xcall` ("Frame size", the amendment): the body pushes S0 around the call, site
+    `(ret_at + 16, up + 16)`;
+  * the PoC's guard rules (a constant address through the index register, stored immediates
+    through R2), NEON through a private copy of `aarch64/simd.py`, `fsqrt` as one word;
+  * `native/`: a page-aligned code buffer on both architectures (sljit's aarch64 `MOV_ADDR` is
+    `adrp` beyond +-1 MiB, LESSONS 152; refused off a page) and the constants `SLJIT_S6`-`S9`,
+    `SLJIT_LOCALS_OFFSET` (16 on aarch64: the bridge's caller sp).
+  Numbers (QEMU 8.2.2 user mode, BTI enforced, this machine):
+  * the suite in-process, explicit, with the walk check and poison: 64 229 pass, 0 fail (68 s);
+    without the checks 64 229; through files with the checks 64 229; guard with the checks
+    64 229, through files 64 229 (68-102 s a run); `spec_diff` against `jit-aarch64` (64 229 in
+    each mode) empty both ways for each;
+  * `test_mixed.py`, `test_boundary.py`, `tests/sljit`, `tests/artifact/test_sljit.py` in both
+    bounds modes with the walk check, poison and verify: 162 pass, 2 skip (x86-64-only);
+    `test_mixed.py` through files: 58 pass; a new `test_boundary.py` test asserts the exit
+    record's sp 16-byte aligned behind a cross-instance call (on every compiler);
+  * `tools/isa_all.py --target jit-sljit-aarch64` through `run_arm64.py`: 953 blobs, 0 failed
+    (ARMv8.0-A). `isa_all.py` now starts its children through qemu-aarch64 where binfmt is
+    missing, and `isa_check.py` with the host's `python3`;
+  * depth (BENCHMARKS): 32 / 32 / 48 bytes direct, own table, across instances, as `jit-aarch64`
+    (64 across instances with an `xcall`, before the amendment); 120 across compilers.
+  x86-64 unchanged: the `tools/jit_dump.py` lists of `jit-sljit-x86_64`, `jit-x86_64` and
+  `jit-aarch64` byte-identical to HEAD's in both modes (so the page-aligned buffer changes no
+  byte), the `sysv`/`win64` blobs identical; `jit-sljit-x86_64` in-process with the checks 64 229 in
+  both modes, `spec_diff` empty; `pytest -n 4` 1 469 pass. Controls (each reverted): the body's
+  `bti jc` removed: SIGILL in the QEMU suite; the push's site numbers without +16: the walk tests
+  of `test_boundary.py` (walk check, GC stress, poison, verify) and `test_mixed.py`'s D71 test
+  fail (its walk-and-collector test pairs two compilers, so it never takes this path); the `ldp`
+  dropped: a segfault in `test_mixed.py`; restoring x9 instead of x19: three `test_boundary.py`
+  tests fail (memory 0's base 34, not 17; the pins; a status); an 8-byte push: only the new alignment test fails (QEMU does not check sp,
+  LESSONS 154); the reload of S2 after the pushed call removed: the memory-base test fails; a
+  buffer off a page: refused (a test). A module with a tail site 1.1 MiB before centry (centry's
+  return point as `adrp` + `add`) takes the hop: the host sees the same stack pointer as for a
+  direct call; generated 16 bytes off a page with the refusal bypassed, the test fails (32
+  bytes apart: tail_switch's restore frame). Wasmtime 50.0.1 under the same QEMU: 32 756 /
+  16 378 / 21 838 levels at 512 KiB (BENCHMARKS).
 
 ## Changes
 * 2026-11-23: created (draft), with the maintainer's placement, CMake and C99 decisions.
@@ -829,3 +884,6 @@ In the step that makes each untrue; step 7 for the rest.
   dropped (it gave 64 bytes a level against the depth table's 16 / 32); D67 stays "with the C
   core", the D39 amendment and the D67 marker leave the docs list; step 1 adds the library's
   accessors and constants.
+* 2026-11-24: aarch64 without `xcall` (maintainer, step 5's depth gate): the same-compiler path
+  pushes S0 around the call in the body (16 bytes, in the site's numbers), for parity with
+  `jit-aarch64` (48 bytes a crossing, not 64).

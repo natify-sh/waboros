@@ -1,6 +1,6 @@
 # pyright: basic, reportArgumentType=false, reportAttributeAccessIssue=false
-"""The D39 backend of `jit-sljit-x86_64` (docs/specs/S0016): our one-pass core
-(common/compiler.py) with sljit as the encoder, through ctypes and `native/`'s library. Ported
+"""The D39 backend of `jit-sljit-x86_64` and `jit-sljit-aarch64` (docs/specs/S0016): our one-pass
+core (common/compiler.py) with sljit as the encoder, through ctypes and `native/`'s library. Ported
 from poc/sljit/sljit-be/waboros_sljit.py (its operators, bounds, floats, SIMD glue) and given
 the structure `jit-x86_64` has since S0015.
 
@@ -10,6 +10,9 @@ Internal convention (sljit's SLJIT_CALL_REG_ARG + SLJIT_ENTER_KEEP(3)):
   pool (pinnable, callee-saved inside this compiler): S3 S4 S5 (saved by sljit's enter) and
   R4 R5 R6 R3 (saved in the function's own frame: `local` = 8 * R pins, nothing else).
 Memory 0's size is read from the context at every explicit check.
+On aarch64 (step 5) the pool is S3-S9 (x22-x28), all saved by sljit's enter: no R pin, so no
+frame locals in bodies and nothing for ccall or the bridge to save; x18 is never touched (sljit's
+`reg_map` has none, and our custom words use x2, x9-x13, x17).
 
 The module, as jit-x86_64's (S0015): per function and host thunk a 16-byte C-entry stub
 (`endbr64; lea rdx, [rip + 5]` as custom bytes, then sljit's `jmp rel32` to centry), the body
@@ -20,14 +23,20 @@ right behind it; after the last body a 128-byte `int3` pad (sljit shortens a jum
   * xcall (a record of another context of this compiler: S0 saved in its 16-byte frame, the
     callee's S0/S2, its body called) and ccall (another compiler's record: R3-R6 saved in its
     frame, the C entry called with R0 = context, R1 = frame); each call is a site, shift 0, no
-    map (S0016 "Frame size": no body frame holds the context or the C-path saves).
+    map (S0016 "Frame size": no body frame holds the context or the C-path saves). aarch64 has
+    no xcall: the body pushes S0 around that call (16 bytes, in the site's numbers), since a
+    sljit frame with one local is 32 bytes there.
 The bridge and tail_switch are this compiler's blob (`trampoline_blob`). Frame numbers
 (`ret_at`, `up`) come from `waboros_sljit_frame`. Every sljit function starts with `endbr64`
-(SLJIT_CONFIG_X86_CET); calls and returns pair up, and SLJIT_CALL_RETURN releases the frame
-and jumps with the return address as found (CET shadow stacks).
+(SLJIT_CONFIG_X86_CET); on aarch64 stubs are `bti jc; adr x2, #8; b centry` (12 bytes) and
+bodies, host-thunk bodies and tail_switch start with `bti jc` (reached by `blr` and by sljit's
+`br` of SLJIT_CALL_RETURN), the bridge with `bti c`. Calls and returns pair up, and
+SLJIT_CALL_RETURN releases the frame and jumps with the return address as found (CET shadow
+stacks).
 """
 
 import ctypes
+import platform
 import struct
 from collections.abc import Sequence
 from functools import cache
@@ -35,6 +44,8 @@ from typing import Any
 
 from tests.sljit import LIB
 from waboros.targets.base import TrapCode, Unsupported
+from waboros.targets.jit.aarch64 import encoder as _enc_a64
+from waboros.targets.jit.aarch64 import simd as _simd_a64
 from waboros.targets.jit.common import gc as _gc
 from waboros.targets.jit.common.backend import AddK, Dst, Imm, Operand, Reg, Slot
 from waboros.targets.jit.common.compiler import EXN, SUPPORTED, WIDEOPS
@@ -111,24 +122,43 @@ def g(n: str) -> int:
     raise KeyError(f"SLJIT_{n}")
 
 
+A64 = platform.machine().lower() in ("aarch64", "arm64")  # the library is built for the host
+ARCH = "aarch64" if A64 else "x86_64"
 R0, R1, R2, R3, R4, R5, R6 = (g(f"R{i}") for i in range(7))
-S0, S1, S2, S3, S4, S5 = (g(f"S{i}") for i in range(6))
+S0, S1, S2, S3, S4, S5, S6, S7, S8, S9 = (g(f"S{i}") for i in range(10))
 FR0, FR1, FR2 = g("FR0"), g("FR1"), g("FR2")
 SP, IMM, MEM, B32 = g("SP"), g("IMM"), g("MEM"), g("32")
 CTX, FRM, MB = S0, S1, S2
-POOL = (S3, S4, S5, R4, R5, R6, R3)  # R3 is rcx on x86-64: variable shifts want it, so last
-SPOOL = (S3, S4, S5)
-RSAVE = (R3, R4, R5, R6)  # what a C entry may clobber of the pool (rcx r8 r11 r10)
+if A64:
+    POOL = (S3, S4, S5, S6, S7, S8, S9)  # x22-x28: callee-saved in C, saved by sljit's enter
+    SPOOL = POOL
+    RSAVE: tuple[int, ...] = ()  # no R pin: nothing a C entry may clobber
+else:
+    POOL = (S3, S4, S5, R4, R5, R6, R3)  # R3 is rcx on x86-64: variable shifts want it, so last
+    SPOOL = (S3, S4, S5)
+    RSAVE = (R3, R4, R5, R6)  # what a C entry may clobber of the pool (rcx r8 r11 r10)
 MEM0 = Layout().memory(0)  # context word of memory 0's base
 M32, M64 = 0xFFFFFFFF, (1 << 64) - 1
 CALL_RETURN = g("CALL_RETURN")
 REG_ENTER = g("ENTER_REG_ARG") | 3  # SLJIT_ENTER_KEEP(3): S0..S2 shared
 SCRATCHES = 7 | (3 << 8)  # R0-R6 and SLJIT_ENTER_FLOAT(3)
 HOP = 0x80000001  # private status (S0015, bit 31): a body returns it to its module's centry
-STUB = 16  # endbr64 (4), lea rdx, [rip + 5] (7), jmp rel32 (5)
-STUB_HEAD = b"\xf3\x0f\x1e\xfa" + b"\x48\x8d\x15" + (5).to_bytes(4, "little")
+BTI_JC, BTI_C = (0xD50324DF).to_bytes(4, "little"), (0xD503245F).to_bytes(4, "little")
+if A64:
+    STUB = 12  # bti jc, adr x2, #8 (the body), b centry
+    STUB_HEAD = BTI_JC + (0x10000042).to_bytes(4, "little")
+    PAD = b"\0\0\0\0"  # one word (udf #0); sljit's aarch64 `b` has no short form anyway
+else:
+    STUB = 16  # endbr64 (4), lea rdx, [rip + 5] (7), jmp rel32 (5)
+    STUB_HEAD = b"\xf3\x0f\x1e\xfa" + b"\x48\x8d\x15" + (5).to_bytes(4, "little")
+    PAD = b"\xcc"  # int3
+# aarch64's same-compiler record path (no xcall, S0016): `stp x19, xzr, [sp, #-16]!` and
+# `ldp x19, xzr, [sp], #16` around the call, x19 being sljit's S0 (as jit-aarch64 pushes x28)
+_X = lib.sljit_get_register_index(0, CTX)  # SLJIT_GP_REGISTER
+PUSH_CTX = (0xA9800000 | 0x7E << 15 | 31 << 10 | 31 << 5 | _X).to_bytes(4, "little")
+POP_CTX = (0xA8C00000 | 2 << 15 | 31 << 10 | 31 << 5 | _X).to_bytes(4, "little")
 HEADROOM = 768  # S0015: the most a chain of frames may allocate before the next stack check
-LOCALS_OFFSET = 0  # SLJIT_LOCALS_OFFSET on x86-64 SysV (sljitConfigInternal.h)
+LOCALS_OFFSET = g("LOCALS_OFFSET")  # 0 on x86-64 SysV, 16 on aarch64 (the frame record)
 
 
 def _private_simd() -> Any:
@@ -150,7 +180,23 @@ def _private_simd() -> Any:
     return m
 
 
-_v128 = _private_simd()
+def _private_simd_a64() -> Any:
+    """The same for aarch64/simd.py: its context and frame registers are sljit's S0 and S1
+    (x19, x20); its scratch x9-x13, x17 and v0-v7, v16-v31 hold nothing of ours."""
+    import importlib.util
+    import sys
+
+    name = f"{__name__}._simd_aarch64"
+    spec = importlib.util.spec_from_file_location(name, _simd_a64.__file__)
+    assert spec is not None and spec.loader is not None
+    m = importlib.util.module_from_spec(spec)
+    sys.modules[name] = m
+    spec.loader.exec_module(m)
+    m.CTX, m.FRAME = (lib.sljit_get_register_index(0, r) for r in (CTX, FRM))
+    return m
+
+
+_v128 = _private_simd_a64() if A64 else _private_simd()
 
 
 def MEM1(r: int) -> int:
@@ -283,8 +329,15 @@ class Emitter:
         self.ret_at, self.up = ret_at.value, up.value
 
     def custom(self, code: bytes) -> None:
-        buf = ctypes.create_string_buffer(code, len(code))
+        assert len(code) <= 16, len(code)
+        buf = (ctypes.c_uint32 * 4)()  # 4-byte aligned, as aarch64's check wants
+        ctypes.memmove(buf, code, len(code))
         lib.sljit_emit_op_custom(self.c, buf, len(code))
+
+    def pad(self, kind: bytes) -> None:
+        """aarch64: a BTI landing pad (`bti jc`/`bti c`) as the next instruction."""
+        if A64:
+            self.custom(kind)
 
     def generate(self) -> tuple[int, int]:
         """(address of the generated buffer, size); the caller frees with `free`."""
@@ -300,6 +353,9 @@ class Emitter:
             raise RuntimeError(
                 f"sljit generated code at {code:#x}, below 4 GiB: not position-independent"
             )
+        if A64 and code % 4096:  # a label address beyond +-1 MiB is `adrp`: page-relative, and
+            lib.sljit_free_code(code, None)  # the loader puts the code at 0 mod 4096 (S0004)
+            raise RuntimeError(f"sljit generated code at {code:#x}, not on a page")
         return code, lib.waboros_sljit_code_size(self.c)
 
     def offsets(self, code: int) -> list[int]:
@@ -355,9 +411,10 @@ class Backend(Emitter):
         f = Frame(pins)
         ns = sum(r in SPOOL for r in pins)
         assert all(r in SPOOL for r in pins[:ns]), pins
+        self.pad(BTI_JC)
         self.enter(REG_ENTER, "ARGS0(32)", SCRATCHES, 3 + ns, 8 * len(f.rpins))
         if self.up + 48 + 32 > HEADROOM:
-            raise Unsupported("jit-sljit-x86_64", "a native frame above the headroom (S0015)")
+            raise Unsupported(f"jit-sljit-{ARCH}", "a native frame above the headroom (S0015)")
         for i, r in enumerate(f.rpins):
             self.op1(g("MOV"), (MEM1(SP), 8 * i), (r, 0))
         f.vconst = lib.sljit_emit_const(self.c, g("MOV"), R2, 0, 1 << 20)  # 8 * frame_slots
@@ -415,7 +472,8 @@ class Backend(Emitter):
 
     def finish(self) -> tuple[bytes, int]:
         """Generate, patch the frame-size constants, turn marks into offsets, and check every
-        C-entry stub: its bytes, the long jump to centry, the body at stub + 16 (S0016)."""
+        C-entry stub: its bytes, the long jump to centry, the body at stub + STUB (16 on x86-64,
+        12 on aarch64; S0016)."""
         code, size = self.generate()
         for k, v in self.consts:
             lib.sljit_set_const(lib.waboros_sljit_const_addr(k), g("MOV"), v, 0)
@@ -428,10 +486,17 @@ class Backend(Emitter):
         centry = self.offset[self._centry_at]
         for stub, body in self._stubs:
             s = self.offset[stub]
-            rel = int.from_bytes(data[s + 12 : s + 16], "little", signed=True)
-            if (data[s : s + 11] != STUB_HEAD or data[s + 11] != 0xE9 or s + STUB + rel != centry
+            if A64:  # b imm26 at stub + 8
+                w = int.from_bytes(data[s + 8 : s + 12], "little")
+                jump, to = w >> 26 == 5, s + 8 + 4 * ((w & 0x3FFFFFF) - ((w & 0x2000000) << 1))
+            else:  # jmp rel32 at stub + 11
+                jump = data[s + 11] == 0xE9
+                to = s + STUB + int.from_bytes(data[s + 12 : s + 16], "little", signed=True)
+            if (data[s : s + len(STUB_HEAD)] != STUB_HEAD or not jump or to != centry
                     or self.offset[body] != s + STUB):  # fmt: skip
-                raise Unsupported("jit-sljit-x86_64", f"the C-entry stub at {s} is not 16 bytes")
+                raise Unsupported(
+                    f"jit-sljit-{ARCH}", f"the C-entry stub at {s} is not {STUB} bytes"
+                )
         return data, len(data)
 
     # ------------------------------------------------------------ data
@@ -644,9 +709,14 @@ class Backend(Emitter):
         self._fld(FR0, x, wide)
         if op == "sqrt":  # sljit has no square root: one instruction per ISA, as custom bytes
             fr = lib.sljit_get_register_index(1, FR0)  # SLJIT_FLOAT_REGISTER
-            a = _enc.Asm()
-            a.sse("sqrt", fr, fr, wide)
-            self._flush(a)
+            if A64:
+                b = _enc_a64.Asm()
+                b.fp1("sqrt", fr, fr, wide)
+                self._flush(b)
+            else:
+                a = _enc.Asm()
+                a.sse("sqrt", fr, fr, wide)
+                self._flush(a)
             self._fst(dst.id, FR0, wide)
             return
         self._round(op, dst.id, wide)
@@ -849,9 +919,12 @@ class Backend(Emitter):
                 else:  # unsigned: through a register (sljit may turn a negative immediate around)
                     self.op1(g("MOV"), (R2, 0), (IMM, s64(end)))
                     self.cmpj(g("LESS"), limit, (R2, 0), oob)
-            if mem == MEM0 and ea < 1 << 31:
+            if mem == MEM0 and ea < 1 << 31 and not (guarded and A64):
                 res = (MEM1(MB), ea)
-            else:
+            elif mem == MEM0:  # aarch64, guard: [base, index] is one instruction, so the fault
+                self.op1(g("MOV"), (R1, 0), (IMM, s64(ea)))  # point's label is on the faulting
+                res = MEM2(MB, R1), 0  # one (an offset the immediate form cannot take would
+            else:  # become an `add` before it)
                 self.op1(g("MOV"), (R1, 0), (IMM, s64(ea)))
                 res = self._base(R1, mem)
         else:
@@ -903,8 +976,10 @@ class Backend(Emitter):
     ) -> None:  # fmt: skip
         m = self._access(f, addr, offset, size, mem, a64, lo)
         s = _o(src, True)
-        if isinstance(src, Slot) or (isinstance(src, Imm) and not -(1 << 31) <= s[1] < 1 << 31):
-            self.op1(g("MOV"), (R2, 0), s)  # one instruction touches memory (fault point)
+        if isinstance(src, Slot) or (
+            isinstance(src, Imm) and (A64 or not -(1 << 31) <= s[1] < 1 << 31)
+        ):  # one instruction touches memory (the fault point): aarch64 has no immediate store
+            self.op1(g("MOV"), (R2, 0), s)
             s = (R2, 0)
         op = {1: "MOV_U8", 2: "MOV_U16", 4: "MOV_U32", 8: "MOV"}[size]
         if size == 4 and s[0] == IMM:
@@ -1157,7 +1232,7 @@ class Backend(Emitter):
 
     def _flush(self, a: Any) -> None:
         code = a.finish()
-        step = 15  # sljit's argument check: x86 1..15 bytes
+        step = 4 if A64 else 15  # sljit's argument check: aarch64 one word, x86 1..15 bytes
         for i in range(0, len(code), step):
             piece = code[i : i + step]
             chunk = (ctypes.c_uint32 * 4)()  # 4-byte aligned, as aarch64's check wants
@@ -1202,6 +1277,61 @@ class Backend(Emitter):
         run(px, a)
         self._flush(a)
 
+    def _custom_a64(self, run: Any) -> None:
+        """aarch64: waboros's NEON lowering (aarch64/simd.py, a private copy with sljit's context
+        and frame registers) into 4-byte custom words. Its forms take [base, #imm] only in the
+        ranges its own bounds give, so a constant address goes to the index register."""
+        a = _enc_a64.Asm()
+        ph = self._phys
+        me = self
+        frame = ph(FRM)
+
+        def bounds(
+            f: Frame, addr: Any, offset: int, size: int, mem: int, a64: bool, lo: int
+        ) -> Any:
+            me._flush(a)
+            if isinstance(addr, Reg):
+                addr = Reg(me._unphys[addr.id])
+            elif isinstance(addr, AddK):
+                addr = AddK(me._unphys[addr.id], addr.k)
+            op, disp = me._access(f, addr, offset, size, mem, a64, lo)
+            base, idx = op & 0x7F, (op >> 8) & 0x7F
+            if not idx and disp:
+                me.op1(g("MOV"), (R1, 0), (IMM, disp))
+                idx, disp = R1, 0
+            return ph(base), (ph(idx) if idx else None), disp
+
+        def fault_point() -> None:
+            me._flush(a)
+            me._fault_point()
+
+        def word(load: bool, t: int, base: int, off: int, size: int = 8) -> None:
+            if off // size < 1 << 12:
+                (a.ld(t, base, off, size) if load else a.st(t, base, off, size))
+            else:
+                a.mov_imm(17, off)
+                (a.ld_idx(t, base, 17, size) if load else a.st_idx(t, base, 17, size))
+
+        def r(o: Any, scratch: int, wide: bool, zr: bool = True) -> int:
+            if isinstance(o, Reg):
+                return o.id
+            if isinstance(o, Slot):
+                word(True, scratch, frame, 8 * o.k, 8 if wide else 4)
+                return scratch
+            v = o.value & (M64 if wide else M32)
+            if v == 0 and zr:
+                return _enc_a64.ZR
+            a.mov_imm(scratch, v, wide)
+            return scratch
+
+        class PX:
+            pass
+
+        px = PX()
+        px.a, px._bounds, px._fault_point, px._word, px._r = a, bounds, fault_point, word, r
+        run(px, a)
+        self._flush(a)
+
     def _mapped(self, o: Any) -> Any:
         if isinstance(o, Reg):
             p = self._phys(o.id)
@@ -1217,15 +1347,18 @@ class Backend(Emitter):
              *, a64: bool, lo: int) -> None:  # fmt: skip
         self._unphys: dict[int, int] = {}
         d, xs = self._mapped(dst), tuple(self._mapped(x) for x in args)
-        self._custom(lambda px, a: _v128.emit(px, f, op, d, xs, imm, a64, lo))
+        run = self._custom_a64 if A64 else self._custom
+        run(lambda px, a: _v128.emit(px, f, op, d, xs, imm, a64, lo))
 
     def move_v128(self, dst: Slot, src: Any) -> None:
-        self._custom(lambda px, a: _v128.move(a, dst, src))
+        run = self._custom_a64 if A64 else self._custom
+        run(lambda px, a: _v128.move(a, dst, src))
 
     # ------------------------------------------------------------ calls
     def _site(self) -> None:
         """The call just emitted is a safepoint (D56): a label at its return address, with the
-        current function's frame numbers (sljit pushes nothing around a call)."""
+        current function's frame numbers (sljit pushes nothing around a call; aarch64's push
+        around a same-compiler call records its own numbers in `_call_record`)."""
         self.sites.append((self.mark(), self.ret_at, self.up))
 
     def _status(self, f: Frame) -> None:
@@ -1242,8 +1375,9 @@ class Backend(Emitter):
 
     def _call_record(self, f: Frame, shift_slots: int) -> None:
         """Call the record in R1 on D71's three paths, three sites with one map (S0015, S0016):
-        our own context: its body behind its 16-byte C entry, as a direct call; another context
-        of this compiler (its HOST_BRIDGE word is ours): `xcall`; else `ccall`, the C entry.
+        our own context: its body behind its C entry (STUB bytes), as a direct call; another context
+        of this compiler (its HOST_BRIDGE word is ours): `xcall` (aarch64: S0 pushed around the
+        call to its body, the callee's S0 and S2 set); else `ccall`, the C entry.
         Each helper restores what it changed before it returns, so the status is tested with
         the pins, S0 and S2 back on every path (A3)."""
         self._records = True
@@ -1260,8 +1394,19 @@ class Backend(Emitter):
         self.op1(g("MOV"), (R2, 0), (MEM1(R1), 16))
         self.op1(g("MOV"), (R2, 0), (MEM1(R2), 8 * HOST_BRIDGE))
         self.cmpj(g("NOT_EQUAL"), (R2, 0), (MEM1(CTX), 8 * HOST_BRIDGE), foreign)
-        self.call(self._xcall)
-        self._site()
+        if A64:  # no xcall: S0 pushed around the call, in this site's numbers (S0016)
+            self.custom(PUSH_CTX)
+            self.op1(g("MOV"), (CTX, 0), (MEM1(R1), 16))
+            self.op1(g("MOV"), (MB, 0), (MEM1(CTX), 8 * MEM0))
+            self.op1(g("MOV"), (R1, 0), (MEM1(R1), 0))
+            self.op2(g("ADD"), (R1, 0), (R1, 0), (IMM, STUB))
+            lib.sljit_emit_icall(self.c, g("CALL_REG_ARG"), g("ARGS0(32)"), R1, 0)
+            self.sites.append((self.mark(), self.ret_at + 16, self.up + 16))
+            self.custom(POP_CTX)
+            self.op1(g("MOV"), (MB, 0), (MEM1(CTX), 8 * MEM0))
+        else:
+            self.call(self._xcall)
+            self._site()
         self.jump(done)
         self.bind(foreign)
         self.call(self._ccall)
@@ -1384,26 +1529,27 @@ class Backend(Emitter):
 
     # ------------------------------------------------------------ C entries (S0015)
     def c_entry(self) -> int:
-        """The 16-byte C entry of the body (or host thunk) that follows: `endbr64; lea rdx,
-        [rip + 5]` (custom bytes), then sljit's jump to centry, long by the pad before centry;
-        rdx (the C convention's third argument) = the body. Returns its mark; `finish` checks
-        the bytes."""
+        """The C entry of the body (or host thunk) that follows, STUB bytes: x86-64 `endbr64; lea
+        rdx, [rip + 5]`, aarch64 `bti jc; adr x2, #8` (custom bytes), then sljit's jump to centry
+        (on x86-64 long by the pad before centry); rdx / x2 (the C convention's third argument) =
+        the body. Returns its mark; `finish` checks the bytes."""
         at = self.mark()
         self.custom(STUB_HEAD[:4])
-        self.custom(STUB_HEAD[4:])
+        self.custom(STUB_HEAD[4:])  # aarch64: `adr x2, #8`, x2 the C convention's third argument
         self.link(lib.sljit_emit_jump(self.c, g("JUMP")), self._centry)
         self._stubs.append((at, self.mark()))
         return at
 
     def c_entry_shared(self) -> int:
-        """After the last body: the pad, centry, and (if a record is called) xcall and ccall.
+        """After the last body: the pad, centry, and (if a record is called) xcall (not on
+        aarch64) and ccall.
         Returns the number of sites recorded (each shift 0, no map)."""
-        for _ in range(128):
-            self.custom(b"\xcc")  # sljit shortens a jump within +-128 bytes
+        for _ in range(128 // len(PAD)):
+            self.custom(PAD)  # sljit shortens a jump within +-128 bytes (x86-64)
         self._centry_at = self.mark()
         self.bind(self._centry)
-        # int32_t centry(S0 = ctx, S1 = frame, S2 = body): C, saves S0-S2 (32 bytes); the body
-        # keeps S3-S5 and R3-R6 itself
+        # int32_t centry(S0 = ctx, S1 = frame, S2 = body): C, saves S0-S2 (32 bytes on x86-64,
+        # 48 on aarch64); the body keeps the pool's registers it pins itself
         self.enter(0, "ARGS3(32, P, P, P)", 3, 3, 0)
         self.op1(g("MOV"), (R1, 0), (S2, 0))
         self.op1(g("MOV"), (MB, 0), (MEM1(CTX), 8 * MEM0))
@@ -1421,6 +1567,12 @@ class Backend(Emitter):
         lib.sljit_emit_return(self.c, g("MOV32"), R0, 0)
         if not self._records:
             return 1
+        if not A64:
+            self._xcall_helper()
+        self._ccall_helper()
+        return 2 if A64 else 3
+
+    def _xcall_helper(self) -> None:
         # xcall: the record in R1 is another context of this compiler (D71); S0 is kept in a
         # 16-byte frame, the callee's S0 and S2 set, its body called
         self.bind(self._xcall)
@@ -1435,9 +1587,12 @@ class Backend(Emitter):
         self.op1(g("MOV"), (CTX, 0), (MEM1(SP), 0))
         self.op1(g("MOV"), (MB, 0), (MEM1(CTX), 8 * MEM0))
         lib.sljit_emit_return(self.c, g("MOV32"), R0, 0)
-        # ccall: the record in R1 is another compiler's: its C entry (S0015: SysV, int32_t
-        # code(ctx, frame)) may clobber R3-R6, which hold pins of the frames above (LESSONS 2);
-        # S0-S5 are callee-saved in C. S2 is reloaded: the callee may have grown a memory
+
+    def _ccall_helper(self) -> None:
+        # ccall: the record in R1 is another compiler's: its C entry (S0015: SysV / AAPCS64,
+        # int32_t code(ctx, frame)) may clobber RSAVE (x86-64's R3-R6, which hold pins of the
+        # frames above, LESSONS 2; none on aarch64); the S registers are callee-saved in C. S2
+        # is reloaded: the callee may have grown a memory
         self.bind(self._ccall)
         self.enter(REG_ENTER, "ARGS0(32)", 7, 3, 8 * len(RSAVE))
         for i, r in enumerate(RSAVE):
@@ -1451,13 +1606,13 @@ class Backend(Emitter):
             self.op1(g("MOV"), (r, 0), (MEM1(SP), 8 * i))
         self.op1(g("MOV"), (MB, 0), (MEM1(CTX), 8 * MEM0))
         lib.sljit_emit_return(self.c, g("MOV32"), R0, 0)
-        return 3
 
     def host_thunk(self, word: int) -> int:
         """The C entry a host import's record points to, then its body: called like a wasm
         function, it calls the import in context word `word` through the bridge with its frame
         as the slots. Returns the C entry's mark."""
         at = self.c_entry()
+        self.pad(BTI_JC)
         self.enter(REG_ENTER, "ARGS0(32)", 3, 3, 0)
         self.op1(g("MOV"), (R0, 0), (IMM, word))
         self.op1(g("MOV"), (R1, 0), (FRM, 0))
@@ -1486,7 +1641,8 @@ def trampoline_blob(conv: str = "sysv") -> tuple[bytes, tuple[int, ...], tuple[i
     then tail_switch; their offsets and `restore`'s; tail_switch's restore-frame numbers. The
     `win64` bridge differs only at the host call (custom bytes) and keeps its locals above the
     call's 32-byte shadow space; tail_switch is the same bytes in both."""
-    home = {"sysv": 0, "win64": 32}[conv]
+    home = {"sysv": 0, "win64": 32, "aapcs64": 0}[conv]
+    pre = home + 8 * len(RSAVE)  # the enclosing HOST_ERROR preset
     e = Emitter()
     # bridge: R0 = the context word of the host function, R1 = its slots. Calls host(ctx,
     # slots) with ctx[HOST_ERROR] preset to 13, returns the word, puts the enclosing preset
@@ -1495,7 +1651,8 @@ def trampoline_blob(conv: str = "sysv") -> tuple[bytes, tuple[int, ...], tuple[i
     # and its sp cleared after (S0013 3a). Locals: R3-R6, then the preset (win64: above the
     # shadow space, [SP, SP + 32) at the call, which the host owns).
     bridge = e.mark()
-    e.enter(REG_ENTER, "ARGS0(32)", 7, 4, home + 8 * 5)
+    e.pad(BTI_C)
+    e.enter(REG_ENTER, "ARGS0(32)", 7, 4, pre + 8)
     for i, r in enumerate(RSAVE):
         e.op1(g("MOV"), (MEM1(SP), home + 8 * i), (r, 0))
     e.op1(g("MOV"), (R2, 0), (MEM1(CTX), 8 * EXIT_RECORD))
@@ -1505,7 +1662,7 @@ def trampoline_blob(conv: str = "sysv") -> tuple[bytes, tuple[int, ...], tuple[i
     e.op1(g("MOV"), (MEM1(R2), 0), (S3, 0))
     e.op1(g("MOV"), (MEM1(R2), 16), (FRM, 0))
     e.op1(g("MOV"), (R2, 0), (MEM1(CTX), 8 * HOST_ERROR))
-    e.op1(g("MOV"), (MEM1(SP), home + 32), (R2, 0))
+    e.op1(g("MOV"), (MEM1(SP), pre), (R2, 0))
     e.op1(g("MOV"), (MEM1(CTX), 8 * HOST_ERROR), (IMM, STATUS_HOST_ERROR))
     e.op1(g("MOV"), (S3, 0), (MEM2(CTX, R0), 3))
     if conv == "win64":
@@ -1516,7 +1673,7 @@ def trampoline_blob(conv: str = "sysv") -> tuple[bytes, tuple[int, ...], tuple[i
     e.op1(g("MOV"), (R1, 0), (MEM1(CTX), 8 * EXIT_RECORD))  # no wasm frame waits in a host call
     e.op1(g("MOV"), (MEM1(R1), 0), (IMM, 0))
     e.op1(g("MOV_U32"), (R0, 0), (MEM1(CTX), 8 * HOST_ERROR))
-    e.op1(g("MOV"), (R1, 0), (MEM1(SP), home + 32))
+    e.op1(g("MOV"), (R1, 0), (MEM1(SP), pre))
     e.op1(g("MOV"), (MEM1(CTX), 8 * HOST_ERROR), (R1, 0))
     for i, r in enumerate(RSAVE):
         e.op1(g("MOV"), (r, 0), (MEM1(SP), home + 8 * i))
@@ -1530,6 +1687,7 @@ def trampoline_blob(conv: str = "sysv") -> tuple[bytes, tuple[int, ...], tuple[i
     ts = e.mark()
     entry, hop, foreign = Label(), Label(), Label()
     e.bind(entry)
+    e.pad(BTI_JC)
     e.enter(REG_ENTER, "ARGS0(32)", 7, 3, 8 * (len(RSAVE) + 1))
     nums = (e.ret_at, e.up)
     restore = Label()

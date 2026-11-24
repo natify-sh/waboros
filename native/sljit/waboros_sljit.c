@@ -12,14 +12,18 @@
 /* Code is generated into plain writable memory and copied out by the caller. Above 4 GiB sljit forms
    a label address (SLJIT_MOV_ADDR) rip-relative on x86-64, below it as an absolute imm32 that the
    copy would not relocate; mmap is not guaranteed to give an address above 4 GiB, so the caller
-   checks it (tests/sljit/backend.py, Emitter.generate, refuses a buffer below 4 GiB). */
+   checks it (tests/sljit/backend.py, Emitter.generate, refuses a buffer below 4 GiB). On aarch64 a
+   label address beyond +-1 MiB is `adrp` + `add`, page-relative: the code starts on a page here, as
+   it does where the loader copies it (0 mod 4096, S0004), and the caller checks that too. The size
+   is kept in the page before the code. */
+#define WSL_PAGE 4096
 static void *wsl_map(size_t size) {
-	size_t *p = mmap(NULL, size + 16, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	size_t *p = mmap(NULL, size + WSL_PAGE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	if (p == MAP_FAILED) return NULL;
-	p[0] = size + 16;
-	return (char *)p + 16;
+	p[0] = size + WSL_PAGE;
+	return (char *)p + WSL_PAGE;
 }
-static void wsl_unmap(void *ptr) { size_t *p = (size_t *)((char *)ptr - 16); munmap(p, p[0]); }
+static void wsl_unmap(void *ptr) { size_t *p = (size_t *)((char *)ptr - WSL_PAGE); munmap(p, p[0]); }
 #define SLJIT_EXECUTABLE_ALLOCATOR 0
 #define SLJIT_MALLOC_EXEC(size, d) ((void)(d), wsl_map(size))
 #define SLJIT_FREE_EXEC(ptr, d) ((void)(d), wsl_unmap(ptr))
@@ -65,6 +69,7 @@ int waboros_sljit_constant(const char *name, sljit_sw *value) {
 	K(SLJIT_NUMBER_OF_REGISTERS) K(SLJIT_NUMBER_OF_SAVED_REGISTERS) K(SLJIT_NUMBER_OF_FLOAT_REGISTERS)
 	K(SLJIT_R0) K(SLJIT_R1) K(SLJIT_R2) K(SLJIT_R3) K(SLJIT_R4) K(SLJIT_R5) K(SLJIT_R6)
 	K(SLJIT_S0) K(SLJIT_S1) K(SLJIT_S2) K(SLJIT_S3) K(SLJIT_S4) K(SLJIT_S5)
+	K(SLJIT_S6) K(SLJIT_S7) K(SLJIT_S8) K(SLJIT_S9) K(SLJIT_LOCALS_OFFSET)
 	K(SLJIT_FR0) K(SLJIT_FR1) K(SLJIT_FR2) K(SLJIT_SP) K(SLJIT_IMM) K(SLJIT_MEM) K(SLJIT_32)
 	K(SLJIT_MOV) K(SLJIT_MOV32) K(SLJIT_MOV_U8) K(SLJIT_MOV32_U8) K(SLJIT_MOV_S8) K(SLJIT_MOV32_S8)
 	K(SLJIT_MOV_U16) K(SLJIT_MOV32_U16) K(SLJIT_MOV_S16) K(SLJIT_MOV32_S16) K(SLJIT_MOV_U32) K(SLJIT_MOV_S32)
