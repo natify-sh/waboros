@@ -50,6 +50,12 @@ void waboros_sljit_frame(struct sljit_compiler *c, sljit_sw *ret_at, sljit_sw *u
 #endif
 }
 
+/* sljit's own accessors are static inline in sljitLir.h, which ctypes cannot call */
+sljit_uw waboros_sljit_label_addr(struct sljit_label *label) { return sljit_get_label_addr(label); }
+sljit_uw waboros_sljit_const_addr(struct sljit_const *k) { return sljit_get_const_addr(k); }
+sljit_uw waboros_sljit_code_size(struct sljit_compiler *c) { return sljit_get_generated_code_size(c); }
+sljit_s32 waboros_sljit_error(struct sljit_compiler *c) { return sljit_get_compiler_error(c); }
+
 int waboros_sljit_constant(const char *name, sljit_sw *value) {
 #define K(x) {#x, (sljit_sw)(x)},
 	static const struct { const char *name; sljit_sw value; } t[] = {
@@ -70,6 +76,7 @@ int waboros_sljit_constant(const char *name, sljit_sw *value) {
 	K(SLJIT_ORDERED_EQUAL) K(SLJIT_UNORDERED_OR_NOT_EQUAL) K(SLJIT_ORDERED_LESS) K(SLJIT_ORDERED_GREATER)
 	K(SLJIT_ORDERED_LESS_EQUAL) K(SLJIT_ORDERED_GREATER_EQUAL) K(SLJIT_UNORDERED) K(SLJIT_ORDERED)
 	K(SLJIT_JUMP) K(SLJIT_CALL) K(SLJIT_CALL_REG_ARG) K(SLJIT_CALL_RETURN)
+	K(SLJIT_GET_RETURN_ADDRESS) K(SLJIT_MOV_ADDR)
 	K(SLJIT_ENTER_REG_ARG) K(SLJIT_ARG_TYPE_W) K(SLJIT_ARG_TYPE_32) K(SLJIT_ARG_TYPE_P) K(SLJIT_ARG_TYPE_F64)
 	K(SLJIT_ARGS0(32)) K(SLJIT_ARGS1(32, W)) K(SLJIT_ARGS2(32, W, W)) K(SLJIT_ARGS3(32, P, P, P))
 	K(SLJIT_ARGS2(32, P, P)) K(SLJIT_ARGS2V(P, P)) K(SLJIT_ARGS3V(P, 32, W)) K(SLJIT_ARGS3V(P, P, W))

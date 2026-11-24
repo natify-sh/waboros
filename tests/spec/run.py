@@ -1,6 +1,7 @@
 """Spec-suite runner (docs/specs/S0001): drives a SpecEngine over the converted wast commands."""
 
 import argparse
+import importlib
 import json
 import os
 import re
@@ -30,6 +31,8 @@ from tests.spec.engine import (
     Value,
 )
 from waboros.targets.base import TARGETS, target_order
+
+importlib.import_module("tests.sljit")  # registers jit-sljit-<arch> where native/ is built (S0016)
 
 CACHE_DIR = fetch.CACHE_DIR
 ROOT = Path(__file__).resolve().parents[2]

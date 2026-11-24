@@ -146,7 +146,7 @@ static void test_stubs(void) {
 	char *x = exec_copy(c, code, 1);
 	sljit_sw ctx[4] = {0, 1000, 0, 0}, frame[4];
 	for (k = 0; k < NF; k++) {
-		sljit_uw s = sljit_get_label_addr(stub[k]) - (sljit_uw)code, b = sljit_get_label_addr(body[k]) - (sljit_uw)code;
+		sljit_uw s = waboros_sljit_label_addr(stub[k]) - (sljit_uw)code, b = waboros_sljit_label_addr(body[k]) - (sljit_uw)code;
 		int st;
 		frame[0] = 5;
 		st = ((sljit_s32 (*)(sljit_sw *, sljit_sw *))(x + s))(ctx, frame);
@@ -154,6 +154,10 @@ static void test_stubs(void) {
 			fails++;
 			printf("  WRONG stub %d: body at stub + %ld (want %d), status %d, frame[0] %ld\n", k, (long)(b - s), STUB, st, (long)frame[0]);
 		}
+	}
+	if (waboros_sljit_code_size(c) != sljit_get_generated_code_size(c) || waboros_sljit_error(c) != SLJIT_ERR_COMPILED) {
+		fails++;  /* the exported accessors (S0016 step 1) */
+		printf("  WRONG accessors: size %lu, error %d\n", (unsigned long)waboros_sljit_code_size(c), waboros_sljit_error(c));
 	}
 	sljit_free_compiler(c);
 	printf("stubs: %d, %d bytes\n", NF, STUB);

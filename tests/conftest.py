@@ -4,12 +4,15 @@ processes"; Android's testbed app embeds Python, `sys.executable` is empty, and 
 there resets the app's signal chain)."""
 
 import gc
+import importlib
 import os
 import subprocess
 import sys
 from collections.abc import Iterator
 
 import pytest
+
+importlib.import_module("tests.sljit")  # registers jit-sljit-<arch> where native/ is built (S0016)
 
 _popen_init = subprocess.Popen.__init__
 

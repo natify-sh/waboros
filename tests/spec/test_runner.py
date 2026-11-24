@@ -384,8 +384,10 @@ def _xfail_keys(engine: str, both: Sequence[str]) -> set[str]:
 def _jits(complete: bool) -> list[str]:
     from waboros.targets.base import TARGETS
 
-    jits = [n for n in TARGETS if n.startswith("jit-")]
-    return [n for n in jits if getattr(TARGETS[n](), "complete", True) == complete]
+    def parity(t: object) -> bool:  # a development target must fail what pyc fails (S0016)
+        return bool(getattr(t, "complete", True) or getattr(t, "development", False))
+
+    return [n for n in TARGETS if n.startswith("jit-") and parity(TARGETS[n]()) == complete]
 
 
 @pytest.mark.parametrize("jit", _jits(True))

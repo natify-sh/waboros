@@ -203,7 +203,7 @@ jobs:
           path: dump
   sljit:
     # S0016: native/ (sljit through CMake alone): the build, ctest (frames, stubs, baseline bytes,
-    # the consumer projects). The spec runs on jit-sljit come with the Python side.
+    # the consumer projects); then jit-sljit-x86_64 (tests/sljit) at parity with jit-x86_64.
     needs: dedup
     if: needs.dedup.outputs.skip != 'true'
     runs-on: ubuntu-latest
@@ -213,6 +213,26 @@ jobs:
       - run: cmake -S native -B build/native
       - run: cmake --build build/native
       - run: ctest --test-dir build/native --output-on-failure
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+        with: { cache-python: true }
+      - run: uv sync --python 3.13
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: .cache/spec
+          key: spec-${{ runner.os }}-${{ hashFiles('tests/spec/fetch.py', 'tests/spec/spectest.wat') }}
+      - run: uv run python tests/spec/fetch.py
+      - run: uv run python -m tests.spec.run --engine jit-x86_64 --in-process --json spec-jit-x86_64.json
+      # in-process, the walk check and poison, both bounds modes; parity both ways on the reports
+      - run: |
+          for b in guard explicit; do
+            WABOROS_JIT_BOUNDS=$b uv run python -m tests.spec.run --engine jit-sljit-x86_64 --in-process --json spec-sljit-$b.json
+            uv run python tools/spec_diff.py spec-jit-x86_64.json spec-sljit-$b.json
+            uv run python tools/spec_diff.py spec-sljit-$b.json spec-jit-x86_64.json
+          done
+        env:
+          WABOROS_JIT_WALK_CHECK: "1"
+          WABOROS_JIT_GC_POISON: "1"
+      - run: uv run pytest -q tests/jit/test_boundary.py tests/spec/test_runner.py --jit-bounds guard,explicit
   spec:
     needs: dedup
     if: needs.dedup.outputs.skip != 'true'

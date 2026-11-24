@@ -364,8 +364,16 @@ runs only under an emulator). `tests/consumer/` is a tiny project embedding `nat
 `--warn-uninitialized -Werror=dev`. The cross build: `-DCMAKE_SYSTEM_NAME=Linux
 -DCMAKE_SYSTEM_PROCESSOR=aarch64 -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc
 "-DCMAKE_CROSSCOMPILING_EMULATOR=qemu-aarch64;-cpu;max;-L;/usr/aarch64-linux-gnu"`. CI: the `sljit` job
-(build, ctest), steps in `jit` (the cross build under QEMU with BTI) and `arm64` (native, no BTI), all
+(build, ctest; then `jit-sljit-x86_64` in-process with the walk check and poison in both bounds
+modes, `tools/spec_diff.py` both ways against `jit-x86_64` on the JSON reports, and
+`tests/jit/test_boundary.py` and the parity test of `tests/spec/test_runner.py`), steps in `jit` (the cross build under QEMU with BTI) and `arm64` (native, no BTI), all
 with `submodules: true`.
+
+`tests/sljit/` registers the development target `jit-sljit-<arch>` when the library is built
+(`WABOROS_SLJIT_LIB`, default `build/native/`), and refuses a library older than any `native/`
+source (rebuild with `cmake --build build/native`). A development target (`development = True`,
+`complete = False`) is never chosen by `auto`, has no FEATURES column, and joins the complete JITs
+in the parity test (it fails exactly what `pyc` fails).
 
 ## CI matrix
 

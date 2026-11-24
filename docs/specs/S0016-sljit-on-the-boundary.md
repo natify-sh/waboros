@@ -724,6 +724,30 @@ In the step that makes each untrue; step 7 for the rest.
   build steps in `jit`, `arm64` and the new `sljit` job. Deviations: `waboros_sljit_constant(name,
   &value)` returns 0 or -1 (a name alone has no way to say "unknown"); DEBUG and VERBOSE are PUBLIC
   definitions (they change the layout of `struct sljit_compiler`); the tests need the shared build.
+* 2026-11-24: step 1 done (x86-64): `tests/sljit/` (`__init__.py`: the library, the mtime refusal,
+  `jit-sljit-x86_64` registered on Linux glibc x86-64; `backend.py`: the PoC's operators with
+  stubs, centry, `xcall`/`ccall`, the hop, the bridge and `tail_switch` by sljit, frames from the
+  library; `finish` checks every stub); `native/` exports the label, constant, code-size and
+  error getters and `SLJIT_GET_RETURN_ADDRESS`/`SLJIT_MOV_ADDR` (LESSONS 146), with a ctest line;
+  the registration points; `test_boundary.py` over both compilers (the walk test counts
+  `jit-sljit`'s helper frames). No core change; the D35 lists of `jit-x86_64` and `jit-aarch64`
+  are byte-identical to HEAD's. Numbers (this machine, the same session):
+  * the spec suite, walk check and poison, guard and explicit (separate processes and
+    `--in-process`): 64 229 pass, 0 fail; `spec_diff` empty both ways; `gc` + `exceptions` with
+    stress and verify: 905 pass;
+  * depth until `STACK_OVERFLOW`, levels at 128 KiB / 512 KiB (bytes a level), driver
+    `depth.py` in the step's scratch (`DEPTH`, its direct twin, `XA` + `XB` of `test_boundary.py`):
+
+    | recursion | `jit-x86_64` | `jit-sljit-x86_64` | Wasmtime 50.0.1 (512 KiB) |
+    |---|---|---|---|
+    | direct `call` | 8 189 / 32 765 (16) | 8 190 / 32 766 (16) | 32 762 |
+    | `call_indirect`, own table | 8 189 / 32 765 (16) | 8 190 / 32 766 (16) | 16 381 |
+    | across instances (calls) | 4 096 / 16 384 (32) | 4 096 / 16 384 (32) | 21 842 |
+    | across compilers, either way (calls) | 1 260 / 5 042 (104: 112 + 96 a pair) | | |
+
+  * CoreMark compile (`TARGETS[t]().compile`, 7 rounds alternated, `taskset -c 2`, median): guard
+    41 ms `jit-x86_64` / 42 ms `jit-sljit-x86_64` (code 34 879 / 35 617 bytes); explicit 68 / 63 ms
+    (43 876 / 47 094 bytes). CoreMark passes its self-check on `jit-sljit-x86_64` (speed: step 6).
 
 ## Changes
 * 2026-11-23: created (draft), with the maintainer's placement, CMake and C99 decisions.

@@ -2,7 +2,8 @@
 """Conformance of the boundary convention (docs/specs/S0015, "Test plan"): tail calls across the
 boundary in constant stack, statuses through C entries, the walk across modules and hop chains, and
 the machine state at the boundary, on the machine's JIT (jit-x86_64 from S0015 step 1, jit-aarch64
-from step 3), with hand-assembled C entries in each architecture's encoder. Under QEMU the aarch64
+from step 3) and on the host's jit-sljit where `native/` is built (S0016), with hand-assembled C
+entries in each architecture's encoder. Under QEMU the aarch64
 code pages are PROT_BTI, so the `bti jc` pads of C entries are checked (a sibling `br x9`)."""
 
 import ctypes
@@ -16,24 +17,51 @@ from typing import Any
 import pytest
 
 from tests.jit import native
-from tests.jit.test_compiler import JIT, Inst, build, trap_of, wat
+from tests.jit.test_compiler import JIT, Inst, trap_of, wat
+from tests.jit.test_compiler import build as _build
 from tests.jit.test_tables import provider
 from tests.jit.test_tail import PING, PONG, _small_thread
 from waboros.runtime.store import StoreState
-from waboros.targets.base import Raw, Trap, TrapCode
+from waboros.targets.base import TARGETS, Raw, Trap, TrapCode
 from waboros.targets.jit.common import instance, walk
 from waboros.targets.jit.common.context import HOST_BRIDGE, TRAP_CODE
 from waboros.targets.jit.common.execmem import ExecMem, load
 from waboros.targets.jit.common.instance import JitFunc, _stacks
 
-X86 = JIT == "jit-x86_64"
+X86 = JIT == "jit-x86_64"  # the architecture (of the machine's JIT)
 M32 = 0xFFFFFFFF
+# the compilers under test: the machine's JIT, and the development ones of its architecture
+JITS = [JIT] + [
+    n
+    for n, t in TARGETS.items()
+    if getattr(t(), "development", False) and getattr(t(), "arch", "") == TARGETS[JIT]().arch  # type: ignore[attr-defined]
+]
+RUNTIME_ONLY = {"test_a_br_through_x9_needs_the_bti_jc_pad",
+                "test_x86_runtime_entry_builds_and_passes_the_isa_gate_on_any_host"}  # fmt: skip
+CUR = [JIT]
+
+
+def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
+    jits = [JIT] if metafunc.function.__name__ in RUNTIME_ONLY else JITS
+    metafunc.parametrize("compiler", jits, indirect=True)
 
 
 @pytest.fixture(autouse=True)
-def public_statuses(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[int]]:
+def compiler(request: pytest.FixtureRequest) -> Iterator[str]:
+    CUR[0] = request.param
+    yield request.param
+    CUR[0] = JIT
+
+
+def build(wasm: bytes, **kw: Any) -> Inst:
+    """test_compiler's `build` with the compiler under test."""
+    return _build(wasm, CUR[0], **kw)
+
+
+@pytest.fixture(autouse=True)
+def public_statuses(compiler: str, monkeypatch: pytest.MonkeyPatch) -> Iterator[list[int]]:
     """Every status that reaches the host is public: no private one (bit 31) leaves a C entry."""
-    native(JIT)
+    native(compiler)
     seen: list[int] = []
     real = instance.Instance._error
 
@@ -241,7 +269,7 @@ GA = """(module (type $s (struct (field i32))) (type $f (func (param i32) (resul
 
 @pytest.mark.parametrize("path", ["body", "C entry"])
 def test_the_walk_crosses_modules_and_hop_chains(
-    monkeypatch: pytest.MonkeyPatch, path: str
+    monkeypatch: pytest.MonkeyPatch, path: str, compiler: str
 ) -> None:
     """host -> A -> (record) B -> (call_indirect) A -> host, then A's own-table call_indirect
     (the record path of our own context), a reference live in each frame, and a collection at
@@ -267,8 +295,10 @@ def test_the_walk_crosses_modules_and_hop_chains(
         fake(a, 1, clobbering(func(b, "g2")))
     assert a("top", 5) == [5 + 1000 + 10 + 105]
     # A's thunk and $back, then B's g (and its C entry), then A's top with its C entry (called
-    # from the host; S0015)
-    assert seen[-1] == [[1] * 2 + [0] * (1 + c) + [1] * 2]
+    # from the host; S0015); jit-sljit calls a record of another context through a module
+    # helper with a frame of its own (xcall, ccall: S0016), B's below $back and A's below g
+    x = int(compiler != JIT)
+    assert seen[-1] == [[1] * 2 + [0] * x + [0] * (1 + c) + [1] * x + [1] * 2]
     assert a("own", 5) == [5 + 1000 + 205]  # A's own table: the body, no C entry between
     assert seen[-1] == [[1] * 4]  # the thunk, $back, own and its C entry
     assert a("hops", 1001) == [7 + 2000]

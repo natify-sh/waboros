@@ -33,6 +33,7 @@ class JitTarget:
     machines: tuple[str, ...]  # platform.machine().lower() values of this architecture
     version = 0
     complete = True  # False: `auto` does not select it (D25, S0004)
+    development = False  # True: a development target outside the package (S0016)
     guard_rows: frozenset[str] = frozenset()  # host rows with a fault handler (S0006)
     verified: frozenset[str] = frozenset()  # rows where WABOROS_JIT_BOUNDS=auto gives guard
 

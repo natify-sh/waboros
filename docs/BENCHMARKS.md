@@ -2,7 +2,7 @@
 title: Benchmarks
 kind: log
 status: current
-updated: 2026-11-22
+updated: 2026-11-24
 ---
 
 # Benchmarks
@@ -2325,3 +2325,41 @@ Reading: as on x86-64 (D71), the own-table `call_indirect` now costs a direct ca
 bytes a level, 48 before), a call into another context of this compiler costs what it did before
 S0015, and one C-entry frame (48 bytes) sits at the bottom of each entry. The +300 bytes over the
 control are the three-path record calls (about 31 instructions each, 9 before).
+
+## `jit-sljit-x86_64` on the boundary: depth and compile time (S0016 step 1, 2026-11-24)
+* Date: 2026-11-24
+* Commit: the S0016 step-1 working tree, on top of the spec amendment "frames without a pre-pass"
+  (`tests/sljit/`, `native/` getters; no change to the core or to the Python backends)
+* Machine: Intel Xeon @ 2.10 GHz, 4 vCPU (the sandbox)
+* Python: CPython 3.13.17
+* Command (depth): a scratch driver (`depth.py`, not committed) that builds `test_boundary.py`'s
+  `DEPTH` (own-table `call_indirect`), its direct twin (`call $f`), and `XA` + `XB` (across
+  instances; across compilers with `XA` by one target and `XB` by the other) with
+  `StoreState(max_wasm_stack=128 << 10)` and `512 << 10`, calls `f(0)` until `STACK_OVERFLOW` and
+  reads the level count from `$n` (across instances: twice `XA`'s count, one call each way);
+  Wasmtime 50.0.1 through wasmtime-py with `Config.max_wasm_stack = 512 << 10` (`depth_wt.py`).
+* Command (compile time): a scratch driver (`ctime.py`) that compiles `poc/in/core.wasm` with
+  `TARGETS[t]().compile` on `jit-x86_64` and `jit-sljit-x86_64` alternately, 7 rounds after one
+  warm-up, under `taskset -c 2`, `WABOROS_JIT_BOUNDS=guard` then `explicit`; median (range).
+* Result, depth (levels at 128 KiB / 512 KiB, bytes a level):
+
+| recursion | `jit-x86_64` | `jit-sljit-x86_64` | Wasmtime 50.0.1 (512 KiB) |
+|---|---|---|---|
+| direct `call` | 8 189 / 32 765 (16) | 8 190 / 32 766 (16) | 32 762 |
+| `call_indirect`, own table | 8 189 / 32 765 (16) | 8 190 / 32 766 (16) | 16 381 |
+| across instances (calls) | 4 096 / 16 384 (32) | 4 096 / 16 384 (32) | 21 842 |
+| across compilers, either way (calls) | 1 260 / 5 042 (104) | (the same chain) | — |
+
+* Result, CoreMark compile time and code size (bytes, the code without the data area):
+
+| bounds | `jit-x86_64` | `jit-sljit-x86_64` |
+|---|---|---|
+| guard | 41 ms (40-46), 34 879 | 42 ms (38-46), 35 617 |
+| explicit | 68 ms (63-71), 43 876 | 63 ms (61-69), 47 094 |
+
+* Conditions: in-process, one store per measurement, no walk check. Across compilers a pair
+  costs `jit-x86_64`'s C path (112 bytes) plus `jit-sljit`'s (96: a 16-byte caller frame, `ccall`'s
+  48 and the callee's 32-byte centry), 104 a call on average. Reading: `jit-sljit`'s internal
+  frames cost what `jit-x86_64`'s do (S0016 "Frame size": the record helpers keep the context
+  and C-path saves out of the body frames); its compile time is within the spread of
+  `jit-x86_64`'s. No run-time speed is claimed here (CoreMark: S0016 step 6).

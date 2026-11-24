@@ -31,6 +31,10 @@ CLAIMS: dict[str, frozenset[str]] = {
         {"bulkMemory", "multiMemory", "simd", "relaxedSimd", "wideArithmetic", "memory64"}
         | {"exceptionsFinal", "gc"}
     ),  # parity with pyc (D25; madd/nmadd fused, D49)
+    "jit-sljit-x86_64": frozenset(
+        {"bulkMemory", "multiMemory", "simd", "relaxedSimd", "wideArithmetic", "memory64"}
+        | {"exceptionsFinal", "gc"}
+    ),  # the claims of jit-x86_64 (S0016)
 }
 
 

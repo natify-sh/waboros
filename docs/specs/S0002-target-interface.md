@@ -6,7 +6,7 @@ status: implemented
 superseded_by:
 related: [D5, D6, D10, D16, D17, D18, D23, D24, S0001, S0003]
 owner: maintainer
-updated: 2026-11-05
+updated: 2026-11-24
 ---
 
 # S0002 Target interface
@@ -75,6 +75,11 @@ class TargetInstance(Protocol):
     def global_set(self, global_index: int, value: Raw) -> None: ...           # later (phase 6)
     def interrupt(self) -> None: ...                           # JIT: sets the word; pyc: later
 ```
+* Two attributes outside the Protocol, read with `getattr` and a default (`PycTarget` defines
+  neither): `complete` (default True; False: `auto` never selects the target, S0004) and
+  `development` (default False, on `JitTarget`; True: a development target outside the package,
+  registered by `tests/`, with no FEATURES.md column, and held to pyc's expected failures like a
+  complete JIT; S0016).
 * `ValidModule` is what the front end's validator returns (decoded sections, function types,
   per-function bodies already validated). No target ever sees an invalid module. While the validator
   does not cover a construct (typed function references, tags, some table instructions), it ends
@@ -287,3 +292,7 @@ weights itself until then.
   is `frontend.types.key(mod, i)`, the iso-recursive canonical key (rec group, position), which
   replaces `functype_key`; the JITs' type ids (`jit/common/instance.type_id(mod, ti)`) use it too.
   A module with GC types is refused by `pyc` and the JITs (`supports()`) until each claims `gc`.
+* 2026-11-24 (S0016 step 1): `development` (default False, on `JitTarget`): a development target
+  (`jit-sljit-<arch>`, registered by `tests/sljit/` where `native/` is built) is never selected by
+  `auto` (`complete = False`), has no FEATURES.md column, and its expected failures must equal
+  pyc's (`tests/spec/test_runner.py` `_jits`).

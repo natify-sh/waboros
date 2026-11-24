@@ -2,7 +2,7 @@
 title: Lessons
 kind: log
 status: current
-updated: 2026-11-22
+updated: 2026-11-24
 ---
 
 # Lessons
@@ -1171,3 +1171,9 @@ What went wrong or surprised us while building the PoC, so it is not found again
     answers "not found" (a size 0 at `data_start`), never an exception or an assert, and the
     round trip stays idempotent because the derivation is a function of the code. Found: S0015
     step 4, 2026-11-23.
+146. **sljit's getters are `static inline`, so ctypes cannot call them.** `sljit_get_label_addr`,
+    `sljit_get_const_addr`, `sljit_get_generated_code_size` and `sljit_get_compiler_error` live in
+    `sljitLir.h` and are absent from the shared library's symbols (`nm -D`); the PoC reached them
+    through its own `lib2.c`. `native/`'s translation unit exports them as `waboros_sljit_*`.
+    After `sljit_generate_code` the compiler's error is `SLJIT_ERR_COMPILED` (1), not 0: check
+    the error before generating. Found: S0016 step 1, 2026-11-24.
