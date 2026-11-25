@@ -883,6 +883,13 @@ so P1 and steps 2, 3, 4, 5 and 8 end with one.
    * Recommendation: **(b)**. A silent call of the wrong host function is worse than a refusal,
      and the only pre-D75 files are the committed fixtures, which keep their Python tests;
      item 5's `v1-s15` line becomes "refused, no bit".
+   * **Decided (maintainer, 2026-11-25): no format change ((a')).** The only pre-D75 files are our
+     own (the committed fixtures and per-run temporaries; no release and no cache wrote any), so
+     no bit is added. P1 regenerates the committed v1 set with `tools/make_v1_artifacts.py`
+     (x86-64 and aarch64, guard and explicit, thin and fat) and adds a module with a host import
+     that pins the D75 bridge; one or two pre-D75 files stay only as "the Python loader refuses
+     the old bridge bytes" (`tests/artifact/data/README.md`). The C loader requires files written
+     after D75; item 5 runs the new set.
 2. **Linux musl and Android**: rows of this spec, or later? Both are verified S0006 rows of the
    Python runtime (x86-64). Musl would come under D47 (c): the same `os_posix.c` and a container
    step. Android would need bionic's `libsigchain` and an emulator cell. Not decided.
@@ -962,3 +969,5 @@ When approved and implemented:
   `SIG_DFL`/`SIG_IGN`, `broken`, faulthandler, `arm_thread_state64_get_pc`); the trampoline copy
   (adopted after the whole file, per engine, D71's test, M5); the runtime tests; `_frozen`'s rules;
   `ArtifactError.section`; `no_sanitize("function")`; Docs this changes extended; nits.
+* 2026-11-25: open question 1 decided (maintainer): no format bit; P1 regenerates the committed set with a
+  host import, the old files stay only for the refusal test.
