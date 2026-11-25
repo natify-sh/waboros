@@ -223,7 +223,10 @@ lacks a feature reports it through `Target.supports` and the module runs on anot
     on every start). Every place passes RISKS.md R1's checks (owner and permissions, checksum,
     versions, ISA) before anything is mapped executable, so a read-only or shared venv falls through
     to (3). The same chain may serve phase 6's module cache, with `compilers/` (never evicted) and
-    `modules/` (LRU) beside each other. Still to decide: the key (waboros version, architecture, ISA
+    `modules/` (LRU) beside each other. A cache directory that waboros creates gets a `.gitignore`
+    containing `*` at creation (maintainer, 2026-11-25; as pytest's and ruff's caches do), so a
+    `<venv>` or `WABOROS_CACHE_DIR` inside a repository is never committed; a directory that
+    already exists is left as it is. Still to decide: the key (waboros version, architecture, ISA
     level, `format_version`, `ctx_abi_version`, GC `features_required` bits), two processes compiling
     the micro-compiler at once (accept the duplicate or lock), and whether caching is on by default.
 
