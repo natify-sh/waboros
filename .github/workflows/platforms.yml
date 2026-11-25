@@ -129,7 +129,7 @@ jobs:
           size=$("$adb" shell getconf PAGE_SIZE | tr -d '\r')
           echo "device page size: $size; API $("$adb" shell getprop ro.build.version.sdk | tr -d '\r')"
           [ "$size" = 16384 ]
-          echo 'CIBW_TEST_RUNTIME={args = ["--connected", "emulator-5554"]}' >> "$GITHUB_ENV"
+          echo 'CIBW_TEST_RUNTIME=args: --connected emulator-5554' >> "$GITHUB_ENV"  # the env form is key: value, not TOML
         shell: bash
       # cibuildwheel's download cache (CPython/PyPy installers, virtualenv, the Android and Pyodide
       # toolchains; cibuildwheel FAQ "Caching"). Linux builds in containers and does not use it.
