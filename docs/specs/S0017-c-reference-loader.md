@@ -892,7 +892,10 @@ so P1 and steps 2, 3, 4, 5 and 8 end with one.
      after D75; item 5 runs the new set.
 2. **Linux musl and Android**: rows of this spec, or later? Both are verified S0006 rows of the
    Python runtime (x86-64). Musl would come under D47 (c): the same `os_posix.c` and a container
-   step. Android would need bionic's `libsigchain` and an emulator cell. Not decided.
+   step. Android would need bionic's `libsigchain` and an emulator cell. **Decided (maintainer,
+     2026-11-25): both are rows of this spec**, Linux musl (x86-64, aarch64) under D47 (c) through
+     `os_posix.c` and a container step, Android (x86-64, arm64) with `libsigchain` and an emulator
+     cell, as in the Python runtime's S0006 rows; "Rows", CI and the plan are to be revised.
 3. **Are the no-compiler and no-GC builds worth having?** Decided **after step 6.1's
    measurement**.
    * No compiler: kept unless it removes little. It is expected to remove sljit (47-90 KB) plus
@@ -971,3 +974,4 @@ When approved and implemented:
   `ArtifactError.section`; `no_sanitize("function")`; Docs this changes extended; nits.
 * 2026-11-25: open question 1 decided (maintainer): no format bit; P1 regenerates the committed set with a
   host import, the old files stay only for the refusal test.
+* 2026-11-25: open question 2 decided (maintainer): Linux musl and Android are rows of this spec.
