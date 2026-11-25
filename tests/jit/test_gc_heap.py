@@ -7,7 +7,7 @@ import ctypes
 import dataclasses
 import mmap
 import struct
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -253,8 +253,9 @@ def test_host_values_cross_as_tagged_words(name: str) -> None:
 # ---- compiled GC code (S0013 step 3b)
 def gc_jit(monkeypatch: pytest.MonkeyPatch, bounds: str = "guard") -> Any:
     native(native_jit())  # this machine's JIT (aarch64 natively or under QEMU)
-    if bounds == "guard" and guard.host_row() not in base.TARGETS[native_jit()]().guard_rows:  # pyright: ignore[reportAttributeAccessIssue]
-        pytest.skip(f"no guard mode for {native_jit()} on {guard.host_row()}")  # musl aarch64 (S0017 D10)
+    row, tgt = guard.host_row(), base.TARGETS[native_jit()]()
+    if bounds == "guard" and row not in cast(Any, tgt).guard_rows:  # musl aarch64 (S0017 D10)
+        pytest.skip(f"no guard mode for {native_jit()} on {row}")
     monkeypatch.setenv("WABOROS_JIT_BOUNDS", bounds)
     return base.TARGETS[native_jit()]()
 
