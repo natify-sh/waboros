@@ -2,7 +2,7 @@
 title: The C reference loader
 kind: spec
 id: S0017
-status: draft
+status: approved
 superseded_by:
 related: [D18, D23, D32, D34, D36, D47, D50, D54, D56, D58, D60, D61, D62, D64, D65, D66, D68, D69, D70, D71, D72, D73, D74, D75, R2, R3, R6, S0001, S0003, S0006, S0013, S0014, S0015, S0016]
 owner: maintainer
@@ -132,8 +132,8 @@ and the fault handler. The first row is Linux glibc x86-64.
   musl aarch64 and Android arm64 the C loader has no handler and refuses guard files at step 5.
   On a listed row the handler is ON only once item 3 in guard mode has passed in CI on that row
   (D47 rule 3); until then `WABOROS_GUARD` defaults to OFF there.
-* The DECISIONS.md record that D47 (d) asks for ("the decision record says so") is written when
-  this spec is approved.
+* The DECISIONS.md record that D47 (d) asks for ("the decision record says so") is D76, written at
+  approval.
 * **Linux musl** comes under **exception (c)**: it reuses `os_posix.c` with no line of its own
   beyond the libc's headers, needs no new CI infrastructure (the `python:3.13-alpine` container of
   the `jit` job gains a step; an Alpine container on the `arm64` runner), and adds no interaction
@@ -1097,3 +1097,4 @@ When approved and implemented:
   a handler there is a v2 candidate for both loaders).
 * 2026-11-25: Decision 11 (handles released: weak in Python, `waboros_ref_release` in C).
 * 2026-11-25: Decision 11 implemented in the Python runtime (the oracle); the two tests in the runtime-test table.
+* 2026-11-25: approved by the maintainer (Decisions 1-11; the build-size question stays open until step 6.1); D76 records it. First step: P1.

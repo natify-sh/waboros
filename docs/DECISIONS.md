@@ -1839,3 +1839,23 @@ needs no change (its callbacks ignore the third argument).
   thunk (d2): thunk changes in every compiler for a semantically similar result.
 * Open: a host function that throws a wasm exception (status 14) is a separate later change.
 
+### D76. The C reference loader (S0017), with its D47 exceptions
+Status: accepted (maintainer, 2026-11-25: S0017 approved; not implemented yet) · Date: 2026-11-25 · Supersedes: — · Evidence: S0017 (Decisions 1-11, two independent reviews and their fixes)
+
+A loader in C99 under `native/loader/` runs v1 artifact files without Python: it reads and checks
+every S0014 rule as the Python loader does (the oracle), instantiates, dispatches host calls (D75),
+runs the guard handler and the moving collector (as a wasm module), and is a test tool now, an
+internal API, a product later (S0017 Decision 1). The Python loader and it must agree on the spec
+suite through files and on the refusal corpus (Decision 6, with the designed exceptions E1/E2).
+* **D47 exceptions** ("the decision record says so", D47 (d)): the fault handler on macOS x86-64
+  and arm64, Windows x64 and ARM64, and Android x86-64 is per-OS code beyond Linux glibc, accepted
+  because the oracle (S0006) has the same handler on those rows and the C loader must refuse and
+  accept the same files; memory, locks, stack bounds and `entry` on macOS and Windows come under
+  (a) (the OS has no `mmap`/`pthread_getattr_np` equivalent, or Apple silicon needs `MAP_JIT`);
+  Linux musl under (c). The handler is OFF on a row until CI has verified it there (D47 rule 3).
+  No handler on musl aarch64 and Android arm64 (S0017 Decision 10).
+* **Order**: P1 (D75 and the regenerated committed v1 set), P2 (`ArtifactError.step`, step 1b),
+  then steps 0-11 of S0017's plan. The build-size question (with/without the compiler and GC) is
+  decided after step 6.1's measurement.
+* Rejected: a loader in Rust or Zig, C generated from Python, reusing WAMR pieces (S0017
+  "Alternatives considered").

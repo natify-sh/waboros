@@ -28,4 +28,4 @@ lifecycle: [STANDARDS.md](../STANDARDS.md).
 | [S0014](S0014-artifact-format.md) | JIT artifact format v1 in the ELF64 container | implemented | maintainer |
 | [S0015](S0015-boundary-convention.md) | The boundary convention between separately compiled JIT artifacts | implemented | maintainer |
 | [S0016](S0016-sljit-on-the-boundary.md) | jit-sljit on the boundary: the first second compiler in a mixed store | implemented | maintainer |
-| [S0017](S0017-c-reference-loader.md) | The C reference loader | draft | maintainer |
+| [S0017](S0017-c-reference-loader.md) | The C reference loader | approved | maintainer |
