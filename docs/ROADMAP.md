@@ -433,6 +433,9 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29; done 2026-11-03) -> 
   * a test switch that moves an i32 memory on every grow (explicit mode) and the GC heap at every
     `ALLOC`, run over the spec `gc/` and `exceptions/` directories, to prove that code reloads the
     base (code, later).
+* **Guard pages on musl aarch64 and Android arm64** (maintainer, 2026-11-25: a v2 candidate): a
+  fault handler on these rows for the Python runtime and the C loader together, so that the two
+  loaders keep agreeing (S0017 Decision 10); until then both run explicit files there.
 * **ISA extensions above the baseline** (maintainer, 2026-11-24: after v1, in this backlog): a
   compatible addition under v1 (an artifact already declares `isa_level`/`isa_features`), each
   variant with its own spec and a measurement (D24, D33, D42); the candidates per level are in

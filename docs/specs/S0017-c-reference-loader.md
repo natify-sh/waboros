@@ -75,6 +75,11 @@ Taken on 2026-11-25 on the revised draft's questions:
    rows ("Rows").
 9. **The fat-file SHA-256 check is S0014's step 1b** (former Open question 4, (a)): as the code
    does, a docs change in P2.
+10. **No guard handler on musl aarch64 and Android arm64** (maintainer, 2026-11-25): as the
+    oracle (`guard_rows` of `jit-aarch64`), the C loader refuses guard files there at step 5 and
+    runs explicit files; Decision 8's `libsigchain` applies to the rows that have a handler. A
+    handler on these rows would have to come to the Python runtime too, so it is a v2 candidate
+    for both loaders (ROADMAP "Phase 8"), not a C-only exception.
 
 ## Goals / Non-goals
 * Goals:
@@ -1080,3 +1085,5 @@ When approved and implemented:
   `check` "1b", the trampoline check at Python's point, the main-thread stack rule on glibc, type
   ids below 2²⁰, the collector hash in path 2, strict UTF-8, `--wiring` and CoreMark's tool,
   `cases.py`, the D47 (d) record at approval, estimates marked.
+* 2026-11-25: Decision 10 (no guard handler on musl aarch64 and Android arm64, as the oracle;
+  a handler there is a v2 candidate for both loaders).
