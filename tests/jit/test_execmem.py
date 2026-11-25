@@ -2,6 +2,7 @@
 
 import ctypes
 import gc
+import mmap
 import os
 import platform
 import sys
@@ -13,7 +14,7 @@ import pytest
 from tests.jit import native
 from waboros.targets.base import TARGETS
 from waboros.targets.jit.common import execmem
-from waboros.targets.jit.common.execmem import ExecMem, load
+from waboros.targets.jit.common.execmem import ExecMem, Reservation, load
 from waboros.targets.jit.common.target import JitTarget
 from waboros.targets.jit.x86_64.encoder import R8, RAX, RCX, RDI, RDX, RSI, Asm
 
@@ -273,3 +274,26 @@ def test_dropped_stores_do_not_exhaust_the_data_limit() -> None:
 
     assert run("off") != 0
     assert run("on") == 0
+
+
+def test_sizes_round_to_a_16_kib_page(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Android 15+ may run with 16 KiB pages. This host may have 4 KiB ones: every size here is a
+    multiple of both, so the real mmap/mprotect calls succeed, and the test covers our rounding and
+    alignment only (the 16 KiB kernel itself is the Android cell of platforms.yml)."""
+    usable()
+    monkeypatch.setattr(mmap, "PAGESIZE", 16384)
+    assert [ExecMem(n).size for n in (1, 16384, 16385)] == [16384, 16384, 32768]
+    mem = ExecMem(1)
+    mem.write(b"\xc3" * 4)  # only the permissions are used here: no call
+    mem.seal()
+    res = Reservation(1 << 20)
+    res.commit(1)
+    assert res.committed == 16384
+    res.commit(16385)
+    assert res.committed == 32768
+    with pytest.raises(ValueError):
+        res.commit_range(4096, 16384)
+    res.commit_range(65536, 81920)
+    ctypes.memmove(res.addr + 65536, b"\x01", 1)
+    assert ctypes.string_at(res.addr + 81920 - 1, 1) == b"\0"
+    res.free()

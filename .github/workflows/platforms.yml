@@ -47,6 +47,7 @@ jobs:
     if: needs.dedup.outputs.skip != 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
+    continue-on-error: ${{ matrix.experimental == true }}
     strategy:
       fail-fast: false
       matrix:
@@ -63,6 +64,11 @@ jobs:
           # tests on x86_64 (the emulator has the runner's architecture), arm64_v8a is built only
           # (test-skip in the config); proven: py-wasmext
           - { name: "Android (x86_64, arm64_v8a)", os: ubuntu-latest, platform: android, archs: "x86_64 arm64_v8a" }
+          # Android 17 (API 37) with 16 KiB pages and the testbed at targetSdk 37: our own emulator
+          # (the testbed's managed devices have neither), `--connected`; the Gradle init script and
+          # the page-size assertion are in the step "16 KiB emulator". experimental: being brought
+          # up, remove `experimental` (and continue-on-error) once it is green
+          - { name: "Android 16 KiB pages (API 37, targetSdk 37)", os: ubuntu-latest, platform: android, archs: x86_64, ps16k: true, experimental: true }
           # pyc only; the build is proven by py-wasmext. ppc64le, riscv64, s390x and iOS are off
           # (maintainer, 2026-11-03): the same pyc as elsewhere, and no micro-compiler for them yet
           - { name: Pyodide, os: ubuntu-latest, platform: pyodide, archs: wasm32 }
@@ -86,6 +92,40 @@ jobs:
         run: uv run pytest tests -q -n auto -p no:cacheprovider --ignore=tests/spec
         env: { WABOROS_WAT_CACHE: "1" }
         shell: bash
+      # The testbed's managed devices are 4 KiB, aosp_atd and targetSdk 35: this cell starts its own
+      # emulator (KVM as android.py's setup_ci does, which also frees the NDK versions) and tells
+      # cibuildwheel to use it. The init script raises targetSdk (finalizeDsl: after the testbed's
+      # build.gradle.kts, before AGP locks the DSL) and writes it to a file the last step prints.
+      - if: ${{ matrix.ps16k }}
+        id: emulator
+        name: 16 KiB emulator
+        timeout-minutes: 20
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+          mkdir -p ~/.gradle/init.d
+          cat > ~/.gradle/init.d/target37.gradle <<'EOF'
+          allprojects { pluginManager.withPlugin("com.android.application") {
+            extensions.getByName("androidComponents").finalizeDsl { dsl ->
+              dsl.defaultConfig.targetSdk = 37
+              new File(System.getenv("RUNNER_TEMP"), "targetsdk.txt").text = "targetSdk=" + dsl.defaultConfig.targetSdk + " compileSdk=" + dsl.compileSdk + "\n"
+            }
+          } }
+          EOF
+          img="system-images;android-37.0;google_apis_ps16k;x86_64"
+          bin="$ANDROID_HOME/cmdline-tools/latest/bin"
+          yes | "$bin/sdkmanager" --licenses > /dev/null || true
+          "$bin/sdkmanager" emulator platform-tools "$img"
+          echo no | "$bin/avdmanager" create avd --name ps16k --package "$img" --device pixel_6 --force
+          nohup "$ANDROID_HOME/emulator/emulator" -avd ps16k -no-window -no-audio -no-snapshot -no-boot-anim -gpu swiftshader_indirect -accel on -memory 4096 > "$RUNNER_TEMP/emulator.log" 2>&1 &
+          adb=$ANDROID_HOME/platform-tools/adb
+          "$adb" wait-for-device
+          until [ "$("$adb" shell getprop sys.boot_completed | tr -d '\r')" = 1 ]; do sleep 5; done
+          size=$("$adb" shell getconf PAGE_SIZE | tr -d '\r')
+          echo "device page size: $size; API $("$adb" shell getprop ro.build.version.sdk | tr -d '\r')"
+          [ "$size" = 16384 ]
+          echo 'CIBW_TEST_RUNTIME={args = ["--connected", "emulator-5554"]}' >> "$GITHUB_ENV"
+        shell: bash
       # cibuildwheel's download cache (CPython/PyPy installers, virtualenv, the Android and Pyodide
       # toolchains; cibuildwheel FAQ "Caching"). Linux builds in containers and does not use it.
       - if: ${{ matrix.platform != 'linux' }}
@@ -97,6 +137,9 @@ jobs:
       # cibuildwheel comes from uv.lock (dev group); the host needs nothing else
       - run: uv run --only-group dev cibuildwheel ci/harness --platform ${{ matrix.platform }} --output-dir wheelhouse
         env: { CIBW_CACHE_PATH: "${{ runner.temp }}/cibw-cache" }
+        shell: bash
+      - if: ${{ always() && matrix.ps16k }}
+        run: cat "$RUNNER_TEMP/targetsdk.txt"
         shell: bash
   # D23/D35, S0014 step 6: a JIT artifact file is architecture-dependent and OS-independent. Each of
   # the six hosts writes the `.wbo` files of CoreMark and the v1 module (tools/artifact_dump.py, pure

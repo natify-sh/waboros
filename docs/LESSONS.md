@@ -1266,3 +1266,10 @@ What went wrong or surprised us while building the PoC, so it is not found again
     of slack. A test that needs `tracemalloc` skips on PyPy (`_tracemalloc` is missing), and
     "only stdlib is imported" counts PyPy's `_lzma_cffi` by its file in the stdlib directory.
     Found: first real PyPy CI run, 2026-11-25.
+161. **The CPython Android testbed fixes the emulator and targetSdk in its Gradle file.** The
+    managed devices are `minVersion` and `maxVersion` only (`aosp_atd`, 4 KiB pages, `targetSdk = 35`,
+    `compileSdk = 35`; the API level of `maxVersion` is its `targetSdk`); cibuildwheel 4.3.5 passes
+    `--managed maxVersion` unless `test-runtime` has `--managed`/`--connected`. A 16 KiB image
+    (`google_apis_ps16k`, API 35-37.x) therefore needs our own emulator and `--connected`, and
+    `targetSdk` is changed by a Gradle init script (`finalizeDsl`), not by a `-P` property.
+    Written before the first CI run of the cell: not yet confirmed. Found: 2026-11-25.

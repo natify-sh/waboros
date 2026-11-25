@@ -9,6 +9,8 @@ reach ART first. The app has no wasmtime (no WAT), so the module is written in b
 import contextlib
 import ctypes
 import io
+import mmap
+import os
 import platform
 import runpy
 import sys
@@ -98,3 +100,11 @@ def test_coremark_passes_its_self_check(monkeypatch: pytest.MonkeyPatch) -> None
     with contextlib.redirect_stdout(out):
         runpy.run_path(str(tool), run_name="__main__")
     assert valid(out.getvalue()), out.getvalue()[-700:]
+
+
+def test_page_size_is_the_kernels() -> None:
+    """16 KiB on the ps16k emulator of platforms.yml (the cell asserts it with adb); the value is
+    in the warnings summary."""
+    kernel = os.sysconf("SC_PAGE_SIZE")
+    warnings.warn(f"page size {kernel}", stacklevel=1)
+    assert mmap.PAGESIZE == kernel
