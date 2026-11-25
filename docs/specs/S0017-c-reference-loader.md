@@ -4,7 +4,7 @@ kind: spec
 id: S0017
 status: draft
 superseded_by:
-related: [D18, D23, D32, D34, D36, D47, D50, D54, D56, D58, D60, D61, D62, D65, D68, D69, D70, D71, D72, D73, D74, D75, R2, R3, R6, S0001, S0003, S0006, S0013, S0014, S0015, S0016]
+related: [D18, D23, D32, D34, D36, D47, D50, D54, D56, D58, D60, D61, D62, D64, D65, D66, D68, D69, D70, D71, D72, D73, D74, D75, R2, R3, R6, S0001, S0003, S0006, S0013, S0014, S0015, S0016]
 owner: maintainer
 updated: 2026-11-25
 ---
@@ -14,150 +14,147 @@ updated: 2026-11-25
 ## Summary
 A loader and runtime for JIT artifacts written in C99 and built with CMake alone (D36, D60;
 ROADMAP.md "Next" (6)(b)). It reads format v1 ([S0014](S0014-artifact-format.md)) with the same
-checks as the Python reader, instantiates a module from the file alone, and runs it under context
-ABI v1 with the boundary of [S0015](S0015-boundary-convention.md): its own `entry`, host functions
-behind each compiler's bridge (with D75's word argument), traps, interrupts, stack limits, the frame
-walk, the GC heap with the collector module, exceptions, and stores that hold code of several
-compilers. The Python loader (`targets/jit/common/artifact.py`, `instance.py` and the runtime
-services) is the oracle.
+checks as the Python reader, and instantiates a module from the file alone. It runs the module
+under context ABI v1 with the boundary of [S0015](S0015-boundary-convention.md): its own
+`entry`, host functions behind each compiler's bridge (with D75's word argument), traps,
+interrupts, stack limits, the frame walk, the GC heap with the collector module, exceptions, and
+stores that hold code of several compilers.
+
+The Python loader is the oracle: `targets/jit/common/artifact.py`, `instance.py` and the runtime
+services.
 
 There are two builds: one embeds a compiler for its own architecture, the other has none and runs
 only AOT files. This spec defines the loader and the **seam** where a compiler plugs in. It does
-not define the compiler, because D68's micro-compiler does not exist yet (ROADMAP "Next" (6)(c)).
-The C loader is the second of the final freeze's conditions (ARTIFACT.md, Status; D73's
-amendments).
+not define the compiler: D68's micro-compiler does not exist yet (ROADMAP "Next" (6)(c)). The C
+loader is the second condition of the final freeze (ARTIFACT.md, Status; D73's amendments).
 
-Fixed before this spec by the maintainer (2026-11-23 and 2026-11-24; ROADMAP "Next" (6),
-[MICRO-COMPILERS.md](../MICRO-COMPILERS.md) "The C variant", D72), and not reopened:
-* C99 and CMake only, with no Python needed to build; under `native/`, following S0016's CMake
-  contract;
-* two builds, with and without an embedded compiler;
-* the GC collector stays a wasm module, and a build option leaves GC out;
-* instantiation and the segment libcalls are written in C from the specification (D72);
-* artifacts are architecture-dependent and OS-independent (D23); v1 must not block 32-bit or MCU
-  targets;
-* the oracle: the spec suite through files and the refusal corpus must agree on both loaders,
-  and files from both compilers must load.
+The maintainer fixed the following before this spec (2026-11-23 and 2026-11-24; ROADMAP "Next"
+(6), [MICRO-COMPILERS.md](../MICRO-COMPILERS.md) "The C variant", D72), and it does not reopen
+them: C99 and CMake only, no Python to build, under `native/` with S0016's CMake contract; two
+builds, with and without an embedded compiler; the GC collector stays a wasm module, and a build
+option leaves GC out; instantiation and the segment libcalls in C from the specification (D72);
+artifacts architecture-dependent and OS-independent (D23), with nothing blocking 32-bit or MCU
+targets; the oracle: the spec suite through files and the refusal corpus agree on both loaders, and
+files of both compilers load.
 
 ## Decisions
-Taken by the maintainer on 2026-11-24 on this draft's open questions. The options and costs are
-in "Changes" and in D36's marker and D75.
-1. **What it is** (Q1): a test tool for now, with an internal C API: no stability promise, no
-   `find_package` and no install. The same sources become the C variant and the product later,
-   by a later decision (D36's marker).
-2. **Rows** (Q2): Linux glibc, macOS and Windows, on x86-64 and aarch64 (macOS x86-64 and arm64,
-   Windows x64 and ARM64), all before the final freeze. Each row beyond Linux glibc x86-64 comes
-   under D47 exception (a) ("Rows").
-3. **Harness** (Q3):
-   * the spec suite and the refusal corpus drive the C loader in-process through a thin ctypes
-     shim: the S0001 engines `cloader-<target>`;
-   * `waboros_run` (load a file, call an export) runs CoreMark and the committed files under
-     ASan/UBSan with no Python in the process;
-   * a C wast runner comes later, with the embedded compiler.
-4. **Host calls** (Q4, D75): the bridge passes the context-word index, `host(ctx, slots, word)`.
-   The C loader has one static dispatcher, and the embedder writes
-   `int32_t f(void *env, uint64_t *slots)`. D75 is implemented first, as prerequisite P1.
-5. **Data in the build** (Q5):
-   * `collector.wasm` as a committed `.c` array, tied to the `.wasm` by a test;
-   * a collector `.wbo` through CMake's `file(READ … HEX)`;
-   * run-time supply stays;
-   * S0016's rule reads "no generator outside CMake".
-6. **Refusal agreement** (Q6): per file, the two loaders agree on:
-   * accept or refuse;
-   * for a refused file, the S0014 step (1-6; for step 6 also the section name);
-   * for an accepted file, the inventory dump.
-   No corpus file may be refused through the Python loader's internal-exception path
-   (`cannot load: …` in `artifact.load`). The step is carried by Python's `ArtifactError.step`
-   (prerequisite P2) and by `waboros_error.check`.
+Taken by the maintainer on 2026-11-24 on this draft's questions. The options and their costs are
+in "Alternatives considered"; the dates are in "Changes".
+1. **What it is**: a test tool for now, with an internal C API: no stability promise, no
+   `find_package`, no install. The same sources become the C variant and the product by a later
+   decision (D36's marker).
+2. **Rows**: Linux glibc, macOS and Windows, on x86-64 and aarch64 (macOS x86-64 and arm64,
+   Windows x64 and ARM64), all before the final freeze. The D47 exception for each is in "Rows".
+3. **Harness**: the spec suite and the refusal corpus drive the C loader in-process through a thin
+   ctypes shim (the S0001 engines `cloader-<target>`); `waboros_run` (load a file, call an export)
+   runs CoreMark and the committed files under ASan/UBSan with no Python in the process; a C wast
+   runner comes later, with the embedded compiler.
+4. **Host calls** (D75): the bridge passes the context-word index, so host functions are called
+   as `host(ctx, slots, word)`. The C loader has one static dispatcher, and the embedder's host
+   function is `int32_t f(void *env, uint64_t *slots)`. D75 is implemented first (prerequisite
+   P1).
+5. **Data in the build**: `collector.wasm` as a committed `.c` array tied to the `.wasm` by a
+   test; a collector `.wbo` through CMake's `file(READ … HEX)`; run-time supply stays; S0016's "no
+   generated sources" reads "no generator outside CMake".
+6. **Refusal agreement**: per corpus file, accept or refuse; for a refused file the S0014 step
+   (1-6; for step 6 also the section); for an accepted file the inventory dump. The exceptions are the ones listed in "Designed exceptions to Decision 6". No corpus file may
+   be refused through the Python loader's internal-exception path (`cannot load: …` in
+   `artifact.load`). The step is carried by `ArtifactError.step` and `.section` in Python
+   (prerequisite P2), and by `waboros_error.check` and `.section` in C.
 
 ## Goals / Non-goals
 * Goals:
-  * the C library `waboros_loader` and the program `waboros_run`, built from the repository's C
-    sources with a C99 compiler and CMake 3.21, as a top-level project or as a subproject, on the
-    six rows;
-  * a strict reader that accepts and refuses exactly what `artifact.load` does, at the same S0014
-    step. The one exception is the trampoline rule, which differs by design for a foreign host
-    (S0014, "One copy per store", "A foreign host");
+  * the static library `waboros_loader` and the program `waboros_run`, built from the
+    repository's C sources with a C99 compiler and CMake 3.21, as a top-level project or a
+    subproject, on the six rows;
+  * a strict reader that accepts and refuses what `artifact.load` does, at the same S0014 step,
+    apart from the designed exceptions;
   * instantiation, calls, host functions, traps, interrupts, stack limits, GC and exceptions that
     agree with the Python runtime on the spec suite through files:
     * `jit-x86_64` and `jit-aarch64` files on every row;
-    * `jit-sljit-*` files and mixed stores on Linux glibc, the only row of the sljit targets
-      (D74);
-  * the committed v1 files run, or are refused, as "Test plan" item 5 says;
+    * `jit-sljit-*` files and mixed stores on Linux glibc (D74: the sljit targets' only row);
+  * the runtime scenarios of "Runtime tests" and the committed files ("Test plan", item 5);
   * the compiler seam, specified so that D68's micro-compiler plugs in without a change to the
     loader.
-* What "reference" means: correctness and clarity before speed. Each rule cites the section of
-  S0014, S0015 or ARTIFACT.md that it implements. There are no fast paths without a measurement
-  (CLAUDE.md, "Measure, do not estimate"), and the code is small enough for a reviewer to read
-  whole.
+* What "reference" means: correctness and clarity before speed. Each rule cites the S0014, S0015
+  or ARTIFACT.md section it implements. There is no fast path without a measurement (CLAUDE.md,
+  "Measure, do not estimate"), and the code is small enough for a reviewer to read whole.
 * Non-goals:
   * a product: a stable C ABI, packaging, install, `find_package` (Decision 1);
-  * the public API of phase 6 (wasmtime-py's shape);
+  * the public API of phase 6;
   * host functions that no module imports (Wasmtime's `Func::new`): phase 6, through D75's shim
     module, which a build without a compiler gets as one more AOT file;
-  * WASI and any host-function library beyond what the tests need;
-  * the compiler (D68), the compiler `.wasm`, cross-compilation, a C wast runner (Decision 3);
-  * static builds and linked AOT artifacts (D62, [STATIC-BUILDS.md](../STATIC-BUILDS.md));
-  * threads (D58: words 6-8 of the libcall block stay zero, and a shared memory is refused);
-  * fuel and epochs (no flag in v1: words 3 and 4 stay 0);
-  * `isa_level` above 1 (as the Python loader: S0014, "Known limitations of v1");
+  * WASI, and any host-function library beyond what the tests need;
+  * the compiler (D68), the compiler `.wasm`, cross-compilation, a C wast runner;
+  * static builds (D62, [STATIC-BUILDS.md](../STATIC-BUILDS.md));
+  * threads: words 6-9 of the libcall block stay zero (D58), and a shared memory is refused;
+  * fuel and epochs: words 3 and 4 stay 0, since v1 has no flag for them;
+  * `isa_level` above 1 (as the Python loader, S0014 "Known limitations of v1");
   * 32-bit hosts and MCUs: nothing here blocks them ("C99 rules"), but none is built.
 
 ### Rows (D47)
-Per-OS code here means: executable memory and W^X, address-space reservations, stack bounds, and
-the fault handler. The first row is Linux glibc x86-64. Every other row comes under **exception
-(a)**: without its per-OS code the loader cannot run there at all, or it breaks W^X, BTI or "never
-crash". The maintainer's Decision 2 asks for these rows before the final freeze.
+Per-OS code here means executable memory and W^X, address-space reservations, stack bounds, locks,
+and the fault handler. The first row is Linux glibc x86-64.
+* **Executable memory, reservations, stack bounds and locks** on every other OS come under
+  **exception (a)**: without them the loader cannot run there at all.
+* **The guard handler** on macOS and Windows comes under **exception (d)**: the maintainer's
+  Decision 2 asks for these rows, for parity with the Python runtime's verified guard rows
+  (S0006). Without the handler, guard files are refused and explicit files run: there is no crash,
+  so (a) does not apply.
+* aarch64 is not a D47 row; its differences are per architecture: cache flush, BTI, the PC field.
 
-| row | per-OS code | evidence for (a) | CI |
+| row | per-OS code | exception | CI |
 |---|---|---|---|
-| Linux glibc x86-64 | `os_posix.c`: `mmap`/`mprotect`, `sigaction(SIGSEGV)`, `pthread_getattr_np` | the first row | `ci.yml` `cloader` (new), `ubuntu-latest` |
-| Linux glibc aarch64 | the same file; `__builtin___clear_cache`, `PROT_BTI` when `AT_HWCAP2` has BTI, the PC from `uc_mcontext.pc` | no instruction-cache coherence: code without the flush is wrong (part 3, "Per architecture"); BTI pads enforced | `arm64` native, `jit` (QEMU `-cpu max`, BTI) |
-| macOS x86-64 | `os_posix.c` (Apple parts): the handler on `SIGSEGV` and `SIGBUS` with `raise` after chaining (`si_code` does not tell, LESSONS 57); stack bounds by `pthread_get_stackaddr_np`/`_stacksize_np` | a guard fault arrives as `SIGBUS` (S0006 step 3): without it a guard trap crashes; `pthread_getattr_np` does not exist | `platforms.yml` `macos-26-intel` |
-| macOS arm64 | as above, plus `MAP_JIT` with `pthread_jit_write_protect_np` around every write of code, and `sys_icache_invalidate` | Apple silicon refuses W+X pages without `MAP_JIT` and switches write protection per thread: without it no code runs (R2) | `platforms.yml` `macos-26` |
-| Windows x64 | `os_windows.c`: `VirtualAlloc`/`VirtualProtect`/`VirtualFree`, a vectored handler (`AddVectoredExceptionHandler(1, …)`), `GetCurrentThreadStackLimits`; the Win64 `entry` | no `mmap` and no signals; a SysV C entry clobbers registers Win64 keeps (S0015 exception (a)) | `platforms.yml` `windows-latest` |
-| Windows ARM64 | the same file, `FlushInstructionCache`, the PC from `ContextRecord->Pc` | as Windows x64, and no instruction-cache coherence | `platforms.yml` `windows-11-arm` |
+| Linux glibc x86-64 | `os_posix.c`: `mmap`/`mprotect`, `pthread_mutex`, `pthread_getattr_np`, `sigaction(SIGSEGV)` | the first row | `ci.yml` `cloader` (new), `ubuntu-latest` |
+| Linux glibc aarch64 | the same file; `__builtin___clear_cache`, `PROT_BTI` when `AT_HWCAP2` has BTI, the PC from `uc_mcontext.pc` | per architecture | `arm64` native, `jit` (QEMU `-cpu max`, BTI) |
+| macOS x86-64 | `os_posix.c` (Apple parts): stack bounds from `pthread_get_stackaddr_np`/`_stacksize_np` and the main thread's rlimit; the handler on `SIGSEGV` and `SIGBUS` | (a) for memory and stack bounds (`pthread_getattr_np` does not exist); (d) for the handler | `platforms.yml` `macos-26-intel` |
+| macOS arm64 | as above, plus `MAP_JIT` with `pthread_jit_write_protect_np` around every code write, `sys_icache_invalidate`, the PC by `arm_thread_state64_get_pc` | (a): Apple silicon refuses executable pages without `MAP_JIT` (R2); (d) for the handler | `platforms.yml` `macos-26` |
+| Windows x64 | `os_windows.c`: `VirtualAlloc`/`VirtualProtect`/`VirtualFree`, `SRWLOCK`, `GetCurrentThreadStackLimits`, the Win64 `entry`; the vectored handler with CET continuation targets | (a) for memory, locks, stack bounds and `entry` (no `mmap`; a Windows host calls in Win64); (d) for the handler | `platforms.yml` `windows-latest` |
+| Windows ARM64 | the same file, `FlushInstructionCache`, the PC from `ContextRecord->Pc` | as Windows x64 | `platforms.yml` `windows-11-arm` |
 
-* The macOS handler uses signals, as the Python runtime does (S0006 step 3). Mach exception
-  ports, which Wasmtime uses by default, are not taken: the oracle uses signals, and two
-  mechanisms would double the tests.
-* **The Win64 `entry` runs from a C host for the first time.** Python runs the code that
-  ARTIFACT.md's Win64 listing matches ("Checked"), and the C bytes are tied to `entry.py` by a
-  test. **A file's `win64` blob is executed for the first time**: the Python runtime never
-  executes a file's blob. Step 8 is where both are first seen to work.
-* Linux musl and Android are not rows of this spec (Open question 2).
+* macOS uses signals, as the Python runtime does (S0006 step 3), not Mach exception ports.
+* **What is new on Windows.** The code that ARTIFACT.md's Win64 listing matches already runs on
+  the Windows runners in-process: it is the Python runtime's `entry`. So are the bytes of the
+  `win64` bridge blob: the runtime assembles its own copy. Three things are new: a copy of a
+  file's blob executed as found in the file, the C `entry` bytes, and the dispatcher's call in
+  Win64.
+* Before step 8, the Win64 `entry` bytes and a file's `win64` bridge with `dispatch` run on Linux
+  through an `ms_abi` C function, as `tests/sljit/test_win64_bridge.py` does for the sljit blob
+  ("Runtime tests").
+* Linux musl and Android are not rows (Open question 2).
 
 ## Interface
 
 ### Where it lives
 ```
 native/
-  CMakeLists.txt          + the loader's options and targets (below)
+  CMakeLists.txt          restructured (step 0) + the loader's options and targets
   loader/
-    waboros.h             the only public header: the internal C API below
-    read.c                ELF container and payloads, S0014 checks 1-6, cexpr parse and types
+    waboros.h             the only public header: the internal C API
+    read.c                ELF container and payloads, S0014 steps 1-6, cexpr parse and types,
+                          the frozen lookup, the inventory dump
     sha256.c              module_sha256 of a fat file and of the collector file
-    instance.c            context layout, linking, instantiation (S0014 step 7), calls, the
-                          dispatcher, the services
-    gc.c                  heap regions, type-info and function-type records, the GC services, the
-                          walk, roots, the collector's driver (absent with WABOROS_WITH_GC=OFF)
-    collector_wasm.c      collector.wasm as a byte array, committed, tied by a test (Decision 5)
-    entry.c               the runtime's `entry` per architecture and convention as byte arrays
-                          (ARTIFACT.md part 3 listings), mapped once per process
-    os_posix.c            Linux and macOS: reserve/commit/protect/flush, MAP_JIT, PROT_BTI,
-                          stack bounds, the signal handler
-    os_windows.c          Windows: the same with VirtualAlloc, FlushInstructionCache, the
-                          vectored handler, GetCurrentThreadStackLimits
-    compiler.h            the seam (below)
+    instance.c            context layout, linking, instantiation, calls, `dispatch`, services
+    gc.c                  heap, type-info and function-type records, GC services, the walk, roots,
+                          the collector's driver (absent with WABOROS_WITH_GC=OFF)
+    collector_wasm.c      collector.wasm as a committed byte array (Decision 5)
+    entry.c               the runtime's `entry` and `sp_stub` per architecture and convention as
+                          byte arrays, tied to `entry.py` by a test
+    os_posix.c            Linux and macOS: memory, locks, stack bounds, the signal handler
+    os_windows.c          Windows: memory, locks, stack bounds, the vectored handler
+    compiler.h            the seam
   tools/waboros_run.c     the program: run an export, --dump, --check
   tests/loader/           ctest self-tests (C, no Python) and the libFuzzer target
-tests/cloader/            the Python side (tests only): the ctypes shim and the S0001 engines
+tests/cloader/            the Python side (tests only): the shim, the engines, the corpus, the
+                          Python dumper, `make_files.py`
 ```
-The loader does not depend on sljit, and a build without a compiler compiles no sljit source.
+The loader does not depend on sljit. A build without a compiler compiles no sljit source.
 
 ### CMake
-The S0016 contract holds:
-* `cmake_minimum_required(VERSION 3.21)`;
+**Step 0 restructures `native/CMakeLists.txt`.** Today a missing submodule is a `FATAL_ERROR`
+whatever is built, and `WABOROS_BUILD_TESTS` requires `WABOROS_SLJIT_SHARED`. After step 0, the
+sljit part and its tests are behind `WABOROS_SLJIT`. S0016's contract holds:
+* CMake 3.21;
 * embedding by `FetchContent_Declare` + `FetchContent_MakeAvailable` (`SOURCE_SUBDIR native`) or
   by `add_subdirectory`, never `FetchContent_Populate`;
 * `target_*` properties only; `WABOROS_*` options; `waboros_*` targets with `waboros::` aliases;
@@ -165,576 +162,803 @@ The S0016 contract holds:
 
 | option | default | meaning |
 |---|---|---|
-| `WABOROS_LOADER` | ON | build `waboros_loader` (`waboros::loader`, static) and `waboros_run` |
-| `WABOROS_LOADER_SHARED` | `PROJECT_IS_TOP_LEVEL` | also a shared `waboros_loader_shared` for the ctypes shim (tests only; `WINDOWS_EXPORT_ALL_SYMBOLS` on Windows) |
-| `WABOROS_WITH_COMPILER` | OFF until D68's compiler exists, then ON on x86-64 and aarch64 | link the embedded compiler through the seam; OFF: AOT files only |
-| `WABOROS_WITH_GC` | ON | the GC heap, the GC services and the collector's driver; OFF: a file with `.waboros.context` `heap` 1 is refused at load |
-| `WABOROS_GUARD` | ON on every row of "Rows" | the fault handler; OFF: a `BOUNDS_GUARD` file is refused at load (S0014 check 5) |
-| `WABOROS_COLLECTOR_WBO` | empty | a path to the collector's `.wbo`, embedded as data with CMake's `file(READ … HEX)` (Decision 5) |
-| `WABOROS_SLJIT` | `WABOROS_WITH_COMPILER` or a top-level build | build S0016's `waboros_sljit`; today the submodule check fails the configure in every case |
+| `WABOROS_LOADER` | ON | `waboros_loader` (`waboros::loader`, static) and `waboros_run` |
+| `WABOROS_LOADER_SHARED` | `PROJECT_IS_TOP_LEVEL` | `waboros_loader_shared` for the shim (tests; `WINDOWS_EXPORT_ALL_SYMBOLS` on Windows) |
+| `WABOROS_WITH_COMPILER` | OFF until D68's compiler exists | link the embedded compiler through the seam |
+| `WABOROS_WITH_GC` | ON | the heap, the GC services, the collector's driver; OFF: `heap` 1 files refused at load |
+| `WABOROS_GUARD` | ON on the six rows | the fault handler; OFF: `BOUNDS_GUARD` files refused at step 5 |
+| `WABOROS_COLLECTOR_WBO` | empty | a collector `.wbo` embedded with `file(READ … HEX)` |
+| `WABOROS_SLJIT` | `WABOROS_WITH_COMPILER` or a top-level build | S0016's `waboros_sljit` and its tests |
 
-* Sanitizer and fuzzing flags come from the top-level command line (`CMAKE_C_FLAGS`), as any
-  user's flags do. The project sets none.
-* Compilers: GCC and Clang on Linux, Apple Clang on macOS, MSVC on Windows (the runners'
-  defaults). Two things are confirmed in step 0, with clang-cl as the fallback: that CMake
-  accepts `C_STANDARD 99` with MSVC, and that the loader builds in MSVC's C mode.
+* Sanitizer and fuzzing flags come from the top-level command line (`CMAKE_C_FLAGS`).
+* Compilers: GCC and Clang on Linux, Apple Clang, and MSVC on Windows (the runners' defaults).
+  Step 0 confirms that CMake accepts `C_STANDARD 99` with MSVC, with clang-cl as the fallback.
 
 ### C99 rules
-* `C_STANDARD 99`, `C_EXTENSIONS OFF`, `_DEFAULT_SOURCE` on the target, as S0016 does. Warnings
-  are `PRIVATE`: `-Wall -Wextra -Wconversion -Wvla` for GNU and Clang, `/W4` for MSVC.
-* **No VLAs and no `alloca`.** Native stack belongs to wasm code (the headroom rule, S0015).
-* **Reading bytes.** Every payload field is assembled from bytes (`rd_u32(p)`: shifts of
-  `uint8_t`). The reader never casts a file pointer to a wider type, so alignment and strict
-  aliasing cannot break it, and it runs on any host, a big-endian or 32-bit one included.
-* **Arithmetic.** Sizes and offsets are `uint64_t`. Every count is checked against the bytes left
-  before it is used or allocated (S0014, "Conventions"), and every sum is checked before it is
-  formed. Signed overflow, shifts by the width and `long` (32 bits on Windows) do not appear.
-* **Memory shared with code** (the context, value stack, linear memories, tables, GC heap) is
-  accessed as `uint64_t` arrays or with `memcpy`, never through a pointer of another type.
-* **The context is the last member of the instance**, a C99 flexible array `uint64_t ctx[]`. The
-  dispatcher therefore finds its instance from `ctx` by subtracting `offsetof`.
-* **The one implementation-defined step**: an address in executable memory becomes a function
-  pointer (`entry`) by a cast from `uintptr_t`. POSIX and Windows both define it.
-* **Atomic words.** `INTERRUPT`, written by any thread, is an aligned `volatile uint64_t` store,
-  which is single-copy atomic on x86-64 and aarch64. C11 atomics wait for D58, as S0016 says.
-* Every call into the library returns a status and fills a caller-provided `waboros_error`.
-  Nothing aborts and nothing prints. "Never crash the interpreter" becomes "never crash the host
-  process": a malformed file, a trap or a failed allocation is a status.
+* `C_STANDARD 99`, `C_EXTENSIONS OFF`, `_DEFAULT_SOURCE`, as S0016. Warnings are `PRIVATE`:
+  `-Wall -Wextra -Wconversion -Wvla` (GNU, Clang) and `/W4` (MSVC).
+* No VLAs and no `alloca`: native stack belongs to wasm code (the headroom rule, S0015).
+* Every payload field is assembled from bytes (`rd_u32(p)`), never read by casting a file pointer,
+  so alignment and strict aliasing cannot break the reader, and it runs on any host.
+* Sizes and offsets are `uint64_t`. Every count is checked against the bytes left before use
+  (S0014, "Conventions"), and every sum before it is formed. There is no signed overflow, no
+  shift by the width, and no `long` (32 bits on Windows).
+* Memory shared with code (the context, value stack, memories, tables, heap) is accessed as
+  `uint64_t` arrays or with `memcpy`.
+* The context is the instance's last member, a flexible array `uint64_t ctx[]`, so `dispatch`
+  finds its instance by subtracting `offsetof`.
+* One implementation-defined step: an executable address becomes a function pointer by a cast from
+  `uintptr_t`. POSIX and Windows define it.
+* **Locks** (`os_*.c`: `pthread_mutex_t` or `SRWLOCK`, behind three functions):
+  * one per engine: the type-id and tag-id registries, the trampoline copies, and the guard
+    registry's writers. The handler reads the registry with no lock: an entry is published after
+    it is written, and retired with `hi` zeroed first (S0006, "Registry");
+  * one per store, as Python's `interrupt_lock`. `waboros_store_interrupt` takes it to walk the
+    instance array (which instantiation grows under the same lock), and the outermost entry takes
+    it to clear the word.
+* **One thread per store** (Python's `StoreState.enter`/`claim`):
+  * the owner's thread id is recorded on the first entry, under the engine lock (the claim is
+    atomic);
+  * an entry, a grow, a table operation or an instantiation from another thread returns
+    `WABOROS_E_THREAD` before anything changes;
+  * nesting is allowed;
+  * a claim outside an entry (instantiation, a host-side grow) is released, so a store built on
+    one thread may run on another.
+* `INTERRUPT` (any thread) is an aligned `volatile uint64_t` store, single-copy atomic on x86-64
+  and aarch64. C11 atomics wait for D58.
+* Every call returns a status and fills a `waboros_error`. Nothing aborts and nothing prints. A
+  malformed file, a trap, a wrong value or a failed allocation is a status, never a crash of the
+  host process.
 
 ### C API (internal; Decision 1)
-No stability promise: the API serves the tests and `waboros_run`, and it changes with them. A
-product API is a later decision; this one is shaped so that a product can add to it without
-removing anything.
+The API serves the tests and `waboros_run` and changes with them. It is shaped so that a product
+can add to it without removing anything.
 ```c
-typedef struct waboros_engine waboros_engine;   /* per process: type ids, tag ids, trampolines, handler */
+typedef struct waboros_engine waboros_engine;   /* registries, trampoline copies, handler, locks */
 typedef struct waboros_store  waboros_store;    /* one thread at a time */
-typedef struct waboros_module waboros_module;   /* a read artifact: metadata + code, not yet mapped */
+typedef struct waboros_module waboros_module;   /* a read artifact */
 typedef struct waboros_instance waboros_instance;
 typedef int32_t (*waboros_host_fn)(void *env, uint64_t *slots);
-typedef struct { int32_t code; uint8_t check; uint32_t trap; char msg[200]; } waboros_error;
-/* code: 0 ok, 1 not ours, 2 refused, 3 link, 4 trap, 5 host error, 6 resource,
-   7 needs a compiler, 8 unsupported build, 9 internal.
-   check: the S0014 step (1-6) of a refusal (codes 1, 2, 7), else 0; msg names the section */
+enum waboros_code {        /* never a trap number: the trap is in `trap` */
+  WABOROS_OK, WABOROS_E_NOT_OURS, WABOROS_E_REFUSED, WABOROS_E_NEEDS_COMPILER,
+  WABOROS_E_NO_GC_BUILD, WABOROS_E_NO_COLLECTOR, WABOROS_E_LINK, WABOROS_E_TYPE,
+  WABOROS_E_ARG, WABOROS_E_THREAD, WABOROS_E_TRAP, WABOROS_E_INTERRUPT, WABOROS_E_EXCEPTION,
+  WABOROS_E_HOST, WABOROS_E_LOST, WABOROS_E_RESOURCE, WABOROS_E_INTERNAL };
+typedef struct {
+  int32_t code;            /* enum waboros_code */
+  uint8_t check;           /* E_NOT_OURS, E_REFUSED, E_NEEDS_COMPILER: the S0014 step 1-6 */
+  char section[24];        /* step 6: the payload's section name */
+  uint32_t trap;           /* E_TRAP: the trap code 1-18 */
+  uint64_t tag;            /* E_EXCEPTION: the tag identity */
+  uint32_t npayload;       /* E_EXCEPTION: payload slots, kept in the store until the next call */
+  char msg[200];
+} waboros_error;
 
-int waboros_engine_new(const waboros_compiler *c /* NULL: none */, waboros_engine **out, waboros_error *e);
-int waboros_engine_set_collector(waboros_engine *, const uint8_t *wbo, size_t n, waboros_error *e);
-int waboros_module_load(waboros_engine *, const uint8_t *b, size_t n, waboros_module **out, waboros_error *e);
-int waboros_module_dump(const waboros_module *, char *buf, size_t n);   /* the canonical inventory */
-int waboros_store_new(waboros_engine *, const waboros_store_config *, waboros_store **out, waboros_error *e);
-int waboros_host_func(waboros_store *, waboros_host_fn f, void *env, uint32_t type_index_in /* of a module */,
-                      const waboros_module *m, waboros_extern *out, waboros_error *e);
+int waboros_engine_new(const waboros_compiler *c /* NULL: none */, waboros_engine **, waboros_error *);
+int waboros_engine_set_collector(waboros_engine *, const uint8_t *wbo, size_t n, waboros_error *);
+int waboros_module_load(waboros_engine *, const uint8_t *b, size_t n, waboros_module **, waboros_error *);
+int waboros_module_dump(const waboros_module *, char *buf, size_t *n);
+int waboros_store_new(waboros_engine *, const waboros_store_config *, waboros_store **, waboros_error *);
+/* host-made externs (spectest's, a host's own) */
+int waboros_host_func(waboros_store *, waboros_host_fn, void *env, const waboros_functype *, waboros_extern *, waboros_error *);
+int waboros_memory_new(waboros_store *, uint64_t min, uint64_t max /* ~0: none */, int a64, waboros_extern *, waboros_error *);
+int waboros_table_new(waboros_store *, const waboros_reftype *, uint64_t min, uint64_t max, uint64_t init, waboros_extern *, waboros_error *);
+int waboros_global_new(waboros_store *, const waboros_valtype *, int mut, const uint64_t *v, waboros_extern *, waboros_error *);
+int waboros_global_get(waboros_store *, const waboros_extern *, uint64_t *v /* 1 or 2 slots */);
+int waboros_global_set(waboros_store *, const waboros_extern *, const uint64_t *v, waboros_error *);
+int waboros_memory_data(waboros_store *, const waboros_extern *, uint8_t **base, uint64_t *size);
 int waboros_instantiate(waboros_store *, waboros_module *, const waboros_extern *imports, size_t n,
-                        waboros_instance **out, waboros_error *e);
-int waboros_export(waboros_instance *, const char *name, size_t len, waboros_extern *out);
-int waboros_call(waboros_store *, const waboros_extern *func, uint64_t *slots, size_t nslots, waboros_error *e);
-void waboros_store_interrupt(waboros_store *);           /* any thread */
-uint64_t waboros_extern_word(waboros_store *, void *host);  /* (h << 2) | 2, part 3 */
+                        waboros_instance **, waboros_error *);
+int waboros_export(waboros_instance *, const char *name, size_t len, waboros_extern *);
+int waboros_call(waboros_store *, const waboros_extern *func, uint64_t *slots, size_t nslots, waboros_error *);
+int waboros_exception_payload(waboros_store *, uint64_t *slots, size_t n);
+void waboros_store_interrupt(waboros_store *);              /* any thread */
+/* references held by the host (the store's handle table, part 3) */
+uint64_t waboros_extern_word(waboros_store *, void *host);  /* (h << 2) | 2 */
 void    *waboros_extern_host(waboros_store *, uint64_t word);
-int      waboros_exception(waboros_store *, uint64_t *tag_id, uint64_t *slots, size_t n); /* after status 14 */
+uint32_t waboros_root(waboros_store *, uint64_t word);      /* a GC or exn reference -> handle */
+uint64_t waboros_rooted(waboros_store *, uint32_t handle);  /* its current word */
+void     waboros_unroot(waboros_store *, uint32_t handle);
 ```
-* `waboros_extern` holds a kind and a pointer. A function is the address of its record, as
-  everywhere in part 3; a host function is `(f, env, type)` until it is imported. Globals,
-  memories and tables are the loader's objects.
-* Values are part-3 slots (`frame[0..n)`): an i32 zero-extended, a v128 in two slots,
-  references as words. `waboros_call` writes the results over the arguments.
-* `waboros_store_config`: `max_wasm_stack` (default 512 KiB, Python's `DEFAULT_BUDGET`) and the
-  value-stack size (1 MiB, `VSTACK_BYTES`).
-* **Host calls (D75).** Every import word and every libcall and GC-service word in use holds the
-  address of the one static function `int32_t dispatch(uint64_t *ctx, uint64_t *slots, uint32_t
-  word)`. The bridge calls it in the host's convention, with `word` in `edx` (SysV), `r8d`
-  (Win64) or `w2` (AAPCS64). It does what `Instance._host` does:
-  1. finds the instance from `ctx`, and checks that `word` is an import, libcall or service word
-     of its layout and that `ctx[word]` is `dispatch`. Otherwise it returns 13 with "host call
-     with an invalid word": a file whose bridge predates D75 fails here instead of calling the
-     wrong function;
-  2. sets the store's next frame to `slots + max(n, m)` (the nested-entry rule, B1);
-  3. calls the import's `f(env, slots)`, or the loader's own service for a libcall or a GC
-     service;
-  4. writes the status into `ctx[HOST_ERROR]` as its last action (D34): 0, a public trap code, or
-     13 with the message kept in the store.
-  A host function returns its status. It never returns 14, and a private status (bit 31) from it
-  becomes 13. An import from another instance of the store is that instance's record, called
-  directly with no dispatcher (D32).
+* **Values** are part-3 slots: an i32 is zero-extended, a v128 takes two slots.
+* **References at the API**:
+  * a funcref is a record address;
+  * an externref is a host word from `waboros_extern_word`;
+  * a GC or exn reference is a **root handle** (`waboros_root`). A result of a GC or exn type
+    comes back as a new handle, which the host must unroot; Python keeps handles until the store
+    is dropped (`gc_handles`).
+  * `waboros_call` and `waboros_global_set` check every reference argument before anything runs,
+    as `_StoreStacks.to_raw` does: a record of this store with a matching type, a live host word,
+    an i31 in range, or a live handle whose object fits the type. Otherwise they return
+    `WABOROS_E_TYPE`.
+* `waboros_call` requires `nslots >= max(nparams, nresults)` (two slots per v128), else
+  `WABOROS_E_ARG`, and writes the results over the arguments.
+* **The exception at the failing entry**: when an entry returns 14, `waboros_call` reads the tag
+  identity and the payload from the object at once, before any wasm or collection runs, as
+  `_uncaught` does. References in the payload are rooted as handles. The values are kept in the
+  store until the next call.
+* `waboros_store_config`: `max_wasm_stack` (default 512 KiB, `DEFAULT_BUDGET`) and the value-stack
+  size (1 MiB, `VSTACK_BYTES`).
+
+### Host calls (D75)
+Every import word and every libcall and GC-service word in use holds the address of one static
+function, `int32_t dispatch(uint64_t *ctx, uint64_t *slots, uint32_t word)`. The bridge calls it
+in the host's convention, with `word` in `edx` (SysV), `r8d` (Win64) or `w2` (AAPCS64). It does
+what `Instance._host` and its callback do (`instance.py`, `_host`):
+1. Find the instance from `ctx`. **Best-effort check**: `word` must be an import, libcall or
+   service word of the instance's layout, and `ctx[word]` must be `dispatch`. Otherwise it returns
+   13: "host call with an invalid word".
+   * This cannot reliably catch a pre-D75 bridge. Such a bridge leaves a live value in the
+     third-argument register: on aarch64 `w2` is a pool register, on SysV it is the low half of
+     `slots`, on Win64 `r8` is the exit record. Since every such word of a context holds
+     `dispatch`, a stale value inside the range passes the check and calls the wrong function.
+   * **So the C loader supports host calls and libcalls only from files written after D75.**
+     Pre-D75 files whose exports make no host call or libcall still run; the committed `v1-s15`
+     set is such a file. Whether to refuse the others is Open question 1.
+2. Refuse to serve a lost store (D61): return 13 with the lost message.
+3. Save the store's next frame and set it to `slots + 8 · max(n, m)` (the nested-entry rule, B1).
+4. Call the import's `f(env, slots)`, or the loader's own service.
+5. Mask each result to its type (`_masks`: i32 and f32 to 32 bits), so slots stay zero-extended.
+6. Map the status:
+   * 0 and the trap codes 1-13 and 15-18 pass (Python's `_TRAP_STATUSES`: every `TrapCode` but
+     14);
+   * any other value (14, above 18, the private range) becomes 13, with the message "host
+     function returned status N" kept in the store (S0015: a host never returns 14, and no
+     private status leaves a bridge).
+7. When the status is 0 and the store runs guard code: check that the handler chain is still
+   intact ("The guard handler", rule `broken`). A broken chain gives 13 and the S0006 message.
+8. Restore the store's next frame. As the last action, write the status to `ctx[HOST_ERROR]`
+   (D34).
+
+An import from another instance of the store is that instance's record, called directly (D32).
+With `WABOROS_JIT_WALK_CHECK=1`, `dispatch` walks the store first, as `_checked` does.
 
 ### The compiler seam (`compiler.h`)
 ```c
 typedef struct waboros_compiler {
     uint16_t e_machine;                  /* the loader's own architecture */
     const char *compiler;                /* its exact `compiler` string (S0014 header) */
-    /* wasm bytes -> a thin v1 file; flags as the header's (BOUNDS_GUARD, GUARD_LOG2) */
+    const char *target;                  /* its target token, added to the known targets */
     int  (*compile)(void *self, const uint8_t *wasm, size_t n, uint32_t flags,
-                    uint8_t **out, size_t *out_n, waboros_error *e);
+                    uint8_t **out, size_t *out_n, waboros_error *e);   /* -> a thin v1 file */
     void (*release)(void *self, uint8_t *out);
     void *self;
 } waboros_compiler;
 ```
-* **The output is a file.** The loader reads it with the same strict reader as any other file.
-  So there is one path, and the seam is exactly what the wasm build of the same compiler exports
-  (`compile(in_ptr, in_len) -> (out_ptr, out_len)`, MICRO-COMPILERS.md requirement 1). An
-  in-memory handoff would be a second path, and it is not added without a measurement.
-* The compiler validates the wasm itself. Its blob is the first copy for its compiler string,
-  like any file's. `WABOROS_WITH_COMPILER=ON` makes the build's compiler the default of
-  `waboros_engine_new`.
-* Until D68 exists, the fat-file path is tested with a **test compiler**: a seam implementation in
-  `tests/cloader/` that calls the Python compiler through ctypes callbacks. It runs in tests only.
+* **The output is a file**, and the loader reads it with the same strict reader. This is the one
+  path, and the same shape as the wasm build's export (`compile(in_ptr, in_len) -> (out_ptr,
+  out_len)`, MICRO-COMPILERS.md requirement 1). An in-memory handoff would be a second path and is
+  not added without a measurement.
+* The compiler validates the wasm itself. Its file's blob becomes its compiler string's copy, as
+  any file's does.
+* **The test compiler** (`tests/cloader/`): a seam implementation whose `compile` is a ctypes
+  callback into the Python compiler of a given target. It is used by the shim engines and the
+  corpus until D68 exists.
 
 ### The GC collector: three builds (maintainer, 2026-11-24)
-The collector is `runtime/gc/collector.wasm` (D54, D61), an ordinary module. It imports the
-store's heap as `gc.heap` and exports `begin`, `roots`, `finish` and `is_subtype`.
+The collector is `runtime/gc/collector.wasm` (D54, D61). It imports the store's heap as `gc.heap`
+and exports `begin`, `roots`, `finish` and `is_subtype`.
 1. **With the embedded compiler** (`WABOROS_WITH_COMPILER=ON`, `WABOROS_WITH_GC=ON`):
-   * the library carries `collector.wasm` as the committed array `collector_wasm.c`. A pytest
-     checks that the array equals the committed `.wasm` (D54's tie);
-   * the collector is compiled with the embedded compiler on first need, once per engine and
-     bounds mode, and kept;
-   * "first need" is the Python runtime's (S0016, "Runtime and loader"): the instantiation of a
-     module with `subtype` 1 (the `IS_SUBTYPE` record), or the first collection.
+   * the library carries `collector.wasm` as the committed array `collector_wasm.c`; a pytest
+     checks that the array equals the `.wasm` (D54's tie);
+   * the collector is compiled on first need, once per engine and bounds mode, and kept. "First
+     need" is the Python runtime's (S0016, "Runtime and loader"): the instantiation of a module
+     with `subtype` 1, or the first collection.
 2. **Without a compiler** (`WABOROS_WITH_COMPILER=OFF`, `WABOROS_WITH_GC=ON`): the collector is
-   **used only as an AOT file**:
-   * the file is a `.wbo` of `collector.wasm` for the loader's architecture, from any compiler of
-     that architecture (D68's wasm build on a PC; today `jit-x86_64`, `jit-aarch64` or
-     `jit-sljit-*`);
-   * it is supplied at run time with `waboros_engine_set_collector`, or at build time with
-     `WABOROS_COLLECTOR_WBO=<path>` (embedded as data);
-   * either way it goes through `waboros_module_load`: the same checks, and one copy per
-     compiler string. Its `module_sha256` must equal the SHA-256 of the committed
-     `collector.wasm` (computed from `collector_wasm.c` at startup), and its exports are checked;
-   * **when a module needs the GC heap** (`.waboros.context` `heap` 1) **and no collector file is
-     present**, `waboros_instantiate` refuses it, before anything of the instance is in the store,
-     with code 8: "module needs the GC collector: none supplied (build without a compiler: supply
-     its AOT file)". The refusal comes at instantiation, not at the first collection, so a program
-     fails at once and not in the middle of a run. A module without the heap never needs the
-     collector.
-3. **Without GC** (`WABOROS_WITH_GC=OFF`):
-   * there is no collector, no GC heap, no GC services and no collection;
-   * a file with `heap` 1 is refused at load, with code 8: "built without GC";
-   * this covers every module with GC types or instructions, a function-subtype
-     `call_indirect`, a `throw`, or a `try_table` with `catch`/`catch_ref`, because exceptions
-     live in the GC heap (S0013 step 6);
-   * a module with only `throw_ref` and `catch_all(_ref)` has no heap and runs (ARTIFACT.md
+   **used only as an AOT file**.
+   * The file is a `.wbo` of `collector.wasm` for the loader's architecture, from any compiler of
+     it: D68's wasm build on a PC, or today `jit-x86_64`, `jit-aarch64` or `jit-sljit-*`.
+   * It is supplied by `waboros_engine_set_collector`, or at build time by
+     `WABOROS_COLLECTOR_WBO`.
+   * It goes through `waboros_module_load`. Its `module_sha256` must equal the SHA-256 of
+     `collector_wasm.c`'s bytes, and its exports are checked.
+   * **When a module has `heap` 1 and no collector file is present**, `waboros_instantiate`
+     refuses it before anything of the instance is in the store: `WABOROS_E_NO_COLLECTOR`,
+     "module needs the GC collector: none supplied (build without a compiler: supply its AOT
+     file)". The refusal comes at instantiation, not at the first collection. A module without the
+     heap never needs the collector.
+3. **Without GC** (`WABOROS_WITH_GC=OFF`): no collector, no heap, no GC services, no collection.
+   * A file with `heap` 1 is refused at load: `WABOROS_E_NO_GC_BUILD`, "built without GC".
+   * This covers GC types and instructions, a function-subtype `call_indirect`, `throw`, and
+     `try_table` with `catch`/`catch_ref`, since exceptions live in the heap (S0013 step 6).
+   * A module with only `throw_ref` and `catch_all(_ref)` has no heap and runs (ARTIFACT.md
      part 3).
-   Whether this build stays is decided after the size measurement (Open question 1).
+   * Whether this build stays is Open question 3.
 
 ## Semantics
 
 ### What is contract and what is runtime-private
 The C loader reproduces the **contract** exactly:
-* the format: S0014 in full, including the order of checks and "Known limitations of v1";
-* the context ABI: ARTIFACT.md part 3, D75's host-call amendment included;
-* the boundary: S0015, including `entry`'s five steps, the walk interface and the guard handler
-  contract;
-* the heap's code contract: offsets 0-15, the formats of objects, type-info, function-type and
-  exception records, reference words, RTT words.
+* S0014 in full: the order of checks and "Known limitations of v1" included;
+* ARTIFACT.md part 3, with D75;
+* S0015: `entry`'s five steps, the walk interface, the guard handler contract, and M5 of its
+  "Compatibility" (a C entry consumes only its own private status; it holds by construction,
+  since a C entry calls only its own module's bodies);
+* the heap's code contract.
 
-Where part 3 leaves a choice to the runtime, the C loader copies the Python runtime's choice
-wherever a spec command could see the difference:
+Where part 3 leaves a choice to the runtime, the C loader copies Python's choice wherever a spec
+command or a runtime test could see the difference:
 
 | runtime-private | Python's choice (the oracle) | the C loader |
 |---|---|---|
 | memory placement | i32: 4 GiB + 32 MiB reserved, committed on grow, never moves; i64: a reservation, moved by a grow past it (D50; `instance.Memory`) | the same on every row |
 | memory limits | 65 536 pages (i32), `MAX_PAGES64`; a failed commit makes `memory.grow` return −1 | the same |
-| table storage, limit | element words reallocated on grow; at most 10 000 000 elements (`TABLE_LIMIT`, D27) | the same |
-| value stack | 1 MiB per store (`VSTACK_BYTES`) | the same |
-| native budget | `min(max_wasm_stack, half the stack left)`; 128 KiB when the bounds are unknown (`native_budget`); the bounds per OS as in `_stack_bounds` | the same, per row |
-| `sp_stub` | assembled and called once per outermost entry | **none**: the address of a local in `waboros_call`, minus 1 KiB. The headroom rule (S0015) leaves more slack than that difference, and the budget is policy |
-| `entry` | assembled per target (`entry.py`); each target seals its own copy | one copy per process and convention: the bytes of ARTIFACT.md's listings, tied to `entry.py` by a test; the walk's entry points are its return point |
-| trampolines of a file | never executed: the runtime's own `conventions()` (S0014, "The waboros runtime") | **executed**: one copy per compiler string per engine, from the first file of that string; a later file's blob and record for the running convention compared byte for byte, the others only checked well-formed (S0014, "A foreign host") |
-| type ids, tag ids | process-wide registries from 1 | per engine, from 1, below 2³² |
-| GC heap regions | type area, tid map at 60 MiB, `ROOTS`, the handle report, semispaces from 64 MiB, committed apart (D69) | the same: `collector.wasm` reads them |
-| host values | `(h << 2) \| 2`, handles from 1, lowest free number reused, at most 2³⁰ − 1; freed after a collection that did not report them | the same |
-| interrupt | set in every context of the store; the outermost entry that returns 12 clears every context's word | the same |
-| a lost collection | the store refuses every later call (D61) | the same |
-| the guard handler | machine code emitted by the runtime (S0006) | a C function per row with the S0006 contract: which faults are ours, the PC change only, chaining to the previous action, `raise` for a sent signal (always on macOS), `EXCEPTION_CONTINUE_SEARCH` otherwise on Windows. Everything it reads is published after it is written, as in S0006's registry |
+| tables | element words reallocated on grow; growth capped at 10 000 000 elements (`TABLE_LIMIT`, D27); a minimum that cannot be allocated is out of memory | the same |
+| value stack | 1 MiB per store | the same |
+| native budget | `min(max_wasm_stack, half the stack left)`; 128 KiB when the bounds are unknown or implausible (`native_budget`); bounds per OS (`_stack_bounds`) | the same, per row |
+| the stack pointer at the first entry | `sp_stub`, a C entry that writes the stack pointer to `frame[0]`, called once per outermost entry | **the same stub bytes**, tied to `entry.py`. The address of a local is wrong under ASan (its fake stack keeps locals on the heap); `__builtin_frame_address` and `_AddressOfReturnAddress` would be two compiler-specific paths |
+| `entry` | assembled per target; each target seals its own copy | one copy per process and convention (ARTIFACT.md listings); the walk's entry point is its return point |
+| trampolines of a file | never executed: the runtime's `conventions()` | executed: one copy per compiler string **per engine**, shared by its stores ("Loading") |
+| type ids, tag ids | process-wide from 1 | per engine from 1, below 2³² |
+| GC heap regions | type area, tid map at 60 MiB (ids below 2²⁰), `ROOTS`, the handle report, semispaces from 64 MiB, committed apart (D69) | the same: `collector.wasm` reads them |
+| GC heap growth (`heap.room`, `_grow`) | the first allocation grows; when an allocation does not fit, collect; if more than half of a half is then live, grow, collecting first when the upper half is active; capacity `max(2·cap, 2·S0, 4·(live + r), 2·(cursor − OBJ + r))` rounded to the half unit, capped at `CAP_MAX`; instantiation only grows | the same rule and numbers |
+| host values | `(h << 2) \| 2`, from 1, the lowest free number reused, at most 2³⁰ − 1 | the same |
+| interrupt | set in every context in `store.instances`, which excludes the collector's; the outermost entry that returns 12 clears every one | the same |
+| a lost collection | every later call refused (D61) | `WABOROS_E_LOST` |
+| the guard handler | machine code emitted by the runtime | a C function per row ("The guard handler") |
 
-### Loading (S0014 checks 1-6)
-1. The S0014 order ("Order of checks"), with the fat-file SHA-256 check placed as prerequisite P2
-   settles it (Open question 3). Each refusal sets `check` to its step and names the field and
-   both values in `msg`.
-2. **Compatibility** (step 5), the foreign-host rule (S0014 Q3; D70):
+### Loading
+**Order** (S0014 "Order of checks", as `artifact.load` runs it):
+1. Identification. Otherwise `WABOROS_E_NOT_OURS`, check 1.
+2. **The frozen lookup and the fat-file SHA-256**, as `_frozen` does (Open question 4 places it
+   in S0014):
+   * read `e_shoff`, `e_shnum` and `e_shstrndx`. Return "none" (the file counts as thin here) if
+     the table, a section, the name table or a name's terminator is outside the file, or if
+     `e_shstrndx` is out of range;
+   * the names are matched without the layout rules, and **the last** section named
+     `.waboros.header` or `.waboros.wasm` wins;
+   * no header section means "none";
+   * `module_sha256` is the first 32 bytes of the header, or fewer when it is shorter;
+   * when `.waboros.wasm` exists and its SHA-256 differs from those bytes, the file is refused:
+     ".waboros.wasm: its SHA-256 is not module_sha256 (corrupt file)", check 1 (P2: "1b").
+3. `format_version` is 1 (step 2).
+4. The container (step 3): every rule of `_sections_r`, including a refusal of an `e_machine` other
+   than 62 and 183.
+5. The header (step 4), as `_head`:
+   * the payload is exact, the reserved fields are zero;
+   * the compiler string is "Compiler string, step 4" below;
+   * the target is known and matches `e_machine`.
+6. Compatibility (step 5):
    * `e_machine` is the host's;
-   * `format_version` and `ctx_abi_version` are 1;
-   * `isa_level` is 1 and `isa_features` is 0 (no feature bit is defined in v1, and the baseline
-     needs no detection on any row);
-   * every `flags` bit is known; `BOUNDS_GUARD` is accepted only with the row's handler installed
-     and `GUARD_LOG2` at most 25;
-   * `features_required` is 0;
-   * the `compiler` string is well-formed (four non-empty tokens). Its value is not compared: it
-     keys the trampoline copy.
-3. **Thin and fat** (D18):
-   * a thin file is refused at its first failing check;
-   * a fat file that fails steps 2-6 is compiled from `.waboros.wasm` when the engine has a
-     compiler for the host architecture;
-   * without a compiler, such a fat file is refused with code 7 ("fat file cannot be used as is
-     and this build has no compiler"; `check` the failing step);
-   * a fat file that passes every check runs as a thin one does.
-4. **Trampolines** (step 6, foreign host):
-   * one copy per compiler string per engine, from the first file with that string, mapped
-     executable under the row's W^X; on aarch64 the instruction cache is invalidated and the
-     pages use `PROT_BTI` where available;
-   * a later file must match the copy byte for byte for the running convention, else it is
-     refused (a fat one is compiled, as in 3);
-   * no copy is shared between compiler strings (D71).
-5. A module is mapped executable at its first instantiation and shared by its instances. `.text`
-   starts at a multiple of 4096 (`adrp`, part 3).
+   * `ctx_abi_version` is 1;
+   * the compiler string is "Compiler string, step 5" below;
+   * `isa_level` is 1 and `isa_features` is 0;
+   * `flags` has no bit but 0 and 8-15, and `BOUNDS_GUARD` and a non-zero `GUARD_LOG2` are set
+     together;
+   * a guard file needs `GUARD_LOG2` of at most 25, the row's handler installed, and its chain
+     not broken;
+   * `features_required` is 0.
+7. The payloads (step 6), each with `_R`'s exactness. A failure sets `section`.
+8. Only when every payload has passed is the file's trampoline copy adopted or compared
+   ("Trampolines").
+
+**Thin and fat** (D18):
+* a thin file is refused at its first failing check;
+* a fat file that fails steps 2-6 is compiled from `.waboros.wasm` by the engine's compiler; with
+  no compiler it gets `WABOROS_E_NEEDS_COMPILER`, with `check` the failing step;
+* a fat file that passes runs as a thin one.
+
+**Compiler string** (S0014 Q3: "Foreign hosts check the contract fields and the target only"):
+* **Step 4**, the same as `_head`:
+  * ASCII, exactly four tokens separated by single spaces, none empty;
+  * the first token is `waboros`;
+  * the fourth is digits only, at most 9;
+  * the third (the target) is a **known target** whose `e_machine` is the file's.
+  The known targets are a build constant: `jit-x86_64` and `jit-sljit-x86_64` (62), `jit-aarch64`
+  and `jit-sljit-aarch64` (183), and the embedded compiler's `target`. Python's set is the
+  targets registered in its process (`artifact.targets()`). They are the same set when the sljit
+  library is built, which is how the corpus runs.
+* **Step 5**: no further check. The version token (and so the source hash of a development build)
+  is not compared: this is the foreign-host rule, and the first designed exception below.
+
+**Trampolines** (S0014, "One copy per store", "A foreign host"; S0015 "Compatibility"):
+* **Per engine, one copy per compiler string**, shared by the engine's stores (D64 item 5 allows
+  one copy per compiler, shared by stores). A store's sets record the entry point and the
+  `restore` points of the copies its instances use.
+* The copy is adopted from the first file of its string, and only after the whole file has passed
+  steps 1-6. It is mapped under the row's W^X, with the instruction cache invalidated and
+  `PROT_BTI` on aarch64.
+* A later file of the string must equal the copy byte for byte for the **running** convention:
+  `size`, blob, offsets relative to `start`, the two restore numbers. The **other** conventions
+  are only checked well-formed: every offset inside its blob, placement and zero gaps as
+  `_trampolines` checks, no `0xFFFFFFFF`. A mismatch is a refusal at step 6, section
+  `.waboros.trampolines`.
+* Copies are never shared between compiler strings, even with identical bytes (D71): two strings
+  get two copies and two `HOST_BRIDGE` addresses.
+
+**Mapping.** A module is mapped executable at its first instantiation and shared by its instances.
+`.text` starts at a multiple of 4096.
+
+### Designed exceptions to Decision 6
+Each corpus file gets one class, computed from Python's verdict. Every class but `agree` is a
+deliberate difference, named here:
+* **`agree`**: both loaders give the same verdict and step (and section). For an accepted file,
+  the dumps are equal.
+* **`E1 compiler`**: Python refuses at step 5 on the `compiler` field (its exact-string rule,
+  `_compatible`), and C accepts, because the string passed step 4. Examples:
+  * `test_refuse.py::test_other_compiler_target_and_version` with a changed version digit;
+  * a byte flip inside the version token that keeps it ASCII without a space.
+  For these, the C dump is compared with the Python dump of `artifact.read(b)`, which applies no
+  step-5 rule.
+  * A flip that breaks the format (a space, a non-ASCII byte, a non-digit in the fourth token, an
+    unknown target) is `agree` at step 4: `test_review.py::test_compiler_string_tokens`'s cases,
+    for example.
+* **`E2 other convention`**: Python refuses at step 6, `.waboros.trampolines`, because a
+  non-running convention's blob or record differs from `conventions()`. C accepts, because it
+  checks that convention only for being well-formed. A change in the running convention, or a
+  malformed record in any convention, is `agree`.
+* **`fat`**: Python compiles the file. C with the test compiler compiles it too (`agree`). C
+  without a compiler gives `WABOROS_E_NEEDS_COMPILER` with the same `check`. The corpus runs both
+  ways.
+* A file Python refuses with `cannot load: …` fails the corpus as a Python defect (Decision 6).
+
+### The inventory dump
+`waboros_module_dump` (C) and `tests/cloader/dump.py` (Python, from `artifact.read`'s
+`ModuleView`) print the same text. Format:
+* UTF-8, one item per line, `\n` at the end of each line;
+* fields separated by one space;
+* integers in decimal; keys, hashes and byte strings in lowercase hex;
+* strings in double quotes with `\\`, `\"` and `\xNN` for bytes outside 0x20-0x7E;
+* `-` for an absent value;
+* the order of S0014's sections, and within each the file's order.
+```
+header <module_sha256> <config_sha256> abi=<n> isa=<n> flags=<n> isa_features=<n> required=<n> optional=<n> compiler=<str>
+machine <n>
+type <i> group=<g> final=<0|1> super=<i|-> <comp> key=<hex>
+import <i> <str module> <str name> <func|table|memory|global|tag> <desc>
+func <i> type=<t> code=<offset>
+start <i|-> data_start=<offset>
+table <i> <valtype> <limits> init=<cexpr|->
+memory <i> <limits>
+global <i> <valtype> mut=<0|1> init=<cexpr>
+tag <i> type=<t>
+export <str> <kind> <i>
+elem <i> <active|passive|declarative> <valtype> table=<t|-> offset=<cexpr|-> <funcs|exprs> <items>
+data <i> <active|passive> memory=<m|-> offset=<cexpr|-> len=<n> sha256=<hex>
+context heap=<0|1> subtype=<0|1> records=<list> sigs=<list> thunks=<list> rtts=<list> thrown=<list>
+stackmaps sha256=<hex of the payload> sites=<n> maps=<n>
+traps <n> <fault>:<resume> ...
+trampolines <conv> start=<n> size=<n> bridge=<n> tail_switch=<n> restore=<n> ret_at=<n> up=<n> sha256=<hex of the blob>
+text size=<n> sha256=<hex of the bytes up to the first blob>
+wasm <-|sha256=<hex>>
+```
+Placeholders: `<valtype>` is `i32 i64 f32 f64 v128` or `ref:<null|nonnull>:<heap>` (`<heap>` a
+type index or the abstract name: `func`, `extern`, `any`, …); `<comp>` is `func params=<valtypes>
+results=<valtypes>`, `struct fields=<fields>` or `array field=<field>`, with `<field>`
+`<storage>:<mut 0|1>` (`<storage>` a valtype, `i8` or `i16`); `<desc>` per import kind is
+`type=<t>`, `<valtype> <limits>`, `<limits>`, `<valtype> mut=<0|1>` or `type=<t>`; `<limits>` is
+`min=<n> max=<n|-> a64=<0|1> shared=<0|1>`; `<cexpr>` is its operations in order as
+`<wasm name>` or `<wasm name>:<immediate>[:<immediate>]` (v128 as 32 hex digits), joined by `,`;
+`<items>` is function indices or cexprs joined by `;`; any list is joined by `,`, `-` when empty.
+The Python dumper is written by the implementer in step 1 (about 150 lines); the C one in step 1
+too (about 250).
 
 ### Instantiation (S0014 step 7; D72)
-The order of S0014 step 7 and of `JitInstance.__init__`:
-1. imports matched by kind, type key and declared subtyping, limits and address type (as
-   `link.py`); an import of another store is refused;
-2. the context is written (part 3: the import, libcall and service words hold `dispatch`), and
-   the store's sets of entry and restore points are extended;
-3. guard registration (the code range with its fault map, the memory reservations);
-4. RTT words and type-info records; function-type records for the module's non-final or subtyped
-   function types; the `IS_SUBTYPE` record (the collector, path 1 or 2 above);
-5. function records, signature words, tag identities;
-6. globals in order, tables with their `init`, then every element segment's items;
-7. active element segments in order (bounds, write, drop; declarative ones dropped);
-8. active data segments in order (`MEMORY_OUT_OF_BOUNDS` past the memory; earlier writes stay);
-9. the start function.
+The order of `JitInstance.__init__`:
+1. Imports are matched by kind, type key and declared subtyping, limits and address type (as
+   `link.py`); an import of another store is refused (`WABOROS_E_LINK`).
+2. The context is written (part 3; import, libcall and service words hold `dispatch`; words 2-6
+   hold the store's values), and the store's sets are extended. The engine refuses two compiler
+   strings with one bridge address (D71), which cannot happen with per-string copies.
+3. Guard registration: the code range with its fault map, the reservations. On Windows x64 under
+   user shadow stacks with context-IP validation, each resume address is registered first with
+   `SetProcessDynamicEHContinuationTargets` (guard.py `_eh_policy`/`_eh_targets`; S0006 step 4,
+   CI run 41633456821). A process that cannot register them refuses guard files at step 5;
+   otherwise the continuation at the resume address ends the process with 0xC0000409.
+4. RTT words and type-info records; function-type records; the `IS_SUBTYPE` record (the
+   collector: path 1 or 2).
+5. Function records, signature words, tag identities.
+6. Globals in order; tables with their `init`; every element segment's items.
+7. Active element segments in order (bounds, write, drop; declarative ones dropped).
+8. Active data segments in order (`MEMORY_OUT_OF_BOUNDS` past the memory; earlier writes stay).
+9. The start function.
 
-Constant expressions are evaluated on an explicit stack of 128-bit values (S0014, "Constant
-expressions"). An allocation follows part 3 and never collects (D61's deviation). The six
-libcalls and the seven GC services run in C behind `dispatch`. `table.init`, `memory.init`,
-`elem.drop` and `data.drop` follow the specification's bounds and trap order. A trap during
-instantiation leaves the instance's roots registered, as Python does (B6).
+Constant expressions are evaluated on an explicit stack of 128-bit values; an allocation follows
+part 3 and never collects (D61's deviation). The six libcalls and the seven GC services run behind
+`dispatch`, in the specification's bounds and trap order. A trap during instantiation leaves the
+instance's roots registered (B6).
 
 ### Calls, traps, exceptions
 * `waboros_call` follows `Instance.call`:
-  * at the outermost entry it resets the value stack and computes `NSTACK_LIMIT` into every
-    context of the store and the collector's;
-  * it checks the value stack, writes the arguments, and calls `entry(ctx, frame, c_entry)`.
-* A non-zero status becomes the error:
-  * a trap code (1-18): code 4;
-  * 12 `INTERRUPT`;
-  * 13: the host's error;
-  * 14: an uncaught exception. `waboros_exception` reads the tag identity and the payload slots
-    from the object before any wasm runs;
-  * anything else, a private status included, is an internal error (code 9).
-* **Nesting.** A host function may call `waboros_call` again. The dispatcher's frame rule and
-  `entry`'s saved block make this re-entrant (part 3).
+  * claim the store (one thread);
+  * refuse a lost store;
+  * check the guard chain when the store has guard code;
+  * at the outermost entry, reset the value stack and compute `NSTACK_LIMIT` from `sp_stub` and
+    the budget, into every context of the store and the collector's;
+  * check the value stack, write the arguments, call `entry(ctx, frame, c_entry)`.
+* The call of `entry`'s bytes is in a function marked `__attribute__((no_sanitize("function")))`
+  (Clang): `-fsanitize=function` reads a type signature before the target of an indirect call,
+  and machine code from a file has none.
+* The status:
+  * a trap code (1-11 and 15-18) gives `WABOROS_E_TRAP`, with `trap` set;
+  * 12 gives `WABOROS_E_INTERRUPT`; at the outermost entry, every context's word is cleared under
+    the store lock;
+  * 13 gives `WABOROS_E_HOST`, with the host's message;
+  * 14 gives `WABOROS_E_EXCEPTION`, read at once ("C API");
+  * anything else, the private range included, gives `WABOROS_E_INTERNAL`.
+* A host function may call `waboros_call` again: the dispatcher's frame rule and `entry`'s saved
+  block make it re-entrant.
 
-### The walk, roots and a collection (`gc.c`)
-* **The walk** follows `walk.py` and S0015's walk interface. It starts from the exit record and
-  steps through each frame by its site's `ret_at`, `up` and `shift`. It crosses the fixed points:
-  the entry's return point with its saved block, and every compiler's `restore` point with its
-  two numbers. An unknown return address is an internal error, never a guess.
-* **Roots**, as `collect.py` gathers them:
-  * the `live` slots of every frame (the `refs` slots that `live` does not mark are nulled);
-  * globals and tables of reference types of the any, extern and exn hierarchies;
-  * passive element segments of those types;
-  * the pending exception word;
-  * the handle table.
-* **The collection.** The roots go to `ROOTS` in batches through `begin`, `roots(n)` and
-  `finish`, on the collector's context, whose `INTERRUPT` stays 0. The store is marked lost from
-  the first call until the heap's words are consistent again. Host values that the handle report
-  does not mark are freed.
-* `WABOROS_JIT_WALK_CHECK=1` makes the C loader walk at every host call and libcall, as the
-  Python runtime does.
+### The walk, roots and a collection (`gc.c`, after `walk.py` and `collect.py`)
+* **The walk.** From the exit record, frame by frame through each site's `ret_at`, `up` and
+  `shift`, across the fixed points: the entry's return point with its saved block, and every
+  compiler's `restore` with its numbers. An unknown return address is `WABOROS_E_INTERNAL`.
+* **Preconditions**, before anything moves (`collect.collect`):
+  * the store is not lost;
+  * the exit record's `sp` is set and the store's next frame is above its `frame` (a collection
+    happens only inside a host call that set the base, B1);
+  * the collector exists (path 1 or 2);
+  * `next frame + 4 KiB` (`VSTACK_RESERVE`) fits the value stack, else `STACK_OVERFLOW`.
+* **The collector's context** (`collect.collect`, D61):
+  * `NSTACK_LIMIT` is the thread's stack low + 64 KiB, or `max(0, nlimit − 256 KiB)` when the low
+    is unknown;
+  * `VSTACK_LIMIT` is the value stack's top;
+  * `INTERRUPT` is 0.
+  The collector is not in the store's instance array, so no interrupt or walk reaches it.
+* **Roots**, as `_gather`:
+  * every frame's `live` slots (a frame base outside the value stack is `WABOROS_E_INTERNAL`); the
+    `refs` slots outside `live` are nulled;
+  * the reference globals of every instance, **each word once**: an imported global is its
+    owner's word, gathered once by address;
+  * every reference table once, even when several instances import it;
+  * passive, not-dropped element segments of reference types;
+  * the handle table;
+  * the pending exception word.
+* **The collection**: `begin(lo, cursor, to, to + half)`; then the roots in batches of at most
+  7 680 words through `ROOTS` and `roots(n)`, each batch copied back in place; then `finish`.
+  The store is marked lost from `begin` until the cursor, limit, `lo` and `end` are written back.
+  A collector trap leaves it lost.
+* **Host values**: unless the report's overflow flag (heap offset 16) is set, every host value
+  whose handle has no report bit (or whose handle is ≥ 16 384) is freed, and its number is reused
+  lowest first (`_free`). With the flag set, nothing is freed.
+* **Test switches** (the Python names, read at engine creation; S0013):
+  * `WABOROS_JIT_WALK_CHECK=1`: walk at every host call and libcall;
+  * `WABOROS_JIT_GC_STRESS=1`: collect at every allocation that may collect;
+  * `WABOROS_JIT_GC_POISON=1`: fill the freed space and new space with 0xA5.
+  `WABOROS_JIT_GC_VERIFY=1` (`gcverify.py`, a graph digest) is **not** implemented in C; its
+  checks run on the Python side of the same files.
 
-### Executable memory and the handler (`os_posix.c`, `os_windows.c`)
-* **Executable memory.** Code is written read-write, then made read-execute (W^X, R2).
-  * Linux: `mprotect`; on aarch64 `__builtin___clear_cache`, and `PROT_BTI` when `AT_HWCAP2` has
+### Executable memory (`os_*.c`)
+* Code is written read-write and then made read-execute (W^X, R2).
+  * Linux: `mprotect`; on aarch64 `__builtin___clear_cache` and `PROT_BTI` when `AT_HWCAP2` has
     BTI.
-  * macOS arm64: `MAP_JIT`, with `pthread_jit_write_protect_np(0)` and `(1)` around each write on
-    the writing thread, then `sys_icache_invalidate`. A signed binary would need the
-    `allow-jit` entitlement; the CI binaries are not signed.
+  * macOS arm64: `MAP_JIT`, with `pthread_jit_write_protect_np(0)` and `(1)` around each write,
+    then `sys_icache_invalidate`. A signed binary would need the `allow-jit` entitlement; the CI
+    binaries are unsigned.
   * Windows: `VirtualAlloc` and `VirtualProtect`, then `FlushInstructionCache`.
-  * Reservations are `PROT_NONE` (`MEM_RESERVE`), committed by `mprotect` (`MEM_COMMIT`).
-* **The guard handler** (S0006's contract) is installed at the first guard file and checked at
-  every entry, as `guard.check()` does.
-  * Linux: `SIGSEGV` with `SA_SIGINFO | SA_ONSTACK` and `si_code > 0`; the PC from
-    `uc_mcontext` (`gregs[REG_RIP]`, or `pc` on aarch64); then the fault map and the
-    reservations; then the PC moved to `code + resume_offset`, or the fault chained.
-  * macOS: `SIGSEGV` and `SIGBUS`; the PC from `uc_mcontext->__ss.__rip` (or `__pc`); `raise`
-    after chaining.
-  * Windows: a vectored handler, first in the list, for `EXCEPTION_ACCESS_VIOLATION`; the PC
-    from `ContextRecord->Rip` (or `->Pc`); `EXCEPTION_CONTINUE_EXECUTION` or `_SEARCH`.
-* Another copy of waboros in the process (the Python runtime beside the shim) chains the same way
-  (S0006, "Chain and claim"), so either may be installed first.
+* Reservations are `PROT_NONE` / `MEM_RESERVE`, committed by `mprotect` / `MEM_COMMIT`.
+
+### The guard handler (`os_*.c`, S0006's contract)
+* **Ours** if and only if all three hold:
+  * a hardware fault: Linux `SIGSEGV` with `si_code > 0`; macOS `SIGSEGV` or `SIGBUS`, where
+    `si_code` does not tell; Windows `EXCEPTION_ACCESS_VIOLATION`;
+  * the PC at a `fault_offset` of a registered code range. The PC comes from `gregs[REG_RIP]` or
+    `pc` (Linux), `__ss.__rip` or `arm_thread_state64_get_pc` (macOS), `Rip` or `Pc` (Windows);
+  * the fault address inside a registered reservation.
+  Recovery sets the PC to `code + resume_offset` and nothing else (Windows:
+  `EXCEPTION_CONTINUE_EXECUTION`; macOS arm64: the matching setter of `<mach/arm/thread_status.h>`,
+  confirmed in step 7).
+* **Otherwise**, chain exactly as S0006 says:
+  * a previous `SA_SIGINFO` handler is called with the same three arguments, a plain one with the
+    signal number;
+  * a previous `SIG_DFL` or `SIG_IGN` is put back with `sigaction` and the handler returns. Only
+    in this case is the signal sent again with `raise`: on Linux when `si_code <= 0`, on macOS
+    always;
+  * Windows returns `EXCEPTION_CONTINUE_SEARCH`.
+* **`broken`**, the rule checked at every entry and after a host call (after `guard.broken`):
+  * our handler is the current action of each signal: intact;
+  * `SIG_DFL` or `SIG_IGN`: broken;
+  * a handler inside an image the host has declared non-chaining (`dladdr`): broken. The shim
+    declares the Python interpreter's image, so faulthandler and the `signal` module's handler
+    count, as in `_broken`;
+  * any other handler (another library, another JIT's anonymous code, the Python runtime's own
+    emitted handler) is assumed to chain;
+  * Windows: a vectored handler cannot be removed, so never broken.
+* In the shim process both copies are installed: the Python runtime's (when a test instantiates
+  there) and the C loader's. Each chains to the other (S0006, "Chain and claim"), and ctest
+  checks both install orders with a second copy of the C handler.
+* Windows risk: faulthandler is a vectored handler that `enable()` puts in front of ours, where
+  it reports guard faults (LESSONS 59). The Python runtime moves its own handler back to the
+  front (`_to_front`); the C loader has no view of faulthandler. The shim's Windows runs disable
+  it (`-p no:faulthandler`). Listed under "Risks".
 
 ## Test plan
 
 ### The harness (Decision 3)
-* **The shim** (`tests/cloader/`) loads `waboros_loader_shared` with ctypes. It registers the
-  S0001 engines `cloader-<target>` for each JIT target of the host (sljit ones where
-  `build/native` has them), as `tests/sljit` registers its target (S0016). An engine:
-  * `load` compiles the module with `<target>`, writes the file (`artifact.write`, fat), and calls
-    `waboros_module_load`;
+* **The shim** (`tests/cloader/`) loads `waboros_loader_shared` with ctypes and registers the S0001
+  engines `cloader-<target>` for each JIT target of the host (the sljit ones where `build/native`
+  has them), as `tests/sljit` does (S0016). An engine:
+  * `load` compiles the module with `<target>`, writes a fat file, and calls
+    `waboros_module_load`. The engine has the test compiler;
   * `instantiate`, `invoke` and `get` call the C API;
-  * host functions (`spectest` and the runner's own) are ctypes callbacks of type
-    `waboros_host_fn` with an `env` handle.
-  * `tests.spec.run` runs each `.wast` in its own child, so a crash of the C loader costs one
-    file, and `spec_diff` works unchanged.
-  * Expected failures are its target's, copied to `tests/spec/xfail/cloader-<target>.txt`
-    (parity, not incompleteness).
-  * `cloader-mixed-<arch>` (Linux glibc) compiles modules alternately with `jit-<arch>` and
-    `jit-sljit-<arch>` into one store, as `tests/jit/test_mixed.py` does.
-* **The refusal corpus** (`tests/cloader/test_corpus.py`) runs in-process through the shim. It
-  builds, as bytes:
-  * every whole-file case of `tests/artifact/test_refuse.py`, `test_strict.py` and
-    `test_review.py`;
-  * every truncation of the D75 small files and of a GC module;
-  * 3 000 byte flips each of CoreMark, a GC module and the small module.
-  Each file is checked in a store that already holds the unmutated file of its compiler string,
-  so the foreign-host compare and Python's `conventions()` compare see the same reference.
-  `artifact.load` and `waboros_module_load` must agree on each file as Decision 6 says. A file
-  that Python refuses with `cannot load: …` fails the test as a Python defect. The files are also
-  written to a directory as the fuzzer's seeds.
+  * `spectest`'s memory, table and globals come from `waboros_*_new`; host functions are ctypes
+    callbacks of type `waboros_host_fn`.
+  * `tests.spec.run` runs each `.wast` in its own child, so a C crash costs one file.
+    `spec_diff` works unchanged.
+  * Expected failures are the target's, copied to `tests/spec/xfail/cloader-<target>.txt`.
+  * `cloader-mixed-<arch>` (Linux glibc) alternates `jit-<arch>` and `jit-sljit-<arch>` modules in
+    one store.
+* **The refusal corpus** (`tests/cloader/test_corpus.py`, in-process):
+  * the cases: every whole-file case of `tests/artifact/test_refuse.py`, `test_strict.py` and
+    `test_review.py`; every truncation of the D75 small files (P1) and of a GC module; 3 000 byte
+    flips each of CoreMark, a GC module and the small module;
+  * each file is checked in a fresh engine that already holds the unmutated file of its compiler
+    string, so both trampoline compares see the same reference;
+  * it runs once with the test compiler and once without one;
+  * each file's class comes from "Designed exceptions to Decision 6", and the test fails on any
+    file outside its class;
+  * the files are also written out as the fuzzer's seeds.
 * **`waboros_run`** (C, no Python in the process): `waboros_run FILE.wbo EXPORT [ARGS…]
-  [--wiring] [--collector F.wbo] [--expect-trap N]`, and `--dump` / `--check FILE…`. It runs
-  under ASan and UBSan, which also covers the guard handler with no Python handler beside it.
-  The `.wbo` files it runs are written earlier in the same job by `tools/artifact_dump.py`.
-* **Later, not in this spec**: a C wast runner, with the embedded compiler, so that compile and
-  run are tested with no Python at all.
+  [--wiring] [--collector F.wbo] [--expect-trap N] [--guard]`, and `--dump` / `--check FILE…`. Its
+  files are written earlier in the same job by `tests/cloader/make_files.py` (about 60 lines,
+  step 6), with each row's Python target: CoreMark, `tests/cloader/traps.wat` (one export per
+  trap code), the committed files' module, and the collector.
+* **Later, not in this spec**: a C wast runner, with the embedded compiler.
+
+### Runtime tests
+`tests/cloader/test_runtime.py` re-runs, through the shim and on the same WAT, the scenarios of
+these Python tests with the same expectations (file `::` test, under `tests/jit/`):
+| area | tests |
+|---|---|
+| nested entries | `test_abi.py::test_reentry_inner_trap_reaches_the_host`, `::test_reentry_50_deep`; `test_exit_record.py::test_exit_record_names_the_caller_and_survives_nested_entries`; `test_gc_nested.py::test_nested_entry_from_a_service` |
+| interrupts | `test_abi.py::test_interrupt_from_another_thread`, `::test_interrupt_is_consumed_in_every_context_of_the_store`; `test_gc_collect.py::test_an_interrupt_does_not_cut_a_collection` |
+| host errors | `test_abi.py::test_host_exception_surfaces_as_itself` (inside a nested entry), `::test_a_host_that_never_writes_its_status_fails`; `test_exceptions.py::test_a_host_trap_14_is_a_host_error_never_status_14` |
+| stacks | `test_abi.py::test_native_stack_overflow_capped_by_a_small_thread_stack`, `::test_value_stack_overflow` |
+| memories, tables | `test_memory64.py::test_move_from_wasm`, `::test_move_in_a_nested_entry`, `::test_table64_grow_results_and_cap`, `::test_huge_table_minimum_is_out_of_memory`; `test_tables.py::test_table_grow_across_nested_entries` |
+| references | `test_tables.py::test_externref_round_trip`, `::test_funcref_out_and_back_in`; `test_gc_collect.py::test_handles_keep_their_identity`, `::test_host_values_are_freed_and_reused_lowest_first`; `test_gc_roots.py::test_an_imported_global_is_a_root`, `::test_a_table_imported_by_two_instances_is_visited_once`, `::test_a_failed_instantiation_leaves_its_globals_roots` |
+| collector | `test_gc_collect.py::test_growth_doubles_never_shrinks_and_flips`, `::test_a_collector_trap_loses_the_store` |
+| threads | `test_memory64.py::test_another_thread_is_refused_while_a_host_import_runs` |
+| boundary | D71's distinctness: a file re-labelled with another compiler version (E1) loads with its own copy, and the two contexts' `HOST_BRIDGE` differ. The Win64 `entry` bytes and a file's `win64` bridge calling `dispatch` through an `ms_abi` function on Linux x86-64, as `tests/sljit/test_win64_bridge.py` does |
 
 ### Acceptance commands
-1. `cmake -S native -B build/native && cmake --build build/native && ctest --test-dir
-   build/native` gives 0 failures on all six rows. ctest covers:
+1. `cmake -S native -B build/native && cmake --build build/native && ctest --test-dir build/native`:
+   0 failures on all six rows. ctest covers:
    * the reader on the committed files;
-   * the entry bytes, an add and a trap through `entry`;
-   * the handler's chaining (a foreign fault, a sent signal);
-   * the consumer check (`add_subdirectory` and `FetchContent`) with `waboros::loader`.
-2. The same with `-DWABOROS_SLJIT=OFF` and no submodule checked out builds the loader.
-3. The spec suite, every case at parity, with `WABOROS_JIT_WALK_CHECK=1`:
-   * Linux glibc x86-64: `uv run python -m tests.spec.run --engine cloader-jit-x86_64`, the same
-     for `cloader-jit-sljit-x86_64` and `cloader-mixed-x86_64`, guard and explicit, each meeting
-     its expected-failures file;
-   * `uv run python tools/spec_diff.py jit-x86_64 cloader-jit-x86_64` both ways gives no
-     difference (the Python side with `WABOROS_JIT_ARTIFACT=1`); likewise each sljit engine
-     against its target;
-   * `gc/` and `exceptions/` also with S0013's GC switches;
-   * Linux aarch64 (native): the same for the aarch64 engines;
-   * macOS and Windows, both architectures: `cloader-jit-<arch>` in guard and explicit mode,
-     against its expected-failures file.
-4. The refusal corpus: `uv run pytest tests/cloader/test_corpus.py` gives 0 disagreements on
-   Linux x86-64 and aarch64 (the reader is OS-independent; one run per architecture is enough).
-5. **The committed files**, through the shim and through `waboros_run`:
-   * the D75 set (P1) is read and run: its host import is called with the right word; its
-     exports work;
-   * `v1-small` uses a GC struct global (`heap` 1), so the no-compiler build runs it only with the
-     collector file supplied, and refuses it without one (the message of path 2);
-   * the `v1-s15-*` files (pre-D75 bridges) are read, and their exports run; they make no host
-     call, so the dispatcher's check is not reached. A later test of the D75 set covers that
-     check with a forged old bridge;
-   * `v1-small-<arch>-thin.wbo` (pre-S0015) is refused at step 6, on the size of
-     `.waboros.trampolines`;
-   * the fat `v1-small-<arch>.wbo` gets code 7 without a compiler, and is compiled and run with
-     the test compiler;
+   * `entry` and `sp_stub`, an add and a trap;
+   * the handler's chaining (a foreign fault, a sent signal, both install orders);
+   * the consumer check with `waboros::loader`.
+2. `-DWABOROS_SLJIT=OFF` with no submodule checked out builds the loader.
+3. The spec suite at parity, with `WABOROS_JIT_WALK_CHECK=1`:
+   * Linux glibc x86-64: `uv run python -m tests.spec.run --engine cloader-jit-x86_64`, and the
+     same for `cloader-jit-sljit-x86_64` and `cloader-mixed-x86_64`, guard and explicit, each
+     meeting its expected-failures file;
+   * `uv run python tools/spec_diff.py jit-x86_64 cloader-jit-x86_64` (Python side with
+     `WABOROS_JIT_ARTIFACT=1`) both ways is empty, and likewise for each sljit engine;
+   * `gc/` and `exceptions/` also with `WABOROS_JIT_GC_STRESS=1` and `WABOROS_JIT_GC_POISON=1`;
+   * Linux aarch64 native: the same for the aarch64 engines;
+   * macOS and Windows, both architectures: `cloader-jit-<arch>`, guard and explicit.
+4. `uv run pytest tests/cloader/test_corpus.py`: 0 files outside their class, on Linux x86-64
+   and aarch64 (the reader is OS-independent).
+5. **The committed files**, through the shim and `waboros_run`:
+   * the D75 set (P1) is read and run, and its host import gets the right word;
+   * `v1-small` has `heap` 1 (a GC struct global). It runs with the collector file supplied, and
+     is refused with `WABOROS_E_NO_COLLECTOR` without one (no compiler);
+   * `v1-s15-*` is read, and its exports run: they make no host call or libcall (Open question 1
+     may change this);
+   * `v1-small-<arch>-thin.wbo` (pre-S0015) is refused at step 6, `.waboros.trampolines`;
+   * the fat `v1-small-<arch>.wbo` gets `WABOROS_E_NEEDS_COMPILER` without a compiler, and is
+     compiled and run with the test compiler;
    * a copy with `EI_ABIVERSION` 2 is refused at step 2.
 6. **The three GC builds**:
-   * with `WABOROS_WITH_GC=OFF`: a `heap` 1 file is refused at load (code 8), and a module with
-     only `throw_ref` runs;
-   * without a compiler and without a collector file: a `heap` 1 module is refused at
-     instantiation (code 8, path 2's message), and the store stays usable;
-   * with the collector supplied at run time, and again embedded with `WABOROS_COLLECTOR_WBO`:
-     `gc/` runs with the GC switches;
-   * a collector file with a wrong `module_sha256` is refused;
-   * the pytest checks that `collector_wasm.c` equals `collector.wasm`.
-7. **CoreMark through a file**: `waboros_run core.<target>.wbo setup --wiring` (`millis` and
-   `print` in C) passes its self-check on every row. Its time is recorded, alternated with
-   `tools/run_coremark_jit.py` on the same file (BENCHMARKS.md).
-8. **Sanitizers**, on Linux x86-64: ctest and `waboros_run` (CoreMark, the committed files, a
-   trap per trap code from `tests/cloader/traps.wat`) built with `-DCMAKE_C_FLAGS="-fsanitize=
-   address,undefined -fno-sanitize-recover=all"`, in explicit mode. In guard mode the run uses
-   `ASAN_OPTIONS=handle_segv=0`, so that ASan does not take the handler's faults.
-9. **Fuzzing the reader**: `tests/loader/fuzz_read.c` is a libFuzzer target over
-   `waboros_module_load` (no instantiation), seeded from item 4's directory. It runs five
-   minutes in `fuzz-nightly.yml`, never blocking; a crash is kept as a run artifact.
-10. **Build sizes** ("Measurements to take") recorded in BENCHMARKS.md.
+   * `WABOROS_WITH_GC=OFF`: a `heap` 1 file is refused at load, and a `throw_ref`-only module runs;
+   * no compiler and no collector file: a `heap` 1 module is refused at instantiation, and the
+     store stays usable;
+   * the collector supplied at run time, and then embedded with `WABOROS_COLLECTOR_WBO`: `gc/`
+     runs with the switches;
+   * a collector file with another `module_sha256` is refused;
+   * a pytest ties `collector_wasm.c` to `collector.wasm`.
+7. **CoreMark**: `waboros_run core.<target>.wbo setup --wiring` passes its self-check on every row.
+   Its time is alternated with `tools/run_coremark_jit.py` on the same file (BENCHMARKS.md).
+8. **Sanitizers** (Linux x86-64): ctest and `waboros_run` (CoreMark, the committed files,
+   `traps.wat` in both modes), built with
+   `-DCMAKE_C_FLAGS="-fsanitize=address,undefined,function -fno-sanitize-recover=all"` (Clang).
+   Guard mode runs with `ASAN_OPTIONS=handle_segv=0`, so ASan does not take the handler's faults.
+9. **Fuzzing**: `tests/loader/fuzz_read.c`, libFuzzer over `waboros_module_load` with a fresh
+   engine per input (no state carries from one input to the next), seeded by item 4. It runs five
+   minutes in `fuzz-nightly.yml`, never blocking.
+10. Build sizes ("Measurements to take") recorded in BENCHMARKS.md.
 11. `python3 tools/check_docs.py`.
 
 ## Plan of steps
-Every step stops and reports if it needs more than its size. P1 changes a contract (D75): it gets
-a `reviewer` after the jit-engineer. Every other step changes no contract. A divergence from
-Python is a bug in one of the two loaders, settled by the S0014/S0015 text; if the text does not
-settle it, the text is amended first (the working freeze: a spec or a decision, no bump).
+Every step stops and reports if it needs more than its size. P1 changes a contract (D75); the
+other steps change none. A divergence from Python is a bug in one of the loaders, settled by the
+text; if the text does not settle it, the text is amended first (the working freeze: a spec or a
+decision, no bump). CLAUDE.md requires a `reviewer` after every JIT, ABI, artifact or trap change,
+so P1 and steps 2, 3, 4, 5 and 8 end with one.
 
 | step | goal | agent | acceptance | size (lines) |
 |---|---|---|---|---|
-| P1 | **D75 implementation.** The bridges of `jit-x86_64`, `jit-aarch64`, `jit-sljit-x86_64` and `jit-sljit-aarch64` pass the word (`edx`/`r8d`/`w2`) in every convention. ARTIFACT.md part 3 ("Host functions", a fixed per-architecture row), S0015's bridge rows, S0003's `host` prototype, D34/D32 markers. A test of the word for each import, each libcall and a nested entry on every JIT target. The new committed v1 set with a host import; `test_old.py`: the `v1-s15` thin files refused by their bridge bytes, the fat ones regenerated | jit-engineer, then reviewer | the spec suite at parity on the four targets in-process and through files, both modes; the D35 lists change only in the bridges; `pytest -q` | src ~60, tests ~150, docs ~40 |
-| P2 | **Refusal steps.** `ArtifactError.step` set at the phase boundaries of `load`/`read`. The fat-file SHA-256 check placed (Open question 3) and S0014 amended to match. Every corpus case refused without the `cannot load:` path | implementer | `tests/artifact/` with a step asserted per refusal case; `pytest -q` | src ~30, tests ~60 |
-| 0 | CMake: `WABOROS_SLJIT`, `WABOROS_LOADER`, `WABOROS_LOADER_SHARED`, an empty loader and `waboros_run`, the consumer check; `native/` configures without the submodule; MSVC confirmed; a `cloader` CI job on the six runners (build and ctest) | implementer | items 1-2 on all six rows | cmake ~80, CI ~70 |
-| 1 | The reader (`read.c`, `sha256.c`), `--dump`/`--check`, the shim's reader part, the corpus test | implementer | item 4 on both architectures | C ~1 100, Python ~250 |
-| 2 | Linux: executable memory, the `entry` bytes tied to `entry.py`, the trampoline copies, calls without imports; the `cloader-<target>` engines | jit-engineer | the MVP directories through `cloader-jit-x86_64` and `cloader-jit-sljit-x86_64`, explicit | C ~800, Python ~250 |
-| 3 | Instantiation and linking complete: `dispatch` (D75; needs P1), records, segments, libcalls, memory64, interrupts, stack limits, exceptions without the heap | implementer | item 3 (Linux x86-64, explicit) without `gc/` and the heap-using `exceptions/`; `spec_diff` empty | C ~900 |
-| 4 | The guard handler on Linux | jit-engineer | item 3 in guard mode; the chaining ctests | C ~250 |
-| 5 | GC: the heap, records, services, walk, roots, the collector driver, `collector_wasm.c`; the three GC builds | jit-engineer | items 3 (`gc/`, `exceptions/`, GC switches, walk check) and 6 | C ~1 100 |
-| 6 | Linux aarch64 (native, QEMU with BTI), mixed stores, the committed files, CoreMark, sanitizers, fuzz job | runner + jit-engineer | items 3, 5, 7, 8, 9 on Linux, both architectures | C ~150, CI ~120 |
-| 6.1 | Build sizes: four builds × `-Os`/`-O2` × x86-64/aarch64 × LTO on/off, stripped text + data, plus the collector's thin `.wbo` | runner | a BENCHMARKS.md section; Open question 1 answered from it | tools ~40 |
-| 7 | macOS x86-64 and arm64: the Apple parts of `os_posix.c` (`MAP_JIT` and write protection, `sys_icache_invalidate`, `SIGBUS`, stack bounds) | jit-engineer | items 1, 3 (`cloader-jit-<arch>`, both modes), 5 and 7 on both macOS runners | C ~250, CI ~30 |
-| 8 | Windows x64 and ARM64: `os_windows.c`, the vectored handler, the Win64 `entry` bytes (first run from C), the file's `win64` blob executed for the first time | jit-engineer | items 1, 3, 5 and 7 on both Windows runners | C ~400, CMake ~30, CI ~30 |
-| 9 | Docs ("Docs this changes"), DECISIONS entry for the implemented loader | orchestrator | `python3 tools/check_docs.py` | — |
-| 10 | Review without the implementers' reasoning: the reader against S0014, the trap order of instantiation, the dispatcher, the handlers per row, the walk and the collector driver, C99 conformance | reviewer | findings closed | — |
+| P1 | **D75.** The four targets' bridges pass the word (`edx`/`r8d`/`w2`) in every convention. ARTIFACT.md part 3, S0015, S0003, D34/D32 markers. A word test per import, libcall and nested entry on every JIT target. The D75 committed set with a host import; `test_old.py`: `v1-s15` thin refused by its bridge bytes, fat regenerated | jit-engineer, then reviewer | the spec suite at parity on the four targets in-process and through files, both modes. `tools/jit_dump.py` lists unchanged (its hash covers the `Compiled`, not the trampolines); `tools/artifact_dump.py` files differ only in the blobs; `pytest -q` | src ~60, tests ~150, docs ~40 |
+| P2 | **Refusal steps.** `ArtifactError.step` and `.section`, set at the phase boundaries of `load`/`read`; the fat-file SHA-256 placed (Open question 4) and S0014 amended; no corpus case on the `cannot load:` path | implementer | `tests/artifact/` asserts the step per refusal; `pytest -q` | src ~40, tests ~60 |
+| 0 | `native/CMakeLists.txt` restructured; `WABOROS_SLJIT`, `WABOROS_LOADER`, `WABOROS_LOADER_SHARED`; an empty loader and `waboros_run`; the consumer check; MSVC confirmed; a `cloader` CI job on the six runners | implementer | items 1-2 on the six rows | cmake ~100, CI ~70 |
+| 1 | The reader (`read.c`, `sha256.c`), the frozen lookup, both dumpers, `--dump`/`--check`, the shim's reader part, the corpus test with its classes (needs P1 and P2) | implementer | item 4 on both architectures | C ~1 350, Python ~400 |
+| 2 | Linux: executable memory, `entry`/`sp_stub` bytes tied to `entry.py`, trampoline copies, locks and the store claim, calls without imports; the engines | jit-engineer, then reviewer | `uv run python -m tests.spec.run --engine cloader-jit-x86_64 --xfail tests/cloader/step2-xfail.txt $(cat tests/cloader/step2.txt)` (the `.wast` files whose modules import nothing, listed by the step from the converted JSON) passes, and the same for `cloader-jit-sljit-x86_64`, explicit | C ~900, Python ~300 |
+| 3 | Instantiation and linking complete: `dispatch` (D75), host externs, globals, references at the API, libcalls, memory64, interrupts, stack limits, exceptions without the heap | jit-engineer, then reviewer | item 3 (Linux x86-64, explicit) without `gc/` and the heap-using `exceptions/`; `spec_diff` empty; the non-GC runtime tests | C ~1 000, Python ~250 |
+| 4 | The guard handler on Linux, `broken`, both install orders | jit-engineer, then reviewer | item 3 in guard mode; the chaining ctests | C ~300 |
+| 5 | GC: heap, records, services, walk, roots, collector driver, `collector_wasm.c`, the switches; the three GC builds | jit-engineer, then reviewer | items 3 (`gc/`, `exceptions/`, switches, walk check) and 6; the GC runtime tests | C ~1 200 |
+| 6 | Linux aarch64 (native, QEMU with BTI), mixed stores, `make_files.py`, the committed files, CoreMark, sanitizers, fuzz job; the `ms_abi` Win64 test | runner + jit-engineer | items 3, 5, 7, 8, 9 on Linux, both architectures | C ~200, Python ~120, CI ~120 |
+| 6.1 | Build sizes | runner | a BENCHMARKS.md section; Open question 3 answered from it | tools ~40 |
+| 7 | macOS x86-64 and arm64 (`os_posix.c`'s Apple parts) | jit-engineer | items 1, 3, 5, 7 on both macOS runners | C ~300, CI ~30 |
+| 8 | Windows x64 and ARM64 (`os_windows.c`, the vectored handler, CET continuation targets, the Win64 `entry`) | jit-engineer, then reviewer | items 1, 3, 5, 7 on both Windows runners; a `/CETCOMPAT` build of `waboros_run` runs the guard traps on x64 | C ~450, CMake ~30, CI ~30 |
+| 9 | Docs ("Docs this changes"), a DECISIONS entry | orchestrator | `python3 tools/check_docs.py` | — |
+| 10 | Final review without the implementers' reasoning: the whole loader against S0014, S0015 and this spec, C99 conformance | reviewer | findings closed | — |
 
-The order is P1 and P2 first (Python side, no C yet), then 0-6 on Linux, 6.1, then 7 and 8. P1
-may run in parallel with 0-2 but must be done before 3.
-
-In total: about 4 950 lines of C, 500 of Python, 110 of CMake and 250 of CI, plus P1 and P2. This
-is an estimate scaled from the Python sizes: `artifact.py` 1 184, `instance.py` 1 374, and
-`heap.py`, `collect.py`, `walk.py`, `guard.py` and `execmem.py` together about 1 460. C needs
-more lines per rule, but loses Python's ctypes plumbing.
+* **Order**: P1 and P2, then 0. Step 1 needs P1 (the corpus uses the D75 files) and P2 (the
+  steps). Then 2-6 on Linux, 6.1, 7 and 8.
+* **Total**: about 5 700 lines of C, 1 070 of Python, 130 of CMake and 250 of CI, plus P1 and P2.
+  This is scaled from the Python sizes: `artifact.py` 1 184, `instance.py` 1 374, and `heap.py`,
+  `collect.py`, `walk.py`, `guard.py` and `execmem.py` about 1 460. C needs more lines per rule
+  and has no ctypes plumbing.
 
 ## Measurements to take
-* Load time (read and checks) and instantiation time against Python's, for CoreMark and a GC
-  module (BENCHMARKS.md, "Instantiation from an artifact", has Python's).
-* CoreMark through the C loader against the Python loader on the same file, alternated, on each
-  row. No difference is expected (the same code bytes); a difference points to a context or
-  memory-placement discrepancy.
-* The cost of a host call through `dispatch`: the import loop of STATIC-BUILDS.md ("Cheap host
-  calls"), a C host against a Python host.
-* **Build sizes** (step 6.1; the maintainer's question, Open question 1).
-  * The stripped size (text + data, `size` after `strip`) of a static `waboros_run` linked with
-    the loader, in four builds: full (compiler and GC), no compiler, no GC, neither.
-  * Each at `-Os` (MinSizeRel) and `-O2`, on x86-64 and aarch64, with LTO
-    (`CMAKE_INTERPROCEDURAL_OPTIMIZATION`) on and off.
-  * Also the collector's AOT file (thin `.wbo`, each architecture, both bounds modes).
-  * Recorded in BENCHMARKS.md with the compiler version. Until D68's compiler exists, the "full"
-    and "no GC" rows use S0016's `waboros_sljit` as a stand-in for the compiler's sljit part and
-    say so; the C core is added when it exists.
-  * The orchestrator's inputs (2026-11-24; sljit 39c508d1, gcc 13, the full sljit API built as
-    the shared library):
-    * sljit text: 56 KB on x86-64 and 47 KB on aarch64 at MinSizeRel `-Os`; 90 and 80 KB at
-      `-O2`;
-    * `collector.wasm`, 1 517 bytes, gives a thin `.wbo` of 11.4 KB (x86-64) and 11.1 KB
-      (aarch64), of which code is 3.7 and 3.6 KB;
-    * CoreMark, 19.5 KB of wasm, gives a thin `.wbo` of 53 KB and 48 KB.
-  * For scale, Python line counts:
-    * the front end: 1 962;
-    * the JIT's common core (compiler, lower, liveness, backend, simd): about 1 760;
-    * the sljit backend (both architectures): 1 728;
-    * the loader and runtime side: about 4 000.
-    So the compiler is expected to be sljit plus a C port of about 5 400 Python lines, against
-    about 4 000 for the loader.
+* Load and instantiation time against Python's, for CoreMark and a GC module (BENCHMARKS.md,
+  "Instantiation from an artifact").
+* CoreMark through the C loader against the Python loader on the same file, alternated, per row.
+  The code bytes are the same, so a difference points to a context or placement discrepancy.
+* A host call through `dispatch`: the import loop of STATIC-BUILDS.md ("Cheap host calls"), a C
+  host against a Python host.
+* **Build sizes** (step 6.1; Open question 3):
+  * the stripped size (text + data, `size` after `strip`) of a static `waboros_run` in four
+    builds: full, no compiler, no GC, neither;
+  * at `-Os` (MinSizeRel) and `-O2`, x86-64 and aarch64, LTO
+    (`CMAKE_INTERPROCEDURAL_OPTIMIZATION`) on and off;
+  * the collector's thin `.wbo` per architecture and bounds mode;
+  * recorded in BENCHMARKS.md with the compiler version. Until D68 exists, "full" and "no GC" use
+    S0016's `waboros_sljit` as a stand-in for the compiler's sljit part and say so.
+  * The orchestrator's inputs (2026-11-24; sljit 39c508d1, gcc 13, the full sljit API as the shared
+    library):
+    * sljit text 56 KB (x86-64) and 47 KB (aarch64) at MinSizeRel `-Os`, 90 and 80 KB at `-O2`;
+    * `collector.wasm` 1 517 bytes, thin `.wbo` 11.4 KB and 11.1 KB (code 3.7 and 3.6 KB);
+    * CoreMark 19.5 KB of wasm, thin `.wbo` 53 KB and 48 KB.
+  * For scale, in Python lines: the front end 1 962; the JIT's common core (compiler, lower,
+    liveness, backend, simd) about 1 760; the sljit backend 1 728 (both architectures); the loader
+    and runtime side about 4 000. So the compiler is expected to be sljit plus a C port of about
+    5 400 Python lines, against about 4 000 for the loader.
 
 ## Risks
-* **Two implementations of instantiation** (D72's accepted risk). Conformance covers it: items
-  3-5. RUNTIME-MODULES.md item 4 names where re-implementations go wrong: the order of traps.
-* **The handlers** (R6): four mechanisms on six rows (Linux and macOS signals with different
-  signals and PC fields, Windows VEH), and a second handler beside Python's in the shim process.
-  S0006's chaining is the contract; ctest checks both install orders, and `waboros_run` runs
-  guard traps with no Python handler.
-* **Executing a foreign blob** is new on every row: Python never runs a file's trampolines. Steps
-  2, 7 and 8 are their first runs on Linux, macOS and Windows. The Win64 blob and the Win64
-  `entry` from C have never been executed.
+* **Two implementations of instantiation** (D72's accepted risk). Covered by items 3-5 and the
+  runtime tests. RUNTIME-MODULES.md item 4 names where re-implementations fail: the order of traps.
+* **The handlers** (R6):
+  * four mechanisms on six rows;
+  * a second handler beside Python's in the shim process;
+  * on Windows, faulthandler in front of ours (LESSONS 59), which the C loader cannot see;
+  * under CET, a resume address that is not registered ends the process.
+  S0006's chaining is the contract. ctest checks both install orders, `waboros_run` runs guard
+  traps with no Python handler, and step 8 runs a `/CETCOMPAT` build.
+* **Old bridges** (S1): host calls from pre-D75 files can go to the wrong function, and the check
+  is best-effort (Open question 1).
+* **Executing a file's blob** is new on every row (Python never does). Steps 2, 7 and 8 are the
+  first runs.
 * **The walk and the collector** run across foreign frames: a wrong site number corrupts the heap
-  silently. The walk check and poison (S0013) run in item 3.
-* **Hidden Python behaviour**: a choice in `instance.py` that is neither contract nor listed
-  above shows up as a `spec_diff` line. It goes into the table, or into part 3 if it is contract.
-* **MSVC's C**: if the C99 subset does not build, clang-cl is the fallback (step 0).
+  silently. The walk check and poison run in item 3.
+* **Hidden Python behaviour**: a choice of `instance.py` that is neither contract nor in the table
+  shows up as a `spec_diff` line or a runtime-test failure. It then goes into the table, or into
+  part 3.
+* **MSVC's C**: clang-cl is the fallback (step 0).
 
 ## Alternatives considered
-* **Reuse WAMR (wasm-micro-runtime) pieces**: its AOT format, context and calling convention are
-  its own ([WAMR-INTEROP.md](../WAMR-INTEROP.md)). Only its platform layer could be reused, and
-  that brings a licence and a build of its own, for about 600 lines of `os_*.c`. Not taken.
-* **A loader in Rust or Zig**: D60 chose C.
-* **C generated from the Python loader**: the Python loader is ctypes over Python objects, and a
-  generator would be larger than the loader. D36 asks for a loader written from the text.
+* **Q1, what it is** (decided: test tool). The other option was a product from the start: a
+  stable, versioned API and `find_package`, which is phase-6 work done in C.
+* **Q2, rows** (decided: six rows). The other option was Linux glibc only. macOS and Windows cost
+  about 300 and 450 lines plus their CI rows, and the first runs of the file's `win64` blob.
+* **Q3, harness** (decided: shim plus `waboros_run`). The other options were:
+  * a C line server under the Python runner: about 250 C lines, process isolation, no Python in
+    the C process, round trips of about 10-20 µs (estimated);
+  * a standalone C wast runner now: about 600 C lines, the runner's semantics written twice, and
+    no `spec_diff`.
+* **Q4, host calls** (decided: D75). The other options were:
+  * a pool of preprocessor-made dispatchers (`WABOROS_HOST_SLOTS`), with a fixed limit;
+  * per-import machine-code thunks, per-architecture bytes;
+  * the raw part-3 signature, which cannot tell imports apart.
+* **Q5, data in the build** (decided). The other option was run-time supply only.
+* **Q6, refusal agreement** (decided: accept/refuse, dump, step). Finer check ids and message
+  equality were rejected: S0014 does not make them normative.
+* **Reuse WAMR pieces**: its AOT format, context and convention are its own
+  ([WAMR-INTEROP.md](../WAMR-INTEROP.md)). Only its platform layer fits, and it brings a licence
+  and a build for about 600 lines of `os_*.c`.
+* **Rust or Zig**: D60 chose C.
+* **C generated from the Python loader**: it is ctypes over Python objects, and D36 asks for a
+  loader written from the text.
 * **Instantiation as a wasm runtime module**: rejected by D72.
-* **`entry` as `.S` files**: these need `enable_language(ASM)`, and MASM syntax on Windows.
-  Byte arrays tied to `entry.py` need no assembler, and ARTIFACT.md part 1 already plans hex
-  bytes of the listings.
-* **Harness options**: a C line server under the Python runner, or a standalone C wast runner
-  now. Decision 3 chose the shim plus `waboros_run`; the C wast runner comes with the compiler.
-* **Host calls without D75**:
-  * a pool of preprocessor-made dispatchers (`WABOROS_HOST_SLOTS`);
-  * per-import machine-code thunks;
-  * the raw part-3 signature.
-  Rejected by Decision 4: D75 gives one dispatcher, no limit, and no machine code of the
-  loader's own.
-* **Mach exception ports on macOS**: Wasmtime's default; not taken (see "Rows").
-* **A separate C runtime for the no-compiler build**: one library with options instead. The seam
-  is a pointer that may be NULL.
+* **`entry` as `.S` files**: needs `enable_language(ASM)` and MASM syntax. Byte arrays tied to
+  `entry.py` need no assembler (ARTIFACT.md part 1 plans the hex bytes).
+* **A local's address instead of `sp_stub`**: wrong under ASan's fake stack ("What is contract").
+* **Mach exception ports on macOS**: Wasmtime's default; the oracle uses signals.
+* **A separate C runtime for the no-compiler build**: one library with options instead; the seam
+  pointer may be NULL.
 
 ## Open questions
-1. **Are the no-compiler and no-GC builds worth having?** The maintainer decided both options;
-   this asks only whether to keep them once their size is known. Decided **after step 6.1's
+1. **Pre-D75 files with host calls.** The dispatcher's check is best-effort ("Host calls"). Should
+   the C loader refuse files whose bridge predates D75?
+   * (a) No: host calls from such files are unsupported and documented, and the committed `v1-s15`
+     set runs.
+   * (b) A `features_optional` bit "the bridge passes the word" (D66), written by every writer from
+     P1 and ignored by the Python loader. The C loader refuses a file without it that has a
+     function import or a used libcall word. This refuses almost every pre-D75 file, `v1-s15`
+     included, since a memory has a `memory.grow` word.
+   * (c) As (b), but the bit is in `features_required`. D75 rejected this: an old loader would
+     refuse new files.
+   * (d) The compiler version: a development string carries a source hash, which has no order, so
+     no rule can be written on it.
+   * Recommendation: **(b)**. A silent call of the wrong host function is worse than a refusal,
+     and the only pre-D75 files are the committed fixtures, which keep their Python tests;
+     item 5's `v1-s15` line becomes "refused, no bit".
+2. **Linux musl and Android**: rows of this spec, or later? Both are verified S0006 rows of the
+   Python runtime (x86-64). Musl would come under D47 (c): the same `os_posix.c` and a container
+   step. Android would need bionic's `libsigchain` and an emulator cell. Not decided.
+3. **Are the no-compiler and no-GC builds worth having?** Decided **after step 6.1's
    measurement**.
-   * **No compiler**: kept unless the measurement shows it removes little. It is expected to
-     remove sljit (47-90 KB of text) plus the C core. It is also the build for devices that run
-     only cross-compiled AOT files.
-   * **No GC**: free to provide only if `WABOROS_WITH_GC=OFF` is just the omission of `gc.c` and
-     a refusal at load. Its cost is one CI build row and the `#if`s at the service words and the
-     walk. Its gain is `gc.c` (about 1 100 lines expected) and the collector's 11 KB file.
-   * The options:
-     * (a) keep both;
-     * (b) keep no-compiler, and drop no-GC if it saves less than an agreed share (for example
-       10 % of the no-compiler build);
-     * (c) drop both.
-   * Until the decision, the plan builds no-GC as the omission of one file and nothing more. If
-     it turns out to need more, the option waits.
-2. **Linux musl and Android**: rows of this spec, or later? Both are verified rows of S0006 for
-   the Python runtime (x86-64). For the C loader, musl would come under D47 (c): the same
-   `os_posix.c`, a container step. Android would need bionic's `libsigchain` and an emulator cell.
-   Not decided.
-3. **Where the fat-file SHA-256 check stands in S0014's order** (prerequisite P2).
-   `artifact.load` checks a fat file's wasm against `module_sha256` after step 1 and before
-   step 2, so a corrupt fat file is refused before anything else; S0014 names the check only
-   inside the fat fallback.
-   * (a) S0014 names it as step 1b, as the code does: a docs change only.
-   * (b) The code moves it into the fallback: a fat file with a corrupt wasm that passes steps
-     2-6 would then run.
-   * Recommendation: **(a)**. A corrupt file is refused at once, and the C reader reports
-     `check` 1 for it.
+   * No compiler: kept unless it removes little. It is expected to remove sljit (47-90 KB) plus
+     the C core, and it is the build for devices that run only AOT files.
+   * No GC: free only if it is just the omission of `gc.c` plus a refusal at load. Its cost is one
+     CI row and the `#if`s at the service words and the walk; its gain is `gc.c` (about 1 200
+     lines) and the collector's 11 KB file.
+   * The options: (a) keep both; (b) keep no-compiler, and drop no-GC if it saves less than an
+     agreed share (for example 10 % of the no-compiler build); (c) drop both.
+   * Until then, no-GC is built only as the omission of one file.
+4. **The fat-file SHA-256 in S0014's order** (P2). `artifact.load` checks it after step 1 and
+   before step 2; S0014 names it only inside the fat fallback.
+   * (a) S0014 names it step 1b, as the code does (docs only).
+   * (b) The code moves it into the fallback: a fat file with a corrupt wasm that passes steps 2-6
+     would then run.
+   * Recommendation: **(a)**: a corrupt file is refused at once, with `check` 1.
 
 ## Docs this changes
 When approved and implemented:
 * By P1 (D75):
-  * ARTIFACT.md part 3: "Host functions" (`host(ctx, slots, word)`) and a fixed row of the
-    per-architecture table;
+  * ARTIFACT.md part 3: "Host functions" (`host(ctx, slots, word)`) and a fixed per-architecture
+    row;
   * [S0015](S0015-boundary-convention.md): the bridge rows;
   * [S0003](S0003-jit-context-abi.md): the `host` prototype;
   * DECISIONS.md D34 and D32: markers;
-  * `tests/artifact/data/README.md`: the D75 set, and the `v1-s15` files' new expectation.
-* By P2: [S0014](S0014-artifact-format.md) "Order of checks": step 1b (Open question 3), and
-  `ArtifactError.step` named in "Semantics: the loader".
+  * D75 itself:
+    * its Evidence "S0017 Q4 (a)-(c)" becomes "S0017, Alternatives considered (Q4)";
+    * "the C loader's dispatcher checks the word's range and `ctx[word]`" becomes
+      "best-effort", with Open question 1's answer;
+  * `tests/artifact/data/README.md`: the D75 set, and the `v1-s15` expectations.
+* By P2: [S0014](S0014-artifact-format.md) "Order of checks": step 1b, the frozen lookup's rules
+  ("Loading", 2), and `ArtifactError.step` and `.section` in "Semantics: the loader".
 * [ARTIFACT.md](../ARTIFACT.md):
-  * part 1: "Planned: hex bytes of each listing" points to `native/loader/entry.c`;
+  * part 1: "Planned: hex bytes" points to `native/loader/entry.c`;
   * part 2: "A loader refuses … whose `compiler` string is not the store's" names the waboros
-    loader, and the foreign-host rule of S0014 is added beside it;
+    loader, with the foreign-host rule and its target check beside it;
   * "Versioning rules": the last bullet names this spec.
+* [D70](../DECISIONS.md) and S0015 "Compatibility": the foreign-blob path and the per-architecture
+  rule are exercised by the C loader before phase 6 (a foreign host, S0014 Q3). The waboros
+  loader's rule is unchanged.
+* [ROADMAP.md](../ROADMAP.md): phase 6's deferred list notes that the foreign-blob path already
+  runs in the C loader; "Next" (6)(b) is done.
 * [S0016](S0016-sljit-on-the-boundary.md) "Where it lives": a marker that "no generated sources"
   reads "no generator outside CMake" (Decision 5), and that `native/` configures without the
-  submodule when sljit is not needed.
-* [S0006](S0006-guard-pages.md): the row table gains the C loader's handler on its six rows.
+  submodule.
+* [S0006](S0006-guard-pages.md): the row table gains the C loader's handler on its six rows, and
+  the C `broken` rule.
+* [RISKS.md](../RISKS.md) R6: the C loader's handlers, the shim process with two copies,
+  Windows faulthandler.
 * [DECISIONS.md](../DECISIONS.md): D36's marker exists; an entry when the loader is implemented
-  (the rows, the harness, the GC builds, the answer to Open question 1).
-* [TESTING.md](../TESTING.md): the `cloader-*` engines, the refusal corpus, `waboros_run` under
-  sanitizers, the fuzz job.
-* [TARGETS.md](../TARGETS.md): the C loader's rows.
-* [ROADMAP.md](../ROADMAP.md): "Next" (6)(b) done.
-* [MICRO-COMPILERS.md](../MICRO-COMPILERS.md): "The C variant" links the seam and the collector's
-  three paths.
-* [BENCHMARKS.md](../BENCHMARKS.md): the measurements above.
-* CLAUDE.md "Commands": the loader's build, its engines and `waboros_run`.
-* [LESSONS.md](../LESSONS.md): any trap found on the way.
+  (rows, harness, GC builds, Open questions 1-4).
+* [TESTING.md](../TESTING.md), [TARGETS.md](../TARGETS.md),
+  [MICRO-COMPILERS.md](../MICRO-COMPILERS.md) ("The C variant" links the seam and the three
+  collector paths), [BENCHMARKS.md](../BENCHMARKS.md), CLAUDE.md "Commands",
+  [LESSONS.md](../LESSONS.md) (traps found on the way).
 
 ## Changes
 * 2026-11-24: created (draft).
-* 2026-11-24: the three paths of the GC collector stated explicitly (maintainer's clarification):
-  compiled on first need with the embedded compiler; only an AOT file without one, with a refusal
-  at instantiation when none is present; no collector and no heap without GC.
-* 2026-11-24: build sizes of the four builds as a measurement (step 6.1), with the orchestrator's
-  inputs; Q7: whether the no-compiler and no-GC builds stay is decided after it.
-* 2026-11-24: Q1 decided (maintainer): a test tool for now with an internal API; the C loader is a
-  future product, not yet fixed. Options were (a) test tool, (b) product with a stable API.
-* 2026-11-24: Q2 decided (maintainer): (b), macOS and Windows before the final freeze; the
-  recommendation was (a), Linux glibc only. Open: Linux musl and Android.
-* 2026-11-24: Q3 decided (maintainer): ctypes for the spec suite and the refusal corpus, plus
-  `waboros_run` under sanitizers without Python; the C wast runner later, with the embedded
-  compiler. The draft recommended a C line server (`--serve`) under the Python runner.
-* 2026-11-24: Q4 decided (maintainer): D75, the bridge passes the import's context-word index.
-  The draft recommended a pool of dispatchers; per-import thunks and the raw signature were the
-  other options.
-* 2026-11-24: Q5 decided (maintainer): a committed array for `collector.wasm`, CMake-generated for
-  a `.wbo`, run-time supply kept.
-* 2026-11-24: Q6 decided (maintainer): (a) plus the S0014 step of each refusal, and no refusal
-  through Python's internal-exception path.
-* 2026-11-25: the spec revised to the decisions:
-  * a "Decisions" list;
-  * Rows for the six rows, with D47 evidence;
-  * `os_posix.c` and `os_windows.c`;
-  * the internal C API with `dispatch` (D75) and `waboros_error.check`;
-  * the harness rewritten (shim engines, corpus in-process, `waboros_run` under sanitizers);
-  * the plan with prerequisites P1 (D75) and P2 (refusal steps and the fat-file SHA-256
-    position) and steps 7 (macOS) and 8 (Windows);
-  * the committed-file expectations (D75 set; `v1-small` needs the collector);
-  * the open items reduced to the size question, musl and Android, and the SHA-256 position.
+* 2026-11-24: the three paths of the GC collector stated explicitly (maintainer's clarification).
+* 2026-11-24: build sizes as a measurement (step 6.1) with the orchestrator's inputs; whether the
+  no-compiler and no-GC builds stay is decided after it.
+* 2026-11-24: Q1-Q6 decided by the maintainer (Decisions 1-6; the rejected options in
+  "Alternatives considered"). The draft had recommended Q2 (a), Q3 a C line server, Q4 a
+  dispatcher pool and Q6 (a) alone.
+* 2026-11-25: revised to the decisions: a Decisions list, six rows, the internal API with
+  `dispatch`, the harness, and the plan with P1, P2 and steps 7 and 8.
+* 2026-11-25: revised after an independent review (docs only). Blocking: the compiler-string
+  rule stated exactly (step 4 as `_head`, S0014 Q3's target check, no step-5 compare); the designed
+  exceptions to Decision 6 (E1, E2, fat); the inventory dump defined; the corpus with and without
+  the test compiler. Should-fix: the dispatcher check best-effort (Open question 1) and its steps
+  after `_host`; `sp_stub` kept; locks and the one-thread rule; the collection after `collect.py`;
+  the C API extended; the plan (P1 before step 1, step 2's command, step 3 to the jit-engineer,
+  reviewers, the D35 statement); D47 (a)/(d); the handlers per OS (CET targets, `raise` only after
+  `SIG_DFL`/`SIG_IGN`, `broken`, faulthandler, `arm_thread_state64_get_pc`); the trampoline copy
+  (adopted after the whole file, per engine, D71's test, M5); the runtime tests; `_frozen`'s rules;
+  `ArtifactError.section`; `no_sanitize("function")`; Docs this changes extended; nits.
