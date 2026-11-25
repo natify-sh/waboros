@@ -4,7 +4,7 @@ kind: spec
 id: S0018
 status: draft
 superseded_by:
-related: [D1, D6, D10, D14, D17, D18, D19, D21, D25, D27, D29, D31, D33, D34, D44, D46, D51, D57, D58, D64, D70, R1, R4, S0001, S0002, S0012, S0013, S0014, S0015, S0017]
+related: [D1, D6, D10, D14, D17, D18, D19, D21, D23, D25, D27, D29, D31, D33, D34, D35, D44, D46, D49, D51, D57, D58, D64, D70, R1, R4, S0001, S0002, S0012, S0013, S0014, S0015, S0017]
 owner: maintainer
 updated: 2026-11-25
 ---
@@ -22,29 +22,73 @@ the externs, `Caller`, `Trap`/`TrapCode` and the limits, **in the shape of wasmt
 it amends only where a public operation has no internal counterpart yet. WASI and the CLI are out
 of scope; each gets its own spec.
 
-Direction (maintainer, 2026-11-25): the API follows wasmtime-py's shape. The one deliberate
-extension is deterministic release by context managers, where wasmtime-py does not already have it,
-with finalizers as a safety net. Every other difference from wasmtime-py is either something
-waboros cannot do yet (an explicit error that names the reason, as [API.md](../API.md) states as its
-principle) or an open question below. The API promises nothing that the language-neutral core
-cannot give ([D17](../DECISIONS.md); [S0017](S0017-c-reference-loader.md) Decision 1 gives the C
-loader no public API yet, so this spec is Python-only). It must still not depend on anything a C
-host could not do the same way.
+Direction (maintainer, 2026-11-25): the API follows wasmtime-py's shape. Context managers, `close()`
+and finalizers follow wasmtime-py's `Managed` base; the one context-manager extension is
+`store.scope()`. The extensions over wasmtime-py are exactly those listed in "Decisions"; every
+other difference is something waboros cannot do yet, raised as an explicit error that names the
+reason ([API.md](../API.md)'s principle). The API promises nothing that the language-neutral core
+cannot give ([D17](../DECISIONS.md)). [S0017](S0017-c-reference-loader.md) Decision 1 gives the C
+loader no public API yet, so this spec is Python-only, but every mechanism it needs from the core is
+one a C host can implement the same way.
+
+## Decisions
+Taken by the maintainer on 2026-11-25 on the draft's nine open questions. The rejected options are
+in "Alternatives considered".
+
+1. **Closeness to wasmtime-py** (former Q1, option (b)): the same signatures and behaviour wherever
+   waboros has a name; wasmtime-py's own test suite runs through a shim as a **counter, not a
+   gate**. The base error class is **`WaborosError`**, with **no `WasmtimeError` alias**, a
+   documented deviation (the test shim maps the name on the test side only).
+2. **Values wasmtime-py cannot express** (former Q2, (b) with a change): `v128` is returned as
+   `bytes` (16 bytes, little-endian, the order in wasm memory) and accepted as a bytes-like object
+   of exactly 16 bytes (`bytes`, `bytearray`, `memoryview`) or an `int`; an i31 is an `int` both
+   ways; structs, arrays and other non-i31 values of the any hierarchy are opaque `AnyRef` handles,
+   and exceptions are opaque `ExnRef` handles; an uncaught wasm exception carries `Trap.exn`. Field
+   access and host-thrown wasm exceptions come later, in their own spec.
+3. **Choosing the target** (former Q3, (b)): `Config.strategy` takes `"auto"`, `"pyc"` and `"jit"`
+   besides wasmtime-py's values; `Config.target` keeps wasmtime-py's meaning (the triple to compile
+   for, D35 cross-compilation); a read-only `Engine.target` tells which target was selected.
+4. **Explicit roots** (former Q4, (b)): Wasmtime's root model now. A handle can be made a
+   **`ManuallyRooted`** root by `root()`, released only by `unroot()` (or `Store.close()`), besides
+   release-on-drop and `store.scope()`. Every handle is **generation-checked**. This amends S0017
+   Decision 11: the C loader gets the same model later.
+5. **Options with no meaning here** (former Q5, (b); also answers ROADMAP open question 4): pure
+   hints are accepted and silently ignored; an option whose ignoring would change behaviour (for
+   example `wasm_simd=False`) raises an explicit error. The bounds mode is wasmtime-py's own
+   `signals_based_traps`: `True` gives guard pages where they are supported, `False` explicit
+   checks. ROADMAP's question listed `signals_based_traps` as meaningless; this decision gives it a
+   meaning.
+6. **Serialized files** (former Q6, (b) and (b)): `serialize()` follows S0014 Q12, so a module
+   compiled in guard mode is recompiled to explicit checks for the file; `serialize(fat=True)`
+   writes a fat file (D18), an extension over wasmtime-py.
+7. **The spec suite** (former Q7, (b)): an engine `api-<target>` over the public API runs the suite
+   in CI on one row; the metric stays on the internal interface of S0001.
+8. **Names of the extensions** (former Q8, (a)): unprefixed, named after Wasmtime's Rust API.
+   API.md's "prefixed or in a submodule" rule is amended.
+9. **Integer arguments out of range** (former Q9, (b); refined by the maintainer the same day): an
+   integer argument may be given in the signed **or** the unsigned range (i32: −2³¹ … 2³²−1, i64:
+   −2⁶³ … 2⁶⁴−1) and is converted to the wasm bit pattern (`0xFFFFFFFF` as an i32 is −1); outside
+   both ranges (for example `2**32 + 5` for an i32, or `2**100`) it raises `ValueError`. Results come
+   back signed, as in wasmtime-py. A documented deviation from wasmtime-py, which wraps any `int`
+   silently, listed among the differential run's known differences.
 
 ## Goals / Non-goals
 * Goals:
   * a user of wasmtime-py recognises every name and signature: where waboros has a name, its
-    signature and behaviour are wasmtime-py's, and the differences are listed in the tables below;
+    signature and behaviour are wasmtime-py's, and the differences are listed in the tables below
+    (Decision 1);
   * every public operation works on every target (`pyc`, `jit-x86_64`, `jit-aarch64`) through
     `Target` methods only (CLAUDE.md, "one interface for all targets");
-  * deterministic release: `Store.close()` and `with` frees a store's memories, GC heap, code and
+  * deterministic release: `Store.close()` and `with` free a store's memories, GC heap, code and
     contexts at once (LESSONS 135; ROADMAP "Memory of dropped stores" (c));
   * one error model: traps, host exceptions and engine errors look the same on every target;
+  * the GC and exception proposals reachable from Python (Decision 2);
   * a statement that 0.x may change (see "Compatibility promise").
 * Non-goals:
   * WASI (`WasiConfig`, `Linker.define_wasi`, `Store.set_wasi`, `set_wasi_http`, `ExitTrap`) and the
     CLI: their own specs (ROADMAP phase 6; open question 2 there chooses the WASI host);
-  * a drop-in replacement for wasmtime-py (ROADMAP phase 6: "not a drop-in"; see Q1);
+  * a drop-in replacement for wasmtime-py (ROADMAP phase 6: "not a drop-in"; Decision 1);
+  * GC field access and host-thrown wasm exceptions: their own spec (Decision 2);
   * `wasmtime.component` ([D7](../DECISIONS.md));
   * `SharedMemory`, `Config.shared_memory` and `wasm_threads`: these come with threads, as an
     additive extension ([D58](../DECISIONS.md));
@@ -62,7 +106,8 @@ host could not do the same way.
   public.
 * The implementation lives in private modules named after wasmtime-py's own (`waboros/_config.py`,
   `_engine.py`, `_store.py`, `_module.py`, `_linker.py`, `_instance.py`, `_func.py`, `_memory.py`,
-  `_table.py`, `_globals.py`, `_tag.py`, `_types.py`, `_value.py`, `_trap.py`, `_error.py`).
+  `_table.py`, `_globals.py`, `_tag.py`, `_types.py`, `_value.py`, `_trap.py`, `_error.py`, and
+  `_gcref.py` for `AnyRef`, `ExnRef` and `ManuallyRooted`).
 * `waboros.frontend`, `waboros.targets` and `waboros.runtime` stay where they are and are internal.
   This is stated in README.md and API.md and in each package's docstring, and is not shown by a
   rename: a rename would touch every file in `src/`, `tests/` and `tools/` for no behavioural gain.
@@ -70,29 +115,34 @@ host could not do the same way.
 * Stdlib only ([D1](../DECISIONS.md)). WAT input works only when the optional extra
   `wasm-tools-package` is installed ([D21](../DECISIONS.md)); without it, a `str` argument gets an
   error that names the extra.
+* Extension names are unprefixed and taken from Wasmtime's Rust API (Decision 8): `Store.scope`
+  (Rust `RootScope`), `AnyRef`, `ExnRef`, `ManuallyRooted`, `root`, `unroot`, `to_rooted`. A later
+  wasmtime-py name for the same thing then most likely coincides.
 
 ### The object model
 Columns: the public surface, the wasmtime-py 50.0.1 counterpart (checked by introspection of the
 pinned development install, `pyproject.toml`), and the deviation. "—" means none. "Explicit error"
-means the call raises the engine error with the reason and never does something different in silence.
+means the call raises `WaborosError` with the reason and never does something different in silence.
+"Extension" marks a name wasmtime-py does not have.
 
 | class | public surface | wasmtime-py | deviation |
 |---|---|---|---|
-| `Config` | write-only setters: `wasm_*` (the features of FEATURES.md), `max_wasm_stack`, `epoch_interruption`, `consume_fuel`, `cache` (`bool` or a path `str`), `signals_based_traps`, `strategy`; `close()`, `with` | the same names (wasmtime-py's `Config` derives from its `Managed` base: `close`, `with`, `__del__`); `Engine(config)` consumes it, so a second `Engine(config)` raises `ValueError("already closed")` | the same consumption; `signals_based_traps` selects the bounds mode ("Configuration"); `consume_fuel=True` and `cache=True` or a path give an explicit error until their steps (`cache=False` is accepted: the cache is off); the options with no meaning here: Q5; target selection: Q3 |
-| `Engine` | `Engine(config=None)`, `increment_epoch()`, `is_pulley()` (a method; always `False`), `close()`, `with` | the same | — (one target per engine, [D25](../DECISIONS.md)) |
-| `Module` | `Module(engine, wasm)` (bytes; `str` is WAT, D21), `from_file`, `validate`, `imports`, `exports`, `serialize`, `deserialize`, `deserialize_file`, `close()`, `with` | the same | `serialize` on a `pyc` engine: explicit error ([S0014](S0014-artifact-format.md) Q6); WAT needs the extra (D21) |
-| `Store` | `Store(engine=None, data=None)`, `data`, `gc()`, `set_epoch_deadline`, `set_limits`, `get_fuel`, `set_fuel`, `close()`, `with` | the same, plus `set_wasi`, `set_wasi_http` | `get_fuel`/`set_fuel`: explicit error until fuel exists; WASI out of scope; **extension over wasmtime-py**: `with store.scope():` (GC handle scopes, "GC handles and scopes"; its name: Q8) |
+| `Config` | write-only setters: `wasm_*` (the features of FEATURES.md), `max_wasm_stack`, `epoch_interruption`, `consume_fuel`, `cache` (`bool` or a path `str`), `signals_based_traps`, `strategy`, `target`, and the options of "Options with no meaning here"; `close()`, `with` | the same names (wasmtime-py's `Config` derives from its `Managed` base: `close`, `with`, `__del__`); `Engine(config)` consumes it, so a second `Engine(config)` raises `ValueError("already closed")` | the same consumption; `strategy` takes `"auto"`, `"pyc"`, `"jit"` (Decision 3); `signals_based_traps` selects the bounds mode (Decision 5); `consume_fuel=True` and `cache=True` or a path give an explicit error until their steps (`cache=False` is accepted: the cache is off) |
+| `Engine` | `Engine(config=None)`, `increment_epoch()`, `is_pulley()` (a method; always `False`), `target` (read-only), `close()`, `with` | the same, without `target` | **extension**: `Engine.target` (Decision 3); one target per engine ([D25](../DECISIONS.md)) |
+| `Module` | `Module(engine, wasm)` (bytes; `str` is WAT, D21), `from_file`, `validate`, `imports`, `exports`, `serialize(fat=False)`, `deserialize`, `deserialize_file`, `close()`, `with` | the same, `serialize()` without `fat` | **extension**: `fat=True` (Decision 6); guard-mode code is recompiled to explicit for the file (Decision 6); `serialize` on a `pyc` engine: explicit error ([S0014](S0014-artifact-format.md) Q6); WAT needs the extra (D21) |
+| `Store` | `Store(engine=None, data=None)`, `data`, `gc()`, `set_epoch_deadline`, `set_limits`, `get_fuel`, `set_fuel`, `scope()`, `close()`, `with` | the same, plus `set_wasi`, `set_wasi_http`, without `scope` | **extension**: `with store.scope():` ("GC handles, roots and scopes"); `get_fuel`/`set_fuel`: explicit error until fuel exists; WASI out of scope |
 | `Linker` | `Linker(engine)`, `allow_shadowing`, `define`, `define_func`, `define_instance`, `define_module`, `get`, `get_default`, `instantiate`, `instantiate_pre`, `define_unknown_imports_as_traps`, `define_unknown_imports_as_default_values`, `close()`, `with` | the same, plus `define_wasi` | WASI out of scope |
 | `InstancePre` | `instantiate(store)`, `module`, `close()`, `with` | the same | — |
 | `Instance` | `Instance(store, module, imports)`, `exports(store)` (by name and by index) | the same | — |
-| `Func` | `Func(store, ty, func, access_caller=False)`, `type(store)`, `__call__(store, *params)` | the same | value types beyond wasmtime-py's: Q2 |
+| `Func` | `Func(store, ty, func, access_caller=False)`, `type(store)`, `__call__(store, *params)` | the same | the values of Decision 2; integers out of range raise (Decision 9) |
 | `Caller` | `get(name)`, `[name]`; usable as the store argument while the host call runs | the same | — |
 | `Memory` | `Memory(store, ty)`, `type`, `size`, `grow`, `read`, `write`, `data_ptr`, `data_len`, `get_buffer_ptr`, `page_size`, `page_size_log2` | the same | `data_ptr` on `pyc` points into a `bytearray` that a grow may move ("Memory access") |
 | `Table` | `Table(store, ty, init)`, `type`, `size`, `grow`, `get`, `set` | the same | `pyc` and the JITs cap `grow` at 10 000 000 elements unless `set_limits` says otherwise ([D27](../DECISIONS.md)) |
 | `Global` | `Global(store, ty, val)`, `type`, `value`, `set_value` | the same | — |
 | `Tag` | `Tag(store, ty)`, `type`, `eq` | the same | — |
-| types | `ValType`, `FuncType`, `MemoryType`, `TableType`, `GlobalType`, `TagType`, `Limits`, `ImportType`, `ExportType`, `Val` | the same | the GC, exception and `v128` types: Q2 |
-| errors | `Trap` (`message`, `trap_code`, `frames`), `TrapCode`, the engine error (Q1), `Frame` (`Managed` in wasmtime-py: `close`, `with`) | `Trap`, `TrapCode`, `WasmtimeError`, `Frame`, `ExitTrap` | `frames` is empty in this part: FEATURES.md ("traps with frames") plans them from Python tracebacks on `pyc` and from a code-address map on the JIT, a later step; `ExitTrap` comes with WASI; the error's name: Q1 |
+| GC values | `AnyRef`, `ExnRef` (`root(store)`, `kind` on `AnyRef`), `ManuallyRooted` (`unroot(store)`, `to_rooted(store)`) | none | **extension** (Decisions 2, 4) |
+| types | `ValType`, `FuncType`, `MemoryType`, `TableType`, `GlobalType`, `TagType`, `Limits`, `ImportType`, `ExportType`, `Val` | the same | `ValType` and `Val` also cover `v128`, the any and exn hierarchies and concrete GC types (**extension**, Decision 2) |
+| errors | `Trap` (`message`, `trap_code`, `frames`, `exn`), `TrapCode`, `WaborosError`, `Frame` (`Managed` in wasmtime-py: `close`, `with`) | `Trap` without `exn`, `TrapCode`, `WasmtimeError`, `Frame`, `ExitTrap` | `WaborosError` instead of `WasmtimeError`, no alias (Decision 1); **extension**: `Trap.exn` (Decision 2); `frames` is empty in this part: FEATURES.md ("traps with frames") plans them from Python tracebacks on `pyc` and from a code-address map on the JIT, a later step; `ExitTrap` comes with WASI |
 | warning | `JitUnavailableWarning` | none | re-exported as D31 decides; it already exists (`targets/base.py`) |
 | function | `wat2wasm` | the same | needs the extra (D21) |
 
@@ -102,53 +152,62 @@ plumbing, and it has no counterpart here.
 
 ### Values: Python ⇄ wasm
 The internal boundary carries unsigned integers and float bit patterns (`Raw`, S0002). The public
-layer converts as wasmtime-py does:
+layer converts:
 
 | wasm type | to wasm (a parameter, a host result, `Global`/`Table` values) | to Python | note |
 |---|---|---|---|
-| `i32`, `i64` | `int` or `Val`; out of range: Q9 | signed `int` | wasmtime-py 50 wraps silently (measured: an i32 identity function returns 5 for `2**32 + 5` and −2147483648 for `2**31`) |
+| `i32`, `i64` | `int` in the signed or the unsigned range, `[-2**(n-1), 2**n)`, converted to the bit pattern (`0xFFFFFFFF` as an i32 is −1), or `Val`; outside both ranges: `ValueError` | signed `int`, as wasmtime-py | Decision 9. wasmtime-py 50 wraps any `int` silently (measured: an i32 identity function returns 5 for `2**32 + 5`). That is an artifact of its implementation, not a documented rule: `Val.i32` stores the value through a ctypes union field (`ffi.wasmtime_valunion_t(i32=val).i32`, `wasmtime/_value.py`), which truncates. In both ranges the two agree (`2**31` gives −2147483648 on both) |
 | `f32`, `f64` | `float` or `Val` | `float` | an f32 NaN payload survives where the host's floats keep it ([D28](../DECISIONS.md), [D46](../DECISIONS.md)) |
-| `funcref` | `Func` or `None` | `Func` or `None` | a `Func` of another store: `TypeError` |
-| `externref` | any Python object, `None` is null | the object | — |
-| `anyref`, `eqref`, `i31ref`, `structref`, `arrayref`, `exnref`, concrete GC types, `v128` | **Q2** | **Q2** | wasmtime-py 50 has no Python form for them (`Val` has no `anyref`; `v128` raises "unimplemented v128 type", `wasmtime/_value.py`) |
+| `v128` | a bytes-like object of exactly 16 bytes (`bytes`, `bytearray`, `memoryview`), or an `int` in `[0, 2**128)`; else `ValueError` (wrong length or range) or `TypeError` | `bytes` of length 16, little-endian (byte 0 is the lane byte at the lowest address in wasm memory) | Decision 2; wasmtime-py raises "unimplemented v128 type" (`wasmtime/_value.py`); internally `pyc` holds an `int` and the JITs two slots (S0005), and the conversion is `int.to_bytes(16, "little")` and back |
+| `funcref` (and typed function references) | `Func` or `None` | `Func` or `None` | a `Func` of another store: `TypeError` |
+| `externref` | any Python object, `None` is null; an `AnyRef` is passed as the any value made external (`extern.convert_any`) | the object; a GC value made external comes out as its `AnyRef`, an i31 included, so that passing it back keeps it a GC value | — |
+| `i31ref` and an i31 in `anyref`/`eqref` | `int` in `[-2**30, 2**30)`, else `ValueError` | `int` | Decision 2; as S0013 step 3b decision G: a Python `int` never crosses into an `anyref` as a host value |
+| `anyref`, `eqref`, `structref`, `arrayref`, concrete struct and array types | `AnyRef` of the same store, `int` (an i31), a host object (a host value in `anyref`, as S0013 decision E) or `None` | `AnyRef` (struct, array), `int` (i31), the host object, or `None` | Decision 2; `AnyRef.kind` is `"struct"` or `"array"`; no field access |
+| `exnref` | `ExnRef` of the same store, or `None` | `ExnRef` or `None` | Decision 2 |
 
 Results: `None` for no result, the value for one result, a `list` for more, as in wasmtime-py
 `Func.__call__`. Host values given for a reference parameter are type-checked before anything
-runs (`TypeError`, D57). Internally a host `int` given for an `anyref` is an i31 in
-`[-2**30, 2**30)`, else `ValueError` (S0013 step 3b decision G); whether the public API keeps that
-reading is part of Q2.
+runs (`TypeError`, D57). `AnyRef` and `ExnRef` are handles ("GC handles, roots and scopes"). Two
+handles that are not `ManuallyRooted` and name the same object are the same Python object (the
+store's one-handle-per-object map), so `is` and `==` compare objects; `ManuallyRooted.to_rooted`
+returns that shared handle. On `pyc` the handle wraps the Python object `pyc` uses (a struct is a
+list, FEATURES.md), with the same public behaviour.
 
 ### Errors and exceptions
+`WaborosError(Exception)` is the base class of engine errors (Decision 1). `Trap(Exception)` is not
+a subclass of it, as `Trap` is not a `WasmtimeError` in wasmtime-py.
+
 | what happens | what the user sees | today, internally |
 |---|---|---|
 | a wasm trap | `Trap` with `trap_code` a `TrapCode` member (wasmtime-py's names; the numeric values are not promised) | `targets.base.Trap(code)` |
-| a wasm exception escapes the outermost call | `Trap` with `trap_code == TrapCode.UNCAUGHT_EXCEPTION`, as in wasmtime-py; access to the payload: Q2 | `Trap(UNCAUGHT_EXCEPTION)`, `.exn` = (tag, values) ([S0012](S0012-exceptions.md) Q4) |
+| a wasm exception escapes the outermost call | `Trap` with `trap_code == TrapCode.UNCAUGHT_EXCEPTION`, as in wasmtime-py, and `exn` the `ExnRef` of the exception (Decision 2); its tag and payload are read when field access comes | `Trap(UNCAUGHT_EXCEPTION)`, `.exn` = (tag, values) ([S0012](S0012-exceptions.md) Q4) |
 | a host function raises | the same exception object comes out of **every** `Func.__call__` it crosses, nested ones included, as in wasmtime-py (its trampoline stores it in `LAST_EXCEPTION`, and `enter_wasm`/`maybe_raise_last_exn` re-raise it at each call): a host function A that calls wasm, which calls a raising host function B, sees B's exception and can catch it. Wasm code cannot catch it | `HostError` carrier, unwrapped only at depth 1 (`targets/pyc/__init__.py` `_run`; `jit/common/instance.py` `_error` and the exported-import path); a nested caller sees `HostError` today (measured on `pyc` and `jit-x86_64`). The public `Func.__call__` unwraps `HostError` at every depth; no core change |
 | an asynchronous exception kills a host callback before it reports its status (JIT) | `RuntimeError("host call interrupted")` | [D34](../DECISIONS.md); on PyPy: [D51](../DECISIONS.md) |
-| invalid or malformed module, link failure, instantiation failure, a refused serialized file, an option or feature waboros lacks | the engine error (Q1) carrying the internal exception as `__cause__` | `Malformed`, `Invalid`, `LinkError`, the `MemoryError` of a memory or table min that cannot be provided at instantiation (S0009 Q6: "phase 6 maps it to the API's error"), `ArtifactError` (`.step`, `.section`, S0017 P2), `Unsupported` |
-| a `jit-*` target forced on a machine where it cannot run | the engine error | `Unsupported` (D31, TARGETS.md) |
+| invalid or malformed module, link failure, instantiation failure, a refused serialized file, an option or feature waboros lacks, an option whose ignoring would change behaviour | `WaborosError` carrying the internal exception as `__cause__` | `Malformed`, `Invalid`, `LinkError`, the `MemoryError` of a memory or table min that cannot be provided at instantiation (S0009 Q6: "phase 6 maps it to the API's error"), `ArtifactError` (`.step`, `.section`, S0017 P2), `Unsupported` |
+| `strategy="jit"` on a machine where the JIT cannot run | `WaborosError` | `Unsupported` (D31, TARGETS.md) |
 | `auto` falls back to `pyc` | one `JitUnavailableWarning` per process and message | D31 |
 | a store used from a second thread | `RuntimeError("a store is used from one thread only")` | `StoreState.claim` |
-| any use after `close()` | `ValueError("already closed")`, wasmtime-py's message | — (new) |
-| wrong argument count or type | the engine error (count, as wasmtime-py), `TypeError` (type) | — |
+| any use after `close()`; a handle released by its scope, by `unroot()` or by the store's close | `ValueError("already closed")`, wasmtime-py's message, and `ValueError` for a stale handle (its generation no longer matches) | — (new) |
+| wrong argument count; wrong argument type; integer out of range | `WaborosError` (count, as wasmtime-py); `TypeError`; `ValueError` (Decision 9) | — |
 
 Which `MemoryError` goes where: a failure **during instantiation** (a min that cannot be provided,
-S0009 Q6) becomes the engine error with the `MemoryError` as its cause, as every instantiation
+S0009 Q6) becomes `WaborosError` with the `MemoryError` as its cause, as every instantiation
 failure does. A failure **during a call or a host operation** (a reservation or commit while the
 guest runs, `Memory.grow` from the host) stays `MemoryError`, as in Python generally. The GC heap's
-failed commit still escapes as `OSError` (ROADMAP, "Memory of dropped stores", open item); step 4
+failed commit still escapes as `OSError` (ROADMAP, "Memory of dropped stores", open item); step 1
 makes it `MemoryError`.
 
 ### Configuration: public knobs and environment variables
 | knob | public (`Config`) | meaning | environment variable today |
 |---|---|---|---|
-| target | Q3 | one target per engine (D25) | `WABOROS_TARGET` (`targets/base.py`, `target_order`) |
-| bounds mode | `signals_based_traps`: unset or `True` is `auto` (guard pages where verified, explicit checks elsewhere; D44); `False` is explicit checks | a property of the compiled code (D29); a compile option per engine, no longer read from the process environment at compile time | `WABOROS_JIT_BOUNDS=auto|guard|explicit` (`jit/common/guard.py`, `mode`) |
+| target | `strategy`: `"auto"` (default), `"pyc"`, `"jit"` (the JIT of this architecture); wasmtime-py's `"cranelift"` raises (Decision 5) | one target per engine (D25); `Engine.target` gives the result (`"pyc"`, `"jit-x86_64"`, `"jit-aarch64"`) | `WABOROS_TARGET` (`targets/base.py`, `target_order`) |
+| cross-compilation | `target`: a triple whose architecture is `x86_64` or `aarch64` (Decision 3) | the JIT of that architecture compiles; an engine for another architecture than the host's compiles and serializes (D35; files are OS-independent, D23), and instantiating its modules raises `WaborosError`; another triple raises | — |
+| bounds mode | `signals_based_traps`: unset or `True` is `auto` (guard pages where verified, explicit checks elsewhere; D44); `False` is explicit checks (Decision 5) | a property of the compiled code (D29); a compile option per engine, no longer read from the process environment at compile time | `WABOROS_JIT_BOUNDS=auto|guard|explicit` (`jit/common/guard.py`, `mode`) |
 | stack | `max_wasm_stack` (bytes) | the JIT's native budget per store ([D10](../DECISIONS.md)); `pyc`: "Stack" below | — (`StoreState.max_wasm_stack`, default 512 KiB in `jit/common/instance.py`, Wasmtime 50's default: see "Stack") |
 | epochs | `epoch_interruption` | "Interruption" | — |
 | fuel | `consume_fuel` | explicit error until fuel exists | — |
-| features | `wasm_*` | `True` for every feature that FEATURES.md claims on all targets; `False`: Q5 | — |
-| cache | `cache` | `False`; `True` gives an explicit error until the cache spec | — |
+| features | `wasm_*` | `True` for every feature FEATURES.md claims on all targets; `False` raises until the validator has feature gates (Decision 5) | — |
+| cache | `cache` | `False`; `True` or a path raises until the cache spec | — |
 
 Precedence: a value set on `Config` wins. A knob left unset takes its environment variable, so the
 CI matrices that set `WABOROS_TARGET` and `WABOROS_JIT_BOUNDS` keep working unchanged. Forcing
@@ -165,16 +224,32 @@ behaviour; the variable only forces it); `WABOROS_JIT_GC_STRESS`, `_GC_VERIFY`, 
 `WABOROS_SLJIT_LIB` (the development targets of S0016). ROADMAP "Next" (6) revisits the
 code-changing ones with the final freeze. This spec leaves them as they are.
 
+### Options with no meaning here (Decision 5)
+The `Config` members of wasmtime-py 50 with no waboros meaning:
+* **accepted and silently ignored** (pure hints; ignoring them changes no result):
+  `cranelift_opt_level`, `cranelift_debug_verifier`, `parallel_compilation`, `profiler`,
+  `debug_info`, `native_unwind_info`, `macos_use_mach_ports`, `memory_init_cow`; and the values that
+  match what waboros does anyway: `gc_support=True`, `wasm_relaxed_simd_deterministic=True` (the
+  deterministic profile, [D49](../DECISIONS.md)), `wasm_component_model*=False`,
+  `wasm_stack_switching=False`;
+* **an explicit error**, because ignoring them would change behaviour: any `wasm_*=False` for a
+  feature waboros supports (for example `wasm_simd=False`; Wasmtime then refuses modules that use
+  it, and the validator has no feature gates yet), `wasm_relaxed_simd_deterministic=False`,
+  `cranelift_nan_canonicalization=True` (S0005 Q5), `cranelift_flag_enable`, `cranelift_flag_set`,
+  `memory_reservation`, `memory_guard_size`, `memory_reservation_for_growth`, `memory_may_move`,
+  `gc_support=False`, `wasm_component_model*=True`, `wasm_stack_switching=True`,
+  `strategy="cranelift"`.
+
 ## Semantics
 
 ### Lifetimes, `close()` and finalizers
 * **What wasmtime-py already has.** Its `Managed` base gives `close()`, `__enter__`/`__exit__` and a
   `__del__` that closes to `Config`, `Engine`, `Store`, `Module`, `Linker`, `InstancePre`, the type
-  objects, `Trap` and `WasmtimeError`. After `close()`, every use raises `ValueError("already
+  objects, `Trap`, `Frame` and `WasmtimeError`. After `close()`, every use raises `ValueError("already
   closed")`, and a second `close()` does nothing (`wasmtime/_managed.py`). `Func`, `Memory`, `Table`,
-  `Global`, `Tag`, `Instance` and `Caller` are not `Managed`: they hold their store, and a use after
-  the store is closed fails when the store is passed to the call. waboros follows this, so
-  `with Store(engine) as store:` is wasmtime-py's shape, not an extension.
+  `Global`, `Tag`, `Instance` and `Caller` are not `Managed`: a use after the store is closed fails
+  when the store is passed to the call. waboros follows this, so `with Store(engine) as store:` is
+  wasmtime-py's shape, not an extension.
 * **`Store.close()`** (ROADMAP phase 6, LESSONS 135) releases at once everything the store owns:
   each instance's code areas (after `guard.add_code`'s registration is removed with
   `_forget_code`, before the unmapping) and contexts, linear memories, tables, and the per-store
@@ -182,14 +257,15 @@ code-changing ones with the final freeze. This spec leaves them as they are.
   value stack, the handle and extern tables, the walk's ranges). The trampolines are not the
   store's: in-process they are sealed once per process and target (`trampolines()`, `@cache`, in
   `jit/x86_64/__init__.py`; `load_trampolines`) and stay. Every later use of the store, of its
-  instances and externs, and of its `GcRef`/`ExnRef` handles raises `ValueError`. The mechanism is
-  a `close()` on `StoreState` that calls a `release()` of each `TargetInstance` and of the target's
-  per-store state (an S0002 amendment, step 1). A C host does the same with a store-destroy call.
+  instances and externs, and of its `AnyRef`, `ExnRef` and `ManuallyRooted` handles raises
+  `ValueError`. The mechanism is a `close()` on `StoreState` that calls a `release()` of each
+  `TargetInstance` and of the target's per-store state (the S0002 amendment, step 1). A C host does
+  the same with a store-destroy call.
 * **`close()` and threads.** The owner thread is recorded for good at the first entry
   (`StoreState.entered`, `store.py`). `close()` from any thread is allowed while no call is active
   on the store, so a store used on a worker can be closed by the thread that made it, and a
   finalizer may run on any thread. While a call is active, `close()` from a host function of that
-  store raises the engine error ("store is in use") and releases nothing, and `close()` from another
+  store raises `WaborosError` ("store is in use") and releases nothing, and `close()` from another
   thread raises the `RuntimeError` of the one-thread rule. The test "no call active" and the mark
   "closed" are one atomic step under the lock that `claim()` takes (`_CLAIM`), and `claim()`
   refuses a closed store under the same lock, so a close and a first entry on two threads cannot
@@ -211,30 +287,39 @@ code-changing ones with the final freeze. This spec leaves them as they are.
   already made keep their own mapped copy, because nothing is shared between stores
   ([D64](../DECISIONS.md)).
 
-### GC handles and scopes (extension over wasmtime-py)
-* Today (S0017 Decision 11, implemented in the Python runtime): a GC object or exception given to
-  the host is a handle (`GcRef`, `ExnRef` in `jit/common/instance.py`) that is released when the
+### GC handles, roots and scopes
+The Wasmtime model (Decision 4), with Python's release-on-drop kept as the default.
+* **Today** (S0017 Decision 11, implemented in the Python runtime): a GC object or exception given
+  to the host is a handle (`GcRef`, `ExnRef` in `jit/common/instance.py`) that is released when the
   host drops it. A weak entry's finalizer queues its slot, and the store drains the queue before a
-  collection and before it makes a new handle. A held handle keeps its object alive and keeps its
-  identity. `pyc` hands out its Python objects, which Python's own GC owns.
-* **`with store.scope():`** (the extension). Every handle the store **creates** while the scope is
-  open is released when the scope closes, whether or not the host still holds it. A use after that
-  raises `ValueError`, also when the handle was returned out of the scope (Wasmtime's root scopes
-  behave the same). Scopes nest. Handles made outside any scope behave as today.
+  collection and before it makes a new handle. Freed slots are reused lowest first (`free_handles`
+  is a heap), and the store keeps one handle per object (`gcrefs`: word → handle). `pyc` hands out
+  its Python objects, which Python's own GC owns.
+* **Generation-checked handles.** Every slot of the handle table carries a generation, which a
+  release increments. A public handle records (slot, generation), and every use compares them; a
+  mismatch raises `ValueError`. This is the one mechanism by which a released handle is told from a
+  reused slot, for every way of releasing (drop, scope, `unroot`, close), in Python and, later, in C.
+* **Release on drop** stays the default for a handle made outside any scope, as today.
+* **`with store.scope():`** (the context-manager extension; Rust `RootScope`). Every handle the
+  store **creates** while the scope is open is released when the scope closes, whether or not the
+  host still holds it; a use after that raises `ValueError`, also when the handle was returned out
+  of the scope (Wasmtime's scoped roots behave the same). Scopes nest. The scope records the
+  handles it creates. A handle the one-handle-per-object map returns because it existed before the
+  scope is not recorded and not released. A later request for the same object makes a new handle.
   This gives a deterministic release where Python's collector would not (PyPy, cycles).
-* **Mechanism.** A mark in the handle table does not work: freed slots are reused lowest first
-  (`free_handles` is a heap, `_StoreStacks`), so a slot index says nothing about when its handle
-  was made, and the table keeps one handle per object (`gcrefs`: word → handle), so asking for an
-  object that already had a handle before the scope returns that older handle, which the scope must
-  not release. So the open scope **records the handles it creates** (only new entries, not those
-  found in `gcrefs`). At exit, it marks each recorded handle object dead (a flag that every use
-  checks) and releases its slot as `waboros_ref_release` does. A later request for the same object
-  makes a new handle. In Python the dead flag lives on the handle object. A C host has no such
-  object, so there a released handle must be told from a reused slot: a generation count per slot
-  (the "generation-checked handles" of ROADMAP phase 6). That amends S0017's C API (Decision 11) and
-  is listed in "Docs this changes". On `pyc` a scope only marks the public wrappers dead, because
-  Python owns the objects.
-* Explicit long-lived roots (`unroot`) and generation-checked handles: Q4.
+* **Explicit roots.** `ref.root(store)` returns a `ManuallyRooted`: a root in its own slot (outside
+  the one-handle-per-object map), released only by `unroot(store)` or `Store.close()`, never by a
+  drop or a scope. `ManuallyRooted.to_rooted(store)` returns the ordinary handle of the same object.
+  Names (Decision 8): Rust's `Rooted::to_manually_rooted` and `ManuallyRooted::unroot` give the type
+  and `unroot`; `root()` is the maintainer's shorter name for the conversion. A `ManuallyRooted`
+  that is never unrooted lives until the store closes, as in Wasmtime (a finalizer does not release
+  it: that is its purpose). Wasmtime's newest releases rename the type; step 4 checks the name
+  against Wasmtime 50's documentation and records it in its report.
+* **`pyc`**: the handles wrap Python objects. Releasing one invalidates the public handle by its
+  generation, and Python owns the object.
+* **The C loader** (S0017 Decision 11: `waboros_ref_release` only) gets the same model later:
+  generations, scopes (a mark/release pair over a record of created handles) and manual roots.
+  This amends Decision 11 ("Docs this changes").
 
 ### Threads
 * **One thread per store at a time** (ARCHITECTURE.md, "Long calls and the GIL"; D14). Today the
@@ -294,9 +379,9 @@ code-changing ones with the final freeze. This spec leaves them as they are.
 `Store.set_limits(memory_size, table_elements, instances, tables, memories)` as in wasmtime-py. The
 checks sit in the runtime services that every target already calls (`memory.grow`, `table.grow`,
 instantiation), so no generated code changes. A grow over a limit returns −1, and an instantiation
-over a limit is the engine error. The `table_elements` default stays at D27's 10 000 000, which is a
-deviation from Wasmtime's unlimited default recorded in D27. `set_limits(table_elements=...)` replaces
-it, as D27 says.
+over a limit raises `WaborosError`. The `table_elements` default stays at D27's 10 000 000, which is
+a deviation from Wasmtime's unlimited default recorded in D27. `set_limits(table_elements=...)`
+replaces it, as D27 says.
 
 ### Memory access
 `read`, `write`, `size`, `grow`, `data_len` and `page_size` work the same on every target. They go
@@ -308,27 +393,30 @@ handed out: an exported view of a `bytearray` would make a later `memory.grow` f
 `BufferError`.
 
 ### Serialization
-* `Module.serialize()` writes a **thin** file (S0014 v1) of the code the module was compiled with,
-  for its target and bounds mode, as wasmtime-py writes what it compiled; the default bounds mode of
-  that file is Q6. `Module.deserialize` and
-  `deserialize_file` read one with the loader's rules (S0014, "Semantics: the loader"; exact
-  `compiler` string, S0015 "Compatibility"). A refused file is the engine error with the
-  `ArtifactError` as its cause.
-* A fat file (D18) is read by `deserialize` (it regenerates on a mismatch). Writing one has no
-  wasmtime-py counterpart: Q6.
-* S0014 Q12 decided that a portable file is `explicit` by default, "made final with the phase-6
-  API". A module compiled in-process uses `auto` (guard pages where verified, D44), so
-  `serialize()` either writes guard-mode code or recompiles. This spec does not override Q12: Q6
-  asks how to apply it.
+* `Module.serialize()` writes a **thin** file (S0014 v1) for the module's target. Following S0014
+  Q12 (Decision 6), the file's code uses **explicit bounds checks**: a module compiled in guard
+  mode (`auto` on a verified row, D44) is recompiled with explicit checks for the file, and its own
+  in-process code is not changed. A module compiled with explicit checks is written as it is. The
+  module therefore keeps its wasm bytes (they are needed for a recompile and for a fat file).
+* `serialize(fat=True)` (extension, Decision 6) writes a fat file: the same code plus the wasm
+  (D18), which regenerates on any mismatch instead of being refused.
+* `Module.deserialize` and `deserialize_file` read either, with the loader's rules (S0014,
+  "Semantics: the loader"; exact `compiler` string, S0015 "Compatibility"). A refused thin file
+  raises `WaborosError` with the `ArtifactError` as its cause. A file's bounds mode is its own: an
+  explicit-checks file runs on every row.
+* An engine whose `Config.target` is another architecture (Decision 3) serializes files for it
+  (D35).
 * `pyc` modules: S0014 Q6 has not specified their file yet, so `serialize` on a `pyc` engine is an
   explicit error.
 * Trust: files from elsewhere are R1's subject. `deserialize` is as unsafe as wasmtime-py's (its
   documentation says the same), and this is stated in the docstring.
 
 ### Target selection and the warning
-The engine fixes its target when it is created (D25): `auto` by default, `WABOROS_TARGET` when set,
-and in future the public knob of Q3. The `JitUnavailableWarning` of D31 is raised at `Engine()`, so
-a user can filter it or turn it into an error with the `warnings` module.
+The engine fixes its target when it is created (D25): `Config.strategy` (`"auto"` by default), or
+`WABOROS_TARGET` when the strategy is left unset. `Engine.target` is the result. With `"auto"`, the
+`JitUnavailableWarning` of D31 is raised at `Engine()`, so a user can filter it or turn it into an
+error with the `warnings` module. With `"jit"`, a JIT that cannot run raises `WaborosError` (D31: no
+warning when the target was chosen explicitly).
 
 ### What the core must give (the S0002 amendment, step 1)
 The public layer reaches targets only through `Target` and `TargetInstance` methods. For that it
@@ -351,12 +439,15 @@ needs, beyond what S0002 has today:
   that the runtime makes per import at instantiation can bind the importing instance. Whether that
   is Wasmtime's caller when the function is reached through a reference from another instance is
   checked in step 3's tests against wasmtime-py;
-* compile options per engine (bounds mode, epoch yield points on `pyc`), passed to `compile` instead
-  of read from the environment;
+* compile options per engine (the target, the architecture for cross-compilation, the bounds mode,
+  epoch yield points on `pyc`), passed to `compile` instead of read from the environment;
 * `release()` per instance and per store state for `Store.close()` (the list under "Lifetimes"),
   `guard`'s code registration removed before unmapping;
-* the scope's record of created handles, the dead flag on handle objects, and generations in the C
-  API ("GC handles and scopes");
+* **generation-checked handles**: a generation per handle slot, incremented on release, checked on
+  every use; a scope's record of the handles it creates; manual roots in slots of their own,
+  outside the one-handle-per-object map ("GC handles, roots and scopes");
+* the v128 and GC conversions at the boundary for every target, one public representation
+  (Decision 2);
 * the limit hooks in the grow and instantiation services;
 * the GC heap's failed commit raised as `MemoryError` instead of `OSError`.
 Each of these is language-neutral: a C host needs the same operations.
@@ -366,26 +457,26 @@ Each of these is language-neutral: a C host needs the same operations.
 |---|---|---|
 | `Store.close()` and a context manager | in scope, step 4 | wasmtime-py's shape; LESSONS 135 |
 | GC handle scopes | in scope, step 4 (`store.scope()`) | the maintainer's extension; S0017 Decision 11 leaves scopes to phase 6 |
-| explicit roots (`unroot`), generation checks | Q4 | no wasmtime-py counterpart |
-| `Module.serialize`/`deserialize` (thin, JIT) | in scope, step 6 | wasmtime-py names; S0014 implemented |
-| fat files from the API | Q6 | no wasmtime-py counterpart |
+| explicit roots, generation checks | in scope, steps 1 and 4 | Decision 4 |
+| `Module.serialize`/`deserialize` (thin and fat, JIT) | in scope, step 6 | wasmtime-py names; S0014 implemented; Decision 6 |
 | `pyc` files | deferred | S0014 Q6 not specified |
-| the cache and its location (`.gitignore` rule) | deferred to the cache spec | the location chain is a proposal (ROADMAP); the `.gitignore` rule is already the maintainer's decision (2026-11-25) and that spec applies it; `Config.cache=True` gives an explicit error |
+| the cache and its location (`.gitignore` rule) | deferred to the cache spec | the location chain is a proposal (ROADMAP); the `.gitignore` rule is already the maintainer's decision (2026-11-25) and that spec applies it; `Config.cache=True` raises |
 | S0015's deferred items (per-architecture rule, foreign blobs, flags agreeing within a store) | out | the API has one target per engine (D25) and exposes no mixed stores; ROADMAP moved the rule to the micro-compiler item |
 | interrupts and epochs | in scope, step 5 | host-side over the existing word |
 | fuel | deferred | needs counters in the code and a measurement |
 | `max_wasm_stack` | in scope (JIT now, `pyc` counter in step 5) | D10 |
-| target and bounds selection | in scope: bounds via `signals_based_traps`; the target knob is Q3 | D25, D44 |
+| target and bounds selection | in scope: `strategy`, `target`, `signals_based_traps` | D25, D44; Decisions 3 and 5 |
+| `waboros.targets()` (API.md) | deferred to the CLI spec, with its `targets` command | Decision 3 adds `Engine.target` only |
 | `JitUnavailableWarning` | in scope, re-exported | D31 |
-| GC and exception references | conversions: Q2 | wasmtime-py has none |
+| GC and exception references | in scope (opaque handles, i31, `Trap.exn`); field access deferred | Decision 2 |
 | traps against host exceptions | in scope | D34, "Errors and exceptions" |
 | one thread per store | in scope, unchanged | ARCHITECTURE.md |
 | free-threaded CPython | the rules hold; the claim waits for the threads spec's audit | ROADMAP open question 8 |
 | PyPy | supported, D51 | D19 |
 | JIT code visible to debuggers | out | its own item in ROADMAP phase 6 |
 | `Trap.frames` | empty list in this part | FEATURES.md plans `pyc` frames from tracebacks and JIT frames from a code-address map: a later step |
-| a host throwing a wasm exception | deferred | wasmtime-py 50 has no API for it (S0012 Q4) |
-| NaN canonicalisation | Q5 (`cranelift_nan_canonicalization`) | S0005 Q5 waits for the `Config` work |
+| a host throwing a wasm exception | deferred, its own spec | Decision 2; wasmtime-py 50 has no API for it (S0012 Q4) |
+| NaN canonicalisation | `cranelift_nan_canonicalization=True` raises | Decision 5; S0005 Q5 |
 | `Config.isa` (D33) | deferred | no variant above the baseline exists yet ([D42](../DECISIONS.md)) |
 
 ## Compatibility promise
@@ -406,72 +497,127 @@ Each of these is language-neutral: a C host needs the same operations.
 * **Differential against wasmtime-py** (TESTING.md's API axis), on the same programs: CoreMark, the
   corpus of `tools/run_corpus.py`, and the spec modules of chosen directories. The same calls are made
   through `waboros` and `wasmtime`, comparing results, trap codes, memory hashes, global values and
-  the exception type of host errors. Known differences are listed in a file, as expected spec
-  failures are: integer arguments out of range (Q9), the D27 table cap, a funcref of another store
-  (`TypeError` on our side), and the values wasmtime-py cannot express (Q2).
+  the exception type of host errors. **Known differences** are listed in a file, as expected spec
+  failures are: integer arguments outside both the signed and the unsigned range (`ValueError` against
+  wasmtime-py's silent wrap, for example `2**32 + 5` or `2**100` for an i32, Decision 9; inside
+  those ranges results are equal);
+  the D27 table cap; a funcref of another store (`TypeError` on our side); the values wasmtime-py
+  cannot express (v128, the any and exn hierarchies, Decision 2); `WaborosError` against
+  `WasmtimeError` (Decision 1); `wasm_*=False` and the other options that raise (Decision 5).
+* Values: v128 round trips as `bytes`, from `bytes`, `bytearray`, `memoryview` and `int`, with the
+  lane order checked against a `v128.store` into memory; wrong lengths raise. i31 round trips as
+  `int`. An `AnyRef` and an `ExnRef` keep their identity across calls on every target.
+* Handles: a scope releases what it created and only that; a handle returned out of a scope raises
+  after it; `root`/`unroot`/`to_rooted`; a stale handle raises after its slot is reused (the
+  generation check); everything raises after `close()`.
 * Host exceptions across nested calls: a host function that calls wasm which calls a raising host
   function catches the original exception on every target, as with wasmtime-py.
+* Serialization: a guard-mode module's file has explicit checks (its header's flags); a fat file
+  regenerates on a mismatch; a cross-compiled engine (`Config.target`) writes a file that the other
+  architecture's runner instantiates (D35's CI rows).
 * **API-surface diff** against wasmtime-py 50.0.1 (TESTING.md): `dir()` of every public class.
-  Missing names are reported, and the expected ones (WASI, components, `SharedMemory`) are listed in
-  a file, as expected spec failures are.
-* **wasmtime-py's own test suite through a shim** (TESTING.md): run as a counter, not a gate (Q1).
+  Missing names are reported, and the expected ones (WASI, components, `SharedMemory`,
+  `WasmtimeError`) are listed in a file, as expected spec failures are.
+* **wasmtime-py's own test suite through a shim** (TESTING.md): a counter, not a gate (Decision 1).
+  The shim maps `wasmtime.WasmtimeError` to `waboros.WaborosError` on the test side.
+* **The spec suite through the public API** (Decision 7): an engine `api-<target>`
+  (`tests/spec/api_engine.py`, an S0001 adapter over the public API) runs the suite in CI on one
+  row, with the same expected failures as its target. The metric stays on the internal engines.
 * Lifetimes: `close()` and `with` release memory. The LESSONS 135 reproduction (N stores with a GC
   heap under `prlimit --data`) passes when each store is closed, and when each is dropped on CPython.
-  Use after close raises `ValueError`. A scope invalidates its handles.
+  Use after close raises `ValueError`.
 * Threads: a store on a second thread raises; `increment_epoch` from another thread stops a long
   call on every target; host exceptions come out as the same object; D34's asynchronous test through
-  the public API.
-* The spec runner: options in Q7.
+  the public API; a close/claim race test.
 * Acceptance of the whole spec: `uv run pytest -q tests/api` passes on every CI row; the
-  differential run is green; `python3 tools/check_docs.py` passes.
+  differential run shows only the known differences; the `api-<target>` run matches its target's
+  expected failures; `python3 tools/check_docs.py` passes.
 
 ## Plan of steps
 | step | goal | agent | acceptance | size (lines, estimated) |
 |---|---|---|---|---|
 | 0 | this spec approved; the S0002 amendment written as text (the list in "What the core must give") | orchestrator, maintainer | approval; `python3 tools/check_docs.py` | docs ~150 |
-| 1 | S0002 amendment implemented on `pyc` and both JITs: extern handle operations, extern-level resolution, host externs (the two ways reported first, one implemented after the choice), compile options per engine, `release()` with the per-store state, limit hooks, the scope record and dead flag, `OSError` → `MemoryError` | jit-engineer (JIT parts) + implementer (`pyc`), then reviewer | the spec suite at parity on the three targets, both bounds modes; new `tests/test_handles.py`; `pytest -q` | src ~450, tests ~350 |
-| 2 | the skeleton: `Config`, `Engine`, `Module`, the types, the errors, `__init__` with `__all__`; WAT through the extra | implementer | `pytest -q tests/api -k "config or engine or module or types"` | src ~600, tests ~400 |
-| 3 | `Linker`, `Instance`, `InstancePre`, `Func`, `Caller`, `Memory`, `Table`, `Global`, `Tag`; the value conversions of the table above (Q2's answer included); host exceptions unwrapped at every depth; the trap mapping | implementer, then reviewer (the trap and host-exception mapping, GC and exception handles at the JIT boundary) | `pytest -q tests/api`; the differential run on CoreMark | src ~900, tests ~700 |
-| 4 | `Store.close()` (with the thread rule), `with`, the finalizers, `store.scope()`, `Store.gc()`, `set_limits` | implementer, then reviewer (release of executable memory and the heap) | the lifetime tests; the LESSONS 135 reproduction; a close/claim race test | src ~300, tests ~250 |
+| 1 | S0002 amendment implemented on `pyc` and both JITs: extern handle operations, extern-level resolution, host externs (the two ways reported first, one implemented after the choice), compile options per engine, `release()` with the per-store state, limit hooks, generation-checked handles with scope records and manual-root slots, `OSError` → `MemoryError` | jit-engineer (JIT parts) + implementer (`pyc`), then reviewer | the spec suite at parity on the three targets, both bounds modes; new `tests/test_handles.py`; `pytest -q` | src ~500, tests ~400 |
+| 2 | the skeleton: `Config` (with the options of Decision 5), `Engine` (with `target`), `Module`, the types, `WaborosError`, `Trap`, `__init__` with `__all__`; WAT through the extra | implementer | `pytest -q tests/api -k "config or engine or module or types"` | src ~650, tests ~450 |
+| 3 | `Linker`, `Instance`, `InstancePre`, `Func`, `Caller`, `Memory`, `Table`, `Global`, `Tag`; the value conversions (Decisions 2 and 9: v128 bytes, i31, `AnyRef`, `ExnRef`, `Trap.exn`); host exceptions unwrapped at every depth; the trap mapping | implementer, then reviewer (the trap and host-exception mapping, GC and exception handles at the JIT boundary) | `pytest -q tests/api`; the differential run on CoreMark | src ~1 000, tests ~800 |
+| 4 | `Store.close()` (with the thread rule), `with`, the finalizers, `store.scope()`, `root`/`unroot`/`to_rooted`, `Store.gc()`, `set_limits` | implementer, then reviewer (release of executable memory and the heap) | the lifetime and handle tests; the LESSONS 135 reproduction; a close/claim race test | src ~350, tests ~300 |
 | 5 | epochs over the interrupt word; `pyc` yield points and depth counter, both measured | implementer, then reviewer | the thread tests; CoreMark with and without `epoch_interruption` on `pyc` in BENCHMARKS.md | src ~250, tests ~150 |
-| 6 | `Module.serialize`/`deserialize`/`deserialize_file` (thin, JIT) | implementer | round trip on every JIT row; a refused file is the engine error with `ArtifactError` as cause | src ~120, tests ~150 |
-| 7 | the API-surface diff, the wasmtime-py suite counter, the corpus differential, Q7's runner option, the threading stress test | runner + implementer | numbers in TESTING.md; CI job | tests ~400, CI ~40 |
-| 8 | docs ("Docs this changes"), a DECISIONS entry | orchestrator | `python3 tools/check_docs.py` | docs ~150 |
+| 6 | `Module.serialize(fat=…)` with the recompile to explicit, `deserialize`, `deserialize_file`, `Config.target` cross-compilation | implementer | round trip on every JIT row; a guard-mode module's file is explicit; a refused file raises `WaborosError` with `ArtifactError` as cause; a cross-compiled file runs on the other architecture's row | src ~180, tests ~200 |
+| 7 | the API-surface diff, the wasmtime-py suite counter, the corpus differential with its known differences, the `api-<target>` engine in CI (Decision 7), the threading stress test | runner + implementer | numbers in TESTING.md; CI job | tests ~600, CI ~50 |
+| 8 | docs ("Docs this changes"), a DECISIONS entry | orchestrator | `python3 tools/check_docs.py` | docs ~180 |
 | 9 | review without the implementers' reasoning: the whole API against this spec and wasmtime-py | reviewer | findings closed | — |
 
-Total, estimated: about 2 600 lines of source and 2 400 of tests. Each step stops and reports if it
+Total, estimated: about 2 900 lines of source and 2 900 of tests. Each step stops and reports if it
 needs more than 120 % of its size.
 
 ## Docs this changes
 * README.md: a usage example and the 0.x statement.
-* [API.md](../API.md): the class table rewritten from this spec's tables. Its "runs with the import
-  changed" sentence is replaced by Q1's answer, and its `config.target = "auto"` example by Q3's.
+* [API.md](../API.md): the class table rewritten from this spec's tables; its "runs with the import
+  changed" sentence replaced by Decision 1 (same signatures, not a drop-in, `WaborosError` without
+  an alias, so it no longer says "the error class may keep the name `WasmtimeError` as an alias");
+  its `config.target = "auto"` example replaced by `config.strategy = "auto"` (Decision 3); its
+  rule "waboros additions (prefixed or in a submodule…)" amended to "unprefixed, named after
+  Wasmtime's Rust API" (Decision 8), and its list of additions (`waboros.targets()`,
+  `Config.target`) corrected (Decision 3).
 * FEATURES.md, "Runtime features": the API column (done, deferred, deviation) per row. The
-  "interruption" row's "`pyc` has yield points" is corrected: there are none yet (see "Contradictions
-  found").
+  "interruption" row's "`pyc` has yield points" is corrected: there are none yet (see
+  "Contradictions found").
 * CLAUDE.md, "Against over-engineering": "Do not touch the public API, the CLI or WASI before their
   phase" becomes "…the public API only under an approved phase-6 spec (S0018); the CLI and WASI
   before their phase".
 * BRIEF.md: "the public API only in phase 6" points to this spec.
-* TESTING.md: the API axis (the shim's counter, the surface diff, `tests/api/`).
-* ARCHITECTURE.md, "The object model": `Config` notes ("decide" → this spec).
+* TESTING.md: the API axis (the shim's counter and its `WasmtimeError` mapping, the surface diff,
+  `tests/api/`, the known-differences file, the `api-<target>` engine of Decision 7).
+* ARCHITECTURE.md, "The object model": `Config` notes ("`target='auto'`", "decide") replaced by
+  Decisions 3 and 5.
 * S0002: the amendment (step 0) and its Changes line.
-* S0017: its C API (Decision 11) gains scopes and generation-checked handles, or records them as
-  deferred, when this spec's scopes are approved.
-* API.md, "waboros additions (prefixed or in a submodule…)": reconciled with Q8's answer.
-* DECISIONS.md: one entry for the API's shape (wasmtime-py's, the one extension, the 0.x statement,
-  the answers to the questions below).
-* ROADMAP.md phase 6: the items placed as in the table above; open question 4 is answered by Q5.
+* **S0017**: Decision 11 amended (Decision 4): the C loader's handles get generations, scopes and
+  manual roots, to be specified when the C API gains them; until then its `waboros_ref_release`
+  stands. This spec does not edit S0017; the orchestrator does, with the maintainer.
+* DECISIONS.md: one entry for the API's shape (wasmtime-py's, the extensions of Decisions 2, 3, 4,
+  6 and `store.scope()`, the 0.x statement, the nine decisions).
+* ROADMAP.md phase 6: the items placed as in the table above; open question 4 answered by
+  Decision 5; open question 3 partly answered ("Interruption").
 
 ## Alternatives considered
-* **A drop-in replacement for wasmtime-py** (`import waboros as wasmtime`). Cost: every name of the
-  pinned version, including WASI, component-model trap codes and C-pointer helpers, follows
-  wasmtime-py's releases. Rejected by ROADMAP ("not a drop-in"). Q1 keeps the middle way.
+* **A drop-in replacement for wasmtime-py** (`import waboros as wasmtime`; former Q1 (c)). Cost:
+  every name of the pinned version, including WASI, component-model trap codes and C-pointer
+  helpers, follows wasmtime-py's releases. Rejected (ROADMAP "not a drop-in"; Decision 1).
+* **The shape only, with our own tests and no wasmtime-py suite** (former Q1 (a)). Rejected: the
+  suite as a counter costs little and measures closeness.
+* **`WasmtimeError` as the class name, or `WaborosError` with a `WasmtimeError` alias** (former Q1).
+  Rejected (Decision 1): our package does not carry another project's name; the shim maps it on
+  the test side.
 * **A new, Pythonic API** (no `store` argument, properties instead of setters). Rejected: D6 and
   BRIEF.md ask for wasmtime-py's shape, so that users recognise it.
-* **The public API as the spec runner's interface.** Rejected for the metric: S0001's four
-  operations keep the metric independent of API work (TESTING.md). An extra engine over the public
-  API is Q7.
+* **No Python form for v128, GC and exception values** (former Q2 (a)): such parameters an
+  explicit error. Rejected: the GC and exception proposals would be unreachable from Python.
+* **v128 as an `int`** (former Q2 (b) as first drafted). Rejected for results (Decision 2): `bytes`
+  in memory order reads like the memory the value comes from; an `int` stays accepted as input.
+* **Field access and host-thrown exceptions now** (former Q2 (c)). Deferred to their own spec.
+* **Target selection by environment only, or API.md's `Config.target` with our names** (former Q3
+  (a), (c)). Rejected: the first leaves no public knob; the second gives wasmtime-py's
+  cross-compilation name another meaning.
+* **No explicit roots in 0.x** (former Q4 (a)). Rejected (Decision 4): one root model for every
+  host now, so the C loader's later API is the same.
+* **Accept and ignore every meaningless option, or reject them all** (former Q5 (a), (c)).
+  Rejected: ignoring `wasm_simd=False` would change behaviour silently; rejecting
+  `cranelift_opt_level` would break wasmtime-py code for nothing.
+* **`serialize()` writes the code it has, guard mode included** (former Q6 (i)(a)), or amending
+  S0014 Q12 (c). Rejected (Decision 6): Q12 is decided, and a guard-mode file would run only on rows
+  with a verified handler.
+* **Fat files from the CLI only** (former Q6 (ii)(a)). Rejected (Decision 6): `serialize(fat=True)`
+  is the API's way to write the portable form of D18.
+* **The spec runner on S0001 only, or moved onto the public API** (former Q7 (a), (c)). Rejected:
+  the first leaves the conversions and the linker untested by the suite; the second ties the
+  metric to API work (TESTING.md).
+* **Prefixed names or a submodule for extensions** (former Q8 (b), (c)). Rejected (Decision 8):
+  Wasmtime's Rust names make a future wasmtime-py name most likely coincide.
+* **Wrapping integers silently, as wasmtime-py** (former Q9 (a)). Rejected (Decision 9): it hides
+  bugs. A signed-only range was not chosen either: the unsigned spelling of a bit pattern
+  (`0xFFFFFFFF`) is common in host code and is what wasmtime-py accepts in practice.
+* **A mark in the handle table for scopes.** Rejected: freed slots are reused lowest first, and one
+  handle per object means a mark releases handles made before the scope.
 * **Renaming the internal packages to `_targets` etc.** Rejected: churn across `src/`, `tests/` and
   `tools/`, and a conflict with the concurrent work, for no behavioural gain.
 * **Epochs compiled into the code** (Wasmtime's way). Rejected for now: a code change in both JITs
@@ -480,83 +626,14 @@ needs more than 120 % of its size.
 * **`memoryview` of linear memory.** Rejected: it breaks `pyc`'s grow (`BufferError`).
 
 ## Open questions
-Ranked by how much later work depends on them.
-
-1. **How close to wasmtime-py, and the error's name.** Docs disagree: API.md says code for
-   wasmtime-py "runs on waboros with the import changed", and TESTING.md runs wasmtime-py's tests
-   through `import waboros as wasmtime`; ROADMAP phase 6 says "not a drop-in". Options: (a) the
-   shape only: our names, our tests; (b) **signature-compatible wherever a name exists**, with
-   wasmtime-py's suite as a counter, not a gate, and the error class named `WasmtimeError` so that
-   `except` clauses carry over; (c) a full drop-in. Recommendation: **(b)**, and for the error class,
-   either `WasmtimeError` (pure shape) or `WaborosError` with `WasmtimeError` as an alias (API.md's
-   idea; then the alias is an extension). Pick one.
-2. **Values wasmtime-py cannot express**: `v128`, `anyref`/`eqref`/`i31ref`, structs and arrays,
-   `exnref`, and the payload of an uncaught exception. The core supports all of them (FEATURES.md),
-   but wasmtime-py 50 (and its `main`, 51.0.0) has no Python form, so any form is an extension.
-   Options: (a) none in 0.x: such a parameter or result is an explicit error; (b) **the minimal set**:
-   `v128` as an `int` in `[0, 2**128)` (`pyc`'s representation); i31 as an `int` both ways, which
-   keeps the internal input rule of S0013 decision G (a host `int` for an `anyref` is an i31) but
-   means a Python `int` can never cross into an `anyref` as a host value; structs, arrays and exceptions as opaque handles named
-   after Wasmtime's Rust API (`AnyRef`, `ExnRef`; equality is identity, no field access); `Trap.exn`
-   for an uncaught exception; (c) (b) plus field access and host-thrown exceptions. Recommendation:
-   **(b)**. Without it, the GC and exception proposals are unreachable from Python.
-3. **Choosing the target.** wasmtime-py's `Config.target` is the cross-compilation triple, and
-   `strategy` picks the compiler (`auto`, `cranelift`); API.md's `config.target = "auto"` gives the
-   first name another meaning. Options: (a) the environment only (`WABOROS_TARGET`), no knob;
-   (b) **new values of `strategy`** (`"auto"`, `"pyc"`, `"jit"`) and `target` kept for D35
-   cross-compilation (serialize only); (c) API.md's `Config.target` with our names. Also: whether
-   `Engine.target` (read-only, what was selected) and `waboros.targets()` (what runs here and why
-   not), both listed in API.md, are wanted; each is an extension. Recommendation: **(b)**, plus
-   `Engine.target`; `waboros.targets()` waits for the CLI's `targets` command.
-4. **Explicit roots for GC handles.** Today: released when dropped; with this spec: scopes. Options:
-   (a) nothing more in 0.x; (b) Wasmtime's `ManuallyRooted` model (`root()`/`unroot()`,
-   generation-checked handles), which is ROADMAP's "one contract for every host". Recommendation:
-   **(a)** in Python, because drop and scopes cover it; (b) when the C loader gets a public API.
-5. **Options with no meaning here** (ROADMAP open question 4). The `Config` members of
-   wasmtime-py 50 that this spec gives no meaning: `cranelift_debug_verifier`,
-   `cranelift_opt_level`, `cranelift_nan_canonicalization`, `cranelift_flag_enable`,
-   `cranelift_flag_set`, `profiler`, `debug_info`, `parallel_compilation`, `native_unwind_info`,
-   `macos_use_mach_ports`, `memory_init_cow`, `memory_reservation`, `memory_guard_size`,
-   `memory_reservation_for_growth`, `memory_may_move`, `gc_support`, `wasm_component_model`,
-   `wasm_component_model_map`, `wasm_component_model_implements`, `wasm_stack_switching`,
-   `wasm_relaxed_simd_deterministic`, `target`, `strategy="cranelift"`; and `wasm_*=False` for a
-   feature we support (Wasmtime then refuses modules that use it; our validator has no feature
-   gates). ROADMAP's question also names `signals_based_traps` as meaningless; this spec gives it the
-   bounds mode instead ("Configuration"), which the maintainer confirms or rejects here. Options:
-   (a) accept and ignore all; (b) **ignore pure hints** (`cranelift_opt_level`,
-   `cranelift_debug_verifier`, `parallel_compilation`, `profiler`, `debug_info`,
-   `native_unwind_info`, `macos_use_mach_ports`, `memory_init_cow`, `gc_support=True`,
-   `wasm_relaxed_simd_deterministic=True`, which is what we do already, D49) and give an explicit
-   error for anything whose ignoring would change behaviour (`wasm_*=False` until the validator has
-   gates, `wasm_relaxed_simd_deterministic=False`, `cranelift_nan_canonicalization=True`,
-   `cranelift_flag_*`, the `memory_*` knobs, `gc_support=False`, `wasm_component_model*=True`,
-   `wasm_stack_switching=True`); (c) reject all. Recommendation: **(b)**. It follows API.md's "never
-   silently differently".
-6. **Serialized files: the bounds mode and fat files.** (i) S0014 Q12 decided `explicit` by default
-   for a portable file, "made final with the phase-6 API", while an in-process module is compiled
-   with `auto`. Options: (a) `serialize()` writes the code it has (wasmtime-py's behaviour; a
-   guard-mode file then runs only on rows with a verified handler, and Q12 applies to the CLI's
-   `compile` and to an engine made with `signals_based_traps=False`); (b) **`serialize()` recompiles
-   to explicit when the module's code is guard-mode**, which keeps Q12 for every file the API writes
-   at the cost of a second compile; (c) amend Q12. Recommendation: **(b)**, since Q12 is a decision;
-   (a) only if the maintainer amends Q12. (ii) Writing a fat file (D18) has no wasmtime-py
-   counterpart: (a) the CLI only (`waboros compile --fat`); (b) `serialize(fat=True)`, an extension.
-   Recommendation: **(a)** in this part.
-7. **The spec suite and the public API.** Options: (a) the runner stays on S0001 only; (b) **also an
-   engine `api-<target>`** (an adapter over the public API) run in CI on one row, while the metric
-   stays on the internal engines; (c) move the runner onto the public API. Recommendation: **(b)**:
-   about 200 lines, and the whole suite then tests the conversions, the linker and the errors.
-8. **Names of the extensions.** API.md says waboros additions are "prefixed or in a submodule, so
-   they never collide with future wasmtime-py names". The maintainer's `store.scope()`, and Q2's
-   `AnyRef`/`ExnRef`, are unprefixed. Options: (a) **unprefixed**, as the maintainer's direction
-   writes `store.scope()`, with API.md's rule amended to "named after Wasmtime's Rust API where it
-   has one" (Rust `RootScope`, `AnyRef`, `ExnRef`), so a later wasmtime-py name most likely
-   coincides; (b) prefixed (`store.waboros_scope()`); (c) a submodule
-   (`waboros.ext.scope(store)`). Recommendation: **(a)**.
-9. **Integer arguments out of range.** wasmtime-py 50 wraps silently. Options: (a) wrap as
-   wasmtime-py does (signature- and behaviour-compatible); (b) `ValueError` outside
-   `[-2**(n-1), 2**n)` (catches bugs; a listed deviation). Recommendation: **(b)**, unless Q1 is
-   answered "drop-in", in which case (a).
+New ones that the decisions create:
+1. **`Engine.target` against `Config.target`.** Decision 3 gives `Config.target` wasmtime-py's
+   meaning (a triple) and adds a read-only `Engine.target` that names our target (`"jit-x86_64"`).
+   One word then has two meanings on two classes. Options: (a) keep both as decided, documented;
+   (b) name the read-only attribute after what it holds, `Engine.strategy` (the resolved value of
+   the knob that chose it, for example `"jit-x86_64"`); (c) keep `Engine.target` but make it return
+   the triple, with the waboros target name in another attribute. Recommendation: **(b)**: the
+   attribute mirrors the `Config` knob that chose it, and no name means two things.
 
 ## Contradictions found while writing
 * FEATURES.md, "Runtime features", interruption: "done: … `pyc` has yield points". The code has
@@ -566,12 +643,11 @@ Ranked by how much later work depends on them.
   ARCHITECTURE.md's `pyc` depth counter: `pyc` has only the `RecursionError` safety net, and
   `max_wasm_stack` is read only by the JIT (`jit/common/instance.py`).
 * API.md ("runs on waboros with the import changed") and TESTING.md's shim against ROADMAP phase 6
-  ("not a drop-in"): Q1.
-* API.md's `Config.target` against wasmtime-py's `Config.target` (a triple): Q3.
-* ARCHITECTURE.md, "The object model": `target='auto'` on `Config`, the same name clash as API.md's
-  (Q3).
-* API.md, "waboros additions (prefixed or in a submodule)", against the unprefixed `store.scope()`
-  of the maintainer's direction: Q8.
+  ("not a drop-in"): settled by Decision 1.
+* API.md's and ARCHITECTURE.md's `Config.target` with our names against wasmtime-py's
+  `Config.target` (a triple): settled by Decision 3.
+* API.md, "waboros additions (prefixed or in a submodule)", against unprefixed extensions: settled
+  by Decision 8.
 * BRIEF.md's map of the documents says "D1–D51"; DECISIONS.md runs to D76.
 * S0015 "Compatibility" still says the per-architecture rule is "enabled in phase 6", while ROADMAP
   has moved it to the micro-compiler item.
@@ -585,6 +661,13 @@ Ranked by how much later work depends on them.
   scope mechanism (a record of created handles, not a mark) and its C-API consequence; finalizer
   claims qualified; `close()` and threads; what the core must give extended (extern-level
   resolution, `Caller`, per-store release, `OSError`); trampolines are per process; epoch details
-  (deadline 0, the lock); the `MemoryError` mapping; `Config` consumption and `cache`; Q6 follows
-  S0014 Q12; Q8 and Q9 added; the `max_wasm_stack` default is right (512 KiB measured), so it is no
-  longer listed as a contradiction.
+  (deadline 0, the lock); the `MemoryError` mapping; `Config` consumption and `cache`; the
+  `max_wasm_stack` default is right (512 KiB measured).
+* 2026-11-25: the maintainer's nine decisions written in ("Decisions"); the rejected options moved
+  to "Alternatives considered"; the body made consistent with them: `WaborosError`, v128 as
+  `bytes`, `AnyRef`/`ExnRef`/`ManuallyRooted` with generation-checked handles, `strategy` and
+  `target`, the option lists, `serialize` to explicit and `fat=True`, the `api-<target>` engine,
+  `ValueError` for out-of-range integers. One new open question (`Engine.target`). Status stays
+  draft until approval.
+* 2026-11-25: Decision 9 refined (maintainer): the signed and the unsigned range are both accepted
+  and converted to the bit pattern; `ValueError` only outside both.
