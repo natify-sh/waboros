@@ -116,7 +116,10 @@ jobs:
           bin="$ANDROID_HOME/cmdline-tools/latest/bin"
           yes | "$bin/sdkmanager" --licenses > /dev/null || true
           "$bin/sdkmanager" emulator platform-tools "$img"
-          echo no | "$bin/avdmanager" create avd --name ps16k --package "$img" --device pixel_6 --force
+          # one AVD directory for avdmanager and the emulator (newer cmdline-tools write elsewhere by default)
+          export ANDROID_AVD_HOME="$HOME/.android/avd"; mkdir -p "$ANDROID_AVD_HOME"
+          echo no | "$bin/avdmanager" create avd --name ps16k --package "$img" --device pixel_6 --force --path "$ANDROID_AVD_HOME/ps16k.avd"
+          "$ANDROID_HOME/emulator/emulator" -list-avds
           nohup "$ANDROID_HOME/emulator/emulator" -avd ps16k -no-window -no-audio -no-snapshot -no-boot-anim -gpu swiftshader_indirect -accel on -memory 4096 > "$RUNNER_TEMP/emulator.log" 2>&1 &
           adb=$ANDROID_HOME/platform-tools/adb
           ls -l /dev/kvm; "$ANDROID_HOME/emulator/emulator" -accel-check || true
