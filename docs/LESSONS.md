@@ -1250,3 +1250,9 @@ What went wrong or surprised us while building the PoC, so it is not found again
     `lzcnt`, after create the `bsr` + `cmov` baseline. Rule: set the baseline after every create
     (`waboros_sljit_create` wraps it), and create compilers only through it. Found: S0016
     step 0, 2026-11-24.
+159. **`uv run` follows `.python-version`, not the venv that `uv sync --python X` made.** With
+    `.python-version` at 3.13, `uv sync --python 3.14` then `uv run python -V` recreates `.venv`
+    and prints 3.13 (uv 0.13.9 and 0.13.10 alike; `--no-sync` names the cause: "does not satisfy
+    the request: Python 3.13"). So the CI matrix rows of `test` ran 3.13 (seen in the logs of the
+    3.15 row: "Using CPython 3.13.18"). Rule: a CI job that wants another Python sets
+    `UV_PYTHON`, which wins over `.python-version`. Found: 2026-11-25.

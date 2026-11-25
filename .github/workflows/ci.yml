@@ -40,6 +40,8 @@ jobs:
     needs: dedup
     if: needs.dedup.outputs.skip != 'true'
     runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: "3.14"  # over .python-version (3.13), as in `test`
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
@@ -58,6 +60,8 @@ jobs:
       fail-fast: false
       matrix:
         python: ["3.11", "3.12", "3.13", "3.14", "3.15", "3.15t", "pypy3.11"]
+    env:
+      UV_PYTHON: ${{ matrix.python }}  # over .python-version, so that `uv run` keeps the matrix Python
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
