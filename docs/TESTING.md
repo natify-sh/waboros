@@ -97,6 +97,8 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is checked in CI).
   fields equal, `write(read(b)) == b`, written twice identical), `test_format.py` (the bytes of each
   payload, every constant-expression operation, a malformed file refused with a message),
   `test_strict.py` (the pinned container layout, one refusal per rule, a byte-flip loop),
+  `test_steps.py` and `conftest.py` (S0017 P2: the S0014 step and section of each kind of refusal; a guard on
+  every test that no refusal escapes `read`/`load` without a step but the two of `artifact.NO_STEP`),
   `test_review.py` (one refusal per finding of the S0014 step-8 review: supertype depth, resume
   offsets, stack-map site order, compiler-string tokens, allocation without the heap, limits,
   signature types; and the reader's linear time on long chains and many records) and

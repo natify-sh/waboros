@@ -567,6 +567,10 @@ bit (D66), so a loader that does not know it refuses the file instead of running
 fat file is regenerated, below):
 1. Identification: `EI_MAG`, `EI_CLASS` 2, `EI_DATA` 1, `EI_VERSION` 1, `EI_OSABI` 0xCB. Otherwise
    "not a waboros artifact": no fallback, the file is not ours.
+1b. A fat file: `.waboros.wasm`, found through the ELF header and the names as the frozen lookup
+   does (D62), without the layout rules of step 3, hashes to `module_sha256`. Otherwise refused,
+   thin or fat, never regenerated: the file is corrupt (S0017 Decision 9). `read` checks it again
+   as a payload (step 6).
 2. `EI_ABIVERSION` is a `format_version` the loader reads (v1 loaders: 1). Otherwise refuse.
 3. The ELF header fields of the table above, the section header table inside the file, every
    section inside the file, names unique, every required section present, no `SHT_REL` or
@@ -590,6 +594,11 @@ fat file is regenerated, below):
    installed and ours, and a guard at least `2^GUARD_LOG2`); every `features_required` bit is known.
 6. Every payload parses exactly with its checks; the trampolines equal the store's copy (the
    waboros runtime: every convention's compiler blob equals `conventions()`'s; "`.waboros.trampolines`").
+Every refusal through `read` or `load` carries `ArtifactError.step` ("1", "1b", "2" to "6", as
+above) and `.section` (the ELF section the check concerns, None for a header-level check; S0017
+P2). Two exits carry no step: `cannot load: ...` (an internal error, a bug) and `cannot be compiled
+by this process` (a fat file's regeneration failed after the format checks passed).
+
 7. Instantiation, in the order of the wasm specification's instantiation: imports matched (kind,
    type by key and declared subtyping, limits and address type, as `link.py`); the context written
    (part 3); type-info records when `heap`; records, signature words, tags; globals in order
@@ -1162,3 +1171,5 @@ When approved and implemented (step 7 unless noted):
 * 2026-11-24 (S0016 step 8): a fat file is compiled with the target passed to `load()`, not "the
   store's compiler" (a store holds several compilers since S0016); marked in "Fat files". No
   format change.
+* 2026-11-25 (S0017 P2): step 1b named in "Order of checks" (the fat file's SHA-256, as `load` has
+  always done it); `ArtifactError.step` and `.section` added to the loader text. No format change.

@@ -1101,3 +1101,5 @@ When approved and implemented:
 * 2026-11-25: P1 implemented (D75): the four targets' bridges pass the word; `tests/jit/test_host_word.py`; the
   committed `v1-d75` set (16 files, `small` and `host`) replaces the earlier ones, two pre-D75 x86-64 files kept
   for the refusal on the bridge bytes.
+* 2026-11-25: P2 done: `ArtifactError.step` and `.section` (`artifact.py`, phase wrappers), S0014 step 1b,
+  `tests/artifact/test_steps.py` and a conftest guard; the two exits in `artifact.NO_STEP` carry no step.

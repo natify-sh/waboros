@@ -14,6 +14,8 @@ import hashlib
 import os
 import platform
 import struct
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from dataclasses import field as dc_field
 from pathlib import Path
@@ -56,7 +58,29 @@ INVENTORY = ("tdefs", "types", "tkeys", "imports", "ttypes", "taddr", "maddr", "
 
 
 class ArtifactError(ValueError):
-    """The file is not a valid v1 artifact; the message names the section and the reason."""
+    """The file is not a valid v1 artifact; the message names the section and the reason. `step`
+    is the S0014 "Order of checks" step that refused it ("1", "1b", "2".."6") and `section` the ELF
+    section it concerns (None for a header-level check); both are None for the two exits below."""
+
+    def __init__(self, msg: str, step: str | None = None, section: str | None = None) -> None:
+        super().__init__(msg)
+        self.step, self.section = step, section
+
+
+# The two exits that carry no step (a bug, and a compiler failure after the format checks passed)
+NO_STEP = ("cannot load: ", ".waboros.wasm: cannot be compiled by this process: ")
+
+
+@contextmanager
+def _step(step: str, section: str | None = None) -> Iterator[None]:
+    """Label an `ArtifactError` leaving the block with the step (and section) unless set."""
+    try:
+        yield
+    except ArtifactError as e:
+        if e.step is None and not str(e).startswith(NO_STEP):
+            e.step = step
+            e.section = e.section or section
+        raise
 
 
 @dataclass
@@ -436,7 +460,9 @@ class _R:
         self.e = len(b) if e is None else e
 
     def fail(self, msg: str) -> Any:
-        raise ArtifactError(f"{self.what}: {msg}")
+        raise ArtifactError(
+            f"{self.what}: {msg}", section=self.what if self.what[0] == "." else None
+        )
 
     def take(self, n: int) -> bytes:
         if n > self.e - self.p:
@@ -756,7 +782,7 @@ def _trampolines(text: bytes, b: bytes, target: str) -> bytes:
 
 def _ident(b: bytes) -> None:
     if len(b) < 64 or b[:4] != b"\x7fELF" or b[4:7] != b"\x02\x01\x01" or b[7] != OSABI:
-        raise ArtifactError("not a waboros artifact (ELF64 little-endian with OS/ABI 0xCB)")
+        raise ArtifactError("not a waboros artifact (ELF64 little-endian with OS/ABI 0xCB)", "1")
 
 
 def _sections_r(b: bytes) -> tuple[dict[str, bytes], int, int]:
@@ -766,7 +792,13 @@ def _sections_r(b: bytes) -> tuple[dict[str, bytes], int, int]:
     the file, every header field as in the table of "File layout"."""
     _ident(b)
     if b[8] != FORMAT_VERSION:
-        raise ArtifactError(f"unsupported format version {b[8]} (this reader reads 1)")
+        raise ArtifactError(f"unsupported format version {b[8]} (this reader reads 1)", "2")
+    with _step("3"):
+        return _layout(b)
+
+
+def _layout(b: bytes) -> tuple[dict[str, bytes], int, int]:
+    """Order step 3: everything of `_sections_r` after the version."""
     if any(b[9:16]):
         raise ArtifactError("ELF header: identification padding is not zero")
     ty, mach, ver, entry, phoff, shoff, flags, ehs, phes, phn, shes, shn, shx = struct.unpack_from(
@@ -812,7 +844,9 @@ def _sections_r(b: bytes) -> tuple[dict[str, bytes], int, int]:
         raise ArtifactError("the sections are not in the order of the format")
     shstr, so = _strtab(order)
     if names != shstr:
-        raise ArtifactError(".shstrtab: not the names of the sections in order")
+        raise ArtifactError(
+            ".shstrtab: not the names of the sections in order", section=".shstrtab"
+        )
     pos, secs = 64, {}
     for n, h in zip(order, heads[1:], strict=True):
         text, plain = n == ".text", n.startswith(".waboros.")
@@ -820,9 +854,9 @@ def _sections_r(b: bytes) -> tuple[dict[str, bytes], int, int]:
             al = h[8] or 1
             if (h[0], h[3], h[4] % al) != (so[n], 0, 0) or al & (al - 1) or h[4] < pos:
                 raise ArtifactError(f"{n}: unknown section with a bad name, address, alignment"
-                                    " or offset")  # fmt: skip
+                                    " or offset", section=n)  # fmt: skip
             if any(b[pos : h[4]]):
-                raise ArtifactError(f"{n}: the padding before it is not zero")
+                raise ArtifactError(f"{n}: the padding before it is not zero", section=n)
             pos = h[4] + h[5]
             continue
         # `.waboros.*` flags and the symbol table's `sh_info` are not read (D62: a later amendment
@@ -835,11 +869,12 @@ def _sections_r(b: bytes) -> tuple[dict[str, bytes], int, int]:
         at = pos + -pos % al
         if (h[:5], h[6:]) != ((so[n], typ, fl, 0, at), (link, info, al, ent)):
             raise ArtifactError(f"{n}: its header (name, type, flags, address, offset, link, info,"
-                                f" alignment or entry size) is not the format's")  # fmt: skip
+                                f" alignment or entry size) is not the format's",
+                                section=n)  # fmt: skip
         if any(b[pos:at]):
-            raise ArtifactError(f"{n}: the padding before it is not zero")
+            raise ArtifactError(f"{n}: the padding before it is not zero", section=n)
         if n == ".symtab" and h[5] % 24:
-            raise ArtifactError(".symtab: the size is not a multiple of 24")
+            raise ArtifactError(".symtab: the size is not a multiple of 24", section=".symtab")
         pos = at + h[5]
         secs[n] = b[at:pos]
     if pos > shoff or any(b[pos:shoff]) or shoff != pos + -pos % 8:
@@ -853,6 +888,11 @@ def _head(b: bytes) -> tuple[dict[str, bytes], SimpleNamespace]:
     """Order steps 1-4: the container's checks and the header parsed exactly. The payloads by
     name, and the header's fields under the names of `ModuleView`."""
     s, mach, _ = _sections_r(b)
+    with _step("4", ".waboros.header"):
+        return _header(s, mach)
+
+
+def _header(s: dict[str, bytes], mach: int) -> tuple[dict[str, bytes], SimpleNamespace]:
     h = _R(s["header"], ".waboros.header")
     msha, csha = h.take(32), h.take(32)
     abi, _, isa, _, flags, _ = h.u(2), h.zero(2), h.u(2), h.zero(2), h.u(4), h.zero(4)
@@ -878,6 +918,11 @@ def _head(b: bytes) -> tuple[dict[str, bytes], SimpleNamespace]:
 def read(b: bytes) -> ModuleView:
     """Parse an artifact exactly; raises `ArtifactError` (a ValueError) naming the reason."""
     s, hd = _head(bytes(b))
+    with _step("6"):
+        return _payloads(s, hd)
+
+
+def _payloads(s: dict[str, bytes], hd: SimpleNamespace) -> ModuleView:
     mach, msha, csha, abi, isa, flags = (hd.machine, hd.module_sha256, hd.config_sha256,
         hd.ctx_abi_version, hd.isa_level, hd.flags)  # fmt: skip
     feats = hd.isa_features, hd.features_required, hd.features_optional
@@ -1058,7 +1103,7 @@ def read(b: bytes) -> ModuleView:
     try:
         gc.decode(s["stackmaps"])
     except ValueError as e:
-        raise ArtifactError(f".waboros.stackmaps: {e}") from None
+        raise ArtifactError(f".waboros.stackmaps: {e}", section=".waboros.stackmaps") from None
     r = _R(s["traps"], ".waboros.traps")
     faults = [(r.u32(), r.u32()) for _ in range(r.count(8))]
     r.done()
@@ -1071,7 +1116,9 @@ def read(b: bytes) -> ModuleView:
         r.fail("fault and resume offsets are not below data_start, or fault offsets not increasing")
     wasm = s.get("wasm")
     if wasm is not None and hashlib.sha256(wasm).digest() != msha:
-        raise ArtifactError(".waboros.wasm: its SHA-256 is not module_sha256")
+        raise ArtifactError(
+            ".waboros.wasm: its SHA-256 is not module_sha256", section=".waboros.wasm"
+        )
     layout = Layout(
         memories=env.nmems, tables=env.ntables, globals=env.nglobals, imports=nfimp, sigs=len(sigs),
         records=len(records), tags=env.ntags, heap=bool(heap), rtts=len(rtts) + len(thrown),
@@ -1110,10 +1157,17 @@ def _frozen(b: bytes) -> tuple[bytes, bytes | None] | None:
 
 
 def _no(field: str, got: object, want: str) -> Any:
-    raise ArtifactError(f".waboros.header: {field} is {got}, this loader {want}")
+    raise ArtifactError(
+        f".waboros.header: {field} is {got}, this loader {want}", "5", ".waboros.header"
+    )
 
 
 def _compatible(v: Any, target: str) -> None:
+    with _step("5", ".waboros.header"):
+        _check(v, target)
+
+
+def _check(v: Any, target: str) -> None:
     """Order step 5 (S0014): the first failing check raises, naming the field and both values."""
     from waboros.targets.jit.common import guard
 
@@ -1163,7 +1217,9 @@ def load(b: bytes, *, target: str) -> Any:
     _ident(b)
     msha, wasm = _frozen(b) or (b"", None)
     if wasm is not None and hashlib.sha256(wasm).digest() != msha:
-        raise ArtifactError(".waboros.wasm: its SHA-256 is not module_sha256 (corrupt file)")
+        raise ArtifactError(
+            ".waboros.wasm: its SHA-256 is not module_sha256 (corrupt file)", "1b", ".waboros.wasm"
+        )
     try:
         hd = _head(b)[1]
         _compatible(hd, target)
@@ -1172,7 +1228,7 @@ def load(b: bytes, *, target: str) -> Any:
         if wasm is None:
             if isinstance(e, ArtifactError):
                 raise
-            raise ArtifactError(f"cannot load: {e!r}") from e
+            raise ArtifactError(f"{NO_STEP[0]}{e!r}") from e
     from waboros.frontend.binary import parse
     from waboros.frontend.validate import validate
 
@@ -1181,4 +1237,4 @@ def load(b: bytes, *, target: str) -> Any:
         validate(m)
         return base.TARGETS[target]().compile(m)
     except Exception as e:
-        raise ArtifactError(f".waboros.wasm: cannot be compiled by this process: {e}") from e
+        raise ArtifactError(f"{NO_STEP[1]}{e}") from e
