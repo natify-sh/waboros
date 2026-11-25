@@ -2,7 +2,7 @@
 title: JIT artifact, ISA levels and the context ABI
 kind: reference
 status: current
-updated: 2026-11-24
+updated: 2026-11-25
 ---
 
 # JIT artifact, ISA levels and the context ABI
@@ -72,7 +72,7 @@ The byte-exact definition is [S0014](specs/S0014-artifact-format.md); this part 
 the contract's version line. A file is an **ELF64** relocatable object (D59; the analysis is in
 [ARTIFACT-CONTAINER.md](ARTIFACT-CONTAINER.md)): `ET_REL`, little-endian only, private `EI_OSABI`
 0xCB, `EI_ABIVERSION` = `format_version`, `e_machine` 62 (x86-64), 183 (aarch64) or 243 (riscv64,
-reserved), no program headers. No OS loads it; the waboros loader maps `.text` itself. Self-contained:
+reserved), no program headers. No OS loads it; the waboros loader maps `.text` itself. **A loader copies `.text` into anonymous memory it maps itself (W^X) and never maps `PROT_EXEC` from the artifact file**: the file offset of `.text` (4096) is not page-aligned on 16 KiB-page kernels, and Android forbids executing app-writable files (Android 10; `System.load` of non-read-only files refused since Android 17, RISKS R2). The Python loader does this; the C loader does too (S0017). Self-contained:
 a host needs **no wasm parser** to instantiate it. Written and read by
 `targets/jit/common/artifact.py`; deterministic (D35); named `<name>.<target>-<level>[-guard].wbo`.
 

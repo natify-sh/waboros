@@ -729,6 +729,9 @@ instance's roots registered (B6).
 
 ### Executable memory (`os_*.c`)
 * Code is written read-write and then made read-execute (W^X, R2).
+* The loader **copies** `.text` into anonymous memory it maps itself and never maps `PROT_EXEC` from the
+  artifact file (ARTIFACT.md, "Artifact format"): the offset 4096 is not page-aligned on 16 KiB-page
+  kernels, and Android forbids executing app-writable files.
   * Linux: `mprotect`; on aarch64 `__builtin___clear_cache` and `PROT_BTI` when `AT_HWCAP2` has
     BTI.
   * macOS arm64: `MAP_JIT`, with `pthread_jit_write_protect_np(0)` and `(1)` around each write,
@@ -1103,3 +1106,4 @@ When approved and implemented:
   for the refusal on the bridge bytes.
 * 2026-11-25: P2 done: `ArtifactError.step` and `.section` (`artifact.py`, phase wrappers), S0014 step 1b,
   `tests/artifact/test_steps.py` and a conftest guard; the two exits in `artifact.NO_STEP` carry no step.
+* 2026-11-25: executable memory: the loader copies `.text`, never maps it from the file (Android 10 / 16 KiB pages; RISKS R2).
