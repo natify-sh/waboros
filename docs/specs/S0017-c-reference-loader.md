@@ -44,7 +44,7 @@ in "Alternatives considered"; the dates are in "Changes".
    `find_package`, no install. The same sources become the C variant and the product by a later
    decision (D36's marker).
 2. **Rows**: Linux glibc, macOS and Windows, on x86-64 and aarch64 (macOS x86-64 and arm64,
-   Windows x64 and ARM64), all before the final freeze. The D47 exception for each is in "Rows".
+   Windows x64 and ARM64), all before the final freeze; Linux musl and Android join by Decision 8. The D47 exception for each is in "Rows".
 3. **Harness**: the spec suite and the refusal corpus drive the C loader in-process through a thin
    ctypes shim (the S0001 engines `cloader-<target>`); `waboros_run` (load a file, call an export)
    runs CoreMark and the committed files under ASan/UBSan with no Python in the process; a C wast
@@ -62,11 +62,25 @@ in "Alternatives considered"; the dates are in "Changes".
    `artifact.load`). The step is carried by `ArtifactError.step` and `.section` in Python
    (prerequisite P2), and by `waboros_error.check` and `.section` in C.
 
+Taken on 2026-11-25 on the revised draft's questions:
+7. **Pre-D75 files** (former Open question 1, option (a')): no format bit. The only pre-D75 files
+   are our own (the committed fixtures and per-run temporaries; no release and no cache wrote
+   any). P1 regenerates the committed v1 set with `tools/make_v1_artifacts.py` (x86-64 and
+   aarch64, guard and explicit, thin and fat) and adds a module with a host import that pins the
+   D75 bridge. One or two pre-D75 files stay only for the Python loader's refusal of the old
+   bridge bytes. The C loader requires files written after D75.
+8. **Linux musl and Android are rows** (former Open question 2): musl on x86-64 and aarch64 under
+   D47 (c), through `os_posix.c` and a container step; Android on x86-64 and arm64, with bionic's
+   `libsigchain` for the handler beside ART and an emulator cell, as the Python runtime's S0006
+   rows ("Rows").
+9. **The fat-file SHA-256 check is S0014's step 1b** (former Open question 4, (a)): as the code
+   does, a docs change in P2.
+
 ## Goals / Non-goals
 * Goals:
   * the static library `waboros_loader` and the program `waboros_run`, built from the
     repository's C sources with a C99 compiler and CMake 3.21, as a top-level project or a
-    subproject, on the six rows;
+    subproject, on every row of "Rows";
   * a strict reader that accepts and refuses what `artifact.load` does, at the same S0014 step,
     apart from the designed exceptions;
   * instantiation, calls, host functions, traps, interrupts, stack limits, GC and exceptions that
@@ -101,6 +115,13 @@ and the fault handler. The first row is Linux glibc x86-64.
   Decision 2 asks for these rows, for parity with the Python runtime's verified guard rows
   (S0006). Without the handler, guard files are refused and explicit files run: there is no crash,
   so (a) does not apply.
+* **Linux musl** comes under **exception (c)**: it reuses `os_posix.c` with no line of its own
+  beyond the libc's headers, needs no new CI infrastructure (the `python:3.13-alpine` container of
+  the `jit` job gains a step; an Alpine container on the `arm64` runner), and adds no interaction
+  class. S0006's musl step is the evidence for the handler (the same `sigaction` path, musl 1.2.6).
+* **Android** comes under **exception (d)** (Decision 8): the same `os_posix.c`, but the handler
+  must be installed through libc's `sigaction` inside an app, where ART's libsigchain interposes
+  it, and it needs the NDK build and the Android cell.
 * aarch64 is not a D47 row; its differences are per architecture: cache flush, BTI, the PC field.
 
 | row | per-OS code | exception | CI |
@@ -111,6 +132,10 @@ and the fault handler. The first row is Linux glibc x86-64.
 | macOS arm64 | as above, plus `MAP_JIT` with `pthread_jit_write_protect_np` around every code write, `sys_icache_invalidate`, the PC by `arm_thread_state64_get_pc` | (a): Apple silicon refuses executable pages without `MAP_JIT` (R2); (d) for the handler | `platforms.yml` `macos-26` |
 | Windows x64 | `os_windows.c`: `VirtualAlloc`/`VirtualProtect`/`VirtualFree`, `SRWLOCK`, `GetCurrentThreadStackLimits`, the Win64 `entry`; the vectored handler with CET continuation targets | (a) for memory, locks, stack bounds and `entry` (no `mmap`; a Windows host calls in Win64); (d) for the handler | `platforms.yml` `windows-latest` |
 | Windows ARM64 | the same file, `FlushInstructionCache`, the PC from `ContextRecord->Pc` | as Windows x64 | `platforms.yml` `windows-11-arm` |
+| Linux musl x86-64 | `os_posix.c` unchanged; the Linux main-thread stack rule (top of `[stack]` in `/proc/self/maps` minus `RLIMIT_STACK`, as `_stack_bounds`: musl's `pthread_getattr_np` reports only the mapped part of the main stack) | (c) | `ci.yml` `jit`, `python:3.13-alpine` container (`apk add build-base cmake`) |
+| Linux musl aarch64 | the same; the instruction-cache flush is `__builtin___clear_cache`, which the toolchain resolves at **link time** (libgcc's or compiler-rt's `__clear_cache`, linked statically into the program). S0006's musl aarch64 limit was a **run-time** lookup by the Python runtime in an image without `libgcc_s`; a ctest checks that the flush is present and that code written twice runs the second version | (c) | `ci.yml` `arm64`, an Alpine container |
+| Android x86-64 | `os_posix.c` with bionic: the handler installed through libc's `sigaction` (never a raw syscall), so in an app process libsigchain makes it a user handler called after ART's (S0006 step 5); `broken` also covers the child-process reset that S0006 documents (a `vfork` child sets the handled signals to `SIG_DFL`) | (d) | `platforms.yml` Android cell, x86_64 emulator |
+| Android arm64 | the same, with `__builtin___clear_cache` | (d) | built in the Android cell (NDK cross build); run on an arm64 emulator where the cell's runner has one, else build-only until a runner does: step 9 reports which |
 
 * macOS uses signals, as the Python runtime does (S0006 step 3), not Mach exception ports.
 * **What is new on Windows.** The code that ARTIFACT.md's Win64 listing matches already runs on
@@ -121,7 +146,6 @@ and the fault handler. The first row is Linux glibc x86-64.
 * Before step 8, the Win64 `entry` bytes and a file's `win64` bridge with `dispatch` run on Linux
   through an `ms_abi` C function, as `tests/sljit/test_win64_bridge.py` does for the sljit blob
   ("Runtime tests").
-* Linux musl and Android are not rows (Open question 2).
 
 ## Interface
 
@@ -166,12 +190,13 @@ sljit part and its tests are behind `WABOROS_SLJIT`. S0016's contract holds:
 | `WABOROS_LOADER_SHARED` | `PROJECT_IS_TOP_LEVEL` | `waboros_loader_shared` for the shim (tests; `WINDOWS_EXPORT_ALL_SYMBOLS` on Windows) |
 | `WABOROS_WITH_COMPILER` | OFF until D68's compiler exists | link the embedded compiler through the seam |
 | `WABOROS_WITH_GC` | ON | the heap, the GC services, the collector's driver; OFF: `heap` 1 files refused at load |
-| `WABOROS_GUARD` | ON on the six rows | the fault handler; OFF: `BOUNDS_GUARD` files refused at step 5 |
+| `WABOROS_GUARD` | ON on every row | the fault handler; OFF: `BOUNDS_GUARD` files refused at step 5 |
 | `WABOROS_COLLECTOR_WBO` | empty | a collector `.wbo` embedded with `file(READ … HEX)` |
 | `WABOROS_SLJIT` | `WABOROS_WITH_COMPILER` or a top-level build | S0016's `waboros_sljit` and its tests |
 
 * Sanitizer and fuzzing flags come from the top-level command line (`CMAKE_C_FLAGS`).
-* Compilers: GCC and Clang on Linux, Apple Clang, and MSVC on Windows (the runners' defaults).
+* Compilers: GCC and Clang on Linux (musl: Alpine's GCC), Apple Clang, MSVC on Windows (the
+  runners' defaults), and the NDK's Clang through CMake's Android toolchain file (step 9).
   Step 0 confirms that CMake accepts `C_STANDARD 99` with MSVC, with clang-cl as the fallback.
 
 ### C99 rules
@@ -292,9 +317,9 @@ what `Instance._host` and its callback do (`instance.py`, `_host`):
      third-argument register: on aarch64 `w2` is a pool register, on SysV it is the low half of
      `slots`, on Win64 `r8` is the exit record. Since every such word of a context holds
      `dispatch`, a stale value inside the range passes the check and calls the wrong function.
-   * **So the C loader supports host calls and libcalls only from files written after D75.**
-     Pre-D75 files whose exports make no host call or libcall still run; the committed `v1-s15`
-     set is such a file. Whether to refuse the others is Open question 1.
+   * **So the C loader requires files written after D75** (Decision 7). No format bit tells them
+     apart: the only pre-D75 files are our own fixtures, kept for the Python loader's refusal
+     test, and no C test loads them. The check stays as a defence against a corrupt file.
 2. Refuse to serve a lost store (D61): return 13 with the lost message.
 3. Save the store's next frame and set it to `slots + 8 · max(n, m)` (the nested-entry rule, B1).
 4. Call the import's `f(env, slots)`, or the loader's own service.
@@ -363,7 +388,7 @@ and exports `begin`, `roots`, `finish` and `is_subtype`.
      `try_table` with `catch`/`catch_ref`, since exceptions live in the heap (S0013 step 6).
    * A module with only `throw_ref` and `catch_all(_ref)` has no heap and runs (ARTIFACT.md
      part 3).
-   * Whether this build stays is Open question 3.
+   * Whether this build stays is Open question 1.
 
 ## Semantics
 
@@ -400,8 +425,8 @@ command or a runtime test could see the difference:
 ### Loading
 **Order** (S0014 "Order of checks", as `artifact.load` runs it):
 1. Identification. Otherwise `WABOROS_E_NOT_OURS`, check 1.
-2. **The frozen lookup and the fat-file SHA-256**, as `_frozen` does (Open question 4 places it
-   in S0014):
+2. **The frozen lookup and the fat-file SHA-256**, as `_frozen` does (S0014 step 1b,
+   Decision 9):
    * read `e_shoff`, `e_shnum` and `e_shstrndx`. Return "none" (the file counts as thin here) if
      the table, a section, the name table or a name's terminator is outside the file, or if
      `e_shstrndx` is out of range;
@@ -712,7 +737,8 @@ these Python tests with the same expectations (file `::` test, under `tests/jit/
 
 ### Acceptance commands
 1. `cmake -S native -B build/native && cmake --build build/native && ctest --test-dir build/native`:
-   0 failures on all six rows. ctest covers:
+   0 failures on the six rows of step 0 (Linux glibc, macOS, Windows; musl and Android in step 9).
+   ctest covers:
    * the reader on the committed files;
    * `entry` and `sp_stub`, an add and a trap;
    * the handler's chaining (a foreign fault, a sent signal, both install orders);
@@ -729,16 +755,17 @@ these Python tests with the same expectations (file `::` test, under `tests/jit/
    * macOS and Windows, both architectures: `cloader-jit-<arch>`, guard and explicit.
 4. `uv run pytest tests/cloader/test_corpus.py`: 0 files outside their class, on Linux x86-64
    and aarch64 (the reader is OS-independent).
-5. **The committed files**, through the shim and `waboros_run`:
-   * the D75 set (P1) is read and run, and its host import gets the right word;
-   * `v1-small` has `heap` 1 (a GC struct global). It runs with the collector file supplied, and
-     is refused with `WABOROS_E_NO_COLLECTOR` without one (no compiler);
-   * `v1-s15-*` is read, and its exports run: they make no host call or libcall (Open question 1
-     may change this);
-   * `v1-small-<arch>-thin.wbo` (pre-S0015) is refused at step 6, `.waboros.trampolines`;
-   * the fat `v1-small-<arch>.wbo` gets `WABOROS_E_NEEDS_COMPILER` without a compiler, and is
-     compiled and run with the test compiler;
+5. **The committed files** (P1's regenerated set, Decision 7), through the shim and `waboros_run`,
+   on every row:
+   * every file of the set (x86-64 and aarch64 for the host, guard and explicit, thin and fat) is
+     read, and its exports run; the host-import module's import gets the right word;
+   * the small module has `heap` 1 (a GC struct global): it runs with the collector file
+     supplied, and is refused with `WABOROS_E_NO_COLLECTOR` without one (no compiler);
+   * a thin file of the other architecture is refused at step 5 (`e_machine`);
+   * a fat file whose code fails step 5 (the other architecture's) gets `WABOROS_E_NEEDS_COMPILER`
+     without a compiler, and is compiled and run with the test compiler;
    * a copy with `EI_ABIVERSION` 2 is refused at step 2.
+   The pre-D75 fixtures are not loaded by the C loader.
 6. **The three GC builds**:
    * `WABOROS_WITH_GC=OFF`: a `heap` 1 file is refused at load, and a `throw_ref`-only module runs;
    * no compiler and no collector file: a `heap` 1 module is refused at instantiation, and the
@@ -764,12 +791,12 @@ Every step stops and reports if it needs more than its size. P1 changes a contra
 other steps change none. A divergence from Python is a bug in one of the loaders, settled by the
 text; if the text does not settle it, the text is amended first (the working freeze: a spec or a
 decision, no bump). CLAUDE.md requires a `reviewer` after every JIT, ABI, artifact or trap change,
-so P1 and steps 2, 3, 4, 5 and 8 end with one.
+so P1 and steps 2, 3, 4, 5, 8 and 9 end with one.
 
 | step | goal | agent | acceptance | size (lines) |
 |---|---|---|---|---|
-| P1 | **D75.** The four targets' bridges pass the word (`edx`/`r8d`/`w2`) in every convention. ARTIFACT.md part 3, S0015, S0003, D34/D32 markers. A word test per import, libcall and nested entry on every JIT target. The D75 committed set with a host import; `test_old.py`: `v1-s15` thin refused by its bridge bytes, fat regenerated | jit-engineer, then reviewer | the spec suite at parity on the four targets in-process and through files, both modes. `tools/jit_dump.py` lists unchanged (its hash covers the `Compiled`, not the trampolines); `tools/artifact_dump.py` files differ only in the blobs; `pytest -q` | src ~60, tests ~150, docs ~40 |
-| P2 | **Refusal steps.** `ArtifactError.step` and `.section`, set at the phase boundaries of `load`/`read`; the fat-file SHA-256 placed (Open question 4) and S0014 amended; no corpus case on the `cannot load:` path | implementer | `tests/artifact/` asserts the step per refusal; `pytest -q` | src ~40, tests ~60 |
+| P1 | **D75.** The four targets' bridges pass the word (`edx`/`r8d`/`w2`) in every convention. ARTIFACT.md part 3, S0015, S0003, D34/D32 markers. A word test per import, libcall and nested entry on every JIT target. The committed v1 set regenerated by `tools/make_v1_artifacts.py` (x86-64 and aarch64, guard and explicit, thin and fat) plus a host-import module; one or two pre-D75 files kept (Decision 7) | jit-engineer, then reviewer | the spec suite at parity on the four targets in-process and through files, both modes; `tests/artifact/test_old.py` runs the new set (read, inventory, instantiate, the host import's word, load thin and fat, the version refusals) and refuses the kept pre-D75 thin file(s) on their bridge bytes, regenerating the fat; `tools/jit_dump.py` lists unchanged (its hash covers the `Compiled`, not the trampolines); `tools/artifact_dump.py` files differ only in the blobs; `pytest -q` | src ~60, tests ~170, docs ~40 |
+| P2 | **Refusal steps.** `ArtifactError.step` and `.section`, set at the phase boundaries of `load`/`read`; the fat-file SHA-256 check named step 1b in S0014 (Decision 9); no corpus case on the `cannot load:` path | implementer | `tests/artifact/` asserts the step per refusal; `pytest -q` | src ~40, tests ~60 |
 | 0 | `native/CMakeLists.txt` restructured; `WABOROS_SLJIT`, `WABOROS_LOADER`, `WABOROS_LOADER_SHARED`; an empty loader and `waboros_run`; the consumer check; MSVC confirmed; a `cloader` CI job on the six runners | implementer | items 1-2 on the six rows | cmake ~100, CI ~70 |
 | 1 | The reader (`read.c`, `sha256.c`), the frozen lookup, both dumpers, `--dump`/`--check`, the shim's reader part, the corpus test with its classes (needs P1 and P2) | implementer | item 4 on both architectures | C ~1 350, Python ~400 |
 | 2 | Linux: executable memory, `entry`/`sp_stub` bytes tied to `entry.py`, trampoline copies, locks and the store claim, calls without imports; the engines | jit-engineer, then reviewer | `uv run python -m tests.spec.run --engine cloader-jit-x86_64 --xfail tests/cloader/step2-xfail.txt $(cat tests/cloader/step2.txt)` (the `.wast` files whose modules import nothing, listed by the step from the converted JSON) passes, and the same for `cloader-jit-sljit-x86_64`, explicit | C ~900, Python ~300 |
@@ -777,15 +804,16 @@ so P1 and steps 2, 3, 4, 5 and 8 end with one.
 | 4 | The guard handler on Linux, `broken`, both install orders | jit-engineer, then reviewer | item 3 in guard mode; the chaining ctests | C ~300 |
 | 5 | GC: heap, records, services, walk, roots, collector driver, `collector_wasm.c`, the switches; the three GC builds | jit-engineer, then reviewer | items 3 (`gc/`, `exceptions/`, switches, walk check) and 6; the GC runtime tests | C ~1 200 |
 | 6 | Linux aarch64 (native, QEMU with BTI), mixed stores, `make_files.py`, the committed files, CoreMark, sanitizers, fuzz job; the `ms_abi` Win64 test | runner + jit-engineer | items 3, 5, 7, 8, 9 on Linux, both architectures | C ~200, Python ~120, CI ~120 |
-| 6.1 | Build sizes | runner | a BENCHMARKS.md section; Open question 3 answered from it | tools ~40 |
+| 6.1 | Build sizes | runner | a BENCHMARKS.md section; Open question 1 answered from it | tools ~40 |
 | 7 | macOS x86-64 and arm64 (`os_posix.c`'s Apple parts) | jit-engineer | items 1, 3, 5, 7 on both macOS runners | C ~300, CI ~30 |
 | 8 | Windows x64 and ARM64 (`os_windows.c`, the vectored handler, CET continuation targets, the Win64 `entry`) | jit-engineer, then reviewer | items 1, 3, 5, 7 on both Windows runners; a `/CETCOMPAT` build of `waboros_run` runs the guard traps on x64 | C ~450, CMake ~30, CI ~30 |
-| 9 | Docs ("Docs this changes"), a DECISIONS entry | orchestrator | `python3 tools/check_docs.py` | — |
-| 10 | Final review without the implementers' reasoning: the whole loader against S0014, S0015 and this spec, C99 conformance | reviewer | findings closed | — |
+| 9 | Linux musl (x86-64, aarch64) and Android (x86-64, arm64): the bionic and musl notes of `os_posix.c`, the NDK build (CMake's Android toolchain file; the shared library for the shim), the CI steps | jit-engineer + runner, then reviewer | musl, both architectures: items 1, 5, 7 and 8's `waboros_run` runs (no sanitizer), and item 3 with `cloader-jit-x86_64` in the x86-64 container. Android x86-64: `tests/cloader/test_android.py` in the cell's app (the shim loads the NDK-built library; guard faults through libsigchain, as `tests/jit/test_android.py`), and `waboros_run` over `adb shell` (no ART) for CoreMark and the committed files. Android arm64: the same where an arm64 emulator runs, else the build | C ~60, CMake ~30, Python ~80, CI ~100 |
+| 10 | Docs ("Docs this changes"), a DECISIONS entry | orchestrator | `python3 tools/check_docs.py` | — |
+| 11 | Final review without the implementers' reasoning: the whole loader against S0014, S0015 and this spec, C99 conformance | reviewer | findings closed | — |
 
 * **Order**: P1 and P2, then 0. Step 1 needs P1 (the corpus uses the D75 files) and P2 (the
-  steps). Then 2-6 on Linux, 6.1, 7 and 8.
-* **Total**: about 5 700 lines of C, 1 070 of Python, 130 of CMake and 250 of CI, plus P1 and P2.
+  steps). Then 2-6 on Linux glibc, 6.1, 7, 8 and 9.
+* **Total**: about 5 760 lines of C, 1 150 of Python, 160 of CMake and 350 of CI, plus P1 and P2.
   This is scaled from the Python sizes: `artifact.py` 1 184, `instance.py` 1 374, and `heap.py`,
   `collect.py`, `walk.py`, `guard.py` and `execmem.py` about 1 460. C needs more lines per rule
   and has no ctypes plumbing.
@@ -797,7 +825,7 @@ so P1 and steps 2, 3, 4, 5 and 8 end with one.
   The code bytes are the same, so a difference points to a context or placement discrepancy.
 * A host call through `dispatch`: the import loop of STATIC-BUILDS.md ("Cheap host calls"), a C
   host against a Python host.
-* **Build sizes** (step 6.1; Open question 3):
+* **Build sizes** (step 6.1; Open question 1):
   * the stripped size (text + data, `size` after `strip`) of a static `waboros_run` in four
     builds: full, no compiler, no GC, neither;
   * at `-Os` (MinSizeRel) and `-O2`, x86-64 and aarch64, LTO
@@ -819,14 +847,16 @@ so P1 and steps 2, 3, 4, 5 and 8 end with one.
 * **Two implementations of instantiation** (D72's accepted risk). Covered by items 3-5 and the
   runtime tests. RUNTIME-MODULES.md item 4 names where re-implementations fail: the order of traps.
 * **The handlers** (R6):
-  * four mechanisms on six rows;
+  * four mechanisms on ten rows, Android's beside ART;
   * a second handler beside Python's in the shim process;
   * on Windows, faulthandler in front of ours (LESSONS 59), which the C loader cannot see;
   * under CET, a resume address that is not registered ends the process.
   S0006's chaining is the contract. ctest checks both install orders, `waboros_run` runs guard
   traps with no Python handler, and step 8 runs a `/CETCOMPAT` build.
-* **Old bridges** (S1): host calls from pre-D75 files can go to the wrong function, and the check
-  is best-effort (Open question 1).
+* **Old bridges**: a pre-D75 file's host call could go to the wrong function (the check is
+  best-effort). Decision 7 removes such files from everything but the Python refusal test.
+* **Android**: the handler beside ART (libsigchain), and a child process that resets the chain
+  (S0006). The arm64 row may stay build-only until a runner has an arm64 emulator.
 * **Executing a file's blob** is new on every row (Python never does). Steps 2, 7 and 8 are the
   first runs.
 * **The walk and the collector** run across foreign frames: a wrong site number corrupts the heap
@@ -839,8 +869,12 @@ so P1 and steps 2, 3, 4, 5 and 8 end with one.
 ## Alternatives considered
 * **Q1, what it is** (decided: test tool). The other option was a product from the start: a
   stable, versioned API and `find_package`, which is phase-6 work done in C.
-* **Q2, rows** (decided: six rows). The other option was Linux glibc only. macOS and Windows cost
-  about 300 and 450 lines plus their CI rows, and the first runs of the file's `win64` blob.
+* **Q2, rows** (decided: six rows, then musl and Android by Decision 8). The other option was
+  Linux glibc only. macOS and Windows cost about 300 and 450 lines plus their CI rows and the
+  first runs of the file's `win64` blob; musl and Android about 60 lines plus their CI steps.
+* **Pre-D75 files** (Decision 7, (a')). The rejected options were a `features_optional` bit that
+  the C loader requires, a `features_required` bit (rejected by D75), the compiler version (a
+  development string's source hash has no order), and best-effort support of old host calls.
 * **Q3, harness** (decided: shim plus `waboros_run`). The other options were:
   * a C line server under the Python runner: about 250 C lines, process isolation, no Python in
     the C process, round trips of about 10-20 µs (estimated);
@@ -868,35 +902,7 @@ so P1 and steps 2, 3, 4, 5 and 8 end with one.
   pointer may be NULL.
 
 ## Open questions
-1. **Pre-D75 files with host calls.** The dispatcher's check is best-effort ("Host calls"). Should
-   the C loader refuse files whose bridge predates D75?
-   * (a) No: host calls from such files are unsupported and documented, and the committed `v1-s15`
-     set runs.
-   * (b) A `features_optional` bit "the bridge passes the word" (D66), written by every writer from
-     P1 and ignored by the Python loader. The C loader refuses a file without it that has a
-     function import or a used libcall word. This refuses almost every pre-D75 file, `v1-s15`
-     included, since a memory has a `memory.grow` word.
-   * (c) As (b), but the bit is in `features_required`. D75 rejected this: an old loader would
-     refuse new files.
-   * (d) The compiler version: a development string carries a source hash, which has no order, so
-     no rule can be written on it.
-   * Recommendation: **(b)**. A silent call of the wrong host function is worse than a refusal,
-     and the only pre-D75 files are the committed fixtures, which keep their Python tests;
-     item 5's `v1-s15` line becomes "refused, no bit".
-   * **Decided (maintainer, 2026-11-25): no format change ((a')).** The only pre-D75 files are our
-     own (the committed fixtures and per-run temporaries; no release and no cache wrote any), so
-     no bit is added. P1 regenerates the committed v1 set with `tools/make_v1_artifacts.py`
-     (x86-64 and aarch64, guard and explicit, thin and fat) and adds a module with a host import
-     that pins the D75 bridge; one or two pre-D75 files stay only as "the Python loader refuses
-     the old bridge bytes" (`tests/artifact/data/README.md`). The C loader requires files written
-     after D75; item 5 runs the new set.
-2. **Linux musl and Android**: rows of this spec, or later? Both are verified S0006 rows of the
-   Python runtime (x86-64). Musl would come under D47 (c): the same `os_posix.c` and a container
-   step. Android would need bionic's `libsigchain` and an emulator cell. **Decided (maintainer,
-     2026-11-25): both are rows of this spec**, Linux musl (x86-64, aarch64) under D47 (c) through
-     `os_posix.c` and a container step, Android (x86-64, arm64) with `libsigchain` and an emulator
-     cell, as in the Python runtime's S0006 rows; "Rows", CI and the plan are to be revised.
-3. **Are the no-compiler and no-GC builds worth having?** Decided **after step 6.1's
+1. **Are the no-compiler and no-GC builds worth having?** Decided **after step 6.1's
    measurement**.
    * No compiler: kept unless it removes little. It is expected to remove sljit (47-90 KB) plus
      the C core, and it is the build for devices that run only AOT files.
@@ -906,14 +912,6 @@ so P1 and steps 2, 3, 4, 5 and 8 end with one.
    * The options: (a) keep both; (b) keep no-compiler, and drop no-GC if it saves less than an
      agreed share (for example 10 % of the no-compiler build); (c) drop both.
    * Until then, no-GC is built only as the omission of one file.
-4. **The fat-file SHA-256 in S0014's order** (P2). `artifact.load` checks it after step 1 and
-   before step 2; S0014 names it only inside the fat fallback.
-   * (a) S0014 names it step 1b, as the code does (docs only).
-   * (b) The code moves it into the fallback: a fat file with a corrupt wasm that passes steps 2-6
-     would then run.
-   * Recommendation: **(a)**: a corrupt file is refused at once, with `check` 1.
-   * **Decided (maintainer, 2026-11-25): (a).** S0014 names the fat-file SHA-256 check step 1b,
-     as the code does (docs only, in P2).
 
 ## Docs this changes
 When approved and implemented:
@@ -926,8 +924,10 @@ When approved and implemented:
   * D75 itself:
     * its Evidence "S0017 Q4 (a)-(c)" becomes "S0017, Alternatives considered (Q4)";
     * "the C loader's dispatcher checks the word's range and `ctx[word]`" becomes
-      "best-effort", with Open question 1's answer;
-  * `tests/artifact/data/README.md`: the D75 set, and the `v1-s15` expectations.
+      "best-effort; the C loader requires files written after D75 (S0017 Decision 7)";
+  * `tests/artifact/data/README.md`: the regenerated set (made by `tools/make_v1_artifacts.py`,
+    with the host-import module), the one or two pre-D75 files kept only for the Python refusal
+    test, and the removal of the rest.
 * By P2: [S0014](S0014-artifact-format.md) "Order of checks": step 1b, the frozen lookup's rules
   ("Loading", 2), and `ArtifactError.step` and `.section` in "Semantics: the loader".
 * [ARTIFACT.md](../ARTIFACT.md):
@@ -943,12 +943,13 @@ When approved and implemented:
 * [S0016](S0016-sljit-on-the-boundary.md) "Where it lives": a marker that "no generated sources"
   reads "no generator outside CMake" (Decision 5), and that `native/` configures without the
   submodule.
-* [S0006](S0006-guard-pages.md): the row table gains the C loader's handler on its six rows, and
+* [S0006](S0006-guard-pages.md): the row table gains the C loader's handler on its ten rows
+  (Linux musl aarch64 and Android arm64 included, where S0006's Python rows stay explicit), and
   the C `broken` rule.
 * [RISKS.md](../RISKS.md) R6: the C loader's handlers, the shim process with two copies,
   Windows faulthandler.
 * [DECISIONS.md](../DECISIONS.md): D36's marker exists; an entry when the loader is implemented
-  (rows, harness, GC builds, Open questions 1-4).
+  (rows, harness, GC builds, Decisions 7-9, Open question 1).
 * [TESTING.md](../TESTING.md), [TARGETS.md](../TARGETS.md),
   [MICRO-COMPILERS.md](../MICRO-COMPILERS.md) ("The C variant" links the seam and the three
   collector paths), [BENCHMARKS.md](../BENCHMARKS.md), CLAUDE.md "Commands",
@@ -978,3 +979,6 @@ When approved and implemented:
   host import, the old files stay only for the refusal test.
 * 2026-11-25: open question 2 decided (maintainer): Linux musl and Android are rows of this spec.
 * 2026-11-25: open question 4 decided (maintainer): (a), the fat-file SHA-256 is S0014's step 1b.
+* 2026-11-25: revised to Decisions 7-9: the dispatcher text, item 5 and P1 on the regenerated
+  set; four new rows (Linux musl and Android, both architectures) with their evidence and a
+  step 9; the remaining open question renumbered 1 (the build sizes).
