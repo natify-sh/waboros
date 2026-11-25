@@ -588,6 +588,15 @@ Ranked; the first two block step 0; Q7 waits for step 6.1's measurement.
    * (b) Also the check number of the first failure (S0014's order), which Python's
      `ArtifactError` does not carry today (about 40 lines in `artifact.py`).
    * Recommendation: **(a)** now; (b) if a disagreement on order ever matters to a host.
+   * **Decided (maintainer, 2026-11-24): (a) plus the S0014 step.** Per file: accept or refuse,
+     the inventory dump of every accepted file, and for a refused file the S0014 step (1-6, with
+     the section name for step 6) at which it was refused; no finer check ids and no message
+     equality (S0014 does not make them normative). Rule: no corpus file may be refused through
+     the Python loader's internal-exception path (`cannot load: …`, artifact.py `load`). Python
+     gains `ArtifactError.step` set at the phase boundaries (about 30 lines, estimated), the C
+     reader a `check` field in `waboros_error` (about 20). To settle first: the Python `load`
+     checks a fat file's sha256 after step 1 and before step 2, which S0014's order does not
+     name; S0014 or the code is aligned before the C reader is written.
 7. **Are the no-compiler and no-GC builds worth having?** The maintainer decided both options, and
    this question asks only whether to keep them once their size is known. It is decided **after
    step 6.1's size measurement**.
@@ -640,3 +649,5 @@ When approved and implemented:
   under sanitizers without Python; the C wast runner later, with the embedded compiler.
 * 2026-11-24: Q4 decided (maintainer): D75, the bridge passes the import's context-word index.
 * 2026-11-24: Q5 decided (maintainer): a committed array for `collector.wasm`, CMake-generated for a `.wbo`.
+* 2026-11-24: Q6 decided (maintainer): (a) plus the S0014 step of each refusal, and no refusal through
+  Python's internal-exception path.
