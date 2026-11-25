@@ -912,6 +912,8 @@ so P1 and steps 2, 3, 4, 5 and 8 end with one.
    * (b) The code moves it into the fallback: a fat file with a corrupt wasm that passes steps 2-6
      would then run.
    * Recommendation: **(a)**: a corrupt file is refused at once, with `check` 1.
+   * **Decided (maintainer, 2026-11-25): (a).** S0014 names the fat-file SHA-256 check step 1b,
+     as the code does (docs only, in P2).
 
 ## Docs this changes
 When approved and implemented:
@@ -975,3 +977,4 @@ When approved and implemented:
 * 2026-11-25: open question 1 decided (maintainer): no format bit; P1 regenerates the committed set with a
   host import, the old files stay only for the refusal test.
 * 2026-11-25: open question 2 decided (maintainer): Linux musl and Android are rows of this spec.
+* 2026-11-25: open question 4 decided (maintainer): (a), the fat-file SHA-256 is S0014's step 1b.
