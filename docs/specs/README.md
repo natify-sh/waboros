@@ -29,4 +29,4 @@ lifecycle: [STANDARDS.md](../STANDARDS.md).
 | [S0015](S0015-boundary-convention.md) | The boundary convention between separately compiled JIT artifacts | implemented | maintainer |
 | [S0016](S0016-sljit-on-the-boundary.md) | jit-sljit on the boundary: the first second compiler in a mixed store | implemented | maintainer |
 | [S0017](S0017-c-reference-loader.md) | The C reference loader | approved | maintainer |
-| [S0018](S0018-python-public-api.md) | The public Python API (phase 6, part 1: the runtime API) | draft | maintainer |
+| [S0018](S0018-python-public-api.md) | The public Python API (phase 6, part 1: the runtime API) | approved | maintainer |

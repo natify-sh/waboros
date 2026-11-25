@@ -333,8 +333,9 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29; done 2026-11-03) -> 
   budget is about 5 400 against 16 400; the fix is decided: a pre-pass over the body tells `func_begin` what the function needs, D67;
   it is implemented with the C core). Then D48,
   MICRO-COMPILERS.md and JIT-AS-WASM.md are amended.
-* **One LIR vocabulary** before porting to the micro-compilers (MICRO-COMPILERS.md): the operation
-  names that are strings today in several places become one enumerated list, defined once,
+* **One LIR vocabulary** before porting to the micro-compilers (MICRO-COMPILERS.md; maintainer,
+  2026-11-25: a planned step right before the micro-compiler's spec (c), checked by identical
+  `jit_dump` lists): the operation names that are strings today in several places become one enumerated list, defined once,
   together with fixing the artifact format in this phase; in C (D60) they become enums anyway, so
   one list is ported instead of several naming schemes.
 * The contract of ARTIFACT.md (format v1, context ABI v1, baseline-ISA sequences, CPU feature
@@ -352,7 +353,7 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29; done 2026-11-03) -> 
   beside phase 5: [REAL-PROGRAMS.md](REAL-PROGRAMS.md) (maintainer's note, draft).
 
 ## Phase 6 — runtime API, WASI, CLI
-*Status: not started.*
+*Status: started (maintainer, 2026-11-25): the public Python runtime API, [S0018](specs/S0018-python-public-api.md) approved (D77), in parallel with the C loader (S0017); WASI and the CLI get their own specs later.*
 
 * `Engine`, `Config`, `Store`, `Module`, `Linker`, `Instance`, externs, `Caller`, `Trap`/`TrapCode`,
   limits, in the shape of wasmtime-py (not a drop-in), over the internal engine interface the spec

@@ -2,7 +2,7 @@
 title: The public Python API (phase 6, part 1: the runtime API)
 kind: spec
 id: S0018
-status: draft
+status: approved
 superseded_by:
 related: [D1, D6, D10, D14, D17, D18, D19, D21, D23, D25, D27, D29, D31, D33, D34, D35, D44, D46, D49, D51, D57, D58, D64, D70, R1, R4, S0001, S0002, S0012, S0013, S0014, S0015, S0017]
 owner: maintainer
@@ -680,3 +680,4 @@ None open. Settled after the decisions:
 * 2026-11-25: Decision 9 refined (maintainer): the signed and the unsigned range are both accepted
   and converted to the bit pattern; `ValueError` only outside both.
 * 2026-11-25: Decision 10 (maintainer): `Engine.strategy` (`jit`/`pyc`) and `Engine.target` (a triple, as `Config.target`); no open question left.
+* 2026-11-25: approved by the maintainer (Decisions 1-10); D77 records it. First step: step 0 (the S0002 amendment).

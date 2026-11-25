@@ -1867,3 +1867,17 @@ suite through files and on the refusal corpus (Decision 6, with the designed exc
   decided after step 6.1's measurement.
 * Rejected: a loader in Rust or Zig, C generated from Python, reusing WAMR pieces (S0017
   "Alternatives considered").
+
+### D77. The public Python API (S0018), started in parallel with the C loader
+Status: accepted (maintainer, 2026-11-25: S0018 approved; not implemented yet) · Date: 2026-11-25 · Supersedes: the phase order of CLAUDE.md's "public API not before its phase" · Evidence: S0018 (Decisions 1-10, an independent review and its fixes)
+
+The core is complete for Wasm 3.0 (FEATURES.md), so phase 6's public Python runtime API starts now,
+beside S0017. Its shape is wasmtime-py's, not a drop-in (S0018 Decision 1): the same signatures
+wherever we have a name; `WaborosError` is the base error, without a `WasmtimeError` alias;
+context managers, `close()` and finalizers as wasmtime-py's `Managed`, `store.scope()` the one
+context-manager extension. The other extensions are listed in S0018's Decisions (values wasmtime-py
+cannot express, `Config.strategy`/`Engine.strategy`/`Engine.target`, explicit roots with
+generation-checked handles, `serialize(fat=True)`, signed-and-unsigned integer ranges). The C
+loader gets no public API now (S0017 Decision 1); the Python API promises nothing the
+language-neutral core cannot give. The rule in CLAUDE.md is amended: the public API is worked on only
+through its approved spec. WASI and the CLI keep their own specs.

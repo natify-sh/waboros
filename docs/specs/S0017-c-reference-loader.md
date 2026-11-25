@@ -90,7 +90,9 @@ Taken on 2026-11-25 on the revised draft's questions:
     next safe point), and the C loader by an explicit `waboros_ref_release(store, handle)`. A
     released object is collected unless something else roots it; a held handle keeps its identity.
     Scoped handles (Wasmtime's `RootScope`) stay in phase 6. Implemented first in the Python
-    runtime (its own step, before P1), then here.
+    runtime (its own step, before P1), then here. *(Amended 2026-11-25 by S0018 Decision 4: every
+    handle slot carries a generation checked on each use, and explicit `root`/`unroot` handles
+    exist besides release-on-drop; the C loader adopts the same model when its C API is public.)*
 
 ## Goals / Non-goals
 * Goals:
@@ -1115,3 +1117,4 @@ When approved and implemented:
 * 2026-11-25: P2 done: `ArtifactError.step` and `.section` (`artifact.py`, phase wrappers), S0014 step 1b,
   `tests/artifact/test_steps.py` and a conftest guard; the two exits in `artifact.NO_STEP` carry no step.
 * 2026-11-25: executable memory: the loader copies `.text`, never maps it from the file (Android 10 / 16 KiB pages; RISKS R2).
+* 2026-11-25: Decision 11 amended by S0018 Decision 4 (generation-checked handles, explicit roots).

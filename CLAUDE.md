@@ -19,7 +19,7 @@ The maintainer communicates in Ukrainian; code, comments, commit messages and do
   development group or CI.
 * **Wasmtime is the oracle, not the goal.** Where the spec leaves room (trap codes, NaN, limits) do
   what Wasmtime does, and test against it. The public API takes the shape of wasmtime-py in phase 6;
-  API parity is never worked on before the compiler and the spec tests need it. Record deliberate
+  the public API is worked on only through its approved spec (S0018, D77; maintainer 2026-11-25). Record deliberate
   deviations in `docs/DECISIONS.md`.
 * **One interface for all targets**, one test suite for all targets. A target never special-cases
   another; the runtime never special-cases a target beyond `Target` methods.
@@ -115,7 +115,7 @@ Report:      files changed, commands run with output, numbers before/after, docs
 * The smallest change that makes the acceptance command pass. No code "for later".
 * No new module, class, layer, plugin point or config option unless the brief names the need; no
   abstraction before its second real use.
-* Do not touch the public API, the CLI or WASI before their phase, even "while you are there".
+* Do not touch the public API outside its approved spec (S0018), nor the CLI or WASI before their specs, even "while you are there".
 * No rewrite of working code that the step does not require; no drive-by reformatting.
 * When unsure between two designs, implement neither: report both with their costs.
 
