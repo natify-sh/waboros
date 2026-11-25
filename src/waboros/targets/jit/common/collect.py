@@ -146,6 +146,7 @@ def collect(inst: Any, heap: Any) -> None:
     # an interrupt() made while the instance was being made (it was in store.instances then) or
     # by any later path is not for the collector: its polls never fire
     coll.ctx[INTERRUPT] = 0
+    st.drain()  # released handles stop being roots
     runs, back = _gather(inst, st, coll)
     half, lo, cur = heap.cap // 2, heap.lo, heap.cursor
     to = gc.OBJ + half if heap.end <= gc.OBJ + half else gc.OBJ
@@ -185,7 +186,7 @@ def collect(inst: Any, heap: Any) -> None:
     heap.lo, heap.end = to, to + half
     heap.u32(gc.CURSOR, new)
     heap.u32(gc.LIMIT, heap.end)
-    st.gcrefs = {st.gc_handles[r.index]: r for r in st.gcrefs.values()}  # B5: words moved
+    st.gcrefs = {st.gc_handles[e.index]: e for e in st.gcrefs.values()}  # B5: words moved
     _free(st, heap)
     if heap.poison:
         ctypes.memset(heap.base + lo, POISON, cur - lo)

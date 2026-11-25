@@ -12,6 +12,8 @@ import mmap
 import os
 import sys
 import threading
+import weakref
+from collections import deque
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
@@ -216,6 +218,13 @@ class FuncRef:
     store: object
 
 
+class _Slot(weakref.ref[GcRef | ExnRef]):
+    """The store's weak entry for a handle: `index` is its slot in `gc_handles`."""
+
+    __slots__ = ("index",)
+    index: int
+
+
 class _StoreStacks:
     """Per store: the value stack, the JIT entries active on it, and the native limit set by the
     first of them."""
@@ -235,11 +244,17 @@ class _StoreStacks:
         self.free_externs: list[int] = []  # a heap: freed handle numbers, reused lowest first
         self.funcrefs: dict[int, FuncRef] = {}
         # GC (S0013 3b): the store's heap (heap.GcHeap, with the first instance that uses GC) and
-        # the handle table: the word of each GcRef given to the host, kept until the store is
-        # dropped (Q10: generations and a free list come with release in phase 6)
+        # the handle table: the word of each GcRef given to the host (S0017 Decision 11: a slot is
+        # released when the host drops the handle). A handle's finalizer only appends its dead
+        # `_Slot` to `released` (atomic, from any thread or point, also on a free-threaded build);
+        # `drain` empties it on the store's own thread, at the start of a collection and of a new
+        # handle: no lock, the contract is one thread per store. A released slot holds word 0
+        # (a null root) and is reused lowest first.
         self.heap: Any = None
         self.gc_handles: list[int] = []
-        self.gcrefs: dict[int, GcRef | ExnRef] = {}  # word -> its handle (exnrefs too, step 6)
+        self.gcrefs: dict[int, _Slot] = {}  # word -> weak entry of its handle (exnrefs too)
+        self.released: deque[_Slot] = deque()
+        self.free_handles: list[int] = []
         self.lost: str | None = None  # a collection did not complete: every call refused (D61)
         # exceptions (S0012): the pending word, which context word 10 points to: 0 or the u32
         # heap offset of the last exception thrown, a root (S0013 step 6, D7)
@@ -287,7 +302,7 @@ class _StoreStacks:
             raise TypeError(f"{v!r} for a reference type that holds only null")
         if h == EXN:  # a handle this store gave out (LESSONS 35)
             i = v.index if isinstance(v, ExnRef) else -1
-            if not 0 <= i < len(self.gc_handles) or self.gcrefs.get(self.gc_handles[i]) is not v:
+            if not self._is_handle(i, v):
                 raise TypeError(f"not an exception reference of this store: {v!r}")
             return self.gc_handles[i]
         if h == FUNC:
@@ -300,7 +315,7 @@ class _StoreStacks:
             return v.addr
         if isinstance(v, GcRef):
             i = v.index
-            if not 0 <= i < len(self.gc_handles) or self.gcrefs.get(self.gc_handles[i]) is not v:
+            if not self._is_handle(i, v):
                 raise TypeError(f"not a GC reference of this store: {v!r}")
             w = self.gc_handles[i]
             if h == ANY and not self._fits(w, ht, mod):
@@ -315,6 +330,23 @@ class _StoreStacks:
         if h == ANY and ht != ANY:  # a host value is an `any` and nothing below it
             raise TypeError(f"{v!r} is a host value: only anyref or externref takes it")
         return self._host_word(v)
+
+    def _is_handle(self, i: int, v: object) -> bool:
+        """`v` is the live handle of slot `i` of this store (a released slot holds word 0)."""
+        if not 0 <= i < len(self.gc_handles):
+            return False
+        e = self.gcrefs.get(self.gc_handles[i])
+        return e is not None and e() is v
+
+    def drain(self) -> None:
+        """Release the slots of the handles the host dropped: word 0, to the free list."""
+        while self.released:
+            e = self.released.popleft()
+            w = self.gc_handles[e.index]
+            if self.gcrefs.get(w) is e:  # not already replaced by a new handle of the word
+                del self.gcrefs[w]
+            self.gc_handles[e.index] = 0
+            heapq.heappush(self.free_handles, e.index)
 
     def _host_word(self, v: object) -> int:
         """The word of host value `v`: `(h << 2) | 2`, h its 1-based handle in the store."""
@@ -357,15 +389,23 @@ class _StoreStacks:
         if h == ANY and r & 1:
             v = r >> 1 & 0x7FFFFFFF
             return v - (v >> 30 << 31)
-        ref = self.gcrefs.get(r)
+        self.drain()
+        e = self.gcrefs.get(r)
+        ref = e() if e is not None else None  # None: dropped, not drained yet
         if ref is None:
             obj = h == EXN or not r & 1  # an exnref is always an object
             if obj and (self.heap is None or not self.heap.is_object(r)):
                 raise RuntimeError(f"JIT code returned {r:#x}, not a reference of this store")
-            n = len(self.gc_handles)
+            if self.free_handles:
+                n = heapq.heappop(self.free_handles)
+                self.gc_handles[n] = r
+            else:
+                n = len(self.gc_handles)
+                self.gc_handles.append(r)
             kind = "i31" if r & 1 else self.heap.kind_of(r)
-            ref = self.gcrefs[r] = ExnRef(n, self) if h == EXN else GcRef(n, kind, self)
-            self.gc_handles.append(r)
+            ref = ExnRef(n, self) if h == EXN else GcRef(n, kind, self)
+            e = self.gcrefs[r] = _Slot(ref, self.released.append)
+            e.index = n
         return ref
 
 

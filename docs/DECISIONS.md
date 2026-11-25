@@ -2,7 +2,7 @@
 title: Decisions
 kind: log
 status: current
-updated: 2026-11-24
+updated: 2026-11-25
 ---
 
 # Decisions
@@ -1104,7 +1104,9 @@ Status: accepted (maintainer, 2026-11-10 and 2026-11-13: S0013 Q1, Q5, Q8, Q9, Q
   given to the host is a `GcRef`, an entry of the store's handle table (index, word, one entry per
   object); there is no release, generation count or free list before phase 6, so the table grows
   with the distinct objects a store hands out. A deviation from Wasmtime's scoped roots, recorded
-  here as Q10 asked.
+  here as Q10 asked. **Superseded 2026-11-25 by S0017 Decision 11**: the Python runtime releases a
+  handle when the host drops it (weak entry, finalizer queues the slot, the store drains it before a
+  collection and a new handle, slot reused lowest first).
 * **Not collected yet**: until step 5 an unreachable object is never reclaimed (the heap grows up to
   2 GiB − 32 MiB, then "GC heap out of memory", a host error). Superseded by D61: collected since
   step 5.3, with a live limit of 2 GiB − 32 MiB − 64 KiB.
@@ -1256,6 +1258,8 @@ Status: accepted (maintainer, 2026-11-15: S0013 "Step 5 decisions" D1-D4 and D6,
 * **Host values of `externref`** that a collection did not meet are freed, unless the collector's
   report overflowed (a live handle at or above 16 384); freed numbers are reused lowest first, so
   the table stays flat under churn. `GcRef` handles stay until the store is dropped (phase 6).
+  **Amended 2026-11-25 by S0017 Decision 11**: `GcRef` and `ExnRef` handles are released when the
+  host drops them.
 * **Function subtyping** (S0013 step 5.6, D6 of "Step 5 decisions", Wasmtime's shape): a
   function-subtype site compares the record's type id with the signature word inline (D39
   amendment `func_type`); a final target stops there, with no call; a non-final one calls the

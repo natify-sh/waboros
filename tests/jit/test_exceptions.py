@@ -571,13 +571,13 @@ def test_a_pad_read_out_of_the_heap_traps(monkeypatch: pytest.MonkeyPatch, bound
     e: Any = i("make")[0]
     old = st.gc_handles[e.index]
     for bad in (0xFFFFFFF0, st.heap.mem.pages << 16):
-        del st.gcrefs[st.gc_handles[e.index]]
-        st.gc_handles[e.index], st.gcrefs[bad] = bad, e
+        slot = st.gcrefs.pop(st.gc_handles[e.index])
+        st.gc_handles[e.index], st.gcrefs[bad] = bad, slot
         with pytest.raises(Trap) as t:
             i.inst.call(k, [e])
         assert t.value.code is TrapCode.MEMORY_OUT_OF_BOUNDS
-    del st.gcrefs[st.gc_handles[e.index]]
-    st.gc_handles[e.index], st.gcrefs[old] = old, e
+    slot = st.gcrefs.pop(st.gc_handles[e.index])
+    st.gc_handles[e.index], st.gcrefs[old] = old, slot
     assert i.inst.call(k, [e]) == [5]
 
 

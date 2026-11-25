@@ -824,7 +824,7 @@ imports (step 3's Python budget); the others already use WAT.
 | host errors | `test_abi.py::test_host_exception_surfaces_as_itself` (inside a nested entry), `::test_a_host_that_never_writes_its_status_fails` (as the shim test, "Host calls"); `test_exceptions.py::test_a_host_trap_14_is_a_host_error_never_status_14` |
 | stacks | `test_abi.py::test_native_stack_overflow_capped_by_a_small_thread_stack`, `::test_value_stack_overflow` |
 | memories, tables | `test_memory64.py::test_move_from_wasm`, `::test_move_in_a_nested_entry`, `::test_table64_grow_results_and_cap`, `::test_huge_table_minimum_is_out_of_memory`; `test_tables.py::test_table_grow_across_nested_entries` |
-| references | `test_tables.py::test_externref_round_trip`, `::test_funcref_out_and_back_in`; `test_gc_collect.py::test_handles_keep_their_identity`, `::test_host_values_are_freed_and_reused_lowest_first`; `test_gc_roots.py::test_an_imported_global_is_a_root`, `::test_a_table_imported_by_two_instances_is_visited_once`, `::test_a_failed_instantiation_leaves_its_globals_roots` |
+| references | `test_tables.py::test_externref_round_trip`, `::test_funcref_out_and_back_in`; `test_gc_collect.py::test_handles_keep_their_identity`, `::test_released_handles_are_reclaimed`, `::test_held_handles_survive_the_release_of_others`, `::test_host_values_are_freed_and_reused_lowest_first`; `test_gc_roots.py::test_an_imported_global_is_a_root`, `::test_a_table_imported_by_two_instances_is_visited_once`, `::test_a_failed_instantiation_leaves_its_globals_roots` |
 | collector | `test_gc_collect.py::test_growth_doubles_never_shrinks_and_flips`, `::test_a_collector_trap_loses_the_store`, `::test_lost_store_does_not_resume_wasm`, `::test_tables_are_roots_in_batches_and_funcref_tables_are_not` |
 | threads | `test_memory64.py::test_another_thread_is_refused_while_a_host_import_runs` |
 | boundary | D71's distinctness: a file re-labelled with another compiler version (E1) loads with its own copy, and the two contexts' `HOST_BRIDGE` differ. The Win64 `entry` bytes and a file's `win64` bridge calling `dispatch` through an `ms_abi` function on Linux x86-64, as `tests/sljit/test_win64_bridge.py` does |
@@ -1096,3 +1096,4 @@ When approved and implemented:
 * 2026-11-25: Decision 10 (no guard handler on musl aarch64 and Android arm64, as the oracle;
   a handler there is a v2 candidate for both loaders).
 * 2026-11-25: Decision 11 (handles released: weak in Python, `waboros_ref_release` in C).
+* 2026-11-25: Decision 11 implemented in the Python runtime (the oracle); the two tests in the runtime-test table.

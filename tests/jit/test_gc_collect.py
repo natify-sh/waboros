@@ -5,6 +5,7 @@ services collecting, and one test per root class and per check of the collection
 tests of step 5.3 among them). On the machine's own JIT."""
 
 import ctypes
+import gc as pygc
 from typing import Any, cast
 
 import pytest
@@ -16,7 +17,7 @@ from waboros.targets.base import Trap, TrapCode
 from waboros.targets.jit.common import collect, gc
 from waboros.targets.jit.common import instance as inst_
 from waboros.targets.jit.common.heap import GcHeap
-from waboros.targets.jit.common.instance import _stacks  # pyright: ignore[reportPrivateUsage]
+from waboros.targets.jit.common.instance import GcRef, _stacks  # pyright: ignore[reportPrivateUsage]
 
 JIT = native_jit()
 SWITCHES = ("WABOROS_JIT_GC_STRESS", "WABOROS_JIT_GC_POISON", "WABOROS_JIT_GC_VERIFY")
@@ -38,6 +39,7 @@ W = """(module
       (local.set $s (i32.add (local.get $s) (struct.get $p 0 (ref.cast (ref $p) (local.get $x)))))
       (local.set $x (struct.get $p 1 (ref.cast (ref $p) (local.get $x)))) (br $l)))
     (local.get $s))
+  (func (export "mk") (result anyref) (call $new (i32.const 7)))
   (func (export "keep") (result anyref) (global.get $keep))
   (func (export "churn") (param $n i32)
     (loop $l (drop (array.new $l (i64.const 1) (i32.const 100)))
@@ -182,6 +184,47 @@ def test_handles_keep_their_identity(monkeypatch: pytest.MonkeyPatch) -> None:
         words.add(st.gc_handles[r.index])
     assert len(words) == 2 and set(st.gcrefs) == set(st.gc_handles)
     assert all(call(i, "ident", None)[0] is None for _ in range(2))
+
+
+def _live_after_release(mp: pytest.MonkeyPatch, hold: bool) -> tuple[int, Inst, Any, int, int]:
+    """Make a handle, keep or drop it, collect: (live bytes, instance, store, slot, word)."""
+    i, st = make(mp, "stress", "poison", "verify")
+    r = call(i, "mk")[0]
+    idx, word = r.index, st.gc_handles[r.index]
+    assert call(i, "ident", r)[0] is r
+    if not hold:
+        del r
+        for _ in range(5):  # a finalizer may run late (PyPy)
+            pygc.collect()
+    call(i, "churn", 1)  # collects (stress): the drain, then the roots
+    return st.heap.cursor - st.heap.lo, i, st, idx, word
+
+
+def test_released_handles_are_reclaimed(monkeypatch: pytest.MonkeyPatch) -> None:
+    held, _, st0, idx0, _ = _live_after_release(monkeypatch, True)
+    assert st0.gc_handles[idx0] != 0 and not st0.free_handles
+    live, i, st, idx, word = _live_after_release(monkeypatch, False)
+    assert live < held  # the same allocations: only the dropped object is gone
+    assert st.gc_handles[idx] == 0 and st.free_handles == [idx] and word not in st.gcrefs
+    assert call(i, "mk")[0].index == idx  # the slot is reused
+
+
+def test_held_handles_survive_the_release_of_others(monkeypatch: pytest.MonkeyPatch) -> None:
+    i, st = make(monkeypatch, "stress", "poison", "verify")
+    a = call(i, "mk")[0]
+    for _ in range(20):
+        call(i, "mk")  # dropped at once
+    for _ in range(5):
+        pygc.collect()
+    for _ in range(3):
+        assert call(i, "ident", a)[0] is a  # collections move it; identity stays
+    assert st.gc_handles[a.index] != 0 and st.free_handles
+    ghost = GcRef(st.free_handles[0], "struct", st)  # a stale handle: its slot is released
+    with pytest.raises(TypeError, match="not a GC reference"):
+        call(i, "ident", ghost)
+    j, _ = make(monkeypatch)
+    with pytest.raises(TypeError, match="not a GC reference"):
+        call(j, "ident", a)  # another store's handle
 
 
 def test_instantiation_never_collects(monkeypatch: pytest.MonkeyPatch) -> None:

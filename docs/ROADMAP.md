@@ -2,7 +2,7 @@
 title: Roadmap
 kind: reference
 status: current
-updated: 2026-11-24
+updated: 2026-11-25
 ---
 
 # Roadmap
@@ -363,8 +363,10 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29; done 2026-11-03) -> 
 * **`Store.close()` and a context manager** (maintainer, 2026-11-19, ROADMAP "Memory of dropped
   stores" (c)): release a store's memories, GC heap, code and contexts at once, not when the cyclic
   GC finds the cycle (LESSONS 135); after `close`, every use of the store or its instances raises.
-* **GC handles released by the host** (maintainer, 2026-11-10, with S0013 Q10): until here a GC
-  reference given to the host stays rooted until the store is dropped. One contract for every host
+* **GC handles released by the host** (maintainer, 2026-11-10, with S0013 Q10; amended
+  2026-11-25 by S0017 Decision 11: the Python runtime already releases a handle when the host drops
+  it, through a weak entry whose finalizer marks the slot for release at a safe point, and the C
+  loader has `waboros_ref_release`; what stays here is scopes and the public API). One contract for every host
   (Python, MicroPython, a C loader, the runtime as wasm), Wasmtime's model: root scopes released
   together when they close, explicit long-lived roots released by `unroot`, generation-checked
   handles. Host conveniences on top (Python: `with store.scope():`, optionally a finalizer that
