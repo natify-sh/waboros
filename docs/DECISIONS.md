@@ -660,7 +660,9 @@ musl is detected positively, by its mapped `ld-musl-<arch>.so.1`, because `platf
 names only glibc. musl's `struct sigaction` and its `sigaction`/`raise` were checked against its
 source and agree with glibc's. CI `jit` runs the spec suite and `test_guard.py` in guard mode in a
 `python:3.13-alpine` container. Linux musl aarch64 stays explicit: `jit-aarch64` needs libgcc's
-`__clear_cache`, which the stock Alpine image lacks (S0004, S0006 Changes).
+`__clear_cache`, which the stock Alpine image lacks (S0004, S0006 Changes). (Superseded
+2026-11-25: our own I-cache flush runs the JIT there, explicit; no guard handler, S0017
+Decision 10.)
 
 **macOS x86-64 and arm64** (2026-11-03, S0006 step 3): `darwin` joins `verified` in both targets,
 so `auto` gives guard pages on macOS, Intel and Apple Silicon. Evidence: CI run 41610392553, fully
@@ -1858,7 +1860,8 @@ suite through files and on the refusal corpus (Decision 6, with the designed exc
   accept the same files; memory, locks, stack bounds and `entry` on macOS and Windows come under
   (a) (the OS has no `mmap`/`pthread_getattr_np` equivalent, or Apple silicon needs `MAP_JIT`);
   Linux musl under (c). The handler is OFF on a row until CI has verified it there (D47 rule 3).
-  No handler on musl aarch64 and Android arm64 (S0017 Decision 10).
+  No handler on musl aarch64; on Android arm64 an opt-in one (`guard` only, not verified on a
+  device; S0017 Decision 10 as amended 2026-11-25).
 * **Order**: P1 (D75 and the regenerated committed v1 set), P2 (`ArtifactError.step`, step 1b),
   then steps 0-11 of S0017's plan. The build-size question (with/without the compiler and GC) is
   decided after step 6.1's measurement.

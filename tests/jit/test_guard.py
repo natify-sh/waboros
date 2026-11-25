@@ -232,6 +232,29 @@ def test_auto_is_explicit_silently_where_guard_cannot_be(
             build(wat(LOAD))
 
 
+@pytest.mark.parametrize("row", ["android", "linux-musl"])
+def test_android_arm64_has_guard_only_when_asked(row: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """S0017 Decision 10 as amended (maintainer, 2026-11-25): jit-aarch64 has a handler on Android
+    (bionic) that `guard` selects and `auto` does not (not verified on a device, D47 rule 3);
+    none on musl aarch64. A simulated host: the row and the machine are patched, and `_handler`
+    is non-empty, so `install` stops after its row check and installs nothing."""
+    from waboros.targets.jit.aarch64 import JitAarch64Target
+
+    tgt = JitAarch64Target()
+    monkeypatch.setattr(guard, "host_row", lambda: row)
+    monkeypatch.setattr(guard.platform, "machine", lambda: "aarch64")
+    monkeypatch.setattr(guard, "_handler", {"addr": 0})
+    monkeypatch.setenv("WABOROS_JIT_BOUNDS", "auto")
+    assert not guard.wanted(tgt)
+    monkeypatch.setenv("WABOROS_JIT_BOUNDS", "guard")
+    assert guard.wanted(tgt)  # compiles guard code; instantiation installs
+    if row == "android":
+        guard.install(tgt)
+    else:
+        with pytest.raises(RuntimeError, match="no fault handler for linux-musl on aarch64"):
+            guard.install(tgt)
+
+
 # /proc/self/maps lines of CPython on Alpine 3.24 (x86-64; aarch64 differs in the name only)
 # and on Ubuntu 24.04
 MUSL_MAPS = """\

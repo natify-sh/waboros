@@ -49,8 +49,9 @@ class JitAarch64Target(JitTarget):
 
     convention = "aapcs64"  # Linux, macOS and Windows alike
 
-    # S0006 steps 2, 3, 4
-    guard_rows = frozenset({"linux-glibc", "darwin", "win32"})
+    # S0006 steps 2, 3, 4; android: opt-in only (WABOROS_JIT_BOUNDS=guard), not verified on a
+    # device, so not in `verified` (D47 rule 3; maintainer 2026-11-25, S0017 Decision 10)
+    guard_rows = frozenset({"linux-glibc", "darwin", "win32", "android"})
     # `auto` gives guard here (D44; CI `arm64`, `jit`;
     # darwin: CI run 41610392553, `arm64 (macos-latest)`;
     # win32: CI run 41633456821, `arm64 (windows-11-arm)`)
@@ -75,7 +76,9 @@ class JitAarch64Target(JitTarget):
         from waboros.targets.jit.aarch64.encoder import Asm
 
         a = Asm()
-        fault_handler(a, tables, prev, sigaction, reraise, darwin=darwin, windows=windows)
+        fault_handler(
+            a, tables, prev, sigaction, reraise, darwin=darwin, windows=windows, bionic=bionic
+        )
         return a.finish()
 
 

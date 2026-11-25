@@ -15,7 +15,8 @@ updated: 2026-11-24
 **Status: implemented (2026-11-03).** Steps 1-5 and 7 are done and verified in CI; step 6 (the artifact
 flag and `TRAPMAP`) moved to the artifact-format spec of phase 5. `auto` is the default (D44) and gives guard pages on Linux
 glibc x86-64 and aarch64, Linux musl x86-64, macOS and Windows (x86-64/x64 and arm64) and Android x86_64; it gives explicit
-checks on Linux musl aarch64 and Android arm64 (table in "Selection and fallback").
+checks on Linux musl aarch64 and Android arm64; Android arm64 has the handler for an explicit
+`WABOROS_JIT_BOUNDS=guard`, unverified on a device (table in "Selection and fallback").
 
 D29: JIT code may omit the bounds check of a 32-bit memory access when the memory sits in a
 reservation whose inaccessible tail catches every out-of-bounds address, and a fault handler turns
@@ -254,10 +255,10 @@ trap).
 | OS / libc | x86-64 | aarch64 | CI |
 |---|---|---|---|
 | Linux glibc | **verified** (D44) | **verified** (step 2; the native runner confirms) | `jit` (aarch64 under QEMU), `arm64` native runner |
-| Linux musl | **verified** (musl step) | explicit: `jit-aarch64` needs libgcc's `__clear_cache`, absent from the stock image (Changes) | `jit` (`python:3.13-alpine` container) |
+| Linux musl | **verified** (musl step) | explicit, no handler (S0017 Decision 10); the JIT runs with our own I-cache flush where libgcc is absent (S0004, 2026-11-25) | `jit` (`python:3.13-alpine` container) |
 | macOS | **verified** (step 3; CI run 41610392553) | **verified** (step 3; CI run 41610392553) | `platforms.yml` (`macOS x86_64`, `macOS arm64`) |
 | Windows | **verified** (step 4; CI run 41640149866) | **verified** (step 4; CI run 41633456821) | `platforms.yml` (`Windows x64`, `Windows ARM64`) |
-| Android (bionic, libsigchain) | **verified** (step 5; CI run 41708608127, `tests/jit/test_android.py` in the Android cell; CPython 3.13+ only, older Pythons on Android are not a target) | explicit (documented limitation) | `platforms.yml` (`Android`, x86_64 emulator) |
+| Android (bionic, libsigchain) | **verified** (step 5; CI run 41708608127, `tests/jit/test_android.py` in the Android cell; CPython 3.13+ only, older Pythons on Android are not a target) | explicit under `auto`; `guard` opt-in, unverified (no device or arm64 emulator; Changes 2026-11-25) | `platforms.yml` (`Android`, x86_64 emulator; arm64 built only) |
 
 The BSDs are not a target (TARGETS.md), so they have no row.
 
@@ -309,7 +310,8 @@ reservation is a crash, not a trap: the explicit-mode tests and differential run
    handler. Acceptance: QEMU and native-runner spec parity; `jit_dump` lists identical across hosts.
 2b. **Linux musl** (added, maintainer 2026-11-02): musl named by its mapped image; x86-64 verified
    in an Alpine container in CI; aarch64 explicit while stock Alpine arm64 has no `__clear_cache`
-   (S0004). Acceptance: the container runs the spec suite and `test_guard.py` in guard mode.
+   (S0004; superseded 2026-11-25: our own I-cache flush runs the JIT there, explicit, no handler).
+   Acceptance: the container runs the spec suite and `test_guard.py` in guard mode.
 3. **macOS x86-64 and arm64**: SIGBUS, Darwin offsets, `MAP_JIT`. Acceptance: the macOS CI legs (now the macOS cells of
    `platforms.yml`) run `test_guard.py` and the spec suite in guard mode.
 4. **Windows x86-64 and arm64** (arm64 joined, maintainer 2026-11-02; done and verified 2026-11-03): the vectored handler; the EH-continuation question answered by a test that forces user
@@ -885,3 +887,22 @@ reservation is a crash, not a trap: the explicit-mode tests and differential run
   bits of `.waboros.header`'s `flags`, the fault map is `.waboros.traps`, a loader refuses (thin) or
   regenerates (fat) a guard file where guard is unavailable or the guard is smaller than the file's.
   The frames table of the "Artifact" paragraph is not produced; it becomes `.waboros.addrmap`.
+* 2026-11-25: **Android arm64: the handler, opt-in** (maintainer, option A; amends S0017 Decision 10).
+  `jit-aarch64` has `android` in `guard_rows`, not in `verified`: `auto` gives explicit there,
+  `WABOROS_JIT_BOUNDS=guard` installs the handler; a thin guard artifact file is likewise refused
+  at step 5 on such a row unless `guard` is asked for (`artifact.py`, as `guard.wanted()`). Read, not copied (aosp-mirror/platform_bionic
+  main): `libc/include/bits/signal_types.h` (`__SIGACTION_BODY` is the same for every `__LP64__`
+  target: int `sa_flags`, the handler at 8, an 8-byte `sigset_t`, `sa_restorer`), so
+  `_SIGACTION["android"]` holds on arm64 and the aarch64 handler reads the saved handler at
+  `BIONIC_SA_HANDLER` 8 (`bionic=True`; before, `JitAarch64Target.fault_handler` took the flag and
+  dropped it, LESSONS); `libc/include/sys/ucontext.h` (aarch64: the kernel's frame, `uc_mcontext`
+  16-aligned at 176, `pc` at `UC_PC`); `libc/bionic/sigaction.cpp` (arm64 adds no restorer: the
+  kernel's vdso one). Installation, libsigchain, `broken()` and the child-process limit are the
+  x86-64 row's, unchanged. Tests on Linux: the bionic offsets against ctypes mirrors, the arm64
+  handler on fabricated contexts with bionic's struct (under QEMU and on the arm64 runner), the
+  llvm-mc round trip, and a simulated `android` row (`auto` explicit, `guard` installs).
+  `test_android.py` takes the guard faults in `guard` mode on arm64, but no CI cell runs it there.
+  Not shown without a device: real faults through libsigchain and ART's arm64 fault manager,
+  PAC/BTI/MTE in an app process. The JIT itself needed our own I-cache flush there: bionic exports
+  no `__clear_cache` (`libc.map.txt` has only arm's `cacheflush`), and none of the python.org
+  3.14.0 Android aarch64 libraries has it (S0004, 2026-11-25).

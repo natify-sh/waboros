@@ -346,7 +346,8 @@ What went wrong or surprised us while building the PoC, so it is not found again
     The coordinator's question about S0004's note found it; the test run did not. Rule: before
     claiming a platform, run the product's probe on the platform's stock image with nothing added.
     List every package the test setup installs and ask which of them the product itself loads.
-    Found: S0006 musl step, 2026-11-02.
+    Found: S0006 musl step, 2026-11-02. (Superseded 2026-11-25 for the flush: our own routine
+    runs where `__clear_cache` is absent, S0004; the rule stands.)
 57. **On macOS, `si_code` does not tell a sent SIGSEGV or SIGBUS from a fault.** The Linux handler
     treats `si_code <= 0` as "sent by `kill`/`raise`": never ours, and re-sent with `raise` after
     SIG_DFL is put back (LESSONS 46). xnu's `sendsig` fills `si_code` by signal number, not by
@@ -1273,3 +1274,16 @@ What went wrong or surprised us while building the PoC, so it is not found again
     (`google_apis_ps16k`, API 35-37.x) therefore needs our own emulator and `--connected`, and
     `targetSdk` is changed by a Gradle init script (`finalizeDsl`), not by a `-P` property.
     Written before the first CI run of the cell: not yet confirmed. Found: 2026-11-25.
+162. **A target method that accepts a flag and drops it fails silently.** `JitAarch64Target.
+    fault_handler` took `bionic=` (the common signature, for x86-64's Android row) and never passed
+    it to the emitter, so on Android arm64 the handler would have chained through the first word
+    of bionic's `struct sigaction`, its `sa_flags`, as a code address. Nothing showed it while the
+    row was refused. Rule: a per-row flag reaches the emitter or the method raises for it; the
+    fabricated-context test runs every row on each architecture that claims it. Found: S0006
+    Android arm64 opt-in, 2026-11-25.
+163. **No `__clear_cache` is reachable at run time on bionic arm64 (nor on musl without
+    libgcc).** bionic's `libc.map.txt` exports only arm's `cacheflush`; compiler-rt's builtins
+    are hidden in every library that links them; no library of python.org's Android aarch64
+    build has the symbol. A JIT that looks the flush up with `dlsym` fails its probe there, so
+    jit-aarch64 never ran on Android arm64 until our own routine (S0004, 2026-11-25). Rule: on
+    a new aarch64 row, check where the flush comes from before anything else. Found: 2026-11-25.

@@ -8,7 +8,8 @@ env:
   # S0006, Linux musl x86-64 (job `jit`): inside `python:3.13-alpine` the row is detected and
   # `auto` gives guard pages, then the spec suite and the fault tests in guard mode. wasmtime's
   # musllinux wheel needs libgcc_s; the fault-map test disassembles with GNU objdump (binutils).
-  # Not aarch64: jit-aarch64 needs libgcc's __clear_cache, absent from the stock image (S0006)
+  # Not aarch64: guard pages have no handler on musl aarch64 (S0017 Decision 10); its JIT runs
+  # explicit, with our own I-cache flush (MUSL_ARM64 below, job `arm64`; S0004)
   MUSL_GUARD: |
     apk add -q libgcc binutils
     pip install -q --root-user-action=ignore --group dev
@@ -17,6 +18,22 @@ env:
     export WABOROS_JIT_BOUNDS=guard
     python -m tests.spec.run --engine "jit-$(uname -m)"
     python -m pytest -p no:cacheprovider tests/jit/test_guard.py -v -rs
+  # S0004 (2026-11-25): jit-aarch64 on Linux musl aarch64 in the stock image, which has no libgcc
+  # and so no __clear_cache: our own flush routine makes code coherent. No wasmtime (its wheel
+  # needs libgcc_s): the WAT of the tests comes from tests/wat_cache, filled by the glibc run
+  # before, and a text missing from it fails the step (its skip reason is grepped: the
+  # WABOROS_JIT_REQUIRE switch would also fail the rows this host lacks, guard and llvm-mc); tests
+  # that need wasmtime as an oracle skip. Explicit bounds (no handler on this row); not the
+  # host's sljit library (built for glibc)
+  MUSL_ARM64: |
+    pip install -q --root-user-action=ignore pytest pytest-xdist
+    export PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 WABOROS_JIT_BOUNDS=explicit WABOROS_SLJIT_LIB=/nonexistent
+    python -c "from waboros.targets.base import TARGETS, target_order; from waboros.targets.jit.common import execmem, guard; why = TARGETS['jit-aarch64']().probe(); print(guard.host_row(), '__clear_cache:', execmem._clear_cache, 'probe:', why, 'auto:', target_order('auto')); assert guard.host_row() == 'linux-musl' and execmem._clear_cache is None and why is None and target_order('auto') == ['jit-aarch64']"
+    python tools/run_coremark_jit.py poc/in/core.wasm --target jit-aarch64 | tee /tmp/coremark.txt
+    python tools/run_coremark_jit.py --check /tmp/coremark.txt
+    python -m pytest -p no:cacheprovider tests/jit -n auto -q -rs -k "not isa_check and not isa_levels and not decode_and_reassemble" > /tmp/pytest.txt 2>&1 || { cat /tmp/pytest.txt; exit 1; }
+    cat /tmp/pytest.txt
+    if grep -q "not in tests/wat_cache" /tmp/pytest.txt; then echo "WAT missing from tests/wat_cache" >&2; exit 1; fi
 jobs:
   # A push to a branch with an open pull request is tested by that pull request's run: skip the
   # duplicate push run (pushes to main, tags and branches without a pull request still run).
@@ -360,6 +377,9 @@ jobs:
         env:
           WABOROS_JIT_REQUIRE: "1"
           WABOROS_JIT_BOUNDS: explicit
+          WABOROS_WAT_CACHE: "1"  # for the musl container below
+      # the same on Linux musl aarch64 with our own I-cache flush (MUSL_ARM64 above)
+      - run: docker run --rm -v "$PWD:/w" -w /w -e MUSL_ARM64 python:3.13-alpine sh -euxc "$MUSL_ARM64"
       - if: ${{ !cancelled() }}
         run: uv run python tools/stack_info.py
       # step 4e: CoreMark on jit-aarch64, natively (the number for BENCHMARKS.md); it must pass

@@ -1195,6 +1195,11 @@ def _check(v: Any, target: str) -> None:
             _no("GUARD_LOG2", log2, f"has a guard of 2^{guard.GUARD_LOG2} at most")
         if not t.guard_rows:
             _no("flags BOUNDS_GUARD", "set", f"has no guard mode for {target}")
+        # as guard.wanted(): a row whose handler is not verified (Android arm64) runs guard code
+        # only when WABOROS_JIT_BOUNDS=guard asks for it (S0017 Decision 10)
+        if guard.host_row() not in t.verified and guard.mode() != "guard":
+            _no("flags BOUNDS_GUARD", "set", f"cannot run guard code here (the handler for "
+                f"{guard.host_row()} is opt-in: WABOROS_JIT_BOUNDS=guard)")  # fmt: skip
         try:
             guard.install(t)
         except (RuntimeError, OSError) as e:

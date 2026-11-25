@@ -473,7 +473,10 @@ stores, D45), compared with `pyc` by `tools/spec_diff.py` (strict since 5d3), ru
 (SIGILL on an SSE2-only CPU before Python starts);
 the spec suite of `jit-x86_64` and `tests/jit/test_guard.py` with `WABOROS_JIT_BOUNDS=guard` named
 explicitly (guard pages, S0006; the same two in a `python:3.13-alpine` container for Linux musl
-x86-64, `MUSL_GUARD`; the test file runs on the JIT of the machine and skips
+x86-64, `MUSL_GUARD`; and in the `arm64` job, `MUSL_ARM64`: `tests/jit` and CoreMark on
+`jit-aarch64` in the stock `python:3.13-alpine` image, explicit bounds, with no libgcc so our own
+I-cache flush is the one used (its natively rewritten-page test is best-effort evidence, S0004),
+the WAT from `tests/wat_cache` filled by the glibc run before it (a missing text fails the step); the test file runs on the JIT of the machine and skips
 on other hosts, but fails under
 `WABOROS_JIT_REQUIRE=1` when `auto` does not give guard pages), so a regression in the
 verified-row check cannot silently turn guard pages off (that `jit-x86_64` guard run, the

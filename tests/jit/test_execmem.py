@@ -127,7 +127,7 @@ def test_flush_covers_the_written_range_once(monkeypatch: pytest.MonkeyPatch) ->
     """The instruction cache is invalidated once, after the code is in place, over the whole
     mapped area (S0004)."""
     name = flush_name()
-    real = getattr(execmem, name)
+    real = getattr(execmem, name) or execmem._own_flush()  # musl, Android: our own  # pyright: ignore[reportAttributeAccessIssue, reportPrivateUsage]
     seen: list[tuple[int, int, bytes]] = []
     target = TARGETS["jit-aarch64"]()
     assert isinstance(target, JitTarget)
@@ -147,15 +147,112 @@ def test_flush_covers_the_written_range_once(monkeypatch: pytest.MonkeyPatch) ->
 
 def test_no_flush_function_means_no_code(monkeypatch: pytest.MonkeyPatch) -> None:
     """Never run unflushed code: without the flush function `load` fails and so does the probe
-    (the D31 warning, `auto` keeps pyc)."""
+    (the D31 warning, `auto` keeps pyc). macOS only: Linux has our own routine (below)."""
     name = flush_name()
+    if name == "_clear_cache":
+        pytest.skip("Linux falls back to our own flush routine")
     monkeypatch.setattr(execmem, name, None)
     with pytest.raises(OSError, match="^no "):
         load(b"\x00" * 4)
     why = TARGETS["jit-aarch64"]().probe()
     assert why is not None and why.startswith("executable memory unavailable: OSError('no ")
-    if name == "_clear_cache":
-        assert "instruction-cache flush function (__clear_cache)" in why
+
+
+def test_the_own_flush_routine_round_trips_through_llvm_mc() -> None:
+    """S0004: `icache_flush` is ARMv8.0-A only (plus the `bti c` hint): llvm-mc with no feature
+    but BTI decodes every word, and re-encodes the same bytes."""
+    import re
+    import shutil
+    import subprocess
+
+    from waboros.targets.jit.aarch64.abi import icache_flush
+    from waboros.targets.jit.aarch64.encoder import Asm as A64
+
+    mc = shutil.which("llvm-mc")
+    if not mc:
+        pytest.skip("no llvm-mc")
+    a = A64()
+    icache_flush(a)
+    code = a.finish()
+    run = [mc, "-triple=aarch64", "-mattr=+bti"]
+    words = " ".join(f"0x{b:02x}" for b in code)
+    out = subprocess.run([*run, "--disassemble"], input=words, capture_output=True, text=True)
+    lines = [ln.strip() for ln in out.stdout.splitlines() if ln.strip()[:1] not in ("", ".")]
+    assert not out.stderr and len(lines) == len(code) // 4, out.stderr
+    ops = [re.sub(r"\s+", " ", ln.split("//")[0].strip()) for ln in lines]
+    for want in ("bti c", "mrs x2, CTR_EL0", "tbnz w2, #28", "dc cvau, x4", "dsb ish",
+                 "tbnz w2, #29", "ic ivau, x4", "isb", "ret"):  # fmt: skip
+        assert any(op.startswith(want) for op in ops), (want, ops)
+    back = subprocess.run([*run, "-show-encoding"], input="\n".join(lines),
+                          capture_output=True, text=True).stdout  # fmt: skip
+    encs = re.findall(r"encoding: \[([^\]]*)\]", back)
+    assert b"".join(bytes(int(x, 16) for x in e.split(",")) for e in encs) == code
+
+
+def test_the_own_flush_takes_every_path_of_ctr_el0() -> None:
+    """Each CTR_EL0 case (clean and invalidate, either skipped by IDC/DIC, both) and line sizes
+    of 16 to 128 bytes run over an unaligned range and return: the `mrs` is replaced by a `nop`,
+    so the value comes in x2, the third argument."""
+    if flush_name() != "_clear_cache":
+        pytest.skip("Linux only")
+    from waboros.targets.jit.aarch64.abi import MRS_CTR_EL0, icache_flush
+    from waboros.targets.jit.aarch64.encoder import Asm as A64
+
+    a = A64()
+    icache_flush(a)
+    code = a.finish()
+    at = code.index((MRS_CTR_EL0 | 2).to_bytes(4, "little"))
+    mem = load(code[:at] + (0xD503201F).to_bytes(4, "little") + code[at + 4 :])
+    f = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint64)(mem.addr)
+    buf = (ctypes.c_uint8 * 8192)()
+    lo = ctypes.addressof(buf)
+    for idc, dic in ((0, 0), (1, 0), (0, 1), (1, 1)):
+        for d, i in ((2, 2), (4, 4), (5, 3)):  # log2 of words: 16, 64, 128 bytes
+            f(lo + 3, lo + 8000, idc << 28 | dic << 29 | d << 16 | i)
+    mem.free()
+
+
+def test_code_runs_through_the_own_flush(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Linux aarch64 without `__clear_cache` (musl without libgcc, Android): `load` goes through
+    our own routine, and the code runs, on this thread and on one that never ran the area's
+    earlier code; a wasm module runs end to end. This does not show that the routine flushes:
+    every `load` maps a fresh page, which the kernel makes coherent itself when it becomes
+    executable (see the rewrite test below)."""
+    import threading
+
+    if flush_name() != "_clear_cache":
+        pytest.skip("Linux only")
+    monkeypatch.setattr(execmem, "_clear_cache", None)
+    from waboros.targets.jit.aarch64.encoder import Asm as A64
+
+    def ret(n: int) -> bytes:
+        a = A64()
+        a.bti("c")
+        a.mov_imm(0, n, wide=False)
+        a.ret()
+        return a.finish()
+
+    got: list[int] = []
+    for n in range(1, 41):  # unmapped and mapped again: usually the same address
+        mem = load(ret(n))
+        f: Any = ctypes.CFUNCTYPE(ctypes.c_int)(mem.addr)
+        got.append(f())
+        t = threading.Thread(target=lambda: got.append(f()))  # noqa: B023 (joined in the loop)
+        t.start()
+        t.join()
+        mem.free()
+    assert got == [n for n in range(1, 41) for _ in (0, 1)]
+    assert execmem._own  # the routine was built and used  # pyright: ignore[reportAttributeAccessIssue, reportPrivateUsage]
+    from tests.jit.test_compiler import build
+
+    monkeypatch.setenv("WABOROS_JIT_BOUNDS", "explicit")
+    # (module (memory 1) (data (i32.const 8) "\2a")
+    #   (func (export "f") (param i32) (result i32) (i32.load8_u (local.get 0))))
+    wasm = bytes.fromhex(
+        "0061736d01000000" "01060160017f017f" "03020100" "0503010001" "07050101660000"
+        "0a090107002000" "2d00000b" "0b07010041080b012a"
+    )  # fmt: skip
+    assert build(wasm, "jit-aarch64")("f", 8) == [42]
 
 
 def test_write_protect_toggle_is_restored_when_the_copy_raises(
@@ -297,3 +394,33 @@ def test_sizes_round_to_a_16_kib_page(monkeypatch: pytest.MonkeyPatch) -> None:
     ctypes.memmove(res.addr + 65536, b"\x01", 1)
     assert ctypes.string_at(res.addr + 81920 - 1, 1) == b"\0"
     res.free()
+
+
+def test_the_own_flush_makes_rewritten_code_visible(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One page run, made writable again, rewritten, made executable again and flushed by our
+    own routine only: the kernel does not sync it this time (its PG_dcache_clean is set since
+    the first time), so a stale instruction cache would run the old code. Best-effort evidence:
+    under QEMU (no I-cache model) it proves nothing; natively a no-op flush can fail it, but
+    whether stale lines are hit is a matter of timing and of the core (CTR_EL0.DIC/IDC make the
+    caches coherent by themselves). The routine's correctness rests on its structure (llvm-mc
+    above), the CTR_EL0 path test and the reading against compiler-rt's `__clear_cache`."""
+    if flush_name() != "_clear_cache":
+        pytest.skip("Linux only")
+    monkeypatch.setattr(execmem, "_clear_cache", None)
+    from waboros.targets.jit.aarch64.encoder import Asm as A64
+
+    flush = execmem._own_flush()  # pyright: ignore[reportAttributeAccessIssue, reportPrivateUsage]
+    mem = ExecMem(4096)
+    f = ctypes.CFUNCTYPE(ctypes.c_int)(mem.addr)
+    for n in range(1, 201):
+        a = A64()
+        a.bti("c")
+        a.mov_imm(0, n, wide=False)
+        a.ret()
+        if n > 1:
+            execmem._commit(mem.addr, mem.size)  # read-write, not executable  # pyright: ignore[reportAttributeAccessIssue, reportPrivateUsage]
+        mem.write(a.finish())
+        execmem._protect(mem.addr, mem.size)  # pyright: ignore[reportAttributeAccessIssue, reportPrivateUsage]
+        flush(mem.addr, mem.addr + mem.size)
+        assert f() == n
+    mem.free()

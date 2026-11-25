@@ -75,11 +75,15 @@ Taken on 2026-11-25 on the revised draft's questions:
    rows ("Rows").
 9. **The fat-file SHA-256 check is S0014's step 1b** (former Open question 4, (a)): as the code
    does, a docs change in P2.
-10. **No guard handler on musl aarch64 and Android arm64** (maintainer, 2026-11-25): as the
-    oracle (`guard_rows` of `jit-aarch64`), the C loader refuses guard files there at step 5 and
-    runs explicit files; Decision 8's `libsigchain` applies to the rows that have a handler. A
-    handler on these rows would have to come to the Python runtime too, so it is a v2 candidate
-    for both loaders (ROADMAP "Phase 8"), not a C-only exception.
+10. **No guard handler on musl aarch64; an opt-in one on Android arm64** (maintainer,
+    2026-11-25; amended the same day, option A): the C loader mirrors the oracle's `guard_rows`
+    and `verified` of `jit-aarch64`. On Android arm64 the Python runtime has the handler
+    (bionic's `struct sigaction`, through libsigchain as on x86-64), selected only by
+    `WABOROS_JIT_BOUNDS=guard`: the row is in `guard_rows`, not in `verified` (no device or
+    emulator runs it, D47 rule 3), so `auto` gives explicit there and the C loader's step 9 has
+    the handler with `WABOROS_GUARD` OFF by default. On musl aarch64 neither loader has one: the C
+    loader refuses guard files there at step 5 and runs explicit files; a handler there is a v2
+    candidate for both loaders (ROADMAP "Phase 8"), not a C-only exception.
 11. **Handles given to the host are released** (maintainer, 2026-11-25; replaces S0013 Q10's
     "until phase 6" for both loaders): the Python runtime frees a handle when its `GcRef` or
     `ExnRef` is no longer referenced (a weak entry and a finalizer, the slot reused after the
@@ -128,8 +132,9 @@ and the fault handler. The first row is Linux glibc x86-64.
   (S0006). Without the handler, guard files are refused and explicit files run: there is no crash,
   so (a) does not apply.
 * **Guard rows are per architecture, as the oracle's `guard_rows`**: `jit-x86_64` has linux-glibc,
-  linux-musl, darwin, win32 and android; `jit-aarch64` has linux-glibc, darwin and win32. On Linux
-  musl aarch64 and Android arm64 the C loader has no handler and refuses guard files at step 5.
+  linux-musl, darwin, win32 and android; `jit-aarch64` has linux-glibc, darwin, win32 and android
+  (opt-in, not verified: Decision 10). On Linux musl aarch64 the C loader has no handler and
+  refuses guard files at step 5.
   On a listed row the handler is ON only once item 3 in guard mode has passed in CI on that row
   (D47 rule 3); until then `WABOROS_GUARD` defaults to OFF there.
 * The DECISIONS.md record that D47 (d) asks for ("the decision record says so") is D76, written at
@@ -154,7 +159,7 @@ and the fault handler. The first row is Linux glibc x86-64.
 | Linux musl x86-64 | `os_posix.c` unchanged; the Linux main-thread stack rule matters here too: musl's `pthread_getattr_np` reports only the mapped part of the main stack | (c) | `ci.yml` `jit`, `python:3.13-alpine` container (`apk add build-base cmake`) |
 | Linux musl aarch64 | the same; the instruction-cache flush is `__builtin___clear_cache`, which the toolchain resolves at **link time** (libgcc's or compiler-rt's `__clear_cache`, linked statically into the program). S0006's musl aarch64 limit was a **run-time** lookup by the Python runtime in an image without `libgcc_s`; a ctest checks that the flush is present and that code written twice runs the second version. No handler (not an oracle guard row): explicit files only | (c) | `ci.yml` `arm64`, an Alpine container |
 | Android x86-64 | `os_posix.c` with bionic: the handler installed through libc's `sigaction` (never a raw syscall), so in an app process libsigchain makes it a user handler called after ART's (S0006 step 5); `broken` also covers the child-process reset that S0006 documents (a `vfork` child sets the handled signals to `SIG_DFL`) | (d) | `platforms.yml` Android cell, x86_64 emulator |
-| Android arm64 | the same, with `__builtin___clear_cache`; no handler (not an oracle guard row): explicit files only | (d) | built in the Android cell (NDK cross build); run on an arm64 emulator where the cell's runner has one, else build-only until a runner does: step 9 reports which |
+| Android arm64 | the same, with `__builtin___clear_cache`; the handler as on Android x86-64, OFF by default (the oracle's row is in `guard_rows`, not `verified`: Decision 10) | (d) | built in the Android cell (NDK cross build); run on an arm64 emulator where the cell's runner has one, else build-only until a runner does: step 9 reports which |
 
 * macOS uses signals, as the Python runtime does (S0006 step 3), not Mach exception ports.
 * **What is new on Windows.** The code that ARTIFACT.md's Win64 listing matches already runs on
@@ -1046,7 +1051,7 @@ When approved and implemented:
   reads "no generator outside CMake" (Decision 5), and that `native/` configures without the
   submodule.
 * [S0006](S0006-guard-pages.md): the row table gains the C loader's handler on the oracle's
-  eight guard rows (none on Linux musl aarch64 and Android arm64, as the Python runtime), and the
+  guard rows (none on Linux musl aarch64, opt-in on Android arm64, as the Python runtime), and the
   C `broken` rule.
 * [RISKS.md](../RISKS.md) R6: the C loader's handlers, the shim process with two copies,
   Windows faulthandler.
@@ -1098,6 +1103,9 @@ When approved and implemented:
   `cases.py`, the D47 (d) record at approval, estimates marked.
 * 2026-11-25: Decision 10 (no guard handler on musl aarch64 and Android arm64, as the oracle;
   a handler there is a v2 candidate for both loaders).
+* 2026-11-25: Decision 10 amended (maintainer, option A): Android arm64 has the handler, opt-in
+  (`guard_rows`, not `verified`), in the Python runtime now and in the C loader at step 9; musl
+  aarch64 still none (its JIT now runs explicit with our own I-cache flush, S0004).
 * 2026-11-25: Decision 11 (handles released: weak in Python, `waboros_ref_release` in C).
 * 2026-11-25: Decision 11 implemented in the Python runtime (the oracle); the two tests in the runtime-test table.
 * 2026-11-25: approved by the maintainer (Decisions 1-11; the build-size question stays open until step 6.1); D76 records it. First step: P1.

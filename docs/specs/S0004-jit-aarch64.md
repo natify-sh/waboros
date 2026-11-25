@@ -199,9 +199,11 @@ AArch64 does not keep the instruction cache coherent with data writes. `execmem.
 RW, write, `mprotect` RX (plus `PROT_BTI` where supported), then **invalidate the range** before the
 first call: Linux: `__clear_cache(start, end)` through ctypes from the process (`CDLL(None)`, else
 `libgcc_s.so.1`; it does `dc cvau`/`dsb ish`/`ic ivau`/`dsb ish`/`isb` with the line sizes from
-`CTR_EL0` and skips what `CTR_EL0.IDC/DIC` make unnecessary). macOS: `sys_icache_invalidate`
+`CTR_EL0` and skips what `CTR_EL0.IDC/DIC` make unnecessary); where the process has neither (musl
+without libgcc, Android bionic), our own routine with that sequence (`aarch64/abi.py`
+`icache_flush`, Changes 2026-11-25). macOS: `sys_icache_invalidate`
 (libSystem) with `MAP_JIT` + `pthread_jit_write_protect_np`; Windows: `FlushInstructionCache`.
-x86-64 keeps a no-op. A process where no flush function is found fails the probe (D31 warning),
+x86-64 keeps a no-op. A process where no flush function is found (macOS) fails the probe (D31 warning),
 never runs unflushed code. Code areas are written once and never patched (W^X), so a fresh area
 needs only this one flush (`ic ivau` is broadcast to every core, inner-shareable). Remaining
 theoretical case: another core that prefetched a freed area's address before it was reused; Linux
@@ -348,10 +350,10 @@ Each JIT step follows CLAUDE.md: plan approved first, review after.
   functions. **Veneer islands** (V8's assembler): exact but complex in one pass.
 * **Upfront far mode from the wasm body size**: needs a safe bytes-per-instruction bound; a loose
   bound puts ordinary large functions in far mode, a tight one is fragile.
-* **Own I-cache routine** (`mrs ctr_el0`, `dc`/`ic` loops) emitted as code: it would need a flush
-  before it can run (bootstrap), relying on the kernel syncing fresh executable pages; `__clear_cache`
-  exists in every glibc and libgcc process we target. Kept as the fallback to consider for musl
-  without libgcc.
+* **Own I-cache routine** (`mrs ctr_el0`, `dc`/`ic` loops) emitted as code instead of
+  `__clear_cache` everywhere: it needs the kernel's sync for its own page (bootstrap). Taken as the
+  fallback only (Changes 2026-11-25): `__clear_cache` stays first where it exists, so glibc is
+  unchanged.
 * **QEMU instead of a native runner**: misses I-cache bugs and is slow; ROADMAP keeps it for
   architectures without runners.
 * **A pool of 8 (as x86-64)**: simpler comparison; 13 used first and measured against 8.
@@ -523,3 +525,27 @@ Resolved by the maintainer on 2026-11-01 (see Changes); none open.
   bounds and the headroom numbers.
 * 2026-11-23: S0015 step 5 (docs): the per-frame bounds gain the measured recursion depth
   (BENCHMARKS.md, step 3); the body text of "Trampolines" says who owns each. No code change.
+* 2026-11-25 (maintainer, option B): **our own I-cache flush** where the process has no
+  `__clear_cache` (Linux musl without libgcc; Android, whose bionic exports none: `libc.map.txt`
+  lists only arm's `cacheflush`, and no library of python.org's 3.14.0 Android aarch64 build has
+  it). `aarch64/abi.py` `icache_flush` emits `void flush(start, end)`: `bti c` (ctypes calls it
+  with `blr`), `mrs ctr_el0`, `dc cvau` per D-line (DminLine), `dsb ish`, `ic ivau` per I-line
+  (IminLine), `dsb ish`, `isb`; the clean skipped under CTR_EL0.IDC, the invalidate under DIC, as
+  the Arm ARM's sequence for modified code and libgcc's/compiler-rt's `__clear_cache` (read, not
+  copied). ARMv8.0-A only. `execmem.py` builds it once, behind a lock, in a page of its own never
+  unmapped, and uses it only when `__clear_cache` was not found. Bootstrap: that page is not
+  flushed by anything of ours; arm64 Linux makes a user page coherent when it first becomes
+  executable (`set_pte_at` calls `__sync_icache_dcache` for a present user-executable PTE,
+  arch/arm64/include/asm/pgtable.h; `__sync_icache_dcache` cleans and invalidates to PoU unless
+  the folio's `PG_dcache_clean` is set, arch/arm64/mm/flush.c; a newly allocated page has it
+  clear). Only this page relies on it. The routine is verified by its structure (the llvm-mc
+  round trip of `test_execmem.py`, ARMv8.0-A only), by a test that runs every CTR_EL0 case
+  (IDC/DIC, line sizes) with the value passed in, and by reading it against compiler-rt's
+  `__clear_cache`. Best-effort evidence only: a test that rewrites one page in place (RW, write,
+  RX: the kernel does not sync it again) and runs it after our flush; under QEMU (no I-cache
+  model) it proves nothing, and natively a missing flush shows only if stale lines are hit
+  (timing, and cores with CTR_EL0.DIC/IDC are coherent anyway). With `__clear_cache` hidden,
+  loaded code also runs on a second thread and a wasm module runs (fresh pages: the kernel syncs
+  them). CI: the `arm64` job runs `tests/jit` and CoreMark in the stock `python:3.13-alpine`
+  image (no libgcc) on the native runner (`MUSL_ARM64`, ci.yml), so the routine is the flush
+  there. The musl aarch64 JIT now runs (explicit; no guard handler there, S0017 Decision 10).

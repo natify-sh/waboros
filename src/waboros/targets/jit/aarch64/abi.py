@@ -168,6 +168,9 @@ WIN_EP_RECORD, WIN_EP_CONTEXT = 0, 8
 WIN_ER_CODE, WIN_ER_NPARAMS, WIN_ER_INFO = 0, 24, 32
 WIN_CTX_PC = 0x108
 WIN_ACCESS_VIOLATION = 0xC0000005
+# Android arm64 (S0006, opt-in): bionic's LP64 `struct sigaction` starts with int sa_flags, the
+# handler at 8 (libc/include/bits/signal_types.h, `__SIGACTION_BODY`, every __LP64__ target)
+BIONIC_SA_HANDLER = 8
 
 
 def fault_handler(
@@ -178,6 +181,7 @@ def fault_handler(
     reraise: int,
     darwin: bool = False,
     windows: bool = False,
+    bionic: bool = False,
 ) -> None:
     """void handler(int sig, siginfo_t *si, ucontext_t *uc), installed with SA_SIGINFO: the
     contract of x86_64/abi.py `fault_handler` (S0006 "The handler contract") in A64. A fault is
@@ -195,7 +199,8 @@ def fault_handler(
     (the pc behind the uc_mcontext pointer, a saved action per signal in x15, always `raise`:
     under SIG_DFL the pending signal ends the process, under SIG_IGN xnu drops it and a fault
     repeats forever, as without us);
-    Darwin enforces no BTI on user code, so `bti c` is a no-op there.
+    Darwin enforces no BTI on user code, so `bti c` is a no-op there. `bionic` (Android arm64):
+    `prev` is bionic's struct sigaction, the saved handler at 8 (x86_64/abi.py likewise).
     `windows`: the vectored exception handler of x86_64/abi.py in A64, `LONG h(EXCEPTION_POINTERS
     *ep)` with ep in x0; x1 and x2 take the record and the ContextRecord, so the rest is the
     Linux path with Windows offsets; it returns -1 or 0 in w0, calls nothing and writes only
@@ -306,7 +311,7 @@ def fault_handler(
         a.ld(16, 15)
     else:
         a.mov_imm(16, prev)
-        a.ld(16, 16)  # its sa_handler / sa_sigaction
+        a.ld(16, 16, BIONIC_SA_HANDLER if bionic else 0)  # its sa_handler / sa_sigaction
     a.addsub_imm("subs", ZR, 16, 1)
     a.bcc("ls", dfl)
     a.br(16)  # x0, x1, x2 as the kernel passed them
@@ -331,4 +336,45 @@ def fault_handler(
     a.blr(16)  # raise(sig)
     a.bind(done)
     a.pair(True, FP, LR, SP, 32, "post")
+    a.ret()
+
+
+# The system instructions of `icache_flush` (ARMv8.0-A; encodings checked with llvm-mc)
+MRS_CTR_EL0, DC_CVAU, IC_IVAU = 0xD53B0020, 0xD50B7B20, 0xD50B7520  # | Rt
+DSB_ISH, ISB = 0xD5033B9F, 0xD5033FDF
+
+
+def icache_flush(a: Asm) -> None:
+    """void flush(void *start, void *end): make [start, end) coherent for instruction fetch on
+    every core, where the process has no `__clear_cache` (S0004 "Executable memory and the
+    I-cache": Linux musl without libgcc, Android bionic). The sequence of the Arm ARM ("Concurrent
+    modification and execution of instructions"), as libgcc's and compiler-rt's `__clear_cache`
+    (read, not copied): line sizes from CTR_EL0 (DminLine bits 16-19, IminLine 0-3: log2 of
+    words); `dc cvau` per D-line, `dsb ish`, `ic ivau` per I-line, `dsb ish`, `isb`; the clean is
+    skipped when CTR_EL0.IDC (bit 28) says it is not needed, the invalidate when DIC (bit 29)
+    does. EL0 may read CTR_EL0 and use `dc cvau` on Linux (SCTLR_EL1.UCT/UCI, or the kernel
+    emulates them). `bti c` first: ctypes calls it with `blr`. Writes x2-x5 only."""
+    no_clean, no_inval, dloop, iloop = (a.label() for _ in range(4))
+    a.bti("c")
+    a.emit(MRS_CTR_EL0 | 2)
+    for bit, lsb, skip, loop, op in ((28, 16, no_clean, dloop, DC_CVAU),
+                                     (29, 0, no_inval, iloop, IC_IVAU)):  # fmt: skip
+        if bit == 29:
+            a.bind(no_clean)
+            a.emit(DSB_ISH)  # the clean completes before the invalidate (or the fetch)
+        a.tbz(2, bit, skip, nz=True)
+        a.bfm("ubfm", 5, 2, lsb, lsb + 3)  # the field
+        a.addsub_imm("add", 5, 5, 2)  # log2 of the line in bytes
+        a.mov_imm(3, 1)
+        a.dp2("lslv", 3, 3, 5)  # x3 = line
+        a.dp2("lsrv", 4, 0, 5)
+        a.dp2("lslv", 4, 4, 5)  # x4 = start rounded down to a line
+        a.bind(loop)
+        a.emit(op | 4)
+        a.addsub("add", 4, 4, 3)
+        a.cmp(4, 1)
+        a.bcc("lo", loop)
+    a.emit(DSB_ISH)
+    a.bind(no_inval)
+    a.emit(ISB)
     a.ret()

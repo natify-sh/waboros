@@ -134,6 +134,35 @@ def test_guard_unavailable(monkeypatch: pytest.MonkeyPatch, wasm: bool) -> None:
             A.load(blob, target=JIT)
 
 
+@pytest.mark.parametrize("mode", ["auto", "guard"])
+def test_guard_file_on_an_opt_in_row(monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
+    """S0017 Decision 10: on a row whose handler is not verified (Android arm64: in
+    `guard_rows`, not in `verified`) a thin guard file is refused under `auto` and accepted under
+    `guard`, as guard.wanted() decides for compiling. A simulated host: this target takes
+    jit-aarch64's rows, the row is `android`, install and the chain check are stubbed."""
+    from waboros.targets.jit.aarch64 import JitAarch64Target
+
+    native(JIT)
+    blob = _guard_file(monkeypatch, False)
+    cls = type(base.TARGETS[JIT]())
+    for rows in ("guard_rows", "verified"):
+        monkeypatch.setattr(cls, rows, getattr(JitAarch64Target, rows))
+    monkeypatch.setattr(guard, "host_row", lambda: "android")
+
+    def install(target: Any) -> None:
+        pass
+
+    monkeypatch.setattr(guard, "install", install)
+    monkeypatch.setattr(guard, "broken", lambda: None)
+    monkeypatch.setenv("WABOROS_JIT_BOUNDS", mode)
+    if mode == "auto":
+        with pytest.raises(A.ArtifactError, match="BOUNDS_GUARD is set.*opt-in") as e:
+            A.load(blob, target=JIT)
+        assert e.value.step == "5"
+    else:
+        assert isinstance(A.load(blob, target=JIT), A.ModuleView)
+
+
 @pytest.mark.parametrize("wasm", [False, True])
 def test_guard_log2_larger_than_the_hosts(monkeypatch: pytest.MonkeyPatch, wasm: bool) -> None:
     native(JIT)
