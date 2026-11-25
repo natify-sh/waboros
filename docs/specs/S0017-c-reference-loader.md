@@ -80,6 +80,13 @@ Taken on 2026-11-25 on the revised draft's questions:
     runs explicit files; Decision 8's `libsigchain` applies to the rows that have a handler. A
     handler on these rows would have to come to the Python runtime too, so it is a v2 candidate
     for both loaders (ROADMAP "Phase 8"), not a C-only exception.
+11. **Handles given to the host are released** (maintainer, 2026-11-25; replaces S0013 Q10's
+    "until phase 6" for both loaders): the Python runtime frees a handle when its `GcRef` or
+    `ExnRef` is no longer referenced (a weak entry and a finalizer, the slot reused after the
+    next safe point), and the C loader by an explicit `waboros_ref_release(store, handle)`. A
+    released object is collected unless something else roots it; a held handle keeps its identity.
+    Scoped handles (Wasmtime's `RootScope`) stay in phase 6. Implemented first in the Python
+    runtime (its own step, before P1), then here.
 
 ## Goals / Non-goals
 * Goals:
@@ -300,6 +307,7 @@ uint64_t waboros_extern_word(waboros_store *, void *host);  /* (h << 2) | 2 */
 void    *waboros_extern_host(waboros_store *, uint64_t word);
 uint64_t waboros_rooted(waboros_store *, uint64_t handle);  /* its object's current word */
 int      waboros_ref_kind(waboros_store *, uint64_t handle); /* WABOROS_REF_STRUCT, _ARRAY, _I31, _EXN; -1 */
+void     waboros_ref_release(waboros_store *, uint64_t handle); /* Decision 11; unknown: no effect */
 /* host-side operations: the one-thread rule, a lost store refused */
 int waboros_memory_grow(waboros_store *, const waboros_extern *, uint64_t delta, uint64_t *old, waboros_error *);
 int waboros_table_grow(waboros_store *, const waboros_extern *, uint64_t delta, uint64_t init, uint64_t *old, waboros_error *);
@@ -318,8 +326,8 @@ int  waboros_guard_nonchaining(const void *addr);   /* process-wide: the image h
     exception, an i31 seen as an externref) is a **handle** `n << 2`, n from 1. One handle per
     object, as Python's `gcrefs`: the C store (`instance.c`, not the shim) maps each word to its
     handle, gives the same handle each time the object crosses, and remaps after every collection
-    (`collect.py`, B5). Handles are kept until the store is dropped, as `gc_handles` (S0013 Q10:
-    release is phase 6). `waboros_ref_kind` gives a handle's kind for the spec runner's
+    (`collect.py`, B5). A handle lives until `waboros_ref_release` (Decision 11); its slot is
+    then reused, and the object, if nothing else roots it, is collected. `waboros_ref_kind` gives a handle's kind for the spec runner's
     `NON_NULL` check; a host word is told by its low bits.
   * `waboros_call`, `waboros_global_set` and `waboros_table_set` check every reference before
     anything runs, as `to_raw` does: a record of this store with a matching type, a live host
@@ -1087,3 +1095,4 @@ When approved and implemented:
   `cases.py`, the D47 (d) record at approval, estimates marked.
 * 2026-11-25: Decision 10 (no guard handler on musl aarch64 and Android arm64, as the oracle;
   a handler there is a v2 candidate for both loaders).
+* 2026-11-25: Decision 11 (handles released: weak in Python, `waboros_ref_release` in C).
