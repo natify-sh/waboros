@@ -99,7 +99,7 @@ jobs:
       - if: ${{ matrix.ps16k }}
         id: emulator
         name: 16 KiB emulator
-        timeout-minutes: 20
+        timeout-minutes: 35
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
@@ -119,8 +119,10 @@ jobs:
           echo no | "$bin/avdmanager" create avd --name ps16k --package "$img" --device pixel_6 --force
           nohup "$ANDROID_HOME/emulator/emulator" -avd ps16k -no-window -no-audio -no-snapshot -no-boot-anim -gpu swiftshader_indirect -accel on -memory 4096 > "$RUNNER_TEMP/emulator.log" 2>&1 &
           adb=$ANDROID_HOME/platform-tools/adb
-          "$adb" wait-for-device
-          until [ "$("$adb" shell getprop sys.boot_completed | tr -d '\r')" = 1 ]; do sleep 5; done
+          ls -l /dev/kvm; "$ANDROID_HOME/emulator/emulator" -accel-check || true
+          # bounded waits, so a failed boot prints the emulator's log instead of hitting the step timeout
+          timeout 600 "$adb" wait-for-device || { tail -n 200 "$RUNNER_TEMP/emulator.log"; exit 1; }
+          timeout 600 sh -c "until [ \"\$('$adb' shell getprop sys.boot_completed | tr -d '\r')\" = 1 ]; do sleep 5; done" || { tail -n 200 "$RUNNER_TEMP/emulator.log"; exit 1; }
           size=$("$adb" shell getconf PAGE_SIZE | tr -d '\r')
           echo "device page size: $size; API $("$adb" shell getprop ro.build.version.sdk | tr -d '\r')"
           [ "$size" = 16384 ]
@@ -139,7 +141,7 @@ jobs:
         env: { CIBW_CACHE_PATH: "${{ runner.temp }}/cibw-cache" }
         shell: bash
       - if: ${{ always() && matrix.ps16k }}
-        run: cat "$RUNNER_TEMP/targetsdk.txt"
+        run: cat "$RUNNER_TEMP/targetsdk.txt" "$RUNNER_TEMP/emulator.log" 2>/dev/null | tail -n 100 || true
         shell: bash
   # D23/D35, S0014 step 6: a JIT artifact file is architecture-dependent and OS-independent. Each of
   # the six hosts writes the `.wbo` files of CoreMark and the v1 module (tools/artifact_dump.py, pure
