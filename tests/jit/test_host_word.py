@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from tests.jit import native
 from tests.jit.test_compiler import JIT, Inst, build, wat
 from waboros.runtime.store import StoreState
 from waboros.targets.base import TARGETS
@@ -68,6 +69,7 @@ def files(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> No
 @pytest.mark.parametrize("target", NAMES)
 @pytest.mark.usefixtures("files")
 def test_the_bridge_passes_the_word(target: str) -> None:
+    native(JIT)  # only this machine's code may run (none on wasm32)
     b = host_module(target)
     inst: Any = b.inst
     log = watch(inst)
@@ -97,6 +99,7 @@ def win64_host() -> int:
 @pytest.mark.parametrize("target", NAMES)
 @pytest.mark.usefixtures("files")
 def test_the_win64_bridge_passes_the_word_in_r8d(target: str) -> None:
+    native(JIT)
     t: Any = TARGETS[target]()
     b = host_module(target)
     inst: Any = b.inst
