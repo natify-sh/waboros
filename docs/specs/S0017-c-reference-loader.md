@@ -92,7 +92,7 @@ Taken on 2026-11-25 on the revised draft's questions:
     loader.
 * What "reference" means: correctness and clarity before speed. Each rule cites the S0014, S0015
   or ARTIFACT.md section it implements. There is no fast path without a measurement (CLAUDE.md,
-  "Measure, do not estimate"), and the code is small enough for a reviewer to read whole.
+  "Measure, do not estimate").
 * Non-goals:
   * a product: a stable C ABI, packaging, install, `find_package` (Decision 1);
   * the public API of phase 6;
@@ -115,6 +115,13 @@ and the fault handler. The first row is Linux glibc x86-64.
   Decision 2 asks for these rows, for parity with the Python runtime's verified guard rows
   (S0006). Without the handler, guard files are refused and explicit files run: there is no crash,
   so (a) does not apply.
+* **Guard rows are per architecture, as the oracle's `guard_rows`**: `jit-x86_64` has linux-glibc,
+  linux-musl, darwin, win32 and android; `jit-aarch64` has linux-glibc, darwin and win32. On Linux
+  musl aarch64 and Android arm64 the C loader has no handler and refuses guard files at step 5.
+  On a listed row the handler is ON only once item 3 in guard mode has passed in CI on that row
+  (D47 rule 3); until then `WABOROS_GUARD` defaults to OFF there.
+* The DECISIONS.md record that D47 (d) asks for ("the decision record says so") is written when
+  this spec is approved.
 * **Linux musl** comes under **exception (c)**: it reuses `os_posix.c` with no line of its own
   beyond the libc's headers, needs no new CI infrastructure (the `python:3.13-alpine` container of
   the `jit` job gains a step; an Alpine container on the `arm64` runner), and adds no interaction
@@ -126,16 +133,16 @@ and the fault handler. The first row is Linux glibc x86-64.
 
 | row | per-OS code | exception | CI |
 |---|---|---|---|
-| Linux glibc x86-64 | `os_posix.c`: `mmap`/`mprotect`, `pthread_mutex`, `pthread_getattr_np`, `sigaction(SIGSEGV)` | the first row | `ci.yml` `cloader` (new), `ubuntu-latest` |
+| Linux glibc x86-64 | `os_posix.c`: `mmap`/`mprotect`, `pthread_mutex`, `pthread_getattr_np`, `sigaction(SIGSEGV)`; on the main thread of every Linux row, the top of `[stack]` in `/proc/self/maps` minus `RLIMIT_STACK` (`_stack_bounds`) | the first row | `ci.yml` `cloader` (new), `ubuntu-latest` |
 | Linux glibc aarch64 | the same file; `__builtin___clear_cache`, `PROT_BTI` when `AT_HWCAP2` has BTI, the PC from `uc_mcontext.pc` | per architecture | `arm64` native, `jit` (QEMU `-cpu max`, BTI) |
 | macOS x86-64 | `os_posix.c` (Apple parts): stack bounds from `pthread_get_stackaddr_np`/`_stacksize_np` and the main thread's rlimit; the handler on `SIGSEGV` and `SIGBUS` | (a) for memory and stack bounds (`pthread_getattr_np` does not exist); (d) for the handler | `platforms.yml` `macos-26-intel` |
 | macOS arm64 | as above, plus `MAP_JIT` with `pthread_jit_write_protect_np` around every code write, `sys_icache_invalidate`, the PC by `arm_thread_state64_get_pc` | (a): Apple silicon refuses executable pages without `MAP_JIT` (R2); (d) for the handler | `platforms.yml` `macos-26` |
 | Windows x64 | `os_windows.c`: `VirtualAlloc`/`VirtualProtect`/`VirtualFree`, `SRWLOCK`, `GetCurrentThreadStackLimits`, the Win64 `entry`; the vectored handler with CET continuation targets | (a) for memory, locks, stack bounds and `entry` (no `mmap`; a Windows host calls in Win64); (d) for the handler | `platforms.yml` `windows-latest` |
 | Windows ARM64 | the same file, `FlushInstructionCache`, the PC from `ContextRecord->Pc` | as Windows x64 | `platforms.yml` `windows-11-arm` |
-| Linux musl x86-64 | `os_posix.c` unchanged; the Linux main-thread stack rule (top of `[stack]` in `/proc/self/maps` minus `RLIMIT_STACK`, as `_stack_bounds`: musl's `pthread_getattr_np` reports only the mapped part of the main stack) | (c) | `ci.yml` `jit`, `python:3.13-alpine` container (`apk add build-base cmake`) |
-| Linux musl aarch64 | the same; the instruction-cache flush is `__builtin___clear_cache`, which the toolchain resolves at **link time** (libgcc's or compiler-rt's `__clear_cache`, linked statically into the program). S0006's musl aarch64 limit was a **run-time** lookup by the Python runtime in an image without `libgcc_s`; a ctest checks that the flush is present and that code written twice runs the second version | (c) | `ci.yml` `arm64`, an Alpine container |
+| Linux musl x86-64 | `os_posix.c` unchanged; the Linux main-thread stack rule matters here too: musl's `pthread_getattr_np` reports only the mapped part of the main stack | (c) | `ci.yml` `jit`, `python:3.13-alpine` container (`apk add build-base cmake`) |
+| Linux musl aarch64 | the same; the instruction-cache flush is `__builtin___clear_cache`, which the toolchain resolves at **link time** (libgcc's or compiler-rt's `__clear_cache`, linked statically into the program). S0006's musl aarch64 limit was a **run-time** lookup by the Python runtime in an image without `libgcc_s`; a ctest checks that the flush is present and that code written twice runs the second version. No handler (not an oracle guard row): explicit files only | (c) | `ci.yml` `arm64`, an Alpine container |
 | Android x86-64 | `os_posix.c` with bionic: the handler installed through libc's `sigaction` (never a raw syscall), so in an app process libsigchain makes it a user handler called after ART's (S0006 step 5); `broken` also covers the child-process reset that S0006 documents (a `vfork` child sets the handled signals to `SIG_DFL`) | (d) | `platforms.yml` Android cell, x86_64 emulator |
-| Android arm64 | the same, with `__builtin___clear_cache` | (d) | built in the Android cell (NDK cross build); run on an arm64 emulator where the cell's runner has one, else build-only until a runner does: step 9 reports which |
+| Android arm64 | the same, with `__builtin___clear_cache`; no handler (not an oracle guard row): explicit files only | (d) | built in the Android cell (NDK cross build); run on an arm64 emulator where the cell's runner has one, else build-only until a runner does: step 9 reports which |
 
 * macOS uses signals, as the Python runtime does (S0006 step 3), not Mach exception ports.
 * **What is new on Windows.** The code that ARTIFACT.md's Win64 listing matches already runs on
@@ -190,7 +197,7 @@ sljit part and its tests are behind `WABOROS_SLJIT`. S0016's contract holds:
 | `WABOROS_LOADER_SHARED` | `PROJECT_IS_TOP_LEVEL` | `waboros_loader_shared` for the shim (tests; `WINDOWS_EXPORT_ALL_SYMBOLS` on Windows) |
 | `WABOROS_WITH_COMPILER` | OFF until D68's compiler exists | link the embedded compiler through the seam |
 | `WABOROS_WITH_GC` | ON | the heap, the GC services, the collector's driver; OFF: `heap` 1 files refused at load |
-| `WABOROS_GUARD` | ON on every row | the fault handler; OFF: `BOUNDS_GUARD` files refused at step 5 |
+| `WABOROS_GUARD` | ON on the guard rows verified in CI ("Rows") | the fault handler; OFF: `BOUNDS_GUARD` files refused at step 5 |
 | `WABOROS_COLLECTOR_WBO` | empty | a collector `.wbo` embedded with `file(READ … HEX)` |
 | `WABOROS_SLJIT` | `WABOROS_WITH_COMPILER` or a top-level build | S0016's `waboros_sljit` and its tests |
 
@@ -200,7 +207,9 @@ sljit part and its tests are behind `WABOROS_SLJIT`. S0016's contract holds:
   Step 0 confirms that CMake accepts `C_STANDARD 99` with MSVC, with clang-cl as the fallback.
 
 ### C99 rules
-* `C_STANDARD 99`, `C_EXTENSIONS OFF`, `_DEFAULT_SOURCE`, as S0016. Warnings are `PRIVATE`:
+* `C_STANDARD 99`, `C_EXTENSIONS OFF`, `_DEFAULT_SOURCE`, as S0016. `os_posix.c` alone defines
+  `_GNU_SOURCE` before its first include, for `Dl_info`/`dladdr`, `pthread_getattr_np` and
+  `REG_RIP`. Warnings are `PRIVATE`:
   `-Wall -Wextra -Wconversion -Wvla` (GNU, Clang) and `/W4` (MSVC).
 * No VLAs and no `alloca`: native stack belongs to wasm code (the headroom rule, S0015).
 * Every payload field is assembled from bytes (`rd_u32(p)`), never read by casting a file pointer,
@@ -215,17 +224,19 @@ sljit part and its tests are behind `WABOROS_SLJIT`. S0016's contract holds:
 * One implementation-defined step: an executable address becomes a function pointer by a cast from
   `uintptr_t`. POSIX and Windows define it.
 * **Locks** (`os_*.c`: `pthread_mutex_t` or `SRWLOCK`, behind three functions):
-  * one per engine: the type-id and tag-id registries, the trampoline copies, and the guard
-    registry's writers. The handler reads the registry with no lock: an entry is published after
-    it is written, and retired with `hi` zeroed first (S0006, "Registry");
+  * one per process: the handler's installation, the non-chaining images, and the guard
+    registry's writers, since one handler and its registry serve every engine. The handler reads
+    the registry with no lock: an entry is published after it is written, and retired with `hi`
+    zeroed first (S0006, "Registry");
+  * one per engine: the type-id and tag-id registries and the trampoline copies;
   * one per store, as Python's `interrupt_lock`. `waboros_store_interrupt` takes it to walk the
     instance array (which instantiation grows under the same lock), and the outermost entry takes
     it to clear the word.
 * **One thread per store** (Python's `StoreState.enter`/`claim`):
   * the owner's thread id is recorded on the first entry, under the engine lock (the claim is
     atomic);
-  * an entry, a grow, a table operation or an instantiation from another thread returns
-    `WABOROS_E_THREAD` before anything changes;
+  * an entry, a host-side grow or table operation (`waboros_memory_grow`, `waboros_table_*`) or
+    an instantiation from another thread returns `WABOROS_E_THREAD` before anything changes;
   * nesting is allowed;
   * a claim outside an entry (instantiation, a host-side grow) is released, so a store built on
     one thread may run on another.
@@ -251,7 +262,8 @@ enum waboros_code {        /* never a trap number: the trap is in `trap` */
   WABOROS_E_HOST, WABOROS_E_LOST, WABOROS_E_RESOURCE, WABOROS_E_INTERNAL };
 typedef struct {
   int32_t code;            /* enum waboros_code */
-  uint8_t check;           /* E_NOT_OURS, E_REFUSED, E_NEEDS_COMPILER: the S0014 step 1-6 */
+  char check[4];           /* E_NOT_OURS, E_REFUSED, E_NEEDS_COMPILER: the S0014 step as
+                              Python's ArtifactError.step: "1", "1b", "2" ... "6" */
   char section[24];        /* step 6: the payload's section name */
   uint32_t trap;           /* E_TRAP: the trap code 1-18 */
   uint64_t tag;            /* E_EXCEPTION: the tag identity */
@@ -281,21 +293,33 @@ void waboros_store_interrupt(waboros_store *);              /* any thread */
 /* references held by the host (the store's handle table, part 3) */
 uint64_t waboros_extern_word(waboros_store *, void *host);  /* (h << 2) | 2 */
 void    *waboros_extern_host(waboros_store *, uint64_t word);
-uint32_t waboros_root(waboros_store *, uint64_t word);      /* a GC or exn reference -> handle */
-uint64_t waboros_rooted(waboros_store *, uint32_t handle);  /* its current word */
-void     waboros_unroot(waboros_store *, uint32_t handle);
+uint64_t waboros_rooted(waboros_store *, uint64_t handle);  /* its object's current word */
+int      waboros_ref_kind(waboros_store *, uint64_t handle); /* WABOROS_REF_STRUCT, _ARRAY, _I31, _EXN; -1 */
+/* host-side operations: the one-thread rule, a lost store refused */
+int waboros_memory_grow(waboros_store *, const waboros_extern *, uint64_t delta, uint64_t *old, waboros_error *);
+int waboros_table_grow(waboros_store *, const waboros_extern *, uint64_t delta, uint64_t init, uint64_t *old, waboros_error *);
+int waboros_table_get(waboros_store *, const waboros_extern *, uint64_t i, uint64_t *v, waboros_error *);
+int waboros_table_set(waboros_store *, const waboros_extern *, uint64_t i, uint64_t v, waboros_error *);
+void waboros_host_message(waboros_store *, const char *msg); /* in a host function: its status 13's text */
+int  waboros_guard_nonchaining(const void *addr);   /* process-wide: the image holding addr never chains */
 ```
 * **Values** are part-3 slots: an i32 is zero-extended, a v128 takes two slots.
-* **References at the API**:
+* **References at the API** (arguments, results, globals, tables, a host function's slots), as
+  `_StoreStacks.from_raw`/`to_raw`:
   * a funcref is a record address;
-  * an externref is a host word from `waboros_extern_word`;
-  * a GC or exn reference is a **root handle** (`waboros_root`). A result of a GC or exn type
-    comes back as a new handle, which the host must unroot; Python keeps handles until the store
-    is dropped (`gc_handles`).
-  * `waboros_call` and `waboros_global_set` check every reference argument before anything runs,
-    as `_StoreStacks.to_raw` does: a record of this store with a matching type, a live host word,
-    an i31 in range, or a live handle whose object fits the type. Otherwise they return
-    `WABOROS_E_TYPE`.
+  * a host value is a host word `(h << 2) | 2` from `waboros_extern_word`;
+  * an i31 of the any hierarchy is its word `(v << 1) | 1` (Python gives an int);
+  * any other non-null reference of the any, extern or exn hierarchy (a struct, an array, an
+    exception, an i31 seen as an externref) is a **handle** `n << 2`, n from 1. One handle per
+    object, as Python's `gcrefs`: the C store (`instance.c`, not the shim) maps each word to its
+    handle, gives the same handle each time the object crosses, and remaps after every collection
+    (`collect.py`, B5). Handles are kept until the store is dropped, as `gc_handles` (S0013 Q10:
+    release is phase 6). `waboros_ref_kind` gives a handle's kind for the spec runner's
+    `NON_NULL` check; a host word is told by its low bits.
+  * `waboros_call`, `waboros_global_set` and `waboros_table_set` check every reference before
+    anything runs, as `to_raw` does: a record of this store with a matching type, a live host
+    word, an i31 in range for a type that takes one, or a handle of this store whose object fits
+    the type. Otherwise they return `WABOROS_E_TYPE`.
 * `waboros_call` requires `nslots >= max(nparams, nresults)` (two slots per v128), else
   `WABOROS_E_ARG`, and writes the results over the arguments.
 * **The exception at the failing entry**: when an entry returns 14, `waboros_call` reads the tag
@@ -320,23 +344,39 @@ what `Instance._host` and its callback do (`instance.py`, `_host`):
    * **So the C loader requires files written after D75** (Decision 7). No format bit tells them
      apart: the only pre-D75 files are our own fixtures, kept for the Python loader's refusal
      test, and no C test loads them. The check stays as a defence against a corrupt file.
-2. Refuse to serve a lost store (D61): return 13 with the lost message.
-3. Save the store's next frame and set it to `slots + 8 · max(n, m)` (the nested-entry rule, B1).
-4. Call the import's `f(env, slots)`, or the loader's own service.
-5. Mask each result to its type (`_masks`: i32 and f32 to 32 bits), so slots stay zero-extended.
-6. Map the status:
+2. Save the store's next frame and set it to `slots + 8 · max(n, m)` (the nested-entry rule, B1).
+3. Call the import's `f(env, slots)`, or the loader's own service. For an import whose type has
+   references (`_ref_host`), the reference arguments are first put in their API form ("C API";
+   a word that is no reference of the store gives 13). On status 0, each reference result is
+   checked as `to_raw` checks a `waboros_call` argument and put back as its word; a failed check
+   gives 13 with the reason.
+4. On status 0, mask each result to its type (`_masks`: i32 and f32 to 32 bits), so slots stay
+   zero-extended.
+5. Map the status:
    * 0 and the trap codes 1-13 and 15-18 pass (Python's `_TRAP_STATUSES`: every `TrapCode` but
      14);
    * any other value (14, above 18, the private range) becomes 13, with the message "host
      function returned status N" kept in the store (S0015: a host never returns 14, and no
      private status leaves a bridge).
-7. When the status is 0 and the store runs guard code: check that the handler chain is still
+6. When the status is 0 and the store runs guard code: check that the handler chain is still
    intact ("The guard handler", rule `broken`). A broken chain gives 13 and the S0006 message.
+7. When the status is still 0 and the store is lost (a nested call's collection failed and the
+   host went on, D61): 13 with the lost message, so wasm never resumes on a half-moved heap
+   (`callback`, instance.py). There is no check before the call, as in Python: a store becomes
+   lost only inside a call, every entry refuses a lost store, and this check stops the return.
 8. Restore the store's next frame. As the last action, write the status to `ctx[HOST_ERROR]`
    (D34).
 
-An import from another instance of the store is that instance's record, called directly (D32).
-With `WABOROS_JIT_WALK_CHECK=1`, `dispatch` walks the store first, as `_checked` does.
+* The text of a 13 is the one the host set with `waboros_host_message` during the call, else
+  "host function returned status 13"; `waboros_call` returns it in `msg` (truncated).
+* **D34 at the C boundary**: the status is `f`'s return value and `dispatch` writes it, so a host
+  that never writes its status cannot exist in C. The hazard moves to the shim: an exception that
+  escapes a ctypes callback makes it return 0. **Shim rule**: each callback catches every
+  exception (`BaseException`) and returns 13 with `waboros_host_message`. This is a deviation from
+  `test_a_host_that_never_writes_its_status_fails`, which maps to a shim test.
+* An import from another instance of the store is that instance's record, called directly (D32).
+* With `WABOROS_JIT_WALK_CHECK=1`, `dispatch` first runs `walk.check`'s assertions ("The walk,
+  roots and a collection"), as `_checked` does.
 
 ### The compiler seam (`compiler.h`)
 ```c
@@ -376,7 +416,8 @@ and exports `begin`, `roots`, `finish` and `is_subtype`.
    * It is supplied by `waboros_engine_set_collector`, or at build time by
      `WABOROS_COLLECTOR_WBO`.
    * It goes through `waboros_module_load`. Its `module_sha256` must equal the SHA-256 of
-     `collector_wasm.c`'s bytes, and its exports are checked.
+     `collector_wasm.c`'s bytes (the array is in this build too, for that hash), and its exports
+     are checked.
    * **When a module has `heap` 1 and no collector file is present**, `waboros_instantiate`
      refuses it before anything of the instance is in the store: `WABOROS_E_NO_COLLECTOR`,
      "module needs the GC collector: none supplied (build without a compiler: supply its AOT
@@ -414,7 +455,7 @@ command or a runtime test could see the difference:
 | the stack pointer at the first entry | `sp_stub`, a C entry that writes the stack pointer to `frame[0]`, called once per outermost entry | **the same stub bytes**, tied to `entry.py`. The address of a local is wrong under ASan (its fake stack keeps locals on the heap); `__builtin_frame_address` and `_AddressOfReturnAddress` would be two compiler-specific paths |
 | `entry` | assembled per target; each target seals its own copy | one copy per process and convention (ARTIFACT.md listings); the walk's entry point is its return point |
 | trampolines of a file | never executed: the runtime's `conventions()` | executed: one copy per compiler string **per engine**, shared by its stores ("Loading") |
-| type ids, tag ids | process-wide from 1 | per engine from 1, below 2³² |
+| type ids, tag ids | process-wide from 1; a function type id below 2²⁰ where the heap's tid map holds it (`gc.TIDS`; `heap.py`: "GC type area exhausted") | per engine from 1, with the same 2²⁰ bound |
 | GC heap regions | type area, tid map at 60 MiB (ids below 2²⁰), `ROOTS`, the handle report, semispaces from 64 MiB, committed apart (D69) | the same: `collector.wasm` reads them |
 | GC heap growth (`heap.room`, `_grow`) | the first allocation grows; when an allocation does not fit, collect; if more than half of a half is then live, grow, collecting first when the upper half is active; capacity `max(2·cap, 2·S0, 4·(live + r), 2·(cursor − OBJ + r))` rounded to the half unit, capped at `CAP_MAX`; instantiation only grows | the same rule and numbers |
 | host values | `(h << 2) \| 2`, from 1, the lowest free number reused, at most 2³⁰ − 1 | the same |
@@ -435,7 +476,7 @@ command or a runtime test could see the difference:
    * no header section means "none";
    * `module_sha256` is the first 32 bytes of the header, or fewer when it is shorter;
    * when `.waboros.wasm` exists and its SHA-256 differs from those bytes, the file is refused:
-     ".waboros.wasm: its SHA-256 is not module_sha256 (corrupt file)", check 1 (P2: "1b").
+     ".waboros.wasm: its SHA-256 is not module_sha256 (corrupt file)", check "1b" (P2).
 3. `format_version` is 1 (step 2).
 4. The container (step 3): every rule of `_sections_r`, including a refusal of an `e_machine` other
    than 62 and 183.
@@ -450,12 +491,14 @@ command or a runtime test could see the difference:
    * `isa_level` is 1 and `isa_features` is 0;
    * `flags` has no bit but 0 and 8-15, and `BOUNDS_GUARD` and a non-zero `GUARD_LOG2` are set
      together;
-   * a guard file needs `GUARD_LOG2` of at most 25, the row's handler installed, and its chain
-     not broken;
+   * a guard file needs, in `_compatible`'s order, `GUARD_LOG2` of at most 25, a row among its
+     architecture's guard rows with the handler built (`WABOROS_GUARD`) and installed, and its
+     chain not broken;
    * `features_required` is 0.
-7. The payloads (step 6), each with `_R`'s exactness. A failure sets `section`.
-8. Only when every payload has passed is the file's trampoline copy adopted or compared
-   ("Trampolines").
+7. The payloads (step 6), each with `_R`'s exactness. A failure sets `section`. Strings are
+   strict UTF-8 as Python's `bytes.decode()` (`_R.text`): no overlong form, no surrogate
+   code point, nothing above U+10FFFF.
+8. Only when every payload has passed is the file's trampoline copy adopted ("Trampolines").
 
 **Thin and fat** (D18):
 * a thin file is refused at its first failing check;
@@ -471,8 +514,12 @@ command or a runtime test could see the difference:
   * the third (the target) is a **known target** whose `e_machine` is the file's.
   The known targets are a build constant: `jit-x86_64` and `jit-sljit-x86_64` (62), `jit-aarch64`
   and `jit-sljit-aarch64` (183), and the embedded compiler's `target`. Python's set is the
-  targets registered in its process (`artifact.targets()`). They are the same set when the sljit
-  library is built, which is how the corpus runs.
+  targets registered in its process (`artifact.targets()`): `tests/sljit` registers only the
+  host's sljit target, only on Linux, only with the library built. A file of a sljit target that
+  Python has not registered is refused by Python at step 4; C refuses the other architecture's at
+  step 5 (`e_machine`) and, off Linux, accepts the host architecture's. The corpus writes only
+  targets registered in Python's process, and a byte flip cannot turn one target token into
+  another known one, so no corpus file meets this; one that does fails outside its class.
 * **Step 5**: no further check. The version token (and so the source hash of a development build)
   is not compared: this is the foreign-host rule, and the first designed exception below.
 
@@ -480,6 +527,10 @@ command or a runtime test could see the difference:
 * **Per engine, one copy per compiler string**, shared by the engine's stores (D64 item 5 allows
   one copy per compiler, shared by stores). A store's sets record the entry point and the
   `restore` points of the copies its instances use.
+* The records are checked where Python checks them: in `read`, while reading `.waboros.funcs`
+  (after `data_start` and `start`, before its entries), each convention in format order. So a file
+  that fails both the trampolines and a later payload is refused on `.waboros.trampolines` by
+  both loaders.
 * The copy is adopted from the first file of its string, and only after the whole file has passed
   steps 1-6. It is mapped under the row's W^X, with the instruction cache invalidated and
   `PROT_BTI` on aarch64.
@@ -499,22 +550,27 @@ Each corpus file gets one class, computed from Python's verdict. Every class but
 deliberate difference, named here:
 * **`agree`**: both loaders give the same verdict and step (and section). For an accepted file,
   the dumps are equal.
-* **`E1 compiler`**: Python refuses at step 5 on the `compiler` field (its exact-string rule,
-  `_compatible`), and C accepts, because the string passed step 4. Examples:
-  * `test_refuse.py::test_other_compiler_target_and_version` with a changed version digit;
+* **`E1 compiler`**, a thin file: Python refuses at step 5 on the `compiler` field (its
+  exact-string rule, `_compatible`), and C accepts, because the string passed step 4. Examples:
+  * the thin half of `test_refuse.py::test_other_compiler_target_and_version`'s `version` case
+    (`both`, lines 105-115);
   * a byte flip inside the version token that keeps it ASCII without a space.
-  For these, the C dump is compared with the Python dump of `artifact.read(b)`, which applies no
-  step-5 rule.
-  * A flip that breaks the format (a space, a non-ASCII byte, a non-digit in the fourth token, an
-    unknown target) is `agree` at step 4: `test_review.py::test_compiler_string_tokens`'s cases,
-    for example.
-* **`E2 other convention`**: Python refuses at step 6, `.waboros.trampolines`, because a
-  non-running convention's blob or record differs from `conventions()`. C accepts, because it
-  checks that convention only for being well-formed. A change in the running convention, or a
-  malformed record in any convention, is `agree`.
-* **`fat`**: Python compiles the file. C with the test compiler compiles it too (`agree`). C
-  without a compiler gives `WABOROS_E_NEEDS_COMPILER` with the same `check`. The corpus runs both
-  ways.
+  The C dump is compared with the Python dump of `artifact.read(b)`, which applies no step-5 rule.
+* **`E2 other convention`**, a thin file: Python refuses at step 6, `.waboros.trampolines`,
+  because a non-running convention's blob or record differs from `conventions()`. C accepts,
+  because it checks that convention only for being well-formed. `read(b)` refuses too, so the C
+  dump is compared with the Python dump of the case's source file (the unmutated file it was made
+  from), except the `trampolines` lines of the non-running conventions. A change in the running
+  convention, or a malformed record in any convention, is `agree`.
+* **`E1-fat`, `E2-fat`**: the same files with `.waboros.wasm`. Python compiles them
+  (`artifact.load` compiles a fat file on any failure of steps 2-6), and C accepts them as thin,
+  with or without a compiler. The dumps are compared as for E1 and E2.
+* **`fat`**: a fat file that fails steps 2-6 for both loaders, at the same step (Python's is the
+  `ArtifactError.step` that `load` catches before it compiles). Python compiles it; its dump is `dump(read(write(c)))` of the compiled result `c` (a thin file written by the
+  same process). C with the test compiler compiles it too, and its dump must be equal; C without
+  a compiler gives `WABOROS_E_NEEDS_COMPILER` with that step as `check`. The corpus runs both
+  ways. Example: `test_review.py::test_compiler_string_tokens` writes fat files whose strings
+  fail step 4 (a space, a long fourth token).
 * A file Python refuses with `cannot load: …` fails the corpus as a Python defect (Decision 6).
 
 ### The inventory dump
@@ -598,7 +654,7 @@ instance's roots registered (B6).
   * a trap code (1-11 and 15-18) gives `WABOROS_E_TRAP`, with `trap` set;
   * 12 gives `WABOROS_E_INTERRUPT`; at the outermost entry, every context's word is cleared under
     the store lock;
-  * 13 gives `WABOROS_E_HOST`, with the host's message;
+  * 13 gives `WABOROS_E_HOST`, with the message of "Host calls";
   * 14 gives `WABOROS_E_EXCEPTION`, read at once ("C API");
   * anything else, the private range included, gives `WABOROS_E_INTERNAL`.
 * A host function may call `waboros_call` again: the dispatcher's frame rule and `entry`'s saved
@@ -607,7 +663,20 @@ instance's roots registered (B6).
 ### The walk, roots and a collection (`gc.c`, after `walk.py` and `collect.py`)
 * **The walk.** From the exit record, frame by frame through each site's `ret_at`, `up` and
   `shift`, across the fixed points: the entry's return point with its saved block, and every
-  compiler's `restore` with its numbers. An unknown return address is `WABOROS_E_INTERNAL`.
+  compiler's `restore` with its numbers. Its checks (`walk.walk`), each failure
+  `WABOROS_E_INTERNAL` and never a crash:
+  * a return address is a call site of a code range of the store;
+  * every stack word is read inside `[nlimit − 4 KiB, stack top)`; unknown stack bounds stop it;
+  * a caller's stack pointer is above its callee's, and a saved one above its entry's block;
+  * a restore frame does not return to another restore frame;
+  * at an entry's return point, the frame base the entry saved is the segment's base;
+  * there are no more segments than active entries.
+* **The walk check** (`WABOROS_JIT_WALK_CHECK=1`, `walk.check`), at every host call and libcall:
+  the exit record was written for this call (`sp` set, `frame` not above the slots); the
+  segments' bases are the active entries' frames, outermost first; a frame base with references
+  lies in the value stack; dead reference slots are nulled; every reference slot holds a valid
+  word (`walk.valid`: null, an i31, a live host word, or a heap object). A failure gives 13 with
+  its reason, as `_checked`.
 * **Preconditions**, before anything moves (`collect.collect`):
   * the store is not lost;
   * the exit record's `sp` is set and the store's next frame is above its `frame` (a collection
@@ -620,13 +689,15 @@ instance's roots registered (B6).
   * `VSTACK_LIMIT` is the value stack's top;
   * `INTERRUPT` is 0.
   The collector is not in the store's instance array, so no interrupt or walk reaches it.
-* **Roots**, as `_gather`:
+* **Roots**, as `_gather`. Only references of the any, extern and exn hierarchies are roots
+  (`_root`, `frontend/validate.py`); a funcref table, global or segment never is (its words are
+  record addresses, which the collector would trap on):
   * every frame's `live` slots (a frame base outside the value stack is `WABOROS_E_INTERNAL`); the
     `refs` slots outside `live` are nulled;
-  * the reference globals of every instance, **each word once**: an imported global is its
-    owner's word, gathered once by address;
-  * every reference table once, even when several instances import it;
-  * passive, not-dropped element segments of reference types;
+  * such globals of every instance, **each word once**: an imported global is its owner's word,
+    gathered once by address;
+  * such tables once each, even when several instances import them;
+  * passive, not-dropped element segments of such types;
   * the handle table;
   * the pending exception word.
 * **The collection**: `begin(lo, cursor, to, to + half)`; then the roots in batches of at most
@@ -673,9 +744,9 @@ instance's roots registered (B6).
 * **`broken`**, the rule checked at every entry and after a host call (after `guard.broken`):
   * our handler is the current action of each signal: intact;
   * `SIG_DFL` or `SIG_IGN`: broken;
-  * a handler inside an image the host has declared non-chaining (`dladdr`): broken. The shim
-    declares the Python interpreter's image, so faulthandler and the `signal` module's handler
-    count, as in `_broken`;
+  * a handler inside an image the host has declared non-chaining with
+    `waboros_guard_nonchaining` (`dladdr`): broken. The shim declares the Python interpreter's
+    image, so faulthandler and the `signal` module's handler count, as in `_broken`;
   * any other handler (another library, another JIT's anonymous code, the Python runtime's own
     emitted handler) is assumed to chain;
   * Windows: a vectored handler cannot be removed, so never broken.
@@ -712,26 +783,36 @@ instance's roots registered (B6).
   * it runs once with the test compiler and once without one;
   * each file's class comes from "Designed exceptions to Decision 6", and the test fails on any
     file outside its class;
-  * the files are also written out as the fuzzer's seeds.
+  * the files are also written out as the fuzzer's seeds;
+  * the whole-file cases are rebuilt by `tests/cloader/cases.py` (step 1, about 200 lines,
+    estimated), since those tests make many of their files under `monkeypatch` (a patched
+    `compiler_string`, guard mode); each case records its source file (for E2);
+  * in step 1 it runs on explicit files only: a guard file's step 5 needs the handler (step 4),
+    and step 1's engine keeps each compiler string's copy as bytes for the compare and maps
+    nothing (executable memory is step 2). Item 4 in full is step 4's acceptance.
 * **`waboros_run`** (C, no Python in the process): `waboros_run FILE.wbo EXPORT [ARGS…]
-  [--wiring] [--collector F.wbo] [--expect-trap N] [--guard]`, and `--dump` / `--check FILE…`. Its
+  [--wiring] [--collector F.wbo] [--expect-trap N] [--guard]`, and `--dump` / `--check FILE…`.
+  `--wiring` supplies CoreMark's imports, as `tools/run_coremark_jit.py` does: `wiring.millis` (a
+  monotonic clock in ms) and `wiring.print(ptr, len)` (bytes of the memory to stdout). Its
   files are written earlier in the same job by `tests/cloader/make_files.py` (about 60 lines,
   step 6), with each row's Python target: CoreMark, `tests/cloader/traps.wat` (one export per
   trap code), the committed files' module, and the collector.
 * **Later, not in this spec**: a C wast runner, with the embedded compiler.
 
 ### Runtime tests
-`tests/cloader/test_runtime.py` re-runs, through the shim and on the same WAT, the scenarios of
-these Python tests with the same expectations (file `::` test, under `tests/jit/`):
+`tests/cloader/test_runtime.py` re-runs, through the shim, the scenarios of these Python tests
+with the same expectations (file `::` test, under `tests/jit/`). The `test_abi.py` ones are
+hand-assembled x86-64 (`build` with backend code), so they are rewritten as WAT modules with host
+imports (step 3's Python budget); the others already use WAT.
 | area | tests |
 |---|---|
 | nested entries | `test_abi.py::test_reentry_inner_trap_reaches_the_host`, `::test_reentry_50_deep`; `test_exit_record.py::test_exit_record_names_the_caller_and_survives_nested_entries`; `test_gc_nested.py::test_nested_entry_from_a_service` |
 | interrupts | `test_abi.py::test_interrupt_from_another_thread`, `::test_interrupt_is_consumed_in_every_context_of_the_store`; `test_gc_collect.py::test_an_interrupt_does_not_cut_a_collection` |
-| host errors | `test_abi.py::test_host_exception_surfaces_as_itself` (inside a nested entry), `::test_a_host_that_never_writes_its_status_fails`; `test_exceptions.py::test_a_host_trap_14_is_a_host_error_never_status_14` |
+| host errors | `test_abi.py::test_host_exception_surfaces_as_itself` (inside a nested entry), `::test_a_host_that_never_writes_its_status_fails` (as the shim test, "Host calls"); `test_exceptions.py::test_a_host_trap_14_is_a_host_error_never_status_14` |
 | stacks | `test_abi.py::test_native_stack_overflow_capped_by_a_small_thread_stack`, `::test_value_stack_overflow` |
 | memories, tables | `test_memory64.py::test_move_from_wasm`, `::test_move_in_a_nested_entry`, `::test_table64_grow_results_and_cap`, `::test_huge_table_minimum_is_out_of_memory`; `test_tables.py::test_table_grow_across_nested_entries` |
 | references | `test_tables.py::test_externref_round_trip`, `::test_funcref_out_and_back_in`; `test_gc_collect.py::test_handles_keep_their_identity`, `::test_host_values_are_freed_and_reused_lowest_first`; `test_gc_roots.py::test_an_imported_global_is_a_root`, `::test_a_table_imported_by_two_instances_is_visited_once`, `::test_a_failed_instantiation_leaves_its_globals_roots` |
-| collector | `test_gc_collect.py::test_growth_doubles_never_shrinks_and_flips`, `::test_a_collector_trap_loses_the_store` |
+| collector | `test_gc_collect.py::test_growth_doubles_never_shrinks_and_flips`, `::test_a_collector_trap_loses_the_store`, `::test_lost_store_does_not_resume_wasm`, `::test_tables_are_roots_in_batches_and_funcref_tables_are_not` |
 | threads | `test_memory64.py::test_another_thread_is_refused_while_a_host_import_runs` |
 | boundary | D71's distinctness: a file re-labelled with another compiler version (E1) loads with its own copy, and the two contexts' `HOST_BRIDGE` differ. The Win64 `entry` bytes and a file's `win64` bridge calling `dispatch` through an `ms_abi` function on Linux x86-64, as `tests/sljit/test_win64_bridge.py` does |
 
@@ -754,11 +835,12 @@ these Python tests with the same expectations (file `::` test, under `tests/jit/
    * Linux aarch64 native: the same for the aarch64 engines;
    * macOS and Windows, both architectures: `cloader-jit-<arch>`, guard and explicit.
 4. `uv run pytest tests/cloader/test_corpus.py`: 0 files outside their class, on Linux x86-64
-   and aarch64 (the reader is OS-independent).
+   and aarch64 (the reader is OS-independent). Explicit files from step 1, all files from step 4.
 5. **The committed files** (P1's regenerated set, Decision 7), through the shim and `waboros_run`,
    on every row:
    * every file of the set (x86-64 and aarch64 for the host, guard and explicit, thin and fat) is
-     read, and its exports run; the host-import module's import gets the right word;
+     read, and its exports run; the host-import module's import gets the right word; where the
+     row has no handler ("Rows"), guard files are refused at step 5;
    * the small module has `heap` 1 (a GC struct global): it runs with the collector file
      supplied, and is refused with `WABOROS_E_NO_COLLECTOR` without one (no compiler);
    * a thin file of the other architecture is refused at step 5 (`e_machine`);
@@ -775,7 +857,8 @@ these Python tests with the same expectations (file `::` test, under `tests/jit/
    * a collector file with another `module_sha256` is refused;
    * a pytest ties `collector_wasm.c` to `collector.wasm`.
 7. **CoreMark**: `waboros_run core.<target>.wbo setup --wiring` passes its self-check on every row.
-   Its time is alternated with `tools/run_coremark_jit.py` on the same file (BENCHMARKS.md).
+   Its time is alternated with `tools/run_coremark_jit.py` on the same file (BENCHMARKS.md),
+   which gains a `.wbo` input in step 6.
 8. **Sanitizers** (Linux x86-64): ctest and `waboros_run` (CoreMark, the committed files,
    `traps.wat` in both modes), built with
    `-DCMAKE_C_FLAGS="-fsanitize=address,undefined,function -fno-sanitize-recover=all"` (Clang).
@@ -791,29 +874,32 @@ Every step stops and reports if it needs more than its size. P1 changes a contra
 other steps change none. A divergence from Python is a bug in one of the loaders, settled by the
 text; if the text does not settle it, the text is amended first (the working freeze: a spec or a
 decision, no bump). CLAUDE.md requires a `reviewer` after every JIT, ABI, artifact or trap change,
-so P1 and steps 2, 3, 4, 5, 8 and 9 end with one.
+so P1 and steps 2-9 but 6.1 end with one (step 6: aarch64 execution, the instruction cache, BTI, the
+Win64 `ms_abi` test; step 7: the macOS handler, `MAP_JIT`, the PC on arm64).
 
-| step | goal | agent | acceptance | size (lines) |
+| step | goal | agent | acceptance | size (lines, estimated) |
 |---|---|---|---|---|
-| P1 | **D75.** The four targets' bridges pass the word (`edx`/`r8d`/`w2`) in every convention. ARTIFACT.md part 3, S0015, S0003, D34/D32 markers. A word test per import, libcall and nested entry on every JIT target. The committed v1 set regenerated by `tools/make_v1_artifacts.py` (x86-64 and aarch64, guard and explicit, thin and fat) plus a host-import module; one or two pre-D75 files kept (Decision 7) | jit-engineer, then reviewer | the spec suite at parity on the four targets in-process and through files, both modes; `tests/artifact/test_old.py` runs the new set (read, inventory, instantiate, the host import's word, load thin and fat, the version refusals) and refuses the kept pre-D75 thin file(s) on their bridge bytes, regenerating the fat; `tools/jit_dump.py` lists unchanged (its hash covers the `Compiled`, not the trampolines); `tools/artifact_dump.py` files differ only in the blobs; `pytest -q` | src ~60, tests ~170, docs ~40 |
+| P1 | **D75.** The four targets' bridges pass the word (`edx`/`r8d`/`w2`) in every convention. ARTIFACT.md part 3, S0015, S0003, D34/D32 markers. A word test per import, libcall and nested entry on every JIT target. The committed v1 set regenerated by `tools/make_v1_artifacts.py` (x86-64 and aarch64, guard and explicit, thin and fat) plus a host-import module; one or two pre-D75 files kept (Decision 7) | jit-engineer, then reviewer | the spec suite at parity on the four targets in-process and through files, both modes; `tests/artifact/test_old.py` runs the new set (read, inventory, instantiate, the host import's word, load thin and fat, the version refusals) and refuses the kept pre-D75 thin file(s) on their bridge bytes, regenerating the fat; `tools/jit_dump.py` lists unchanged (its hash covers the `Compiled`, not the trampolines); for each file of `tools/artifact_dump.py OUT DIR` before and after, the `artifact.read` views are equal but for `compiler` (the development digest, `_own_digest`), the trampoline records and the blobs, shown by a comparison whose command and output the report gives (the tool prints one hash per file, so its lists cannot show it); `pytest -q` | src ~60, tests ~170, docs ~40 |
 | P2 | **Refusal steps.** `ArtifactError.step` and `.section`, set at the phase boundaries of `load`/`read`; the fat-file SHA-256 check named step 1b in S0014 (Decision 9); no corpus case on the `cannot load:` path | implementer | `tests/artifact/` asserts the step per refusal; `pytest -q` | src ~40, tests ~60 |
 | 0 | `native/CMakeLists.txt` restructured; `WABOROS_SLJIT`, `WABOROS_LOADER`, `WABOROS_LOADER_SHARED`; an empty loader and `waboros_run`; the consumer check; MSVC confirmed; a `cloader` CI job on the six runners | implementer | items 1-2 on the six rows | cmake ~100, CI ~70 |
-| 1 | The reader (`read.c`, `sha256.c`), the frozen lookup, both dumpers, `--dump`/`--check`, the shim's reader part, the corpus test with its classes (needs P1 and P2) | implementer | item 4 on both architectures | C ~1 350, Python ~400 |
+| 1 | The reader (`read.c`, `sha256.c`), the frozen lookup, both dumpers, `--dump`/`--check`, the shim's reader part, the corpus test with its classes and `cases.py` (needs P1 and P2); no executable memory, no handler: copies kept as bytes | implementer | item 4 on explicit files, both architectures | C ~1 350, Python ~600 |
 | 2 | Linux: executable memory, `entry`/`sp_stub` bytes tied to `entry.py`, trampoline copies, locks and the store claim, calls without imports; the engines | jit-engineer, then reviewer | `uv run python -m tests.spec.run --engine cloader-jit-x86_64 --xfail tests/cloader/step2-xfail.txt $(cat tests/cloader/step2.txt)` (the `.wast` files whose modules import nothing, listed by the step from the converted JSON) passes, and the same for `cloader-jit-sljit-x86_64`, explicit | C ~900, Python ~300 |
-| 3 | Instantiation and linking complete: `dispatch` (D75), host externs, globals, references at the API, libcalls, memory64, interrupts, stack limits, exceptions without the heap | jit-engineer, then reviewer | item 3 (Linux x86-64, explicit) without `gc/` and the heap-using `exceptions/`; `spec_diff` empty; the non-GC runtime tests | C ~1 000, Python ~250 |
-| 4 | The guard handler on Linux, `broken`, both install orders | jit-engineer, then reviewer | item 3 in guard mode; the chaining ctests | C ~300 |
+| 3 | Instantiation and linking complete: `dispatch` (D75), host externs, globals, references at the API, libcalls, memory64, interrupts, stack limits, exceptions without the heap | jit-engineer, then reviewer | item 3 (Linux x86-64, explicit) without `gc/` and the heap-using `exceptions/`; `spec_diff` empty; the non-GC runtime tests (the `test_abi.py` ones rewritten as WAT) | C ~1 000, Python ~400 |
+| 4 | The guard handler on Linux, `broken`, both install orders | jit-engineer, then reviewer | item 3 in guard mode; the chaining ctests; item 4 in full | C ~300 |
 | 5 | GC: heap, records, services, walk, roots, collector driver, `collector_wasm.c`, the switches; the three GC builds | jit-engineer, then reviewer | items 3 (`gc/`, `exceptions/`, switches, walk check) and 6; the GC runtime tests | C ~1 200 |
-| 6 | Linux aarch64 (native, QEMU with BTI), mixed stores, `make_files.py`, the committed files, CoreMark, sanitizers, fuzz job; the `ms_abi` Win64 test | runner + jit-engineer | items 3, 5, 7, 8, 9 on Linux, both architectures | C ~200, Python ~120, CI ~120 |
+| 6 | Linux aarch64 (native, QEMU with BTI), mixed stores, `make_files.py`, the committed files, CoreMark (`run_coremark_jit.py` takes a `.wbo`), sanitizers, fuzz job; the `ms_abi` Win64 test | runner + jit-engineer, then reviewer | items 3, 5, 7, 8, 9 on Linux, both architectures | C ~200, Python ~150, CI ~120 |
 | 6.1 | Build sizes | runner | a BENCHMARKS.md section; Open question 1 answered from it | tools ~40 |
-| 7 | macOS x86-64 and arm64 (`os_posix.c`'s Apple parts) | jit-engineer | items 1, 3, 5, 7 on both macOS runners | C ~300, CI ~30 |
+| 7 | macOS x86-64 and arm64 (`os_posix.c`'s Apple parts) | jit-engineer, then reviewer | items 1, 3, 5, 7 on both macOS runners | C ~300, CI ~30 |
 | 8 | Windows x64 and ARM64 (`os_windows.c`, the vectored handler, CET continuation targets, the Win64 `entry`) | jit-engineer, then reviewer | items 1, 3, 5, 7 on both Windows runners; a `/CETCOMPAT` build of `waboros_run` runs the guard traps on x64 | C ~450, CMake ~30, CI ~30 |
 | 9 | Linux musl (x86-64, aarch64) and Android (x86-64, arm64): the bionic and musl notes of `os_posix.c`, the NDK build (CMake's Android toolchain file; the shared library for the shim), the CI steps | jit-engineer + runner, then reviewer | musl, both architectures: items 1, 5, 7 and 8's `waboros_run` runs (no sanitizer), and item 3 with `cloader-jit-x86_64` in the x86-64 container. Android x86-64: `tests/cloader/test_android.py` in the cell's app (the shim loads the NDK-built library; guard faults through libsigchain, as `tests/jit/test_android.py`), and `waboros_run` over `adb shell` (no ART) for CoreMark and the committed files. Android arm64: the same where an arm64 emulator runs, else the build | C ~60, CMake ~30, Python ~80, CI ~100 |
 | 10 | Docs ("Docs this changes"), a DECISIONS entry | orchestrator | `python3 tools/check_docs.py` | — |
 | 11 | Final review without the implementers' reasoning: the whole loader against S0014, S0015 and this spec, C99 conformance | reviewer | findings closed | — |
 
 * **Order**: P1 and P2, then 0. Step 1 needs P1 (the corpus uses the D75 files) and P2 (the
-  steps). Then 2-6 on Linux glibc, 6.1, 7, 8 and 9.
-* **Total**: about 5 760 lines of C, 1 150 of Python, 160 of CMake and 350 of CI, plus P1 and P2.
+  steps), and no executable memory or handler. Then 2-6 on Linux glibc (item 4 in full after
+  step 4), 6.1, 7, 8 and 9.
+* **Total** (estimated): about 5 760 lines of C, 1 530 of Python, 160 of CMake and 350 of CI,
+  plus P1 and P2.
   This is scaled from the Python sizes: `artifact.py` 1 184, `instance.py` 1 374, and `heap.py`,
   `collect.py`, `walk.py`, `guard.py` and `execmem.py` about 1 460. C needs more lines per rule
   and has no ctypes plumbing.
@@ -847,7 +933,7 @@ so P1 and steps 2, 3, 4, 5, 8 and 9 end with one.
 * **Two implementations of instantiation** (D72's accepted risk). Covered by items 3-5 and the
   runtime tests. RUNTIME-MODULES.md item 4 names where re-implementations fail: the order of traps.
 * **The handlers** (R6):
-  * four mechanisms on ten rows, Android's beside ART;
+  * four mechanisms on eight guard rows, Android's beside ART;
   * a second handler beside Python's in the shim process;
   * on Windows, faulthandler in front of ours (LESSONS 59), which the C loader cannot see;
   * under CET, a resume address that is not registered ends the process.
@@ -943,9 +1029,9 @@ When approved and implemented:
 * [S0016](S0016-sljit-on-the-boundary.md) "Where it lives": a marker that "no generated sources"
   reads "no generator outside CMake" (Decision 5), and that `native/` configures without the
   submodule.
-* [S0006](S0006-guard-pages.md): the row table gains the C loader's handler on its ten rows
-  (Linux musl aarch64 and Android arm64 included, where S0006's Python rows stay explicit), and
-  the C `broken` rule.
+* [S0006](S0006-guard-pages.md): the row table gains the C loader's handler on the oracle's
+  eight guard rows (none on Linux musl aarch64 and Android arm64, as the Python runtime), and the
+  C `broken` rule.
 * [RISKS.md](../RISKS.md) R6: the C loader's handlers, the shim process with two copies,
   Windows faulthandler.
 * [DECISIONS.md](../DECISIONS.md): D36's marker exists; an entry when the loader is implemented
@@ -982,3 +1068,15 @@ When approved and implemented:
 * 2026-11-25: revised to Decisions 7-9: the dispatcher text, item 5 and P1 on the regenerated
   set; four new rows (Linux musl and Android, both architectures) with their evidence and a
   step 9; the remaining open question renumbered 1 (the build sizes).
+* 2026-11-25: revised after a second independent review (docs only). Blocking: the dispatcher's
+  lost-store check after the call, as `callback`; E1-fat and E2-fat classes, the `fat` dump, and
+  E2's compare. Should-fix: GC roots only of the any, extern and exn hierarchies; references at
+  host functions as `_ref_host`; one handle per object in the C store; the `test_abi.py`
+  scenarios rewritten as WAT and the D34 shim rule; step 1 without executable memory or the
+  handler, the full corpus after step 4; reviewers after steps 6 and 7; guard rows per
+  architecture and D47 rule 3; a process lock for the handler; the walk's checks; C API calls
+  (`waboros_ref_kind`, `waboros_host_message`, `waboros_guard_nonchaining`, host-side grow and
+  table calls); `_GNU_SOURCE`; the sljit known-target difference; P1's dump acceptance. Nits:
+  `check` "1b", the trampoline check at Python's point, the main-thread stack rule on glibc, type
+  ids below 2²⁰, the collector hash in path 2, strict UTF-8, `--wiring` and CoreMark's tool,
+  `cases.py`, the D47 (d) record at approval, estimates marked.
