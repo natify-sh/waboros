@@ -1,8 +1,6 @@
 # pyright: reportUnknownVariableType=false, reportUnknownArgumentType=false
 """The binary reader: malformed input is `Malformed`, never a stray exception or a bomb."""
 
-import tracemalloc
-
 import pytest
 
 from waboros.frontend.binary import ImplLimit, Malformed, decode, parse
@@ -75,6 +73,7 @@ def test_too_many_locals() -> None:
         body = bytes([n]) + groups + b"\x0b"
         return HEAD + TYPE + FUNC + b"\x0a" + bytes([len(body) + 2, 1, len(body)]) + body
 
+    tracemalloc = pytest.importorskip("tracemalloc", reason="PyPy has no _tracemalloc")
     tracemalloc.start()
     with pytest.raises(Malformed):
         parse(locals_of(big + big, 2))

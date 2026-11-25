@@ -366,7 +366,9 @@ def run_native_recursion(store: StoreState, tramp: Trampolines) -> tuple[int, Tr
 
 def test_native_stack_overflow_small_budget(tramp: Trampolines) -> None:
     depth, code = run_native_recursion(StoreState(max_wasm_stack=64 << 10), tramp)
-    assert code is TrapCode.STACK_OVERFLOW and 64 << 10 >> 5 < depth <= 64 << 10 >> 4
+    # the limit is measured by the sp stub's entry, the run starts from another: PyPy's differs by
+    # up to ~0.5 KiB (LESSONS 160), so the upper bound has 1 KiB of slack
+    assert code is TrapCode.STACK_OVERFLOW and 64 << 10 >> 5 < depth <= (64 << 10 >> 4) + 64
 
 
 def test_native_limit_set_by_the_first_jit_entry_at_any_store_depth(tramp: Trampolines) -> None:

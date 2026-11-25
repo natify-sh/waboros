@@ -1256,3 +1256,13 @@ What went wrong or surprised us while building the PoC, so it is not found again
     the request: Python 3.13"). So the CI matrix rows of `test` ran 3.13 (seen in the logs of the
     3.15 row: "Using CPython 3.13.18"). Rule: a CI job that wants another Python sets
     `UV_PYTHON`, which wins over `.python-version`. Found: 2026-11-25.
+160. **PyPy refuses a ctypes array as a `struct.pack_into` buffer, and enters native code from a
+    slightly different sp.** `struct.pack_into(fmt, (c_char * n).from_address(a), ...)` raises
+    `TypeError: a read-write bytes-like object is required` on PyPy 8.0.1 (CPython accepts it):
+    it broke every GC test (heap.py). Rule: write native memory with `ctypes.memmove` of
+    packed bytes. Also, the native stack limit is measured by the sp stub's entry and the run
+    enters again from another sp; on PyPy the two differ by up to ~0.5 KiB (recursion depth under
+    a 64 KiB budget: 4093 on CPython, 4123-4126 on PyPy), so a test bound on that depth has 1 KiB
+    of slack. A test that needs `tracemalloc` skips on PyPy (`_tracemalloc` is missing), and
+    "only stdlib is imported" counts PyPy's `_lzma_cffi` by its file in the stdlib directory.
+    Found: first real PyPy CI run, 2026-11-25.

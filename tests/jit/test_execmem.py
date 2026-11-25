@@ -108,7 +108,8 @@ def test_code_areas_are_unmapped_with_their_instances() -> None:
         assert i("f") == [1]
         released.append(cast(Any, i.inst).code._release)  # the finalizer that unmaps it
         del i
-    gc.collect()  # a store and its instances form a cycle
+    for _ in range(5):  # a store and its instances form a cycle; PyPy finalizes late (LESSONS 49)
+        gc.collect()
     assert not any(r.alive for r in released)
 
 

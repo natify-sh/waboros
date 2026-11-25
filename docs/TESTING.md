@@ -47,7 +47,7 @@ The D25 parity test (`tests/spec/test_runner.py`) requires every JIT to fail wha
 The runtime package itself declares **no** dependencies; these live in a development group.
 The Python ones are the uv `dev` group in `pyproject.toml` (`uv sync`); wasmtime 50.0.1 needs
 Python ≥ 3.9; with the floor at 3.11 (D19) no markers are needed (all dev
-tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is first checked in CI).
+tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is checked in CI).
 
 ## The spec test suite
 

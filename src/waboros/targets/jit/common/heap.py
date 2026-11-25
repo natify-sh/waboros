@@ -117,8 +117,8 @@ class GcHeap:
         if tid and not self.tid_map:  # the whole map: is_subtype reads any entry (D69)
             self._commit(gc.TID_MAP, gc.OBJ)
             self.tid_map = True
-        buf = (ctypes.c_char * n).from_address(self.base + off)
-        struct.pack_into(f"<{len(words)}I", buf, 0, *words)
+        # memmove, not pack_into on a ctypes array: PyPy refuses that buffer (LESSONS 160)
+        ctypes.memmove(self.base + off, struct.pack(f"<{len(words)}I", *words), 4 * len(words))
         self.types += n
         self.records[k], self.display[off] = off, display
         if tid:
