@@ -20,7 +20,7 @@ from waboros.runtime import link
 from waboros.runtime.store import StoreState
 from waboros.targets import base
 from waboros.targets.base import Trap, TrapCode
-from waboros.targets.jit.common import gc, walk
+from waboros.targets.jit.common import gc, guard, walk
 from waboros.targets.jit.common.context import FIRST_VAR, GC_SERVICES, Layout
 from waboros.targets.jit.common.heap import POISON, GcHeap
 from waboros.targets.jit.common.instance import GcRef, Instance, _stacks, type_id  # pyright: ignore[reportPrivateUsage]
@@ -253,6 +253,8 @@ def test_host_values_cross_as_tagged_words(name: str) -> None:
 # ---- compiled GC code (S0013 step 3b)
 def gc_jit(monkeypatch: pytest.MonkeyPatch, bounds: str = "guard") -> Any:
     native(native_jit())  # this machine's JIT (aarch64 natively or under QEMU)
+    if bounds == "guard" and guard.host_row() not in base.TARGETS[native_jit()]().guard_rows:  # pyright: ignore[reportAttributeAccessIssue]
+        pytest.skip(f"no guard mode for {native_jit()} on {guard.host_row()}")  # musl aarch64 (S0017 D10)
     monkeypatch.setenv("WABOROS_JIT_BOUNDS", bounds)
     return base.TARGETS[native_jit()]()
 
