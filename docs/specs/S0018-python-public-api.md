@@ -47,7 +47,8 @@ in "Alternatives considered".
    access and host-thrown wasm exceptions come later, in their own spec.
 3. **Choosing the target** (former Q3, (b)): `Config.strategy` takes `"auto"`, `"pyc"` and `"jit"`
    besides wasmtime-py's values; `Config.target` keeps wasmtime-py's meaning (the triple to compile
-   for, D35 cross-compilation); a read-only `Engine.target` tells which target was selected.
+   for, D35 cross-compilation); what was selected is read from `Engine.strategy` and `Engine.target`
+   (Decision 10).
 4. **Explicit roots** (former Q4, (b)): Wasmtime's root model now. A handle can be made a
    **`ManuallyRooted`** root by `root()`, released only by `unroot()` (or `Store.close()`), besides
    release-on-drop and `store.scope()`. Every handle is **generation-checked**. This amends S0017
@@ -71,6 +72,14 @@ in "Alternatives considered".
    both ranges (for example `2**32 + 5` for an i32, or `2**100`) it raises `ValueError`. Results come
    back signed, as in wasmtime-py. A documented deviation from wasmtime-py, which wraps any `int`
    silently, listed among the differential run's known differences.
+
+10. **The engine's read-only view of the choice** (the open question Decisions 3 creates, (b) with
+    a triple, maintainer 2026-11-25): as Wasmtime separates the compiler (`strategy`) from the
+    platform (`target`), `Engine.strategy` is the resolved compiler family (`"jit"` or `"pyc"`) and
+    `Engine.target` is the triple compiled for (for example `"x86_64-unknown-unknown"`; the OS part
+    is `unknown` because artifacts are OS-independent, D23; `pyc` has none and gives `None`). Each
+    name means the same on `Config` and on `Engine`. The internal target names (`jit-x86_64`, the
+    compiler string of S0014) are not part of the public API and do not change.
 
 ## Goals / Non-goals
 * Goals:
@@ -128,7 +137,7 @@ means the call raises `WaborosError` with the reason and never does something di
 | class | public surface | wasmtime-py | deviation |
 |---|---|---|---|
 | `Config` | write-only setters: `wasm_*` (the features of FEATURES.md), `max_wasm_stack`, `epoch_interruption`, `consume_fuel`, `cache` (`bool` or a path `str`), `signals_based_traps`, `strategy`, `target`, and the options of "Options with no meaning here"; `close()`, `with` | the same names (wasmtime-py's `Config` derives from its `Managed` base: `close`, `with`, `__del__`); `Engine(config)` consumes it, so a second `Engine(config)` raises `ValueError("already closed")` | the same consumption; `strategy` takes `"auto"`, `"pyc"`, `"jit"` (Decision 3); `signals_based_traps` selects the bounds mode (Decision 5); `consume_fuel=True` and `cache=True` or a path give an explicit error until their steps (`cache=False` is accepted: the cache is off) |
-| `Engine` | `Engine(config=None)`, `increment_epoch()`, `is_pulley()` (a method; always `False`), `target` (read-only), `close()`, `with` | the same, without `target` | **extension**: `Engine.target` (Decision 3); one target per engine ([D25](../DECISIONS.md)) |
+| `Engine` | `Engine(config=None)`, `increment_epoch()`, `is_pulley()` (a method; always `False`), `strategy`, `target` (read-only), `close()`, `with` | the same, without `strategy`/`target` | **extension**: `Engine.strategy`, `Engine.target` (Decision 10); one target per engine ([D25](../DECISIONS.md)) |
 | `Module` | `Module(engine, wasm)` (bytes; `str` is WAT, D21), `from_file`, `validate`, `imports`, `exports`, `serialize(fat=False)`, `deserialize`, `deserialize_file`, `close()`, `with` | the same, `serialize()` without `fat` | **extension**: `fat=True` (Decision 6); guard-mode code is recompiled to explicit for the file (Decision 6); `serialize` on a `pyc` engine: explicit error ([S0014](S0014-artifact-format.md) Q6); WAT needs the extra (D21) |
 | `Store` | `Store(engine=None, data=None)`, `data`, `gc()`, `set_epoch_deadline`, `set_limits`, `get_fuel`, `set_fuel`, `scope()`, `close()`, `with` | the same, plus `set_wasi`, `set_wasi_http`, without `scope` | **extension**: `with store.scope():` ("GC handles, roots and scopes"); `get_fuel`/`set_fuel`: explicit error until fuel exists; WASI out of scope |
 | `Linker` | `Linker(engine)`, `allow_shadowing`, `define`, `define_func`, `define_instance`, `define_module`, `get`, `get_default`, `instantiate`, `instantiate_pre`, `define_unknown_imports_as_traps`, `define_unknown_imports_as_default_values`, `close()`, `with` | the same, plus `define_wasi` | WASI out of scope |
@@ -200,7 +209,7 @@ makes it `MemoryError`.
 ### Configuration: public knobs and environment variables
 | knob | public (`Config`) | meaning | environment variable today |
 |---|---|---|---|
-| target | `strategy`: `"auto"` (default), `"pyc"`, `"jit"` (the JIT of this architecture); wasmtime-py's `"cranelift"` raises (Decision 5) | one target per engine (D25); `Engine.target` gives the result (`"pyc"`, `"jit-x86_64"`, `"jit-aarch64"`) | `WABOROS_TARGET` (`targets/base.py`, `target_order`) |
+| target | `strategy`: `"auto"` (default), `"pyc"`, `"jit"` (the JIT of this architecture); wasmtime-py's `"cranelift"` raises (Decision 5) | one target per engine (D25); `Engine.strategy` (`"jit"`/`"pyc"`) and `Engine.target` (the triple, `None` for `pyc`) give the result (Decision 10) | `WABOROS_TARGET` (`targets/base.py`, `target_order`) |
 | cross-compilation | `target`: a triple whose architecture is `x86_64` or `aarch64` (Decision 3) | the JIT of that architecture compiles; an engine for another architecture than the host's compiles and serializes (D35; files are OS-independent, D23), and instantiating its modules raises `WaborosError`; another triple raises | — |
 | bounds mode | `signals_based_traps`: unset or `True` is `auto` (guard pages where verified, explicit checks elsewhere; D44); `False` is explicit checks (Decision 5) | a property of the compiled code (D29); a compile option per engine, no longer read from the process environment at compile time | `WABOROS_JIT_BOUNDS=auto|guard|explicit` (`jit/common/guard.py`, `mode`) |
 | stack | `max_wasm_stack` (bytes) | the JIT's native budget per store ([D10](../DECISIONS.md)); `pyc`: "Stack" below | — (`StoreState.max_wasm_stack`, default 512 KiB in `jit/common/instance.py`, Wasmtime 50's default: see "Stack") |
@@ -413,7 +422,7 @@ handed out: an exported view of a `bytearray` would make a later `memory.grow` f
 
 ### Target selection and the warning
 The engine fixes its target when it is created (D25): `Config.strategy` (`"auto"` by default), or
-`WABOROS_TARGET` when the strategy is left unset. `Engine.target` is the result. With `"auto"`, the
+`WABOROS_TARGET` when the strategy is left unset. `Engine.strategy` and `Engine.target` are the result (Decision 10). With `"auto"`, the
 `JitUnavailableWarning` of D31 is raised at `Engine()`, so a user can filter it or turn it into an
 error with the `warnings` module. With `"jit"`, a JIT that cannot run raises `WaborosError` (D31: no
 warning when the target was chosen explicitly).
@@ -466,7 +475,7 @@ Each of these is language-neutral: a C host needs the same operations.
 | fuel | deferred | needs counters in the code and a measurement |
 | `max_wasm_stack` | in scope (JIT now, `pyc` counter in step 5) | D10 |
 | target and bounds selection | in scope: `strategy`, `target`, `signals_based_traps` | D25, D44; Decisions 3 and 5 |
-| `waboros.targets()` (API.md) | deferred to the CLI spec, with its `targets` command | Decision 3 adds `Engine.target` only |
+| `waboros.targets()` (API.md) | deferred to the CLI spec, with its `targets` command | Decisions 3 and 10 add `Engine.strategy` and `Engine.target` only |
 | `JitUnavailableWarning` | in scope, re-exported | D31 |
 | GC and exception references | in scope (opaque handles, i31, `Trap.exn`); field access deferred | Decision 2 |
 | traps against host exceptions | in scope | D34, "Errors and exceptions" |
@@ -626,14 +635,13 @@ needs more than 120 % of its size.
 * **`memoryview` of linear memory.** Rejected: it breaks `pyc`'s grow (`BufferError`).
 
 ## Open questions
-New ones that the decisions create:
+None open. Settled after the decisions:
 1. **`Engine.target` against `Config.target`.** Decision 3 gives `Config.target` wasmtime-py's
    meaning (a triple) and adds a read-only `Engine.target` that names our target (`"jit-x86_64"`).
    One word then has two meanings on two classes. Options: (a) keep both as decided, documented;
    (b) name the read-only attribute after what it holds, `Engine.strategy` (the resolved value of
    the knob that chose it, for example `"jit-x86_64"`); (c) keep `Engine.target` but make it return
-   the triple, with the waboros target name in another attribute. Recommendation: **(b)**: the
-   attribute mirrors the `Config` knob that chose it, and no name means two things.
+   the triple, with the waboros target name in another attribute. **Decided (Decision 10).**
 
 ## Contradictions found while writing
 * FEATURES.md, "Runtime features", interruption: "done: … `pyc` has yield points". The code has
@@ -671,3 +679,4 @@ New ones that the decisions create:
   draft until approval.
 * 2026-11-25: Decision 9 refined (maintainer): the signed and the unsigned range are both accepted
   and converted to the bit pattern; `ValueError` only outside both.
+* 2026-11-25: Decision 10 (maintainer): `Engine.strategy` (`jit`/`pyc`) and `Engine.target` (a triple, as `Config.target`); no open question left.
