@@ -106,12 +106,17 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is checked in CI).
   `Compiled.module` and the read module have only the inventory's keys.
   `tests/artifact/test_old.py` (S0014 step 4.3) reads and runs the v1 files committed under
   `tests/artifact/data/` (never regenerated; their README names the commit and compiler string); a
-  later format or ABI bump keeps the test, changed to expect the version refusal. The
-  `v1-small-*` files are **pre-S0015 fixtures**: `read` refuses them on the layout alone, the size of
-  `.waboros.trampolines` (84 against 60 bytes on x86-64, 44 against 32 on aarch64), also with the
-  compiler string patched to the file's; the fat one is regenerated from its wasm and runs. The
-  `v1-s15-small-*` files (S0015 step 4) are read, run (the view on the native architecture), loaded
-  thin and fat, and refused for their version like the first set.
+  later format or ABI bump keeps the test, changed to expect the version refusal. The `v1-d75-*`
+  set (S0017 P1: modules `small` and `host`, both JITs, both bounds modes, thin and fat) is read,
+  run (the view on the native architecture, the `host` module's word per import, D75), loaded thin
+  and fat, and refused for its version. The two kept **pre-D75 files** `v1-s15-small-x86_64*` are
+  refused on their bridge bytes (`read`, and `load` of the thin one with the compiler string
+  patched to the file's); the fat one is regenerated from its wasm and runs (S0017 Decision 7).
+  The pre-S0015 record layout (40-byte records) is refused by `test_trampolines.py`.
+  `tests/jit/test_host_word.py` (D75): the word a host receives, per import (`call`,
+  `call_indirect`, `return_call`), libcall and nested entry, on the machine's JIT and each
+  development compiler of its architecture, in-process and through files; the Win64 bridges of the
+  x86-64 compilers with a hand-assembled Win64 host on any x86-64 host.
   `tests/artifact/test_trampolines.py` (S0014 step 5): the instance of a loaded file runs on the
   process's trampolines; a blob byte, a moved `bridge`, `tail_switch` or `restore`, or a changed
   restore number of any convention is refused thin and regenerated fat; the payload's layout

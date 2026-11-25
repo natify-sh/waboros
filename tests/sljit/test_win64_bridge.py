@@ -39,7 +39,8 @@ SEEN = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint64)
 def test_win64_has_the_custom_call_and_the_same_tail_switch() -> None:
     sysv, win = (backend.trampoline_blob(c) for c in ("sysv", "win64"))
     call = backend._win64_call(backend.S3)
-    assert call == b"\x48\x89\xd9\x48\x89\xf2\x41\xff\xd5"  # mov rcx,rbx; mov rdx,rsi; call r13
+    # mov rcx, rbx; mov rdx, rsi; mov r8d, eax; call r13
+    assert call == bytes.fromhex("4889d94889f24189c041ffd5")
     assert win[0][: win[1][1]].count(call) == 1 and call not in sysv[0]
     assert sysv[0][sysv[1][1] :] == win[0][win[1][1] :]  # tail_switch: the same bytes
     assert sysv[1][2] - sysv[1][1] == win[1][2] - win[1][1] and sysv[2] == win[2]

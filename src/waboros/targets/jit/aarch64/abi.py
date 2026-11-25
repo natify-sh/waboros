@@ -35,7 +35,8 @@ def reload_memory(a: Asm) -> None:
 
 def bridge(a: Asm) -> None:
     """Wasm code: x0 = context word of the host function, x1 = its slots, then
-    `ldr x16, [x28, #8*HOST_BRIDGE]; blr x16`. Calls host(ctx, slots) with ctx[HOST_ERROR] preset
+    `ldr x16, [x28, #8*HOST_BRIDGE]; blr x16`. Calls host(ctx, slots, word) (D75: w2, saved
+    above) with ctx[HOST_ERROR] preset
     to 13 and returns the status the host left there in w0 (its C return value is ignored, D34);
     the word's previous value (an enclosing host call's preset) is put back. Saves x2-x8 for every
     frame above (LESSONS 2); x19-x28 are callee-saved for the host. The call site reloads
@@ -57,6 +58,7 @@ def bridge(a: Asm) -> None:
     a.mov_imm(9, STATUS_HOST_ERROR)
     a.st(9, CTX, status)
     a.ld_idx(16, CTX, 0, scaled=True)  # x16 = ctx[x0]
+    a.mov(2, 0, wide=False)  # the word (D75), zero-extended
     a.mov(0, CTX)  # x1 already holds the slots
     a.blr(16)
     a.ld(10, CTX, EXIT)

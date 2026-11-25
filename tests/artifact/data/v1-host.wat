@@ -1,0 +1,12 @@
+(module
+  (type $t (func (param i32) (result i32)))
+  (import "env" "h" (func $h (type $t)))
+  (import "env" "k" (func $k (param i64) (result i64)))
+  (memory (export "mem") 1)
+  (table 1 funcref)
+  (elem (i32.const 0) $h)
+  (func (export "f") (param i32) (result i32) (call $h (local.get 0)))
+  (func (export "g") (param i64) (result i64) (call $k (local.get 0)))
+  (func (export "ind") (param i32) (result i32) (call_indirect (type $t) (local.get 0) (i32.const 0)))
+  (func (export "tail") (param i32) (result i32) (return_call $h (local.get 0)))
+  (func (export "grow") (param i32) (result i32) (memory.grow (local.get 0))))

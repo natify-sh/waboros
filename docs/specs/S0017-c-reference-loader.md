@@ -1098,3 +1098,6 @@ When approved and implemented:
 * 2026-11-25: Decision 11 (handles released: weak in Python, `waboros_ref_release` in C).
 * 2026-11-25: Decision 11 implemented in the Python runtime (the oracle); the two tests in the runtime-test table.
 * 2026-11-25: approved by the maintainer (Decisions 1-11; the build-size question stays open until step 6.1); D76 records it. First step: P1.
+* 2026-11-25: P1 implemented (D75): the four targets' bridges pass the word; `tests/jit/test_host_word.py`; the
+  committed `v1-d75` set (16 files, `small` and `host`) replaces the earlier ones, two pre-D75 x86-64 files kept
+  for the refusal on the bridge bytes.

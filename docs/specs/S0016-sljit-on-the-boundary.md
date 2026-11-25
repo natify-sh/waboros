@@ -6,7 +6,7 @@ status: implemented
 superseded_by:
 related: [D23, D30, D35, D39, D47, D56, D59, D60, D61, D64, D66, D67, D68, D70, D71, D73, D74, R2, R3, S0004, S0013, S0014, S0015]
 owner: maintainer
-updated: 2026-11-24
+updated: 2026-11-25
 ---
 
 # S0016 jit-sljit on the boundary: the first second compiler in a mixed store
@@ -383,7 +383,8 @@ tests/sljit/                   the Python side (development only): backend.py (t
   * The blobs are bytes; `tail_switch` is identical in both.
   * The `win64` bridge differs only at the host call. sljit's x86-64 build picks one calling
     convention at build time (`_WIN64`), and we use one sljit configuration on every OS
-    (LESSONS 141), so that call is custom bytes: `rcx`/`rdx` arguments and an indirect `call`.
+    (LESSONS 141), so that call is custom bytes: `rcx`/`rdx` arguments (and `r8d`, the word, since D75) and an
+    indirect `call`.
     About 20 lines. The exit record's `pc` is the bridge caller's return address, as in the `sysv`
     bridge, not a label in the bridge.
   * The 32-byte shadow space is `[rsp, rsp + 32)` at the call. So the bridge's own locals (the
@@ -788,7 +789,8 @@ In the step that makes each untrue; step 7 for the rest.
   `isa_name`; `digest_sources()` is folded into a development build's compiler string (one
   16-digit digest, paths relative to the files' common directory); a file whose compiler target is
   not registered is refused saying so. `jit-sljit-x86_64` writes `sysv` and `win64` blobs: the
-  `win64` bridge's host call is custom bytes (`mov rcx, rbx; mov rdx, rsi; call r13`) and its
+  `win64` bridge's host call is custom bytes (`mov rcx, rbx; mov rdx, rsi; call r13`; since D75 also `mov r8d, eax` before the
+  call) and its
   locals sit above the shadow space (`tests/sljit/test_win64_bridge.py` executes it against an
   `ms_abi` function of the library, patching `HOST_BRIDGE` and the import word of a normal
   instance). The "none" value left `read` (refused by name, x86-64 and aarch64). The tools take
@@ -935,3 +937,5 @@ In the step that makes each untrue; step 7 for the rest.
   counts 112 bytes before a sljit centry (the most a foreign compiler's C path pushes, 64, plus
   centry's 48); the "Record calls" bullet is marked superseded by "Frame size"; the `approved` status
   becomes `implemented`.
+* 2026-11-25 (S0017 P1, D75): the win64 host call's custom bytes pass the word in `r8d`; the sysv
+  and aapcs64 bridges pass it in `edx`/`w2` (`ARGS3V`). Markers at the two descriptions.

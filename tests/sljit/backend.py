@@ -1624,15 +1624,19 @@ class Backend(Emitter):
 
 
 def _win64_call(fn: int) -> bytes:
-    """`mov rcx, <S0>; mov rdx, <R1>; call <fn>`: the host call of the win64 bridge as custom
-    bytes, as sljit is built for SysV on every OS (LESSONS 141); registers from sljit's map."""
-    ctx, slots, f = (lib.sljit_get_register_index(0, r) for r in (S0, R1, fn))  # SLJIT_GP_REGISTER
+    """`mov rcx, <S0>; mov rdx, <R1>; mov r8d, <R0>; call <fn>`: the host call of the win64
+    bridge as custom bytes, host(ctx, slots, word) (D75), as sljit is built for SysV on every OS
+    (LESSONS 141); registers from sljit's map."""
+    ctx, slots, word, f = (lib.sljit_get_register_index(0, r) for r in (S0, R1, R0, fn))
+    # no source or call target overwritten before it is read
+    assert 1 not in (slots, word, f) and 2 not in (word, f) and 8 not in (ctx, slots, f)
 
-    def mov(d: int, s: int) -> bytes:  # mov r64 d, r64 s (89 /r)
-        return bytes((0x48 | (s >> 3) << 2 | d >> 3, 0x89, 0xC0 | (s & 7) << 3 | (d & 7)))
+    def mov(d: int, s: int, w: int = 8) -> bytes:  # mov r64/r32 d, s (89 /r; REX.W iff w)
+        rex = w | (s >> 3) << 2 | d >> 3
+        return bytes((0x40 | rex,) if rex else ()) + bytes((0x89, 0xC0 | (s & 7) << 3 | (d & 7)))
 
     call = bytes((0x41,) if f >= 8 else ()) + bytes((0xFF, 0xD0 | (f & 7)))  # call r64 (FF /2)
-    return mov(1, ctx) + mov(2, slots) + call
+    return mov(1, ctx) + mov(2, slots) + mov(8, word, 0) + call
 
 
 @cache
@@ -1645,10 +1649,10 @@ def trampoline_blob(conv: str = "sysv") -> tuple[bytes, tuple[int, ...], tuple[i
     pre = home + 8 * len(RSAVE)  # the enclosing HOST_ERROR preset
     e = Emitter()
     # bridge: R0 = the context word of the host function, R1 = its slots. Calls host(ctx,
-    # slots) with ctx[HOST_ERROR] preset to 13, returns the word, puts the enclosing preset
-    # back; R3-R6 saved for all frames above (LESSONS 2); the store's exit record {the caller's
-    # stack pointer at its call, the return address, the frame} written before the host runs
-    # and its sp cleared after (S0013 3a). Locals: R3-R6, then the preset (win64: above the
+    # slots, word) (D75) with ctx[HOST_ERROR] preset to 13, returns the word, puts the enclosing
+    # preset back; R3-R6 saved for all frames above (LESSONS 2); the store's exit record {the
+    # caller's stack pointer at its call, the return address, the frame} written before the host
+    # runs and its sp cleared after (S0013 3a). Locals: R3-R6, then the preset (win64: above the
     # shadow space, [SP, SP + 32) at the call, which the host owns).
     bridge = e.mark()
     e.pad(BTI_C)
@@ -1667,9 +1671,10 @@ def trampoline_blob(conv: str = "sysv") -> tuple[bytes, tuple[int, ...], tuple[i
     e.op1(g("MOV"), (S3, 0), (MEM2(CTX, R0), 3))
     if conv == "win64":
         e.custom(_win64_call(S3))
-    else:
+    else:  # host(ctx, slots, word) (D75): the word zero-extended into R2
+        e.op1(g("MOV32"), (R2, 0), (R0, 0))
         e.op1(g("MOV"), (R0, 0), (CTX, 0))
-        lib.sljit_emit_icall(e.c, g("CALL"), g("ARGS2V(P, P)"), S3, 0)
+        lib.sljit_emit_icall(e.c, g("CALL"), g("ARGS3V(P, P, W)"), S3, 0)
     e.op1(g("MOV"), (R1, 0), (MEM1(CTX), 8 * EXIT_RECORD))  # no wasm frame waits in a host call
     e.op1(g("MOV"), (MEM1(R1), 0), (IMM, 0))
     e.op1(g("MOV_U32"), (R0, 0), (MEM1(CTX), 8 * HOST_ERROR))

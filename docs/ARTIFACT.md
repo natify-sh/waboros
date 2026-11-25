@@ -294,8 +294,11 @@ after it (B1): 1 is a match. `is_subtype` answers 0 for an id at or past the cap
 entry (equality was tested already) and traps on a malformed record.
 
 **Host functions** (imports and libcalls) share one C signature in the host's calling convention:
-`int32_t f(uint64_t *ctx, uint64_t *slots)` — the arguments in `slots[0..n)`, one 64-bit slot per
-value as for entries; the function writes its results to `slots[0..m)`, then, as its last action, its
+`int32_t f(uint64_t *ctx, uint64_t *slots, uint32_t word)` — `word` is the index of the context
+word the function was called through (its import's or libcall's word; D75, a working-freeze
+amendment of v1: a host maps it to the import through the layout it built, a libcall may ignore
+it; files written before D75 pass a stale value there and are refused by their bridge bytes); the
+arguments in `slots[0..n)`, one 64-bit slot per value as for entries; the function writes its results to `slots[0..m)`, then, as its last action, its
 status to `ctx[HOST_ERROR]`: `0`, a trap code, or `13` `HOST_ERROR` (the host keeps the actual
 exception). Its C return value is ignored (D34). Compiled code calls it through the bridge
 (`ctx[HOST_BRIDGE]`), which saves what its compiler needs kept (private to the compiler since S0015), presets `ctx[HOST_ERROR]` to 13, returns the word as the call's status and puts back the word's
@@ -375,6 +378,7 @@ also spill the register windows before a walk). S0015's headroom numbers (1 KiB,
 | | x86-64 | aarch64 |
 |---|---|---|
 | boundary (C entry), from S0015 steps 1 and 3 | `int32_t f(rdi = ctx, rsi = frame)` in SysV on every OS: keeps `rbx rbp r12`–`r15`, may clobber `rax rcx rdx rsi rdi r8`–`r11`, every xmm register and the flags; status in `eax` (the upper half undefined); DF 0 and MXCSR `0x1F80` control bits at entry and exit; `endbr64` first | `int32_t f(x0 = ctx, x1 = frame)` in AAPCS64 on every OS: keeps `x19`–`x29`, `sp`, `d8`–`d15`, may clobber `x0`–`x17`, `x30`, the other vector state and NZCV; never touches `x18`; status in `w0` (the upper half undefined); FPCR at entry and exit as S0015's table; `bti jc` first |
+| host call (bridge → host function, D75) | `host(ctx, slots, word)`: SysV `rdi`, `rsi`, `edx`; Win64 `rcx`, `rdx`, `r8d` (32-byte shadow space) | `host(ctx, slots, word)`: `x0`, `x1`, `w2` |
 | exit record (bridge): `sp`, `pc` | `sp` = rsp + 8 at entry (before the `call` pushed), `pc` = `[rsp]` | `sp` = sp at the `blr`, `pc` = `x30` |
 | entry's saved block | `[rsp, rsp + 32)` at its `call`: enclosing `{sp, pc, frame}`, then its frame | `[sp + 96, sp + 128)` at its `blr`, the same four words |
 | landing pad, boundary | `endbr64` | `bti jc` (C entries, `entry`, `sp_stub`; S0015 Q5) |
@@ -388,7 +392,7 @@ every OS) as information (another compiler, a sljit micro-compiler, states its o
 | | x86-64 | aarch64 | `jit-sljit-x86_64` | `jit-sljit-aarch64` |
 |---|---|---|---|---|
 | bridge call | `eax` = word, `rdx` = slots; `call` | `x0` = word, `x1` = slots; `blr x16` | `rax` = word, `rsi` = slots; `call` | `x0` = word, `x1` = slots; `blr` |
-| bridge preserves | pool (`rbx rbp rsi rdi r8–r11`), `r12`–`r15` | `x2`–`x8`, `x19`–`x28`, `x29`, `sp` | `rbx rbp r12`–`r15`, and `rcx r8 r10 r11` saved in its frame (`win64`: above the 32-byte shadow space, the host call custom bytes `mov rcx, rbx; mov rdx, rsi; call r13`) | `x19`–`x28` through sljit's enter (the host keeps the callee-saved ones); no R pins, the pool is `x22`–`x28` (sljit's S3–S9), so nothing is saved in a frame |
+| bridge preserves | pool (`rbx rbp rsi rdi r8–r11`), `r12`–`r15` | `x2`–`x8`, `x19`–`x28`, `x29`, `sp` | `rbx rbp r12`–`r15`, and `rcx r8 r10 r11` saved in its frame (`win64`: above the 32-byte shadow space, the host call custom bytes `mov rcx, rbx; mov rdx, rsi; mov r8d, eax; call r13`) | `x19`–`x28` through sljit's enter (the host keeps the callee-saved ones); no R pins, the pool is `x22`–`x28` (sljit's S3–S9), so nothing is saved in a frame |
 | `tail_switch` | record in `rdx`, return address at `[rsp]`; the first hop and the hops from `restore`, never one from a C entry; restore frame 64 bytes (S0015 step 1, D71) | record in `x16`, return address in `x30`; the same hops; restore frame 80 bytes (S0015 step 3) | record in `rax`, return address at `[rsp]`; the same hops; restore frame 48 bytes (`restore_ret_at` 40) | record in `x0`, return address in `x30`; the same hops; restore frame 32 bytes (`restore_ret_at` 8) |
 | exit record (bridge): `frame` | `r12` | `x27` | `r15` | `x20` (sljit's S1) |
 | landing pad, the compiler's own | `endbr64` | `bti c` (bodies, bridge, `tail_switch`), `bti j` (jump-table pads) | `endbr64` | `bti jc` (bodies, host-thunk bodies, `tail_switch`), `bti c` (bridge); stubs `bti jc; adr x2, #8; b centry` (12 bytes) |

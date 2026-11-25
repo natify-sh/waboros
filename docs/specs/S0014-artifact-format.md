@@ -667,8 +667,9 @@ authoritative (D18).
   on x86-64 (as built: `tools/artifact_dump.py` writes the files and lists their sha256, and the
   `artifacts` / `artifacts-diff` jobs of `platforms.yml` compare six hosts, step 6; `tools/jit_dump.py
   --files` writes one file per module) and the x86-64-written file runs there (as built:
-  `test_old.py::test_view_runs` reads and runs `v1-s15-small-aarch64.wbo`, written on x86-64, in
-  the native aarch64 jobs of `platforms.yml`: Linux, macOS and Windows on Arm).
+  `test_old.py::test_view_runs` reads and runs aarch64 files written on x86-64, `v1-s15-small-aarch64.wbo`
+  (since S0017 P1 `v1-d75-*-aarch64-*`), in the native aarch64 jobs of `platforms.yml`: Linux, macOS
+  and Windows on Arm).
 * **Refusals** (`tests/artifact/test_refuse.py`), each with its message, each thin and fat (fat:
   regenerated and run): wrong magic or OS/ABI (refused even fat); `EI_ABIVERSION` 0 and 2;
   `e_machine` of the other architecture; `ctx_abi_version` 2; `isa_level` 3 on a CPU without AVX2

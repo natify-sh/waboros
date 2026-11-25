@@ -55,7 +55,7 @@ it is not a new format. The runtime side is [S0002](S0002-target-interface.md).
 ### Calling conventions
 ```c
 int32_t entry(uint64_t *ctx, uint64_t *frame, const void *code);   /* per host convention */
-int32_t host (uint64_t *ctx, uint64_t *slots);                     /* imports and libcalls */
+int32_t host (uint64_t *ctx, uint64_t *slots, uint32_t word);      /* imports and libcalls; word: D75 */
 ```
 * `frame[0..n)` holds the arguments, `frame[0..m)` the results after a 0 return: one slot per value,
   i32 zero-extended, i64 as is, f32/f64 bit patterns (ARTIFACT.md).
@@ -90,8 +90,8 @@ int32_t host (uint64_t *ctx, uint64_t *slots);                     /* imports an
   pointer of the arguments, then `call [r15 + 8*HOST_BRIDGE]`. SysV bridge: `endbr64`; push the pool
   registers SysV lets a callee clobber (`rsi rdi r8–r11`; all of them, not only the caller's pins:
   frames above keep pins there too, LESSONS 2); push `ctx[HOST_ERROR]` (an enclosing host call's
-  preset); `ctx[HOST_ERROR] ← 13`; `rdi ← r15`, `rsi ← rdx`; `call [r15+8*rax]`; `eax ←
-  ctx[HOST_ERROR]`; pop it back into the word; pop; `ret` with the status in `eax`. Win64 bridge: saves `r8–r11` only, passes `rcx`/`rdx`, and
+  preset); `ctx[HOST_ERROR] ← 13`; `rdi ← r15`, `rsi ← rdx`, `edx ← eax` (the word, D75); `call [r15+8*rax]`; `eax ←
+  ctx[HOST_ERROR]`; pop it back into the word; pop; `ret` with the status in `eax`. Win64 bridge: saves `r8–r11` only, passes `rcx`/`rdx`/`r8d`, and
   reserves the 32-byte shadow space. Both write the store's exit record (word 14) through r8/r9
   after pushing them, and clear its `sp` after the host returns (S0013 3a). The wasm call site then
   reloads `r13`/`r14` and does `test eax, eax; jnz unwind`.
@@ -432,3 +432,6 @@ uv run pytest tests/jit -k "entry or trap or reentry or host or interrupt or sta
 * 2026-11-23: S0015 step 5 (docs): "Two stacks" gains the measured recursion depth through
   `call_indirect` and across instances on both architectures; the second-architecture paragraph
   names the boundary row per architecture and the `bti jc` pad. No ABI change.
+* 2026-11-25 (S0017 P1, D75): the `host` prototype gains `uint32_t word`, the context-word index
+  the host was called through (SysV `edx`, Win64 `r8d`, AAPCS64 `w2`); a working-freeze amendment
+  of v1, no version bump.

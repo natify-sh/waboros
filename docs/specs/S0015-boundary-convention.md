@@ -251,6 +251,8 @@ ARTIFACT.md part 3, "Reference listing of the runtime's `entry`".
     * `frame`: the frame base of the calling wasm frame, the base its site's map refers to;
   * preset `ctx[HOST_ERROR]` to 13, return the word as the status, and put back the enclosing
     preset (part 3, D34): the scratch gate's sljit bridge did both;
+  * *(D75, S0017 P1)* call the host as `host(ctx, slots, word)`, `word` the context-word index it
+    was called with, zero-extended (SysV `edx`, Win64 `r8d`, AAPCS64 `w2`: the fixed row of part 3);
   * the rest of part 3's host-function contract, unchanged (the nested entry at
     `slots + max(n, m)`), with one sentence added: a host function writes only `0`, a public trap
     code or `13` into `HOST_ERROR`, so no private status leaves through a bridge.
@@ -935,3 +937,6 @@ Moved to [ARTIFACT.md](../ARTIFACT.md) part 3, "Reference listing of the runtime
   "What sljit-based compilers must add", the deferred lists and "Compatibility" are marked as
   superseded or done in part by S0016 (`jit-sljit` has stubs and a `centry`; frame numbers from
   `native/`; no "runtime's own compiler"; in-process mixed stores). No change to the contract.
+* 2026-11-25 (S0017 P1, D75): "What every bridge must do" gains the third argument `word`; the
+  compiler-private rows of ARTIFACT.md part 3 gain the sljit win64 bytes `mov r8d, eax`, the fixed
+  rows a host-call row. A working-freeze amendment of v1, no version bump.

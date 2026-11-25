@@ -6,7 +6,7 @@ status: implemented
 superseded_by:
 related: [D19, D25, D30, D32, D34, D35, D39, D47, D51, R2, R3, S0001, S0002, S0003, S0004, S0011]
 owner: maintainer
-updated: 2026-11-16
+updated: 2026-11-25
 ---
 
 # S0012 Exception handling (exnref) on pyc, jit-x86_64 and jit-aarch64
@@ -86,7 +86,7 @@ Wasmtime.
 | word | name | direction | meaning |
 |---|---|---|---|
 | 10 | `EXCEPTION` | host → code | the address of the store's pending-exception word. The word holds the exnref of the exception in flight, valid only while status 14 propagates. One word per store, so an exception crosses contexts (a call through a function record, D32) |
-| 11 | `EXN_REFILL` | host → code | the arena refill service: a host function with the libcall signature (`int32_t f(ctx, slots)`), called through the bridge only when a throw finds the arena's chunk full (step 3, D52); reserved and zero since S0013 step 6.3 |
+| 11 | `EXN_REFILL` | host → code | the arena refill service: a host function with the libcall signature (`int32_t f(ctx, slots)`, since D75 `f(ctx, slots, word)`), called through the bridge only when a throw finds the arena's chunk full (step 3, D52); reserved and zero since S0013 step 6.3 |
 | 12, 13 | `ARENA_CURSOR`, `ARENA_LIMIT` | host → code | addresses of the store's arena cursor and limit (step 3, D52); reserved and zero since S0013 step 6.3 |
 | … (after the function records) | per tag *t*: 1 word | host → code | the tag's identity: a non-zero value unique in the process, imported tags first. An imported tag has its exporter's value. |
 
@@ -515,3 +515,4 @@ in a comment (REFERENCES.md).
   record: the caller restores the pool itself before the status test (S0015 A3).
 * 2026-11-22: D71 (x86-64): a record of the caller's own context, or of another context of the
   same compiler, is called at its body, where the callee's epilogue restores the pool as before.
+* 2026-11-25 (D75): the libcall signature in the context table gains the word, `f(ctx, slots, word)`.

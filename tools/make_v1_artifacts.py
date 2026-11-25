@@ -1,11 +1,16 @@
-"""Wrote the committed v1 artifacts under tests/artifact/data/.
+"""Writes the committed v1 artifacts under tests/artifact/data/.
 
-Run twice, kept for the record: S0014 step 4.3 wrote `v1-small-<arch>[-thin].wbo`, the pre-S0015
-fixtures; S0015 step 4 wrote `v1-s15-small-<arch>[-thin].wbo`. The files are NEVER regenerated: a
-later format must keep reading them or refuse them with the version message (CLAUDE.md, "The JIT
-artifact is a contract"). Each JIT gets a fat and a thin file of one small module, written in
-explicit bounds mode, from the committed `v1-small.wasm` (its source is `v1-small.wat`). Compiling
-for the other architecture needs no foreign host. A new set takes a new `SET` name.
+Run three times, kept for the record: S0014 step 4.3 wrote `v1-small-<arch>[-thin].wbo`, the
+pre-S0015 fixtures; S0015 step 4 wrote `v1-s15-small-<arch>[-thin].wbo`; S0017 P1 (D75, the bridge
+passes the word) wrote the set `v1-d75`, which replaced both (S0017 Decision 7: the only files
+written before D75 are our own; two of them stay for the refusal of the old bridge bytes). A set
+is written once and not regenerated: a later format must keep reading it or refuse it with the
+version message (CLAUDE.md, "The JIT artifact is a contract"); a new set takes a new `SET` name.
+
+`v1-d75`: modules `small` (`v1-small.wasm`, source `v1-small.wat`) and `host` (`v1-host.wasm`,
+written here once from `v1-host.wat` through wasmtime, a module with host imports), for each JIT,
+both bounds modes, fat and thin: `v1-d75-<module>-<arch>-<bounds>[-thin].wbo`. Compiling for the
+other architecture needs no foreign host.
 
     uv run python -m tools.make_v1_artifacts
 """
@@ -14,30 +19,36 @@ import hashlib
 import os
 from pathlib import Path
 
-os.environ["WABOROS_JIT_BOUNDS"] = "explicit"
+from waboros.frontend.binary import parse
+from waboros.frontend.validate import validate
+from waboros.targets import base
+from waboros.targets.jit.common import artifact
 
-from waboros.frontend.binary import parse  # noqa: E402
-from waboros.frontend.validate import validate  # noqa: E402
-from waboros.targets import base  # noqa: E402
-from waboros.targets.jit.common import artifact  # noqa: E402
-
-SET = "v1-s15"  # the file name prefix of this set
+SET = "v1-d75"  # the file name prefix of this set
 DATA = Path(__file__).resolve().parents[1] / "tests" / "artifact" / "data"
 
 
 def main() -> None:
-    wasm = (DATA / "v1-small.wasm").read_bytes()
-    for target in ("jit-x86_64", "jit-aarch64"):
-        m = parse(wasm)
-        validate(m)
-        c = base.TARGETS[target]().compile(m)
-        arch = target.split("-")[1]
+    host = DATA / "v1-host.wasm"
+    if not host.exists():
+        import wasmtime  # development only
+
+        host.write_bytes(wasmtime.wat2wasm((DATA / "v1-host.wat").read_text()))
+    for mod in ("small", "host"):
+        wasm = (DATA / f"v1-{mod}.wasm").read_bytes()
         sha = hashlib.sha256(wasm).digest()
-        (DATA / f"{SET}-small-{arch}.wbo").write_bytes(artifact.write(c, target=target, wasm=wasm))
-        (DATA / f"{SET}-small-{arch}-thin.wbo").write_bytes(
-            artifact.write(c, target=target, module_sha256=sha)
-        )
-        print(target, artifact.compiler_string(target))
+        for target in ("jit-x86_64", "jit-aarch64"):
+            for bounds in ("guard", "explicit"):
+                os.environ["WABOROS_JIT_BOUNDS"] = bounds
+                m = parse(wasm)
+                validate(m)
+                c = base.TARGETS[target]().compile(m)
+                name = f"{SET}-{mod}-{target[4:]}-{bounds}"
+                (DATA / f"{name}.wbo").write_bytes(artifact.write(c, target=target, wasm=wasm))
+                (DATA / f"{name}-thin.wbo").write_bytes(
+                    artifact.write(c, target=target, module_sha256=sha)
+                )
+    print(SET, artifact.compiler_string("jit-x86_64"), artifact.compiler_string("jit-aarch64"))
 
 
 if __name__ == "__main__":

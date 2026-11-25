@@ -44,7 +44,8 @@ RESTORE_RET_AT, RESTORE_UP = 56, 64
 
 def bridge(a: Asm, win64: bool) -> None:
     """Wasm code: eax = context word of the host function, rdx = its slots, then
-    `call [r15 + 8 * HOST_BRIDGE]`. Calls host(ctx, slots) with ctx[HOST_ERROR] preset to 13 and
+    `call [r15 + 8 * HOST_BRIDGE]`. Calls host(ctx, slots, word) (D75: the word in edx, Win64
+    r8d, caller-saved in both) with ctx[HOST_ERROR] preset to 13 and
     returns the status the host left there in eax (its C return value is ignored: ctypes leaves
     it undefined when an exception escapes a callback, D34); the word's previous value is put
     back, so an outer host call still reads its own preset. Saves every pool register the
@@ -72,9 +73,11 @@ def bridge(a: Asm, win64: bool) -> None:
     a.mov_imm(status, STATUS_HOST_ERROR, w=True)
     if win64:
         a.mov(RCX, R15, w=True)  # rdx already holds the slots
+        a.mov(R8, RAX)  # the word (D75); r8 was saved above, free after the exit record
     else:
         a.mov(RDI, R15, w=True)
         a.mov(RSI, RDX, w=True)
+        a.mov(RDX, RAX)  # the word (D75), 32-bit: zero-extended
     a.call(Mem(R15, 0, RAX, 8))
     if pad:
         a.alu_imm("add", RSP, pad, w=True)
