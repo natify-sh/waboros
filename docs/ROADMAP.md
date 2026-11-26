@@ -421,6 +421,10 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29; done 2026-11-03) -> 
   and the integer-core spec commands; the shared core does not change. s390x, armv7, mips32el,
   ppc64le, loongarch64, i686 and the rest stay on `pyc` (s390x was excluded by the maintainer; the
   reasons are in D48).
+* **Order (D48 amendment, maintainer, 2026-11-25):** riscv64; then the 32-bit PC targets i686 and
+  armv7 through sljit; then the 32-bit microcontrollers (v2). LoongArch64 is not a target; s390x,
+  ppc64le and MIPS are not a priority (a sljit backend on request only, later); Pyodide/wasm32 is
+  not a JIT priority, its CI cell stays as a cheap `pyc` check.
 * **Later, not a first priority (D48 amendment): the sljit track.** One D39 backend on sljit's API
   under the ported core, shipped as `sljit-<arch>.wasm`, may give those architectures a JIT,
   verified against `pyc` under QEMU ([SLJIT-BACKEND.md](SLJIT-BACKEND.md), `poc/sljit/`). Its first

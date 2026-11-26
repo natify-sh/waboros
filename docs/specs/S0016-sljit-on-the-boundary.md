@@ -587,8 +587,10 @@ About 1 100 lines of Python (mostly ported), 250 of C, 120 of CMake, 190 of runt
 ## Toward the other sljit architectures
 This spec stays on x86-64 and aarch64: the plan of steps does not change. This section lists what
 `jit-sljit`, and later the C micro-compiler (D68), would need on the other architectures sljit
-supports: riscv64 first (D48), then LoongArch64, s390x, ppc64le and MIPS64, then 32-bit ARM, x86
-and RISC-V32.
+supports. The order is D48's (maintainer, 2026-11-25): riscv64 first, then the 32-bit PC targets
+(i686, armv7), then the 32-bit microcontrollers in v2; LoongArch64 is not a target, and s390x,
+ppc64le and MIPS are not a priority (on request only, later). Their columns below are kept as
+research, not as a plan.
 
 Each row is marked:
 * **known**: written in a document or decision;
@@ -939,3 +941,6 @@ In the step that makes each untrue; step 7 for the rest.
   becomes `implemented`.
 * 2026-11-25 (S0017 P1, D75): the win64 host call's custom bytes pass the word in `r8d`; the sysv
   and aapcs64 bridges pass it in `edx`/`w2` (`ARGS3V`). Markers at the two descriptions.
+* 2026-11-25 (D48 amendment): "Toward the other sljit architectures" states D48's order (riscv64,
+  then i686 and armv7, then MCUs in v2); LoongArch64 is not a target, s390x, ppc64le and MIPS are
+  not a priority.

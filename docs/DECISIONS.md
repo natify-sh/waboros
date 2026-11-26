@@ -763,7 +763,7 @@ touches and, for each row beyond the first, the exception and its evidence; a re
 change without a named exception as out of scope.
 
 ### D48. Native JIT targets are x86-64, aarch64 and riscv64
-Status: accepted (maintainer, 2026-11-03; amended 2026-11-04: the sljit track) · Date: 2026-11-03 · Supersedes: — · Evidence: [ARTIFACT-CONTAINER.md](ARTIFACT-CONTAINER.md) (Wasmtime 50.0.1 CLI, checked 2026-11-02: `--target i686-...` and `--target armv7-...` give "Support for this target has not been implemented yet"; 32-bit hosts get Pulley, its bytecode interpreter)
+Status: accepted (maintainer, 2026-11-03; amended 2026-11-04: the sljit track; 2026-11-25: order and scope of the other architectures) · Date: 2026-11-03 · Supersedes: — · Evidence: [ARTIFACT-CONTAINER.md](ARTIFACT-CONTAINER.md) (Wasmtime 50.0.1 CLI, checked 2026-11-02: `--target i686-...` and `--target armv7-...` give "Support for this target has not been implemented yet"; 32-bit hosts get Pulley, its bytecode interpreter)
 
 **Scope: the JIT under CPython** (desktop, server, mobile). MicroPython (the `mpy` target, phase 7) is a
 separate question with its own architectures (Thumb, Xtensa, RISC-V 32 and others, through
@@ -807,6 +807,15 @@ The big-endian and 32-bit consequences below hold for the hand-written JITs, not
 (sljit has byte-reversed loads and stores; i64 on 32-bit targets needs register pairs, a D39
 amendment of that track). Proposal, proof of concept and measurements:
 [SLJIT-BACKEND.md](SLJIT-BACKEND.md), `poc/sljit/`.
+
+**Amendment (maintainer, 2026-11-25): order and scope of the other architectures.**
+* **LoongArch64 is not a target**, on any track; it runs `pyc`.
+* **s390x, ppc64le and MIPS (every variant) are not a priority**: they run `pyc`; a sljit backend
+  for them may come later, on request only, and not now.
+* **Pyodide / wasm32 is not a priority** as a JIT target (wasm hosts serve it); the Pyodide cell of
+  `platforms.yml` stays as a cheap check of `pyc`.
+* **Order:** riscv64 first; then the 32-bit PC targets (i686, armv7) through sljit; then the 32-bit
+  microcontroller targets, in v2.
 
 Consequences (for the hand-written JITs): there is no big-endian JIT host, so the backend interface (D39) never needs
 byte-reversed loads and stores and SIMD lanes stay in host order on every JIT target; the JIT CI stays
