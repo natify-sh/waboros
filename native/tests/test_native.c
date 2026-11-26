@@ -7,14 +7,14 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <stdlib.h>
-#ifdef __aarch64__
+#if defined(__aarch64__) && defined(__linux__)
 #include <sys/auxv.h>
 #endif
 #include "waboros_sljit.h"
 
-#if defined(__aarch64__) && !defined(PROT_BTI)
+#if defined(__aarch64__) && defined(__linux__) && !defined(PROT_BTI)
 #define PROT_BTI 0x10
-#elif !defined(__aarch64__)
+#elif !defined(PROT_BTI)
 #define PROT_BTI 0
 #endif
 typedef sljit_sw (*fn2)(sljit_sw, sljit_sw);
@@ -22,7 +22,7 @@ static int fails;
 static sljit_sw g_ra, g_after;
 
 static int has_bti(void) {
-#ifdef __aarch64__
+#if defined(__aarch64__) && defined(__linux__)
 	return (getauxval(AT_HWCAP2) & (1UL << 17)) != 0;
 #else
 	return 0;
@@ -193,8 +193,34 @@ static void test_baseline(void) {
 	sljit_free_code(p, NULL);
 	printf("baseline: %zu bytes, bsr %zu bsf %zu cmov %zu%s\n", n, bsr, bsf, cmov, lz ? "" : ", no lzcnt/tzcnt");
 }
+#elif defined(SLJIT_CONFIG_ARM_64)
+/* sljit picks LSE at build time (__ARM_FEATURE_ATOMICS); the build must be ARMv8.0-A (Apple Clang's
+   default is not). Without LSE the CAS form is refused and an atomic pair is ldxr/stxr, no CAS and
+   no LDADD-class word (ARMv8.1). */
+static void test_baseline(void) {
+	struct sljit_compiler *c = waboros_sljit_create();
+	sljit_u32 *p; size_t i, n, xr = 0;
+	sljit_s32 cas = sljit_emit_atomic_load(c, SLJIT_MOV | SLJIT_ATOMIC_USE_CAS | SLJIT_ATOMIC_TEST, SLJIT_R0, SLJIT_R1);
+	if (cas != SLJIT_ERR_UNSUPPORTED) { fails++; printf("  WRONG: CAS offered (%d): LSE build\n", cas); }
+	sljit_emit_enter(c, 0, SLJIT_ARGS1(W, W), 3, 1, 0);
+	sljit_emit_atomic_load(c, SLJIT_MOV, SLJIT_R0, SLJIT_S0);
+	sljit_emit_atomic_store(c, SLJIT_MOV | SLJIT_SET_ATOMIC_STORED, SLJIT_R1, SLJIT_S0, SLJIT_R0);
+	sljit_emit_return(c, SLJIT_MOV, SLJIT_R0, 0);
+	p = sljit_generate_code(c, 0, NULL);
+	n = sljit_get_generated_code_size(c) / 4;
+	for (i = 0; i < n; i++) {
+		if ((p[i] & 0xbffffc00u) == 0x885f7c00u || (p[i] & 0xbfe0fc00u) == 0x88007c00u) xr++;  /* ldxr, stxr */
+		if ((p[i] & 0x3fa07c00u) == 0x08a07c00u || (p[i] & 0x3f200c00u) == 0x38200000u) {  /* cas*, ld<op> */
+			fails++; printf("  WRONG: ARMv8.1 word %08x at %zu\n", (unsigned)p[i], i);
+		}
+	}
+	if (xr != 2) { fails++; printf("  WRONG: ldxr/stxr words %zu, want 2\n", xr); }
+	sljit_free_compiler(c);
+	sljit_free_code(p, NULL);
+	printf("baseline: %zu words, ldxr/stxr %zu, no CAS, no LSE\n", n, xr);
+}
 #else
-static void test_baseline(void) { printf("baseline: x86-64 only\n"); }
+static void test_baseline(void) { printf("baseline: x86-64 and aarch64 only\n"); }
 #endif
 
 #ifdef SLJIT_CONFIG_ARM_64

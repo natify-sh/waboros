@@ -248,8 +248,8 @@ jobs:
   cloader:
     # S0017 step 0: native/ builds the loader on the six runners (item 1: configure, build, ctest), and
     # (item 2) in a copy of native/ without the sljit submodule, with -DWABOROS_SLJIT=OFF. The
-    # macOS and Windows rows build the loader only: S0016's sljit rows are Linux (Apple Clang's
-    # arm64 default has LSE, which waboros_sljit.c refuses: the baseline is ARMv8.0-A).
+    # Windows rows build the loader only (waboros_sljit.c and test_native.c are POSIX: mmap, fork);
+    # the macOS rows build sljit too, arm64 pinned to ARMv8.0-A (waboros_sljit.c refuses LSE).
     needs: dedup
     if: needs.dedup.outputs.skip != 'true'
     strategy:
@@ -258,8 +258,8 @@ jobs:
         include:
           - { os: ubuntu-latest, sljit: "ON" }
           - { os: ubuntu-24.04-arm, sljit: "ON" }
-          - { os: macos-26, sljit: "OFF" }
-          - { os: macos-26-intel, sljit: "OFF" }
+          - { os: macos-26, sljit: "ON" }
+          - { os: macos-26-intel, sljit: "ON" }
           - { os: windows-latest, sljit: "OFF" }
           - { os: windows-11-arm, sljit: "OFF" }
     runs-on: ${{ matrix.os }}

@@ -71,6 +71,11 @@ if(WABOROS_SLJIT)
     "$<BUILD_INTERFACE:${sljit_dir}>" "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/sljit>")
   target_compile_definitions(waboros_sljit PRIVATE _DEFAULT_SOURCE)
   target_compile_definitions(waboros_sljit PUBLIC SLJIT_CONFIG_AUTO=1)
+  # sljit picks LSE atomics from __ARM_FEATURE_ATOMICS; Apple Clang's arm64 default (apple-m1) has it,
+  # the portable baseline is ARMv8.0-A (S0016). Other OSes default to the generic ARMv8.0-A already.
+  if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
+    target_compile_options(waboros_sljit PRIVATE -march=armv8-a)
+  endif()
   # DEBUG and VERBOSE change the layout of struct sljit_compiler, so they are PUBLIC (users see the same)
   if(WABOROS_SLJIT_DEBUG)
     target_compile_definitions(waboros_sljit PUBLIC SLJIT_VERBOSE=1 SLJIT_DEBUG=1)
