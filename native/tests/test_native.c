@@ -199,6 +199,9 @@ static void test_baseline(void) {
 	sljit_emit_return(c, SLJIT_MOV, SLJIT_R0, 0);
 	p = sljit_generate_code(c, 0, NULL);
 	n = sljit_get_generated_code_size(c);
+	if (n < 4 || p[0] != 0xf3 || p[1] != 0x0f || p[2] != 0x1e || p[3] != 0xfa) {  /* SLJIT_CONFIG_X86_CET on every OS */
+		fails++; printf("  WRONG: the entry does not start with endbr64\n");
+	}
 	for (i = 2; i + 1 < n; i++) {
 		int rex = (p[i - 1] & 0xf0) == 0x40;
 		if (p[i] != 0x0f) continue;

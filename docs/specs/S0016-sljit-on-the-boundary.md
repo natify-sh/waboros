@@ -945,3 +945,4 @@ In the step that makes each untrue; step 7 for the rest.
   then i686 and armv7, then MCUs in v2); LoongArch64 is not a target, s390x, ppc64le and MIPS are
   not a priority.
 * 2026-11-26 (S0017 step 0): `waboros_sljit.c` has a Windows branch of the allocator hooks (`VirtualAlloc`/`VirtualFree`, the same header page and layout as the `mmap` branch); the win64 test host (`waboros_sljit_test_win64_*`) is excluded on `_WIN32`.
+* 2026-11-26: `SLJIT_CONFIG_X86_CET` is set on `_M_X64` too (MSVC defines no `__x86_64__`, so the Windows x64 build had no `endbr64` in `sljit_emit_enter`); `test_native.c` `test_baseline` checks the entry starts with `endbr64` (a build without the define and with `-fcf-protection=none` fails it: GCC's default `-fcf-protection` defines `__CET__`, which turns CET on inside sljit as well).

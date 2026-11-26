@@ -45,7 +45,7 @@ static void wsl_unmap(void *ptr) { size_t *p = (size_t *)((char *)ptr - WSL_PAGE
 #define SLJIT_FREE_EXEC(ptr, d) ((void)(d), wsl_unmap(ptr))
 #define SLJIT_EXEC_OFFSET(ptr) 0
 #define SLJIT_UTIL_STACK 0
-#ifdef __x86_64__
+#if defined(__x86_64__) || defined(_M_X64)  /* MSVC has _M_X64 only: endbr64 on every OS (S0016) */
 #define SLJIT_CONFIG_X86_CET 1
 #endif
 #include "waboros_sljit.h"  /* sljitLir.h, after the defines */
