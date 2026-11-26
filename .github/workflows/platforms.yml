@@ -137,6 +137,16 @@ jobs:
           path: ${{ runner.temp }}/cibw-cache
           key: cibw-${{ matrix.platform }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('uv.lock', 'ci/harness/pyproject.toml') }}
           restore-keys: cibw-${{ matrix.platform }}-${{ runner.os }}-${{ runner.arch }}-
+      # the CPython Android testbed's Gradle dependencies (the Android Gradle plugin, Kotlin): without
+      # this every Android run downloads them from Maven Central, which answers 429 (LESSONS 164)
+      - if: ${{ matrix.platform == 'android' }}
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('uv.lock', 'ci/harness/pyproject.toml') }}
+          restore-keys: gradle-${{ runner.os }}-${{ runner.arch }}-
       # cibuildwheel comes from uv.lock (dev group); the host needs nothing else
       - run: uv run --only-group dev cibuildwheel ci/harness --platform ${{ matrix.platform }} --output-dir wheelhouse
         env: { CIBW_CACHE_PATH: "${{ runner.temp }}/cibw-cache" }

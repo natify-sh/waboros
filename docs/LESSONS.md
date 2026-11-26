@@ -1287,3 +1287,10 @@ What went wrong or surprised us while building the PoC, so it is not found again
     build has the symbol. A JIT that looks the flush up with `dlsym` fails its probe there, so
     jit-aarch64 never ran on Android arm64 until our own routine (S0004, 2026-11-25). Rule: on
     a new aarch64 row, check where the flush comes from before anything else. Found: 2026-11-25.
+
+164. **Maven Central rate-limits CI runners (HTTP 429).** The CPython Android testbed resolves the
+    Android Gradle plugin and Kotlin from Maven Central on every run; from GitHub's shared runner
+    addresses it answers 429 Too Many Requests often enough to fail a required cell before any
+    test runs (`platforms` on bc16405). Rule: cache what a build tool downloads (`~/.gradle/caches`,
+    `~/.gradle/wrapper`), keyed on what pins it (`uv.lock` pins cibuildwheel and so the testbed).
+    Found: 2026-11-26.
