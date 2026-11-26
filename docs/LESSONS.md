@@ -1294,3 +1294,8 @@ What went wrong or surprised us while building the PoC, so it is not found again
     test runs (`platforms` on bc16405). Rule: cache what a build tool downloads (`~/.gradle/caches`,
     `~/.gradle/wrapper`), keyed on what pins it (`uv.lock` pins cibuildwheel and so the testbed).
     Found: 2026-11-26.
+
+165. **Editing `native/CMakeLists.txt` makes `tests/sljit` refuse a stale library.** `tests/sljit/__init__.py`
+    compares the library's mtime with `CMakeLists.txt`, but a rebuild relinks nothing when only the
+    CMake file changed, so the check keeps failing. Rule: after editing `native/CMakeLists.txt`,
+    remove `build/native` and configure again. Found: 2026-11-26.

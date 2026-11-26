@@ -245,6 +245,40 @@ jobs:
         with:
           name: jit-dump-x86
           path: dump
+  cloader:
+    # S0017 step 0: native/ builds the loader on the six runners (item 1: configure, build, ctest), and
+    # (item 2) in a copy of native/ without the sljit submodule, with -DWABOROS_SLJIT=OFF. The
+    # Windows rows build the loader only: sljit is not built there (S0016 has no Windows row).
+    needs: dedup
+    if: needs.dedup.outputs.skip != 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, sljit: "ON" }
+          - { os: ubuntu-24.04-arm, sljit: "ON" }
+          - { os: macos-26, sljit: "ON" }
+          - { os: macos-26-intel, sljit: "ON" }
+          - { os: windows-latest, sljit: "OFF" }
+          - { os: windows-11-arm, sljit: "OFF" }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run: { shell: bash }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with: { submodules: true }
+      - run: |
+          cmake -S native -B build/native -DWABOROS_SLJIT=${{ matrix.sljit }}
+          cmake --build build/native --config Release
+          ctest --test-dir build/native -C Release --output-on-failure
+      # item 2: the same tree without third_party/sljit, so the build cannot find sljit by accident
+      - run: |
+          mkdir -p "$RUNNER_TEMP/nosub"
+          cp -r native "$RUNNER_TEMP/nosub/native"
+          rm -rf "$RUNNER_TEMP/nosub/native/third_party/sljit"
+          cmake -S "$RUNNER_TEMP/nosub/native" -B "$RUNNER_TEMP/nosub/b" -DWABOROS_SLJIT=OFF
+          cmake --build "$RUNNER_TEMP/nosub/b" --config Release
+          ctest --test-dir "$RUNNER_TEMP/nosub/b" -C Release --output-on-failure
   sljit:
     # S0016: native/ (sljit through CMake alone): the build, ctest (frames, stubs, baseline bytes,
     # the consumer projects); then jit-sljit-x86_64 (tests/sljit) at parity with jit-x86_64.

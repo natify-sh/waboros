@@ -1,5 +1,5 @@
 # A project that embeds native/ as a subproject (S0016): the check that it leaks nothing global.
-# -DWABOROS_ROOT=<repo> -DEMBED=add_subdirectory|FetchContent
+# -DWABOROS_ROOT=<repo> -DEMBED=add_subdirectory|FetchContent [-DWABOROS_SLJIT=ON|OFF]
 cmake_minimum_required(VERSION 3.21)
 project(waboros_consumer LANGUAGES C)
 if(EMBED STREQUAL "FetchContent")
@@ -15,5 +15,9 @@ if(DEFINED CMAKE_C_STANDARD OR inc)
 endif()
 enable_testing()
 add_executable(consumer main.c)
-target_link_libraries(consumer PRIVATE waboros::sljit)
+target_link_libraries(consumer PRIVATE waboros::loader)
+if(TARGET waboros::sljit)
+  target_link_libraries(consumer PRIVATE waboros::sljit)
+  target_compile_definitions(consumer PRIVATE HAVE_SLJIT)
+endif()
 add_test(NAME consumer COMMAND consumer)
