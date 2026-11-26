@@ -120,69 +120,12 @@ jobs:
       - run: uv run pytest tests/jit -n auto -v -rs
         env:
           WABOROS_JIT_REQUIRE: "1"  # a missing tool fails the job instead of skipping (tests/jit)
-      # S0004: the aarch64 ABI and compiler tests under QEMU user mode, which enforces BTI (the
-      # arm64 runner's CPU has none); about 2.5 min with the GC tests (S0013 step 4)
-      - run: sudo apt-get install -y qemu-user libc6-arm64-cross libgcc-s1-arm64-cross gcc-aarch64-linux-gnu
-      # S0016 step 0: native/ cross-built for aarch64, ctest under QEMU with BTI enforced (frames,
-      # stubs, the BTI ping-pong and its SIGILL control, the consumer projects)
-      - run: |
-          cmake -S native -B build/native-a64 -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=aarch64 -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc "-DCMAKE_CROSSCOMPILING_EMULATOR=qemu-aarch64;-cpu;max;-L;/usr/aarch64-linux-gnu"
-          cmake --build build/native-a64
-          ctest --test-dir build/native-a64 --output-on-failure
-      - run: uv python install cpython-3.13-linux-aarch64-gnu
-      - run: python3 tools/run_arm64.py -m pytest tests/jit/test_abi_aarch64.py tests/jit/test_boundary.py tests/jit/test_compiler.py tests/jit/test_compiler_aarch64.py tests/jit/test_tail.py tests/jit/test_exit_record.py tests/jit/test_walk.py tests/test_gc.py tests/test_collector_module.py tests/jit/test_gc_collect.py tests/jit/test_gc_moving.py tests/jit/test_gc_roots.py tests/jit/test_gc_heap.py tests/jit/test_gc_nested.py tests/jit/test_gc_subtype.py -q
-      # S0005: the v128 boundary tests and the NEON operators (5c, 5e1, 5e2) against pyc, BTI
-      # enforced; about 2.5 min. Explicit bounds: QEMU TCG splits a straddling 16-byte store, so
-      # guard mode may tear one (accepted, D45; `auto` gives guard in an aarch64 process)
-      - run: python3 tools/run_arm64.py -m pytest tests/jit/test_simd_abi.py tests/jit/test_simd_aarch64.py -q
-        env:
-          WABOROS_JIT_REQUIRE: "1"
-          WABOROS_JIT_BOUNDS: explicit
       # D24: every spec module and CoreMark compiled by jit-x86_64 has only x86-64-v1 instructions
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: .cache/spec
           key: spec-${{ runner.os }}-${{ hashFiles('tests/spec/fetch.py', 'tests/spec/spectest.wat') }}
       - run: uv run python tests/spec/fetch.py
-      # step 4e: the whole spec suite on jit-aarch64 with BTI enforced (call_indirect, tail calls
-      # and jump tables land on their pads; simd/ since 5e2), in-process under QEMU; about 1 min.
-      # Both bounds modes named (S0006 step 2), then the fault tests under QEMU (the subprocess
-      # ones skip without binfmt; the arm64 runner runs them natively)
-      # (explicit: also with the frame walk checked at every host call, S0013 3a)
-      - run: python3 tools/run_arm64.py -m tests.spec.run --engine jit-aarch64 --in-process
-        env:
-          WABOROS_JIT_BOUNDS: explicit
-          WABOROS_JIT_WALK_CHECK: "1"
-      - run: python3 tools/run_arm64.py -m tests.spec.run --engine jit-aarch64 --in-process
-        env:
-          WABOROS_JIT_BOUNDS: guard
-      - run: python3 tools/run_arm64.py -m pytest tests/jit/test_guard.py -q -rs
-        env:
-          WABOROS_JIT_BOUNDS: guard
-          WABOROS_JIT_REQUIRE: "1"
-      # S0016 step 5: jit-sljit-aarch64 (build/native-a64 above) at parity with jit-aarch64 under
-      # QEMU, BTI enforced, explicit bounds (the arm64 runner runs guard): in-process and through
-      # files with the walk check and poison, spec_diff both ways; the mixed, boundary and sljit
-      # tests (child processes through qemu-aarch64)
-      - run: |
-          python3 tools/run_arm64.py -m tests.spec.run --engine jit-aarch64 --in-process --json spec-a64.json
-          python3 tools/run_arm64.py -m tests.spec.run --engine jit-sljit-aarch64 --in-process --json spec-sl-a64.json
-          WABOROS_JIT_ARTIFACT=1 python3 tools/run_arm64.py -m tests.spec.run --engine jit-sljit-aarch64 --in-process --json spec-sl-a64-files.json
-          for r in spec-sl-a64.json spec-sl-a64-files.json; do
-            uv run python tools/spec_diff.py spec-a64.json $r
-            uv run python tools/spec_diff.py $r spec-a64.json
-          done
-          python3 tools/run_arm64.py -m pytest -q tests/jit/test_mixed.py tests/jit/test_boundary.py tests/sljit tests/artifact/test_sljit.py
-        env:
-          WABOROS_JIT_BOUNDS: explicit
-          WABOROS_JIT_WALK_CHECK: "1"
-          WABOROS_JIT_GC_POISON: "1"
-      # S0016 step 8: the mixed-store tests through artifact files (written, loaded, instantiated)
-      - run: WABOROS_JIT_ARTIFACT=1 python3 tools/run_arm64.py -m pytest -q tests/jit/test_mixed.py
-        env:
-          WABOROS_JIT_BOUNDS: explicit
-          WABOROS_JIT_WALK_CHECK: "1"
-          WABOROS_JIT_GC_POISON: "1"
       # S0006: guard pages, named explicitly although `auto` (the default, D44) gives them here,
       # so a regression in the verified-row check cannot silently turn them off: the spec suite
       # with the fault handler doing the bounds checks, then the fault tests (foreign faults, a
@@ -245,6 +188,73 @@ jobs:
         with:
           name: jit-dump-x86
           path: dump
+  arm64-bti:
+    # What only QEMU adds (S0004, S0016): `qemu-aarch64 -cpu max` enforces BTI, the arm64 runners' CPUs
+    # have none, so only here a missing `bti jc`/`bti c` landing pad is a SIGILL. Everything else
+    # that ran under QEMU is run natively by `arm64`. The whole Python process runs under QEMU (JIT
+    # code gets PROT_BTI); the tests' child interpreters would start natively on this host (no
+    # binfmt for the host's own architecture, and no BTI), so `qpython` makes `sys.executable` a
+    # wrapper that runs the venv's Python under QEMU again. Explicit bounds where noted: QEMU
+    # splits a straddling 16-byte store, so guard mode may tear one (D45); guard is run by `arm64`.
+    needs: dedup
+    if: needs.dedup.outputs.skip != 'true'
+    runs-on: ubuntu-24.04-arm
+    env:
+      Q: ${{ github.workspace }}/.venv/bin/qpython
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with: { submodules: true }
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+        with: { cache-python: true }  # the managed Pythons too, not only the packages
+      - run: uv sync --python 3.13
+      - run: sudo apt-get install -y qemu-user
+      # S0016 step 0: native/ built natively, its BTI tests under QEMU (CMake applies the emulator
+      # to add_test of targets also when not cross-compiling, which registers bti_control): the
+      # ping-pong of tail calls must pass, the control without the pad must die of SIGILL
+      - run: |
+          cmake -S native -B build/native "-DCMAKE_CROSSCOMPILING_EMULATOR=qemu-aarch64;-cpu;max"
+          cmake --build build/native
+          ctest --test-dir build/native -N -R '^bti_' | grep "Total Tests: 2"
+          ctest --test-dir build/native -R '^bti_' --output-on-failure
+      # the venv's Python under QEMU; `qpython` is also what the tests' children start (see above).
+      # The check: BTI is enforced in the process and in a child (this CPU has none natively)
+      - run: |
+          printf '#!/bin/sh\nexec qemu-aarch64 -cpu max -0 "$0" %s "$@"\n' "$PWD/.venv/bin/python" > "$Q"
+          chmod +x "$Q"
+          "$Q" -c "
+          import subprocess, sys
+          from waboros.targets.jit.common import execmem
+          code = 'from waboros.targets.jit.common import execmem; print(execmem._PROT_BTI)'
+          child = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, check=True)
+          print(sys.executable, execmem._PROT_BTI, child.stdout.strip())
+          assert execmem._PROT_BTI and child.stdout.strip() not in ('', '0')"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: .cache/spec
+          key: spec-${{ runner.os }}-${{ hashFiles('tests/spec/fetch.py', 'tests/spec/spectest.wat') }}
+      - run: uv run python tests/spec/fetch.py
+      # the entries and indirect transfers: the trampolines' pads (ABI), tail calls, the exit
+      # record's resume point, the service entries of nested GC calls
+      - run: $Q -m pytest -q tests/jit/test_abi_aarch64.py tests/jit/test_tail.py tests/jit/test_exit_record.py tests/jit/test_gc_nested.py
+      # step 4e: the whole spec suite on jit-aarch64 (call_indirect, tail calls, jump tables and the
+      # simd/ operators land on their pads), then jit-sljit-aarch64 at parity (S0016 step 5), in
+      # process and through files, with the walk check and poison, spec_diff both ways; the mixed,
+      # boundary (`br x9` onto a `bti c` pad is a SIGILL, in a child) and sljit tests; test_mixed
+      # again through artifact files (step 8: the cross-store and cross-compiler entries)
+      - run: |
+          $Q -m tests.spec.run --engine jit-aarch64 --in-process --json spec-a64.json
+          $Q -m tests.spec.run --engine jit-sljit-aarch64 --in-process --json spec-sl-a64.json
+          WABOROS_JIT_ARTIFACT=1 $Q -m tests.spec.run --engine jit-sljit-aarch64 --in-process --json spec-sl-a64-files.json
+          for r in spec-sl-a64.json spec-sl-a64-files.json; do
+            uv run python tools/spec_diff.py spec-a64.json $r
+            uv run python tools/spec_diff.py $r spec-a64.json
+          done
+          $Q -m pytest -q tests/jit/test_mixed.py tests/jit/test_boundary.py tests/sljit tests/artifact/test_sljit.py
+          WABOROS_JIT_ARTIFACT=1 $Q -m pytest -q tests/jit/test_mixed.py
+        env:
+          WABOROS_JIT_BOUNDS: explicit
+          WABOROS_JIT_WALK_CHECK: "1"
+          WABOROS_JIT_GC_POISON: "1"
   cloader:
     # S0017 step 0: native/ builds the loader on the six runners (item 1: configure, build, ctest), and
     # (item 2) in a copy of native/ without the sljit submodule, with -DWABOROS_SLJIT=OFF. The

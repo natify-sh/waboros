@@ -1308,3 +1308,11 @@ What went wrong or surprised us while building the PoC, so it is not found again
     pointer` in ntdll) with the session's environment; `env -i HOME=… PATH=… WINEPREFIX=…` runs it,
     so a mingw-w64 build of `native/` with that wrapper as `CMAKE_CROSSCOMPILING_EMULATOR` runs the
     ctest. Found: 2026-11-26.
+
+167. **On an arm64 host QEMU does not emulate a test's child processes.** `qemu-aarch64 python` runs
+    the parent with BTI enforced, but its `subprocess` children are native aarch64 ELF files, which
+    the kernel runs itself (no binfmt entry for the host's architecture), on a CPU without BTI: a
+    test that expects a SIGILL in a child (`test_abi_aarch64`, `test_boundary`) fails there. On an
+    x86 host the same children do not start at all (skipped, or run through `qemu-aarch64`). Rule:
+    job `arm64-bti` makes `sys.executable` a wrapper (`qpython`, `qemu-aarch64 -0 "$0" .venv/bin/python`)
+    and checks `execmem._PROT_BTI` in a child before the tests. Found: 2026-11-26 (not yet run in CI).

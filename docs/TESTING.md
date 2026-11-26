@@ -41,9 +41,9 @@ The D25 parity test (`tests/spec/test_runner.py`) requires every JIT to fail wha
 | pywasm (pip) | a second oracle and a source of ideas: its spec runner (`test/spec.py`) was adapted in the PoC session; it passes the core spec suite (54 006 commands, 0 failures at its pinned spec commit `fffc6e12f`) but treats `assert_invalid` / `assert_malformed` as no-ops |
 | meld | fusing component test programs into core modules for WASI 0.2 |
 | MicroPython unix port, `mpy-cross` | the `mpy` target |
-| CMake >= 3.21, a C99 compiler, `gcc-aarch64-linux-gnu` | `native/` (S0016): sljit as a git submodule (`git submodule update --init`), built by CMake alone; never part of the package. The cross build for aarch64 runs its ctest under `qemu-aarch64 -cpu max` |
+| CMake >= 3.21, a C99 compiler | `native/` (S0016): sljit as a git submodule (`git submodule update --init`), built by CMake alone; never part of the package. On an arm64 host, job `arm64-bti` builds it natively and runs its `bti_*` ctest under `qemu-aarch64 -cpu max` (`-DCMAKE_CROSSCOMPILING_EMULATOR`, applied by CMake to `add_test` also without cross-compiling) |
 | CMake >= 3.21, a C99 compiler | `native/loader` (S0017): job `cloader` of `ci` on the six runners (`ubuntu-latest`, `ubuntu-24.04-arm`, `macos-26`, `macos-26-intel`, `windows-latest`, `windows-11-arm`): configure, build, ctest; then the same in a copy of `native/` without the sljit submodule, `-DWABOROS_SLJIT=OFF`; the Linux, macOS and Windows (MSVC) rows build `waboros_sljit` too (Apple arm64 with `-march=armv8-a`: Apple Clang's default has LSE, which `waboros_sljit.c` refuses; the `native` ctest's `test_baseline` checks ldxr/stxr, no CAS), the Windows rows use `VirtualAlloc` in `waboros_sljit.c` and `test_native.c`, and run no BTI test |
-| QEMU user-mode | JIT targets for other architectures in CI; `jit-aarch64` BTI (the arm64 Linux runner has none): `tools/run_arm64.py` in the x86 `jit` job; an SSE2-only x86-64 CPU (`qemu64` without SSE3, SSSE3, SSE4 and popcnt) for the SIMD tests and the `simd` spec run of `jit-x86_64` (S0005) |
+| QEMU user-mode | JIT targets for other architectures in CI; `jit-aarch64` BTI (the arm64 Linux runner's CPU has none): job `arm64-bti` on an arm64 runner, the venv's Python under `qemu-aarch64` (a wrapper, `qpython`, also makes the tests' child interpreters start under QEMU: natively they would run without BTI); `tools/run_arm64.py` for a local run on x86; an SSE2-only x86-64 CPU (`qemu64` without SSE3, SSSE3, SSE4 and popcnt) for the SIMD tests and the `simd` spec run of `jit-x86_64` (S0005) |
 
 The runtime package itself declares **no** dependencies; these live in a development group.
 The Python ones are the uv `dev` group in `pyproject.toml` (`uv sync`); wasmtime 50.0.1 needs
@@ -130,7 +130,7 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is checked in CI).
   round trip checks every convention's blob and offsets against the target's `conventions()` on
   every module.
 * **The boundary convention** (S0015): `tests/jit/test_boundary.py`, on the machine's JIT and
-  under QEMU in the `jit` job, which enforces BTI (the C entries' `bti jc` pads, reached by a
+  under QEMU in the `arm64-bti` job, which enforces BTI (the C entries' `bti jc` pads, reached by a
   `br x9`):
   tail-call ping-pong across two instances, 10⁶ round trips in a 256 KiB thread entered from the
   host, from a direct call and through a third instance's record (a calling control overflows);
@@ -376,9 +376,9 @@ runs only under an emulator). `tests/consumer/` is a tiny project embedding `nat
 (build, ctest; then `jit-sljit-x86_64` in-process with the walk check and poison in both bounds
 modes, `tools/spec_diff.py` both ways against `jit-x86_64` on the JSON reports, and
 `tests/jit/test_boundary.py`, `tests/sljit/` and the parity test of `tests/spec/test_runner.py`; the suite through artifact
-files with `spec_diff` both ways, and `tools/isa_all.py --target jit-sljit-x86_64`; since step 8 also `gc` and `exceptions` on `jit-sljit-x86_64` in explicit mode with `WABOROS_JIT_GC_STRESS`, `_GC_POISON`, `_GC_VERIFY` and the walk check, as the `jit` job runs them on `jit-x86_64`), steps in `jit` (the cross build under QEMU with BTI) and `arm64` (native, no BTI), all
-with `submodules: true`. Since step 5 `jit` also runs `jit-sljit-aarch64` under
-`tools/run_arm64.py` (explicit bounds, BTI enforced, the walk check and poison): the suite
+files with `spec_diff` both ways, and `tools/isa_all.py --target jit-sljit-x86_64`; since step 8 also `gc` and `exceptions` on `jit-sljit-x86_64` in explicit mode with `WABOROS_JIT_GC_STRESS`, `_GC_POISON`, `_GC_VERIFY` and the walk check, as the `jit` job runs them on `jit-x86_64`), steps in `arm64-bti` (built natively, `bti_*` under QEMU with BTI) and `arm64` (native, no BTI), all
+with `submodules: true`. Since step 5 `arm64-bti` also runs `jit-sljit-aarch64` under
+QEMU (explicit bounds, BTI enforced, the walk check and poison): the suite
 in-process and through files against `jit-aarch64`'s report with `spec_diff` both ways, and
 `test_mixed.py`, `test_boundary.py`, `tests/sljit/` and `tests/artifact/test_sljit.py`, and (step 8)
 `test_mixed.py` again through artifact files (`WABOROS_JIT_ARTIFACT=1`); `arm64`
@@ -414,7 +414,7 @@ host sees the same stack pointer as for a direct call).
 
 Mixed stores (S0016 step 3): `tests/jit/test_mixed.py` puts the machine's JIT and each development
 compiler of its architecture in one store, both directions (pairs from `TARGETS`: `jit-x86_64`
-with `jit-sljit-x86_64`, `jit-aarch64` with `jit-sljit-aarch64` under QEMU and on the arm64
+with `jit-sljit-x86_64`, `jit-aarch64` with `jit-sljit-aarch64` under QEMU (`arm64-bti`) and on the arm64
 runner); it skips without the library. It covers calls of every value type (NaN payloads, v128,
 externref and funcref by identity, a struct and an i31 made in the caller) through an import,
 `call_indirect` and `call_ref` into the other compiler's table; D71's paths, read from the walk at a
@@ -445,12 +445,12 @@ poison and `WABOROS_JIT_GC_VERIFY=1`, in-process and through files.
 | Python | `ci` job `test`: CPython 3.11, 3.12, 3.13, 3.14, 3.15, 3.15t (free-threaded); PyPy 3.11 (D19). `platforms.yml`: a narrower set per platform (`ci/harness/pyproject.toml`: the oldest and the newest free-threaded, 3.14 on Linux x86_64 glibc, 3.13 for musl, i686, armv7l, Android and Pyodide) |
 | OS | Linux x86-64 (all jobs of `ci`, and `platforms.yml`: glibc, musl, i686); Linux arm (`ubuntu-24.04-arm`: job `arm64` of `ci`, and aarch64 and armv7l in `platforms.yml`); Windows x64 (`windows-latest`), macOS x64 (`macos-26-intel`), Windows ARM64 (`windows-11-arm`) and macOS arm64 (`macos-26`) only in `platforms.yml` (cibuildwheel, below) |
 | target | `pyc` everywhere; `jit-*` where the machine matches; `mpy` with the MicroPython unix port (phase 7, not in CI yet) |
-| development targets | `jit-sljit-x86_64` (job `sljit`: in-process and through files, both bounds modes, `gc` and `exceptions` under stress); `jit-sljit-aarch64` in `jit` (QEMU, explicit, BTI enforced) and in `arm64` (native, guard); never selected by `auto`, not in `platforms.yml` (S0016) |
+| development targets | `jit-sljit-x86_64` (job `sljit`: in-process and through files, both bounds modes, `gc` and `exceptions` under stress); `jit-sljit-aarch64` in `arm64-bti` (QEMU, explicit, BTI enforced) and in `arm64` (native, guard); never selected by `auto`, not in `platforms.yml` (S0016) |
 | native arm64 | `jit-aarch64` on GitHub's arm64 runners: `ubuntu-24.04-arm` (job `arm64` of `ci`, and `platforms.yml`), `macos-26` (macOS arm64, `MAP_JIT`) and `windows-11-arm` (`platforms.yml`; labels per actions/runner-images) |
 | python.org macOS | the macOS cells of `platforms.yml` run the python.org framework CPython (hardened runtime) that cibuildwheel installs, on Apple Silicon (`macos-26`) and Intel; the JIT tests and the spec suite pass there, and a refusal by the hardened runtime would show as a failed cell (RISKS R2). The separate `macos-pythonorg` job, with its entitlements printout, is gone |
 | Android | the Android cell of `platforms.yml`: CPython's testbed app on a managed x86_64 emulator (cibuildwheel; `arm64_v8a` is built only), `python -m pytest tests --jit-bounds=guard,explicit` inside the app with every test that needs no wasmtime as an oracle (no wasmtime there; WAT comes from the WAT cache, below), among them `tests/jit/test_android.py` (Android only: the SELinux context, the probe and `auto`, guard faults through ART's libsigchain with a module written in binary, CoreMark's self-check; S0006 step 5); no arm64 test (RISKS R2). The `android` job and `tools/android_check.py` are gone |
 | Android, 16 KiB pages | the second Android cell of `platforms.yml` ("Android 16 KiB pages (API 37, targetSdk 37)"; a required cell since 2026-11-26, after two green runs): the same tests in the same testbed app, on our own x86_64 emulator started by the job (system image `android-37.0;google_apis_ps16k`, `--connected emulator-5554` through `CIBW_TEST_RUNTIME`; the testbed's managed devices are 4 KiB and targetSdk 35 only), with a Gradle init script (`~/.gradle/init.d`) that sets the testbed's `targetSdk` to 37. The job asserts `adb shell getconf PAGE_SIZE` = 16384 and prints the page size and `targetSdk=` it ran with; `tests/jit/test_android.py` checks `mmap.PAGESIZE` = `os.sysconf("SC_PAGE_SIZE")` in the app, and `tests/jit/test_execmem.py` the 16 KiB rounding of `ExecMem` and `Reservation` on any host (4 KiB too: rounding and alignment only). Android 17 requires native files loaded with `System.load()` to be read-only; a pure-Python wheel with anonymous `mmap` code does not exercise that rule (the testbed's own libraries are in the read-only `nativeLibraryDir`), so the cell is a regression guard, not proof |
-| emulated | QEMU user-mode: in `ci` for `jit-aarch64` (BTI) and `jit-x86_64` (SSE2-only CPU); the optional `exotic` jobs of `platforms.yml` (ppc64le, s390x, riscv64, `pyc` only, one QEMU runner each, started from the Actions tab, non-blocking); a JIT for an architecture without native runners (riscv64, D48) as it appears |
+| emulated | QEMU user-mode: in `ci` for `jit-aarch64` (BTI, job `arm64-bti`) and `jit-x86_64` (SSE2-only CPU); the optional `exotic` jobs of `platforms.yml` (ppc64le, s390x, riscv64, `pyc` only, one QEMU runner each, started from the Actions tab, non-blocking); a JIT for an architecture without native runners (riscv64, D48) as it appears |
 
 JIT artifacts: run baseline artifacts on an emulated baseline CPU (e.g. QEMU `-cpu` without SSE4.1 /
 with plain ARMv8.0) and check that a higher-level artifact is refused there; load artifacts with the C
@@ -464,10 +464,15 @@ on 3.13 again with `WABOROS_JIT_BOUNDS=explicit`, so explicit checks stay covere
 test files with `WABOROS_PYC_FBITS=1` (D46: f32/f64 as int bit patterns, the default only on 32-bit x86);
 `tools/stack_info.py` (the runtime's `entry` and `sp_stub`, S0015) on
 3.13, also in a musl container); `jit`
-(`tests/jit` with `WABOROS_JIT_REQUIRE=1`; the aarch64 ABI, compiler, tail-call and SIMD tests
-(`test_simd_abi.py`, `test_simd_aarch64.py`, in explicit mode: QEMU splits a straddling 16-byte store,
-D45) and the spec suite of `jit-aarch64` (it covers `simd/` since the 5e2 claim) in both bounds modes, then
-`test_guard.py` in guard mode, under QEMU with BTI enforced (its subprocess cases skip without binfmt); the x86 SIMD tests and the explicit `simd` spec run of
+(`tests/jit` with `WABOROS_JIT_REQUIRE=1`; the x86 work only: guard and GC-stress spec runs,
+`test_guard.py`, musl, the ISA gates and the D35 lists of both targets, compiled but never run for aarch64);
+`arm64-bti` (an arm64 runner; only what needs BTI, which the runners' CPUs lack, so the venv's Python
+runs under `qemu-aarch64 -cpu max`: the `bti_*` ctest of `native/` with its SIGILL control, `test_abi_aarch64.py`,
+`test_tail.py`, `test_exit_record.py`, `test_gc_nested.py`, the spec suite of `jit-aarch64` and
+`jit-sljit-aarch64` (in process and through files, `spec_diff` both ways; covers `simd/`), `test_mixed.py`,
+`test_boundary.py`, `tests/sljit/` and `tests/artifact/test_sljit.py`, explicit bounds: QEMU splits a
+straddling 16-byte store, D45. The rest of what once ran under QEMU, the compiler, walk, GC and SIMD
+tests, the guard spec run and `test_guard.py`, runs natively in `arm64`); `jit` also: the x86 SIMD tests and the explicit `simd` spec run of
 `jit-x86_64` under the SSE2-only `qemu64` CPU with `WABOROS_JIT_BOUNDS=explicit` (QEMU splits wide
 stores, D45), compared with `pyc` by `tools/spec_diff.py` (strict since 5d3), run inside an
 `ubuntu:latest` container because the Ubuntu 26.04 runner's own userland is the `amd64v3` variant
@@ -515,7 +520,7 @@ Package tests run in parallel with pytest-xdist (`-n auto`, in the dev group; th
 wherever the process is native and can start subprocesses: the `test`, `jit` and `arm64` pytest runs of `ci`,
 `coverage.yml`, the WAT-cache fill and every cibuildwheel cell except Android and Pyodide, whose runtimes
 cannot start the worker processes (execnet). Serial: the single-file `tests/jit/test_guard.py` runs (too small
-to gain), every run under QEMU user mode (`tools/run_arm64.py`, the qemu64 container): without binfmt its child
+to gain), every run under QEMU user mode (`arm64-bti`, `tools/run_arm64.py`, the qemu64 container): without binfmt its child
 processes are not emulated (xdist workers for aarch64 would not start; in the qemu64 SSE2 step they would run
 natively with AVX and silently stop testing SSE2). The spec runner (`tests/spec/run.py`) runs its per-file
 child processes in parallel (`--jobs`, default the CPU count); with `--in-process` it is serial.
@@ -564,7 +569,7 @@ listed failures and, for a JIT, equals `pyc` (S0005, "Claiming `simd`"); until t
 progress only through the QEMU step above, which fails on a SIGILL, a crash or a difference from `pyc`.
 `jit-x86_64` claims `simd` since step 5d3 and `jit-aarch64` since step 5e2 (0 failures each), so the
 default spec run includes `simd/` for both: the `spec` job for `jit-x86_64`, the QEMU spec run of the
-`jit` job and the native `arm64` job for `jit-aarch64`. The x86 `qemu64` step stays: it runs `simd/` on
+`arm64-bti` job and the native `arm64` job for `jit-aarch64`. The x86 `qemu64` step stays: it runs `simd/` on
 another CPU model (SSE2 only); the aarch64 explicit step was dropped at 5e2, the claimed QEMU run covers it.
 
 CoreMark on a JIT is checked with `tools/run_coremark_jit.py --check FILE` (the `arm64` job; in the
