@@ -407,6 +407,16 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29; done 2026-11-03) -> 
   (Thumb, Xtensa, RISC-V, …) without an encoder of ours; inline assemblers (`asm_thumb`, `asm_xtensa`)
   for the hottest functions (TARGETS.md, "MicroPython's own native emitters as JIT back ends").
 * Port the translator to run on MicroPython if on-device compilation is wanted.
+* **A `.wbo` loader as a MicroPython module** (maintainer, 2026-11-26; a goal, no spec yet): the C
+  loader built without the compiler (S0017, `WABOROS_WITH_COMPILER=OFF`, and without GC or guard
+  where the device needs neither), as a user C module of the firmware or a dynamic native module
+  (natmod `.mpy`), so that MicroPython loads wasm compiled on a PC as machine code at run time,
+  swapped without reflashing, with host imports as MicroPython callables through D75's single
+  `host(ctx, slots, word)`; code copied into executable RAM (IRAM on ESP32; ARTIFACT's copy rule).
+  Why (the maintainer's experience on microcontrollers): wasm3 barely fits and is slow there, while
+  wasm2c is fast but needs the firmware rebuilt per module; a small loader plus `.wbo` keeps
+  compiled speed and dynamic loading. Needs the 32-bit format (v2), the Thumb/Xtensa backends behind
+  D68, explicit bounds; the loader's size per build comes from S0017's measurement step 6.1.
 
 ## Phase 8 — more architectures
 *Status: not started.*
