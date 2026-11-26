@@ -1299,3 +1299,12 @@ What went wrong or surprised us while building the PoC, so it is not found again
     compares the library's mtime with `CMakeLists.txt`, but a rebuild relinks nothing when only the
     CMake file changed, so the check keeps failing. Rule: after editing `native/CMakeLists.txt`,
     remove `build/native` and configure again. Found: 2026-11-26.
+
+166. **A C-entry stub names the third argument register of its convention.** `test_native.c`'s x86-64
+    stub was `lea rdx, [rip + 5]` (SysV's third argument); under Win64 the third argument is `r8`,
+    so centry called garbage and the test died of a stack overflow, found under Wine before any CI
+    run. Rule: every hand-written byte that places a C argument is per convention (`sysv`/`win64`),
+    as the artifact's bridges are (D23). Wine 9 in this container aborts at start (`free(): invalid
+    pointer` in ntdll) with the session's environment; `env -i HOME=… PATH=… WINEPREFIX=…` runs it,
+    so a mingw-w64 build of `native/` with that wrapper as `CMAKE_CROSSCOMPILING_EMULATOR` runs the
+    ctest. Found: 2026-11-26.

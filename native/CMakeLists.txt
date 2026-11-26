@@ -66,7 +66,8 @@ if(WABOROS_SLJIT)
   add_library(waboros_sljit ${_kind} "${CMAKE_CURRENT_SOURCE_DIR}/sljit/waboros_sljit.c")
   add_library(waboros::sljit ALIAS waboros_sljit)
   set_target_properties(waboros_sljit PROPERTIES
-    C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF POSITION_INDEPENDENT_CODE ON)
+    C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF POSITION_INDEPENDENT_CODE ON
+    WINDOWS_EXPORT_ALL_SYMBOLS ON)  # the DLL exports sljit's API and waboros_sljit_* (no __declspec in sljit)
   target_include_directories(waboros_sljit PUBLIC
     "$<BUILD_INTERFACE:${sljit_dir}>" "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/sljit>")
   target_compile_definitions(waboros_sljit PRIVATE _DEFAULT_SOURCE)
@@ -111,7 +112,7 @@ if(WABOROS_BUILD_TESTS)
     target_link_libraries(waboros_test_native PRIVATE waboros_sljit)
     waboros_c99(waboros_test_native)
     add_test(NAME native COMMAND waboros_test_native)
-    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$" AND NOT WIN32)
       add_test(NAME bti_pingpong COMMAND waboros_test_native bti 1)
       if(CMAKE_CROSSCOMPILING_EMULATOR)  # the control: QEMU enforces BTI, so without the pad it is SIGILL
         add_test(NAME bti_control COMMAND waboros_test_native bti 0)

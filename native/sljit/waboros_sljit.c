@@ -7,7 +7,11 @@
 #endif
 #include <stddef.h>
 #include <string.h>
+#ifdef _WIN32
+#include <windows.h>
+#else
 #include <sys/mman.h>
+#endif
 
 /* Code is generated into plain writable memory and copied out by the caller. Above 4 GiB sljit forms
    a label address (SLJIT_MOV_ADDR) rip-relative on x86-64, below it as an absolute imm32 that the
@@ -17,6 +21,17 @@
    it does where the loader copies it (0 mod 4096, S0004), and the caller checks that too. The size
    is kept in the page before the code. */
 #define WSL_PAGE 4096
+#ifdef _WIN32
+/* VirtualAlloc gives 64 KiB-aligned RW memory; the code starts one page in, so on aarch64 it is
+   0 mod 4096 as above. The size is kept in the header page, as on POSIX (the release needs none). */
+static void *wsl_map(size_t size) {
+	size_t *p = VirtualAlloc(NULL, size + WSL_PAGE, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+	if (!p) return NULL;
+	p[0] = size + WSL_PAGE;
+	return (char *)p + WSL_PAGE;
+}
+static void wsl_unmap(void *ptr) { VirtualFree((char *)ptr - WSL_PAGE, 0, MEM_RELEASE); }
+#else
 static void *wsl_map(size_t size) {
 	size_t *p = mmap(NULL, size + WSL_PAGE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	if (p == MAP_FAILED) return NULL;
@@ -24,6 +39,7 @@ static void *wsl_map(size_t size) {
 	return (char *)p + WSL_PAGE;
 }
 static void wsl_unmap(void *ptr) { size_t *p = (size_t *)((char *)ptr - WSL_PAGE); munmap(p, p[0]); }
+#endif
 #define SLJIT_EXECUTABLE_ALLOCATOR 0
 #define SLJIT_MALLOC_EXEC(size, d) ((void)(d), wsl_map(size))
 #define SLJIT_FREE_EXEC(ptr, d) ((void)(d), wsl_unmap(ptr))
@@ -102,7 +118,7 @@ int waboros_sljit_constant(const char *name, sljit_sw *value) {
 	return -1;
 }
 
-#if defined(__x86_64__) && defined(__GNUC__)
+#if defined(__x86_64__) && defined(__GNUC__) && !defined(_WIN32)
 static void (*wsl_seen)(void *, void *, sljit_uw);
 void waboros_sljit_test_win64_set(void (*seen)(void *, void *, sljit_uw)) { wsl_seen = seen; }
 __attribute__((ms_abi)) void waboros_sljit_test_win64_host(void *ctx, void *slots) {

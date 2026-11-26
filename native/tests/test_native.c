@@ -3,10 +3,14 @@
 #include <stdio.h>
 #include <string.h>
 #include <signal.h>
+#include <stdlib.h>
+#ifdef _WIN32
+#include <windows.h>
+#else
 #include <sys/mman.h>
 #include <sys/wait.h>
 #include <unistd.h>
-#include <stdlib.h>
+#endif
 #if defined(__aarch64__) && defined(__linux__)
 #include <sys/auxv.h>
 #endif
@@ -31,6 +35,15 @@ static int has_bti(void) {
 
 static char *exec_copy(struct sljit_compiler *c, void *code, int bti) {
 	size_t n = sljit_get_generated_code_size(c), len = (n + 4095) & ~(size_t)4095;
+#ifdef _WIN32
+	DWORD old;
+	char *p = VirtualAlloc(NULL, len, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+	(void)bti;  /* no BTI page flag here */
+	if (!p) { fprintf(stderr, "VirtualAlloc: %lu\n", (unsigned long)GetLastError()); exit(2); }
+	memcpy(p, code, n);
+	if (!VirtualProtect(p, len, PAGE_EXECUTE_READ, &old)) { fprintf(stderr, "VirtualProtect: %lu\n", (unsigned long)GetLastError()); exit(2); }
+	FlushInstructionCache(GetCurrentProcess(), p, n);
+#else
 	char *p = mmap(0, len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	if (p == MAP_FAILED) { perror("mmap"); exit(2); }
 	memcpy(p, code, n);
@@ -38,6 +51,7 @@ static char *exec_copy(struct sljit_compiler *c, void *code, int bti) {
 	   elsewhere (EINVAL), and the page would stay non-executable */
 	if (mprotect(p, len, PROT_READ | PROT_EXEC | (bti && has_bti() ? PROT_BTI : 0))) { perror("mprotect"); exit(2); }
 	__builtin___clear_cache(p, p + n);
+#endif
 	return p;
 }
 
@@ -100,8 +114,14 @@ static void test_frames(void) {
 #ifdef SLJIT_CONFIG_X86_64
 #define STUB 16
 static void pad(struct sljit_compiler *c) { sljit_u8 b = 0xcc; sljit_emit_op_custom(c, &b, 1); }
-static void stub_head(struct sljit_compiler *c) {  /* endbr64; lea rdx, [rip + 5] */
+/* endbr64; lea rdx, [rip + 5] (the body in the C convention's third argument: rdx in SysV, r8 in
+   Win64, so `lea r8, [rip + 5]` there; same length) */
+static void stub_head(struct sljit_compiler *c) {
+#ifdef _WIN32
+	sljit_u8 e[4] = {0xf3, 0x0f, 0x1e, 0xfa}, l[7] = {0x4c, 0x8d, 0x05, 5, 0, 0, 0};
+#else
 	sljit_u8 e[4] = {0xf3, 0x0f, 0x1e, 0xfa}, l[7] = {0x48, 0x8d, 0x15, 5, 0, 0, 0};
+#endif
 	sljit_emit_op_custom(c, e, 4); sljit_emit_op_custom(c, l, 7);
 }
 #else
@@ -223,7 +243,7 @@ static void test_baseline(void) {
 static void test_baseline(void) { printf("baseline: x86-64 and aarch64 only\n"); }
 #endif
 
-#ifdef SLJIT_CONFIG_ARM_64
+#if defined(SLJIT_CONFIG_ARM_64) && !defined(_WIN32)
 /* A(n) tail-calls B(n - 1) by SLJIT_CALL_RETURN (br x9) and B calls A, 1e5 times, on PROT_BTI
    pages; entered by a C call (blr). With the `bti jc` pad it runs, without it: SIGILL. */
 static void pingpong_fn(struct sljit_compiler *c, int pad, sljit_sw other_slot) {
@@ -256,7 +276,7 @@ static int test_bti(int pad) {
 
 int main(int argc, char **argv) {
 	setvbuf(stdout, NULL, _IONBF, 0);  /* the output survives a crash */
-#ifdef SLJIT_CONFIG_ARM_64
+#if defined(SLJIT_CONFIG_ARM_64) && !defined(_WIN32)
 	if (argc > 2 && strcmp(argv[1], "bti") == 0) {
 		int st = 0;
 		printf("BTI: %s\n", has_bti() ? "yes" : "no (PROT_BTI not used)");

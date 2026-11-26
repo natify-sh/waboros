@@ -944,3 +944,4 @@ In the step that makes each untrue; step 7 for the rest.
 * 2026-11-25 (D48 amendment): "Toward the other sljit architectures" states D48's order (riscv64,
   then i686 and armv7, then MCUs in v2); LoongArch64 is not a target, s390x, ppc64le and MIPS are
   not a priority.
+* 2026-11-26 (S0017 step 0): `waboros_sljit.c` has a Windows branch of the allocator hooks (`VirtualAlloc`/`VirtualFree`, the same header page and layout as the `mmap` branch); the win64 test host (`waboros_sljit_test_win64_*`) is excluded on `_WIN32`.

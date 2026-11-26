@@ -19,7 +19,7 @@ sljit_uw waboros_sljit_code_size(struct sljit_compiler *c);
 sljit_s32 waboros_sljit_error(struct sljit_compiler *c);
 /* A sljit constant by its name (SLJIT_R0, SLJIT_ARGS3(32, P, P, P), ...): 0 and *value, or -1. */
 int waboros_sljit_constant(const char *name, sljit_sw *value);
-#if defined(__x86_64__) && defined(__GNUC__)
+#if defined(__x86_64__) && defined(__GNUC__) && !defined(_WIN32)
 /* Test only (tests/sljit/test_win64_bridge.py): a host function in the Windows x64 convention,
    run on Linux through the win64 bridge. It calls `seen` (SysV) with its arguments and the
    stack pointer at its call, then writes all 32 bytes of its shadow space. */
