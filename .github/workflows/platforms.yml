@@ -47,7 +47,6 @@ jobs:
     if: needs.dedup.outputs.skip != 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
-    continue-on-error: ${{ matrix.experimental == true }}
     strategy:
       fail-fast: false
       matrix:
@@ -66,9 +65,8 @@ jobs:
           - { name: "Android (x86_64, arm64_v8a)", os: ubuntu-latest, platform: android, archs: "x86_64 arm64_v8a" }
           # Android 17 (API 37) with 16 KiB pages and the testbed at targetSdk 37: our own emulator
           # (the testbed's managed devices have neither), `--connected`; the Gradle init script and
-          # the page-size assertion are in the step "16 KiB emulator". experimental: being brought
-          # up, remove `experimental` (and continue-on-error) once it is green
-          - { name: "Android 16 KiB pages (API 37, targetSdk 37)", os: ubuntu-latest, platform: android, archs: x86_64, ps16k: true, experimental: true }
+          # the page-size assertion are in the step "16 KiB emulator"
+          - { name: "Android 16 KiB pages (API 37, targetSdk 37)", os: ubuntu-latest, platform: android, archs: x86_64, ps16k: true }
           # pyc only; the build is proven by py-wasmext. ppc64le, riscv64, s390x and iOS are off
           # (maintainer, 2026-11-03): the same pyc as elsewhere, and no micro-compiler for them yet
           - { name: Pyodide, os: ubuntu-latest, platform: pyodide, archs: wasm32 }
