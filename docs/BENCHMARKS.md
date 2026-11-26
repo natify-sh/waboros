@@ -204,6 +204,50 @@ nothing about hardware. The same run: spec core 20509 pass / 0 fail and `auto` s
 (The macOS and Windows legs of the `arm64` job no longer exist; those platforms run in `platforms.yml`, which does not
 measure speed. The Linux leg stays: native CoreMark, guard against explicit, below.)
 
+## Pulley vs wasm3 (32-bit host) (2026-11-26)
+
+Conditions: cloud container, x86-64 Linux 6.18.44, Intel Xeon @ 2.10 GHz, 4 vCPU, every run pinned with
+`taskset -c 2`, runs alternated, two rounds. Workload `poc/in/core.wasm` (CoreMark 1.0), it/s as CoreMark
+prints it; every run printed "Correct operation validated" (the iteration count differs per engine, so crcfinal does).
+The i686 rows are native 32-bit processes on the x86-64 kernel (`gcc-multilib`, `i686-unknown-linux-gnu`).
+Wasmtime 50.0.1 (as in `uv.lock`), Rust 1.97.0 (`cargo build --release`, opt-level 3), crate features
+`runtime`, `cranelift`, `pulley`; Cranelift compiles the module to Pulley bytecode when the process starts,
+and the 32-bit host runs it with the interpreter. On the i686 host the default target and an explicit
+`pulley32` gave the same engine (rounds below: default 1 620 / 1 573, explicit 1 554 / 1 468). wasm3 v0.5.0
+(commit 6b8bcb1, the tag pywasm3 0.5.0 wraps), `gcc` 13.3.0 `-O3` `-m32` / `-m64`, without WASI.
+Hosts: a small Rust program (Wasmtime) and a small C program (wasm3) with `wiring.millis` (monotonic ms)
+and `wiring.print`; scratch sources were not added to the repository.
+
+| engine | host | round 1 | round 2 |
+|---|---|---|---|
+| **Pulley** (`pulley32`) | **i686** | 1 620 | 1 573 |
+| **wasm3** v0.5.0 | **i686** | 1 035 | 1 064 |
+| Pulley (`pulley64`), Rust host | x86-64 | 1 700 | 1 649 |
+| Pulley (`pulley64`), wasmtime-py | x86-64 | 1 535 | 1 570 |
+| wasm3 v0.5.0, C host | x86-64 | 2 418 | 2 393 |
+| wasm3 pywasm3 0.5.0 | x86-64 | 2 533 | 2 397 |
+| Wasmtime Cranelift, Rust host | x86-64 | 19 801 | 20 322 |
+| Wasmtime Cranelift, wasmtime-py | x86-64 | 20 919 | 20 845 |
+
+Commands (wasmtime-py rows use `ref.py`, a copy of `poc/ref_run.py`'s wasmtime branch with
+`Config().target = "pulley64"`; the Rust host takes `core.wasm [target]`):
+
+```
+cargo build --release --target i686-unknown-linux-gnu      # and without --target for x86-64
+taskset -c 2 target/i686-unknown-linux-gnu/release/host poc/in/core.wasm [pulley32]
+taskset -c 2 target/release/host poc/in/core.wasm [pulley64]
+gcc -m32 -O3 -Iw3src/source <m3_*.c without wasi/libc/tracer> w3host.c -o w3_32 -lm   # -m64 for x86-64
+taskset -c 2 ./w3_32 poc/in/core.wasm
+taskset -c 2 uv run --with pywasm3==0.5.0 python poc/ref_run.py poc/in/core.wasm wasm3
+taskset -c 2 uv run python ref.py {pulley64,default}
+```
+
+On this machine Pulley on an i686 host ran CoreMark about 1.5 times faster than wasm3 (1 573-1 620 vs
+1 035-1 064 it/s), while on x86-64 wasm3 ran about 1.4-1.5 times faster than Pulley (`pulley64`); Pulley
+(Rust host, mean of two rounds) lost 5 % and wasm3 (C host) 56 % going from x86-64 to i686. A `pulley32` module cannot be run in an x86-64
+process (Wasmtime refuses: the target does not match the host), so no proxy was used.
+
+
 ## Compile and load times (CoreMark)
 
 | step | time |
