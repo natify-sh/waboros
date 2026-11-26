@@ -471,7 +471,9 @@ runs under `qemu-aarch64 -cpu max`: the `bti_*` ctest of `native/` with its SIGI
 `test_tail.py`, `test_exit_record.py`, `test_gc_nested.py`, the spec suite of `jit-aarch64` and
 `jit-sljit-aarch64` (in process and through files, `spec_diff` both ways; covers `simd/`), `test_mixed.py`,
 `test_boundary.py`, `tests/sljit/` and `tests/artifact/test_sljit.py`, explicit bounds: QEMU splits a
-straddling 16-byte store, D45. The rest of what once ran under QEMU, the compiler, walk, GC and SIMD
+straddling 16-byte store, D45. Measured (run 45906355757, 2026-11-26): `jit` 4.4 min (12.5 before the split, run
+45715104583), `arm64-bti` 4.1 min (its QEMU part 3.6 min), the whole `ci` 13 min (25-32 before: `arm64`
+waits for `jit`'s D35 lists); the `qpython` check prints `PROT_BTI` 16 in the process and its child. The rest of what once ran under QEMU, the compiler, walk, GC and SIMD
 tests, the guard spec run and `test_guard.py`, runs natively in `arm64`); `jit` also: the x86 SIMD tests and the explicit `simd` spec run of
 `jit-x86_64` under the SSE2-only `qemu64` CPU with `WABOROS_JIT_BOUNDS=explicit` (QEMU splits wide
 stores, D45), compared with `pyc` by `tools/spec_diff.py` (strict since 5d3), run inside an
