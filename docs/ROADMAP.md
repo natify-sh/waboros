@@ -407,6 +407,13 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29; done 2026-11-03) -> 
   (Thumb, Xtensa, RISC-V, …) without an encoder of ours; inline assemblers (`asm_thumb`, `asm_xtensa`)
   for the hottest functions (TARGETS.md, "MicroPython's own native emitters as JIT back ends").
 * Port the translator to run on MicroPython if on-device compilation is wanted.
+* **`pyc` output on MicroPython** (maintainer, 2026-11-27): not now. `pyc` stays as it is for
+  CPython and PyPy; running wasm as Python code on MicroPython is this phase's `mpy` question. What
+  breaks today and why a module dict is not enough is LESSONS 169; the probe is
+  `poc/mpy_pyc_probe.py` (CoreMark and 17 spec files pass on MicroPython 1.29 with its patches). The
+  design to evaluate first: functions in tables, exports and imports as small objects with
+  `__slots__` (type key, tail body, function), so the key travels with the function and nothing
+  leaks; measured against today's attributes on CPython and PyPy.
 * **A `.wbo` loader as a MicroPython module** (maintainer, 2026-11-26; a goal, no spec yet): the C
   loader built without the compiler (S0017, `WABOROS_WITH_COMPILER=OFF`, and without GC or guard
   where the device needs neither), as a user C module of the firmware or a dynamic native module

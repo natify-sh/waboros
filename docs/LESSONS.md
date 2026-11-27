@@ -1330,3 +1330,22 @@ What went wrong or surprised us while building the PoC, so it is not found again
     `ArtifactError.section`; compare sections without the suffix. Rule: a second implementation of
     a reader is checked on mutated files, accept or refuse, step and section, not on the files the
     writer makes. Found: 2026-11-26.
+
+169. **`pyc` output does not run on MicroPython 1.29 as generated; five things break, nothing else did.**
+    `poc/mpy_pyc_probe.py` (CoreMark and a spec subset on the unix port, standard build) found:
+    (1) functions take no attributes, so `f2.s = key` (call_indirect type key) and `f2.t = f2_b` (tail
+    call body) raise `AttributeError` at import: a module dict keyed by the function works;
+    (2) `int.bit_length` and `int.bit_count` do not exist (clz, ctz, popcnt, i64 to f32): `bin(x)`;
+    (3) `struct.Struct` does not exist (the runtime builds U32, P32 and the like from it) and
+    `os.environ` does not, and `waboros/__init__.py` imports `importlib`, so the package cannot be
+    imported, only `runtime.py` can be copied; (4) the recursion limit is about 175 Python frames
+    (a fixed 40 kB C stack on the unix port) and the error is `RuntimeError`, not `RecursionError`;
+    (5) a function whose bytecode needs a jump over 32 kB fails to compile with `RuntimeError:
+    bytecode overflow` (spec br_table.wast, one 48 000 line function). Memory is a `bytearray` taken from
+    the MicroPython heap: run with `-X heapsize=1024M` or modules of a few pages raise `MemoryError`.
+    A module dict for (1) is not enough in the package: instances of `pyc` exec into their own
+    namespaces and tables and imports carry other modules' functions, so the key must be visible
+    across modules, and a shared dict keeps every instance alive (no `weakref` on MicroPython either).
+    Decision (maintainer, 2026-11-27): `pyc` stays as it is for CPython and PyPy; MicroPython is the
+    `mpy` target's question (phase 7). Rule: "valid for the MicroPython flavour" is a claim that needs
+    this run. Found: 2026-11-27.
