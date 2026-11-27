@@ -6,7 +6,7 @@ status: approved
 superseded_by:
 related: [D18, D23, D32, D34, D36, D47, D50, D54, D56, D58, D60, D61, D62, D64, D65, D66, D68, D69, D70, D71, D72, D73, D74, D75, R2, R3, R6, S0001, S0003, S0006, S0013, S0014, S0015, S0016]
 owner: maintainer
-updated: 2026-11-25
+updated: 2026-11-27
 ---
 
 # S0017 The C reference loader
@@ -193,6 +193,8 @@ native/
     os_posix.c            Linux and macOS: memory, locks, stack bounds, the signal handler
     os_windows.c          Windows: memory, locks, stack bounds, the vectored handler
     compiler.h            the seam
+    internal.h            what the loader's files share (not API): the engine and module structs,
+                          the os_* and entry prototypes, the context word numbers (step 2)
   tools/waboros_run.c     the program: run an export, --dump, --check
   tests/loader/           ctest self-tests (C, no Python) and the libFuzzer target
 tests/cloader/            the Python side (tests only): the shim, the engines, the corpus, the
@@ -297,6 +299,8 @@ void waboros_engine_free(waboros_engine *);
 void waboros_module_free(waboros_module *);
 int waboros_module_dump(const waboros_module *, char *buf, size_t *n);
 int waboros_store_new(waboros_engine *, const waboros_store_config *, waboros_store **, waboros_error *);
+void waboros_store_free(waboros_store *);  /* its instances too; the engine outlives its stores */
+typedef struct { uint32_t kind; uint32_t index; waboros_instance *inst; } waboros_extern; /* step 2's layout */
 /* host-made externs (spectest's, a host's own) */
 int waboros_host_func(waboros_store *, waboros_host_fn, void *env, const waboros_functype *, waboros_extern *, waboros_error *);
 int waboros_memory_new(waboros_store *, uint64_t min, uint64_t max /* ~0: none */, int a64, waboros_extern *, waboros_error *);
@@ -375,9 +379,9 @@ what `Instance._host` and its callback do (`instance.py`, `_host`):
 4. On status 0, mask each result to its type (`_masks`: i32 and f32 to 32 bits), so slots stay
    zero-extended.
 5. Map the status:
-   * 0 and the trap codes 1-13 and 15-18 pass (Python's `_TRAP_STATUSES`: every `TrapCode` but
-     14);
-   * any other value (14, above 18, the private range) becomes 13, with the message "host
+   * 0 and the statuses 1-10, 12, 13 and 16-18 pass (Python's `_TRAP_STATUSES`: every `TrapCode`
+     but 14; the oracle's `TrapCode` has no 11 and no 15);
+   * any other value (11, 14, 15, above 18, the private range) becomes 13, with the message "host
      function returned status N" kept in the store (S0015: a host never returns 14, and no
      private status leaves a bridge).
 6. When the status is 0 and the store runs guard code: check that the handler chain is still
@@ -688,7 +692,9 @@ instance's roots registered (B6).
   (Clang): `-fsanitize=function` reads a type signature before the target of an indirect call,
   and machine code from a file has none.
 * The status:
-  * a trap code (1-11 and 15-18) gives `WABOROS_E_TRAP`, with `trap` set;
+  * a trap code of the oracle's `TrapCode` (1-10 and 16-18) gives `WABOROS_E_TRAP`, with `trap` set;
+    11 and 15 (`OUT_OF_FUEL`, `HEAP_MISALIGNED`: in part 3's table, emitted by no v1 compiler) are
+    not in it, so they fall under the last rule, as Python's "JIT code returned status N";
   * 12 gives `WABOROS_E_INTERRUPT`; at the outermost entry, every context's word is cleared under
     the store lock;
   * 13 gives `WABOROS_E_HOST`, with the message of "Host calls";
@@ -1141,3 +1147,30 @@ When approved and implemented:
 * 2026-11-26: step 1 done: the reader (`native/loader/read.c`, `sha256.c`, `compiler.h`; about 1 480 lines of C in `read.c`, 1 730 with `sha256.c`, the headers and `waboros_run.c`): the frozen lookup and step 1b, steps 2-6 with the Python reader's checks (canonical type keys, subtyping for the constant expressions' typing, the stack maps, the trampolines against the engine's per-compiler-string copy, kept as bytes), the inventory dump in C and in Python (`tests/cloader/dump.py`), `waboros_run --dump`/`--check`, the ctypes shim with the test compiler, `tests/cloader/cases.py` and `test_corpus.py` (about 860 lines of Python, 43 % over the 600 estimated: the modules family, the subtyping modules and the thin flips were added; the C side, 1 730 lines with the headers and `waboros_run.c`, is 28 % over its 1 350), ctest `loader_check_committed` and `loader_check_other_architecture`, the corpus in CI (`sljit`, `arm64`). Item 4 on explicit files: 0 files outside their class on Linux x86-64 (173 whole-file cases, 2 529 module files, 31 424 prefixes, 9 000 flips of fat and thin files, 16 committed files). Points the text left open, settled by the oracle: Python's `ArtifactError.section` of a constant-expression error is `<section> constant expression` (its reader's `what`), so the corpus compares the section without that suffix and C reports the payload's name; the corpus compares sections only at step 6; the test compiler compiles for the host for a case loaded with the other architecture's target; a file with two changes (a compiler string that differs and a broken payload) is refused by C at step 6 and by Python at step 5, which is outside the classes (the designed exception E1 covers C's acceptance of a file only), and no single-change file is one. Where the C reader had to copy a Python wart to agree (LESSONS 168): `_frozen` returns none for the whole file when any section name is unreadable; a section name that is not valid UTF-8 is refused at step 3 (Python decodes with `replace`, so its canonical `.shstrtab` never equals the file's). Not done: guard files (step 4), executable memory (step 2), the aarch64 shim run (the shim needs an aarch64 Python: the aarch64 reader was compared under `qemu-aarch64` on the dumps and verdicts of 4 098 files, not in the repository), libFuzzer (not installed here), MSVC/Apple Clang builds (CI).
 
 * 2026-11-27: step 1 review fixes: `ABOVE[none]` lacked `eq` (valid modules such as an `eqref` global initialised from a `(ref null none)` global were refused; `cases.py` now has 160 subtyping modules, every abstract heap type and a concrete type against each supertype in a global, a table initial value and an element item, which fail with the old constant); the running convention is Win64's record on Windows x64 and the first one elsewhere (as `JitX86_64Target.convention`); the `fat` class compares the step-6 section too; the corpus asserts that its source loads; `test_accepted_modules` needs the spec cache (a failure under `WABOROS_JIT_REQUIRE=1`); the `arm64` CI step runs after the spec fetch; `waboros_run` keeps the larger status and checks read and print errors; sums of counts are checked (`add32`).
+* 2026-11-27: step 2 done (Linux x86-64, explicit): `native/loader/entry.c` (the SysV `entry` and `sp_stub` bytes of
+  `entry.py`, one executable copy per process; `tests/cloader/test_entry_bytes.py`), `os_posix.c` (W^X memory,
+  reservations, locks, the thread id, the stack bounds as `_stack_bounds`), `instance.c` (stores with the one-thread
+  claim under the engine lock, the value stack, instantiation of modules without imports in `JitInstance`'s order,
+  calls as `Instance.call`, `dispatch` checking the word and failing every libcall with 13 until step 3),
+  `internal.h`; `read.c` keeps the file's bytes and the reader's arrays in the module, maps each compiler string's
+  trampoline copy executable at adoption, and compares and adopts under the engine lock. C API additions:
+  `waboros_store_free` and `waboros_extern`'s layout (`{kind, index, inst}`). Moved into step 2: the native stack
+  limit (`sp_stub`, `native_budget`; without it deep recursion would crash: no fault handler in explicit mode) and
+  `waboros_store_interrupt` (the store lock's user; the interrupt runtime tests stay in step 3). The engines
+  `cloader-jit-x86_64` and `cloader-jit-sljit-x86_64` (`tests/cloader/engine.py`); `tests/cloader/step2.txt` (195
+  files) passes on both with `step2-xfail.txt` (451 commands, every one step-3 work: libcalls, host references, and
+  the commands after them that read what they did not write; all pass on `WABOROS_JIT_ARTIFACT=1 --engine
+  jit-x86_64`). Off Linux x86-64 the runtime files build (POSIX) but have no `entry` (steps 6-8); Windows builds the
+  reader only (step 8).
+* 2026-11-27: step 2 review fixes and notes. "Calls, traps, exceptions" and "Host calls (D75)" step 5 follow the
+  oracle: statuses 11 and 15 are not in `TrapCode`, so an entry's 11 or 15 is `WABOROS_E_INTERNAL` ("JIT code
+  returned status N", as `Instance._error`) and a host's 11 or 15 becomes 13 (the text had listed both as traps).
+  Deferred to step 3: element segments' items are evaluated only for the active segments, when they are written
+  (Instantiation step 6 evaluates every segment's items first; `table.init` needs the passive ones). The fixes: a
+  failed instantiation leaves the store's instance array under the store lock; the context's word numbers are
+  summed in 64 bits and a context past 2^28 words is `WABOROS_E_RESOURCE`, as is an i64 reservation that would
+  wrap; `tests.spec.run` registers the `cloader-*` engines so that a stale loader library fails only those
+  (`tests/cloader/test_lazy_engines.py`); `test_step2_files.py` accepts a follow-on failure only with no
+  `module` command between it and its file's step-3 failure. Budget: step 2 is over its estimate, C about 1 200
+  lines against 900 (the reader keeping the module and the store), Python about 560 against 300 (the engine, the
+  shim, and five test files).

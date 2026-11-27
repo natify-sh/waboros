@@ -62,6 +62,24 @@ ENGINES: dict[str, Callable[[], SpecEngine]] = {
 }
 
 
+def _cloader() -> dict[str, Callable[[], SpecEngine]]:
+    """The C loader through the shim, `cloader-<target>`, where build/native has it (S0017). A
+    library the shim refuses (older than a `native/` source) fails only the run that chooses one of
+    these engines, never the others."""
+    try:
+        return importlib.import_module("tests.cloader.engine").engines()
+    except RuntimeError as e:
+        why = str(e)
+
+        def refuse() -> SpecEngine:
+            raise RuntimeError(why)
+
+        return {f"cloader-{t}": refuse for t in TARGETS if t.startswith("jit-")}
+
+
+ENGINES.update(_cloader())
+
+
 def target_of(engine: str) -> str:
     """The name whose claims and xfail file apply: `auto` counts as the target it selects."""
     return target_order("auto")[0] if engine == "auto" else engine

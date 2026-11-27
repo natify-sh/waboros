@@ -134,6 +134,15 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is checked in CI).
   (Linux aarch64). ctest (`native/CMakeLists.txt`) runs `waboros_run --check` on the committed explicit
   files of the host's architecture (accepted) and of the other one (refused at step 5, or a fat file that
   needs a compiler) on every `cloader` row.
+  S0017 step 2 (Linux x86-64): the S0001 engines `cloader-jit-x86_64` and `cloader-jit-sljit-x86_64`
+  (`tests/cloader/engine.py`, registered by `tests.spec.run` when the loader library is built): the Python
+  compiler writes a fat file in explicit mode, the C loader loads, instantiates and calls it in-process.
+  `tests/cloader/step2.txt` (`python -m tests.cloader.step2`: the files whose modules import nothing and
+  need no heap) runs with `--xfail tests/cloader/step2-xfail.txt` on both engines; `test_step2_files.py`
+  checks that every expected failure is step-3 work (or follows one in its file), never a crash.
+  `test_entry_bytes.py` ties `native/loader/entry.c` to `entry.py`; `test_store.py` checks the one-thread
+  rule, deep recursion (trap 5 on the main thread and a 256 KiB thread) and `waboros_store_interrupt`;
+  ctest `loader_entry` runs `entry` and `sp_stub` on hand-assembled C entries.
   `tests/jit/test_host_word.py` (D75): the word a host receives, per import (`call`,
   `call_indirect`, `return_call`), libcall and nested entry, on the machine's JIT and each
   development compiler of its architecture, in-process and through files; the Win64 bridges of the

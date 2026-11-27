@@ -63,8 +63,10 @@ Rules:
 
 A host also supplies `entry` as machine code of its own (S0015, D70): the file holds none. Part 3's
 "Entry" is its contract, and "Reference listing of the runtime's `entry`" there gives a listing per
-architecture and convention. Planned: hex bytes of each listing, for hosts without an assembler
-(Dart FFI, LuaJIT).
+architecture and convention. Hex bytes of each listing, for hosts without an assembler (Dart FFI,
+LuaJIT): `native/loader/entry.c` holds the x86-64 SysV `entry` and `sp_stub` (S0017 step 2, tied to
+`targets/jit/x86_64/entry.py` by `tests/cloader/test_entry_bytes.py`); Win64 and aarch64 follow in
+S0017 steps 8 and 6.
 
 ## 2. Artifact format (version 1)
 

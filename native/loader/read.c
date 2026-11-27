@@ -12,9 +12,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "compiler.h"
+#include "internal.h"
 #include "sha256.h"
-#include "waboros.h"
 
 #define U(x) ((unsigned long long)(x))
 #define NO_START 0xFFFFFFFFu
@@ -50,46 +49,13 @@ static const uint16_t ABOVE[12] = {0x801, 0x012, 0x024, 0x7C8, 0x010, 0x020, 0x0
 #define H_STRUCT (-21)
 #define H_ARRAY (-22)
 
-/* A value type: k is the wasm byte of a number type (or 0x78 i8, 0x77 i16), K_REF for a reference
- * (nullable, heap: an index, or -12 down to -23), K_NULLREF for the type of ref.null. */
+/* A value type (internal.h: VT): k is the wasm byte of a number type (or 0x78 i8, 0x77 i16), K_REF
+ * for a reference (nullable, heap: an index, or -12 down to -23), K_NULLREF for the type of ref.null. */
 enum { K_REF = 0, K_NULLREF = 0xFF };
-typedef struct {
-	uint8_t k, nullable, mut;
-	int32_t heap;
-} VT;
-typedef struct { /* a type: kind 0 func (v params, w results), 1 struct (v fields), 2 array (v[0]) */
-	uint8_t kind, final;
-	int32_t super;
-	uint32_t gs, ge, np, nr, depth;
-	VT *v, *w;
-} Ty;
-
-typedef struct Blk {
-	struct Blk *next;
-	uint64_t align;
-} Blk;
 typedef struct {
 	char *p;
 	size_t n, cap;
 } Sb;
-typedef struct { /* the compiler string's copy of the running convention's blob (S0014 "One copy per store") */
-	char *str;
-	size_t n;
-	uint32_t size, rel[3];
-	uint16_t ret_at, up;
-	uint8_t *blob;
-} Copy;
-struct waboros_engine {
-	waboros_compiler comp;
-	int has_comp;
-	uint16_t machine; /* the loader's own */
-	Copy *copies;
-	size_t ncopies;
-};
-struct waboros_module {
-	char *dump;
-	size_t dump_n;
-};
 
 typedef struct Ld {
 	jmp_buf jb;
@@ -122,6 +88,12 @@ typedef struct Ld {
 	Copy cur; /* the file's own running-convention record */
 	const uint8_t *cur_blob;
 	int cur_ok;
+	/* kept for instantiation (internal.h, waboros_module): file offsets and counts */
+	Lim *tlim, *mlim;
+	uint64_t *tinit_at, *ginit_at, funcs_at, exports_at, sigs_at, code_n;
+	uint32_t ntimp, nmimp, nimports, nexports, nsigs, nelems, ndatas, start, data_start;
+	Elem *elems;
+	Data *datas;
 } Ld;
 
 typedef struct {
@@ -135,12 +107,15 @@ typedef struct {
 static uint32_t ld16(const uint8_t *p) { return (uint32_t)p[0] | (uint32_t)p[1] << 8; }
 static uint32_t ld32(const uint8_t *p) { return ld16(p) | ld16(p + 2) << 16; }
 static uint64_t ld64(const uint8_t *p) { return ld32(p) | (uint64_t)ld32(p + 4) << 32; }
+uint32_t waboros_ld32(const uint8_t *p) { return ld32(p); }
+uint64_t waboros_ld64(const uint8_t *p) { return ld64(p); }
 
 static void cpy(char *dst, size_t cap, const char *s) {
 	size_t i = 0;
 	while (s && s[i] && i + 1 < cap) { dst[i] = s[i]; i++; }
 	dst[i] = 0;
 }
+void waboros_cpy(char *dst, size_t cap, const char *s) { cpy(dst, cap, s); }
 
 /* Refuse: the step the pass is in, the section (or NULL) and the reason. Never returns. */
 static void bail(Ld *L, const char *section, const char *what, const char *msg) {
@@ -544,7 +519,7 @@ static uint32_t ftype(Rd *r) {
 }
 
 /* page 16 for a memory, 0 for a table; the text goes to dump piece `id`; returns the address type byte */
-static uint8_t limits(Rd *r, uint32_t page, int id) {
+static uint8_t limits(Rd *r, uint32_t page, int id, Lim *out) {
 	uint32_t fl = rd_u8(r), log2 = rd_u8(r);
 	uint64_t mn, mx, cap;
 	rd_zero(r, 2);
@@ -559,6 +534,9 @@ static uint8_t limits(Rd *r, uint32_t page, int id) {
 	if (fl & 1) sb_f(r->L, id, "%llu", U(mx));
 	else sb_put(r->L, id, "-", 1);
 	sb_f(r->L, id, " a64=%d shared=0", (fl & 2) != 0);
+	out->min = mn;
+	out->max = fl & 1 ? mx : (uint64_t)-1;
+	out->a64 = (uint8_t)((fl & 2) != 0);
 	return (uint8_t)(fl & 2 ? 0x7E : 0x7F);
 }
 
@@ -865,7 +843,7 @@ static uint64_t trampolines(Ld *L) {
 	if (rd_u32(&r) != nconv) rfail(&r, "not one record per convention of its target");
 	if (r.e != 4 + 28 * (uint64_t)nconv) rfail(&r, "the payload has not the layout of S0015 (28 bytes per convention)");
 	for (i = 0; i < L->eng->ncopies; i++)
-		if (L->eng->copies[i].n == L->comp_n && !memcmp(L->eng->copies[i].str, L->comp, L->comp_n)) cp = &L->eng->copies[i];
+		if (L->eng->copies[i]->n == L->comp_n && !memcmp(L->eng->copies[i]->str, L->comp, L->comp_n)) cp = L->eng->copies[i];
 	for (k = 0; k < nconv; k++) {
 		uint32_t cid = rd_u8(&r), start, size, x[3], ret_at, up;
 		rd_zero(&r, 3);
@@ -997,6 +975,11 @@ static void payloads(Ld *L) {
 	L->taddr = (uint8_t *)pool_n(L, (uint64_t)ni + L->size[S_TABLES] / 26 + 1, 1);
 	L->maddr = (uint8_t *)pool_n(L, (uint64_t)ni + L->size[S_MEMORIES] / 20 + 1, 1);
 	L->gtype = (VT *)pool_n(L, (uint64_t)ni + L->size[S_GLOBALS] / 6 + 1, sizeof(VT));
+	L->tlim = (Lim *)pool_n(L, (uint64_t)ni + L->size[S_TABLES] / 26 + 1, sizeof(Lim));
+	L->mlim = (Lim *)pool_n(L, (uint64_t)ni + L->size[S_MEMORIES] / 20 + 1, sizeof(Lim));
+	L->tinit_at = (uint64_t *)pool_n(L, (uint64_t)ni + L->size[S_TABLES] / 26 + 1, sizeof(uint64_t));
+	L->ginit_at = (uint64_t *)pool_n(L, (uint64_t)ni + L->size[S_GLOBALS] / 6 + 1, sizeof(uint64_t));
+	L->nimports = ni;
 	L->gmax = -1;
 	for (i = 0; i < ni; i++) {
 		const uint8_t *m, *nm;
@@ -1020,9 +1003,11 @@ static void payloads(Ld *L) {
 			vt_text(L, D_IMPORTS, t);
 			sb_put(L, D_IMPORTS, " ", 1);
 			L->ttype[L->ntables] = t;
-			L->taddr[L->ntables++] = limits(&r, 0, D_IMPORTS);
+			L->taddr[L->ntables] = limits(&r, 0, D_IMPORTS, &L->tlim[L->ntables]);
+			L->ntables++;
 		} else if (kind == 2) {
-			L->maddr[L->nmems++] = limits(&r, 16, D_IMPORTS);
+			L->maddr[L->nmems] = limits(&r, 16, D_IMPORTS, &L->mlim[L->nmems]);
+			L->nmems++;
 		} else {
 			VT t = vt_read(&r, nt, 0);
 			t.mut = (uint8_t)rd_u8(&r);
@@ -1036,6 +1021,8 @@ static void payloads(Ld *L) {
 	rd_done(&r);
 	L->nfimp = L->nfuncs;
 	L->nimpg = L->nglobals;
+	L->ntimp = L->ntables;
+	L->nmimp = L->nmems;
 	/* funcs */
 	r = rd(L, S_FUNCS);
 	data_start = rd_u32(&r);
@@ -1043,6 +1030,10 @@ static void payloads(Ld *L) {
 	code_n = trampolines(L);
 	if (data_start > code_n) rfail(&r, "data_start is past the end of .text");
 	nfdef = rd_count(&r, 8);
+	L->funcs_at = L->off[S_FUNCS] + r.p;
+	L->code_n = code_n;
+	L->data_start = data_start;
+	L->start = start;
 	last = (uint64_t)-1;
 	n = add32(&r, L->nfuncs, nfdef); /* the index space: every sum below fits */
 	for (i = 0; i < nfdef; i++) {
@@ -1089,7 +1080,8 @@ static void payloads(Ld *L) {
 		L->nrecs = nrec;
 		for (i = 0; i < L->nfimp; i++)
 			if (i >= nrec || ld32(r.b + at + 4 * (uint64_t)i) != i) rfail(&r, "a function import has no record");
-		ids(&r, nt, "sigs", 1, &at);
+		L->nsigs = ids(&r, nt, "sigs", 1, &at);
+		L->sigs_at = L->off[S_CONTEXT] + at;
 		nthunk = rd_count(&r, 4);
 		at = r.p;
 		for (i = 0; i < nthunk; i++) rd_u32(&r);
@@ -1115,12 +1107,15 @@ static void payloads(Ld *L) {
 		vt_text(L, D_TABLES, t);
 		sb_put(L, D_TABLES, " ", 1);
 		L->ttype[L->ntables] = t;
-		L->taddr[L->ntables] = limits(&r, 0, D_TABLES);
+		L->taddr[L->ntables] = limits(&r, 0, D_TABLES, &L->tlim[L->ntables]);
 		has = rd_u8(&r);
 		if (has > 1) rfail(&r, "has_init is not 0 or 1");
 		if (!has && !t.nullable) rfail(&r, "a table of a non-nullable type needs an initial value");
 		sb_put(L, D_TABLES, " init=", 6);
-		if (has) cexpr(&r, &t, D_TABLES);
+		if (has) {
+			L->tinit_at[L->ntables] = L->off[S_TABLES] + r.p;
+			cexpr(&r, &t, D_TABLES);
+		}
 		else sb_put(L, D_TABLES, "-", 1);
 		sb_put(L, D_TABLES, "\n", 1);
 		L->ntables++;
@@ -1131,7 +1126,8 @@ static void payloads(Ld *L) {
 	n = rd_count(&r, 20);
 	for (i = 0; i < n; i++) {
 		sb_f(L, D_MEMS, "memory %llu ", U(L->nmems));
-		L->maddr[L->nmems++] = limits(&r, 16, D_MEMS);
+		L->maddr[L->nmems] = limits(&r, 16, D_MEMS, &L->mlim[L->nmems]);
+		L->nmems++;
 		sb_put(L, D_MEMS, "\n", 1);
 	}
 	rd_done(&r);
@@ -1147,6 +1143,7 @@ static void payloads(Ld *L) {
 		sb_f(L, D_GLOBALS, "global %llu ", U(L->nimpg + k));
 		vt_text(L, D_GLOBALS, t);
 		sb_f(L, D_GLOBALS, " mut=%d init=", t.mut);
+		L->ginit_at[L->nimpg + k] = L->off[S_GLOBALS] + r.p;
 		cexpr(&r, &t, D_GLOBALS);
 		sb_put(L, D_GLOBALS, "\n", 1);
 		L->gtype[L->nimpg + k] = t;
@@ -1155,6 +1152,8 @@ static void payloads(Ld *L) {
 	rd_done(&r);
 	r = rd(L, S_EXPORTS);
 	n = rd_count(&r, 9);
+	L->nexports = n;
+	L->exports_at = L->off[S_EXPORTS] + r.p;
 	for (i = 0; i < n; i++) {
 		const uint8_t *s;
 		uint32_t sl, kind, lim[5];
@@ -1170,11 +1169,15 @@ static void payloads(Ld *L) {
 	/* segments */
 	r = rd(L, S_SEGMENTS);
 	n = rd_count(&r, 6);
+	L->nelems = n;
+	L->elems = (Elem *)pool_n(L, n, sizeof(Elem));
 	for (i = 0; i < n; i++) {
 		static const char *const mode[3] = {"active", "passive", "declarative"};
 		uint32_t m = rd_u8(&r), kind, cnt, j, allfunc = 1;
 		VT rt;
+		Elem *el = &L->elems[i];
 		if (m > 2) rfail(&r, "bad element segment mode");
+		el->mode = (uint8_t)m;
 		rt = vt_read(&r, nt, 1);
 		sb_f(L, D_SEGS, "elem %llu %s ", U(i), mode[m]);
 		vt_text(L, D_SEGS, rt);
@@ -1183,6 +1186,8 @@ static void payloads(Ld *L) {
 			VT at = num(L->taddr[ti]);
 			if (!fits(L, rt, L->ttype[ti])) rfail(&r, "the element type does not fit its table");
 			sb_f(L, D_SEGS, " table=%llu offset=", U(ti));
+			el->table = ti;
+			el->off_at = L->off[S_SEGMENTS] + r.p;
 			cexpr(&r, &at, D_SEGS);
 		} else {
 			sb_put(L, D_SEGS, " table=- offset=-", 17);
@@ -1190,6 +1195,9 @@ static void payloads(Ld *L) {
 		kind = rd_u8(&r);
 		if (kind > 1) rfail(&r, "items is not 0 or 1");
 		cnt = rd_count(&r, kind == 0 ? 4 : 6);
+		el->items = (uint8_t)kind;
+		el->n = cnt;
+		el->items_at = L->off[S_SEGMENTS] + r.p;
 		sb_put(L, D_SEGS, kind ? " exprs " : " funcs ", 7);
 		if (!cnt) sb_put(L, D_SEGS, "-", 1);
 		for (j = 0; j < cnt; j++) {
@@ -1206,22 +1214,30 @@ static void payloads(Ld *L) {
 		sb_put(L, D_SEGS, "\n", 1);
 	}
 	n = rd_count(&r, 5);
+	L->ndatas = n;
+	L->datas = (Data *)pool_n(L, n, sizeof(Data));
 	for (i = 0; i < n; i++) {
 		uint32_t m = rd_u8(&r), len;
 		const uint8_t *d;
 		waboros_sha256 s;
 		uint8_t h[32];
+		Data *da = &L->datas[i];
 		if (m > 1) rfail(&r, "bad data segment mode");
+		da->mode = (uint8_t)m;
 		sb_f(L, D_SEGS, "data %llu %s memory=", U(i), m ? "passive" : "active");
 		if (m == 0) {
 			uint32_t mi = rd_index(&r, L->nmems, "memory");
 			VT at = num(L->maddr[mi]);
 			sb_f(L, D_SEGS, "%llu offset=", U(mi));
+			da->mem = mi;
+			da->off_at = L->off[S_SEGMENTS] + r.p;
 			cexpr(&r, &at, D_SEGS);
 		} else {
 			sb_put(L, D_SEGS, "- offset=-", 10);
 		}
 		len = rd_u32(&r);
+		da->len = len;
+		da->at = L->off[S_SEGMENTS] + r.p;
 		d = rd_take(&r, len);
 		waboros_sha256_init(&s);
 		waboros_sha256_update(&s, d, len);
@@ -1308,13 +1324,10 @@ static void frozen(const uint8_t *b, uint64_t n, Frozen *f) {
 }
 
 /* ----------------------------------------------------------------------------- one pass, the engine, the entry points */
+static void pool_release(Blk *k);
 static void pass_free(Ld *L) {
 	int i;
-	while (L->pool) {
-		Blk *k = L->pool;
-		L->pool = k->next;
-		free(k);
-	}
+	pool_release(L->pool);
 	for (i = 0; i < ND; i++) free(L->sb[i].p);
 	free(L);
 }
@@ -1327,9 +1340,11 @@ static void pass(Ld *L, waboros_module **out, int *fat, Frozen *fz) {
 	const uint8_t *b = L->b;
 	waboros_sha256 s;
 	uint8_t h[32];
-	int i, ok = 0;
+	int i;
 	size_t total = 0;
 	char *d;
+	Copy *cp = NULL;
+	waboros_module *m;
 	if (L->n < 64 || memcmp(b, "\x7f" "ELF\x02\x01\x01\xcb", 8)) refuse(L, "not a waboros artifact (ELF64 little-endian with OS/ABI 0xCB)");
 	frozen(b, L->n, fz);
 	if (fz->has_wasm) {
@@ -1349,38 +1364,111 @@ static void pass(Ld *L, waboros_module **out, int *fat, Frozen *fz) {
 	L->step = "4";
 	parse_header(L);
 	payloads(L);
-	/* the whole file passed: adopt the copy of its compiler string */
+	/* the whole file passed: adopt the copy of its compiler string, mapped executable (W^X: copied into
+	 * memory of our own, never mapped from the file; "Loading", Trampolines) */
 	if (L->cur_ok) {
 		size_t k;
 		for (k = 0; k < eng->ncopies; k++)
-			if (eng->copies[k].n == L->comp_n && !memcmp(eng->copies[k].str, L->comp, L->comp_n)) ok = 1;
-		if (!ok) {
-			Copy *cs = (Copy *)realloc(eng->copies, (eng->ncopies + 1) * sizeof(Copy));
-			Copy *c;
+			if (eng->copies[k]->n == L->comp_n && !memcmp(eng->copies[k]->str, L->comp, L->comp_n)) cp = eng->copies[k];
+		if (!cp) {
+			Copy **cs = (Copy **)realloc(eng->copies, (eng->ncopies + 1) * sizeof(Copy *));
 			if (!cs) oom(L);
 			eng->copies = cs;
-			c = &cs[eng->ncopies];
-			*c = L->cur;
-			c->str = (char *)malloc(L->comp_n + 1);
-			c->blob = (uint8_t *)malloc(L->cur.size + 1);
-			if (!c->str || !c->blob) { free(c->str); free(c->blob); oom(L); }
-			memcpy(c->str, L->comp, L->comp_n);
-			c->n = L->comp_n;
-			memcpy(c->blob, L->cur_blob, L->cur.size);
-			eng->ncopies++;
+			cp = (Copy *)calloc(1, sizeof *cp);
+			if (!cp) oom(L);
+			*cp = L->cur;
+			cp->str = (char *)malloc(L->comp_n + 1);
+			cp->blob = (uint8_t *)malloc(L->cur.size + 1);
+			if (cp->str && cp->blob) {
+				memcpy(cp->str, L->comp, L->comp_n);
+				cp->n = L->comp_n;
+				memcpy(cp->blob, L->cur_blob, L->cur.size);
+#ifdef WABOROS_RUNTIME
+				cp->exec = os_exec_map(cp->blob, cp->size, &cp->exec_n);
+#endif
+			}
+			if (!cp->str || !cp->blob
+#ifdef WABOROS_RUNTIME
+			    || !cp->exec
+#endif
+			) {
+				free(cp->str);
+				free(cp->blob);
+				free(cp);
+				oom(L);
+			}
+			eng->copies[eng->ncopies++] = cp;
 		}
 	}
 	for (i = 0; i < ND; i++) total += L->sb[i].n;
-	*out = (waboros_module *)malloc(sizeof **out);
+	m = (waboros_module *)calloc(1, sizeof *m);
 	d = (char *)malloc(total + 1);
-	if (!*out || !d) { free(*out); free(d); *out = NULL; oom(L); }
-	(*out)->dump = d;
-	(*out)->dump_n = total;
+	if (m) m->b = (uint8_t *)malloc((size_t)L->n + 1);
+	if (!m || !d || !m->b) {
+		if (m) free(m->b);
+		free(m);
+		free(d);
+		oom(L);
+	}
+	m->dump = d;
+	m->dump_n = total;
 	for (i = 0; i < ND; i++) {
 		if (L->sb[i].n) memcpy(d, L->sb[i].p, L->sb[i].n);
 		d += L->sb[i].n;
 	}
 	*d = 0;
+	/* what instantiation needs: the bytes and the reader's arrays (the pool moves to the module) */
+	memcpy(m->b, b, (size_t)L->n);
+	m->eng = eng;
+	m->pool = L->pool;
+	L->pool = NULL;
+	m->copy = cp;
+	m->text_at = L->off[S_TEXT];
+	m->code_n = L->code_n;
+	m->funcs_at = L->funcs_at;
+	m->exports_at = L->exports_at;
+	m->recs_at = L->off[S_CONTEXT] + L->recs_off;
+	m->sigs_at = L->sigs_at;
+	m->keys_at = L->off[S_TYPES] + L->keys_off;
+	m->ty = L->ty;
+	m->nty = L->nty;
+	m->nfuncs = L->nfuncs;
+	m->nfimp = L->nfimp;
+	m->ntables = L->ntables;
+	m->ntimp = L->ntimp;
+	m->nmems = L->nmems;
+	m->nmimp = L->nmimp;
+	m->nglobals = L->nglobals;
+	m->ngimp = L->nimpg;
+	m->ntags = L->ntags;
+	m->ftidx = L->ftidx;
+	m->ttype = L->ttype;
+	m->gtype = L->gtype;
+	m->tlim = L->tlim;
+	m->mlim = L->mlim;
+	m->tinit_at = L->tinit_at;
+	m->ginit_at = L->ginit_at;
+	m->nimports = L->nimports;
+	m->nexports = L->nexports;
+	m->nrecs = L->nrecs;
+	m->nsigs = L->nsigs;
+	m->nelems = L->nelems;
+	m->elems = L->elems;
+	m->ndatas = L->ndatas;
+	m->datas = L->datas;
+	m->start = L->start;
+	m->data_start = L->data_start;
+	m->heap = (uint8_t)L->heap;
+	m->users = 1;
+	*out = m;
+}
+
+static void pool_release(Blk *k) {
+	while (k) {
+		Blk *nx = k->next;
+		free(k);
+		k = nx;
+	}
 }
 
 static int load_strict(waboros_engine *eng, const uint8_t *b, size_t n, waboros_module **out, waboros_error *e,
@@ -1396,13 +1484,22 @@ static int load_strict(waboros_engine *eng, const uint8_t *b, size_t n, waboros_
 	L->b = b;
 	L->n = n;
 	L->step = "1";
+#ifdef WABOROS_RUNTIME
+	os_lock(eng->lock); /* the copies: compared and adopted as one step */
+#endif
 	if (setjmp(L->jb)) {
 		int code = e->code;
 		pass_free(L);
+#ifdef WABOROS_RUNTIME
+		os_unlock(eng->lock);
+#endif
 		return code;
 	}
 	pass(L, out, fat, fz);
 	pass_free(L);
+#ifdef WABOROS_RUNTIME
+	os_unlock(eng->lock);
+#endif
 	return WABOROS_OK;
 }
 
@@ -1423,6 +1520,14 @@ int waboros_engine_new(const waboros_compiler *c, waboros_engine **out, waboros_
 		g->comp = *c;
 		g->has_comp = 1;
 	}
+#ifdef WABOROS_RUNTIME
+	if (!(g->lock = os_lock_new())) {
+		free(g);
+		e->code = WABOROS_E_RESOURCE;
+		cpy(e->msg, sizeof e->msg, "out of memory");
+		return e->code;
+	}
+#endif
 	*out = g;
 	return WABOROS_OK;
 }
@@ -1431,10 +1536,18 @@ void waboros_engine_free(waboros_engine *g) {
 	size_t i;
 	if (!g) return;
 	for (i = 0; i < g->ncopies; i++) {
-		free(g->copies[i].str);
-		free(g->copies[i].blob);
+#ifdef WABOROS_RUNTIME
+		os_unmap(g->copies[i]->exec, g->copies[i]->exec_n);
+#endif
+		free(g->copies[i]->str);
+		free(g->copies[i]->blob);
+		free(g->copies[i]);
 	}
 	free(g->copies);
+	free(g->keys);
+#ifdef WABOROS_RUNTIME
+	os_lock_free(g->lock);
+#endif
 	free(g);
 }
 
@@ -1473,9 +1586,30 @@ int waboros_module_load(waboros_engine *eng, const uint8_t *b, size_t n, waboros
 	return st;
 }
 
-void waboros_module_free(waboros_module *m) {
-	if (m) free(m->dump);
+/* Under the engine lock (or with no runtime): the last user frees the code and the reader's data. */
+void waboros_module_unref(waboros_module *m) {
+	if (--m->users) return;
+#ifdef WABOROS_RUNTIME
+	if (m->code) os_unmap(m->code, m->code_mapped);
+#endif
+	pool_release(m->pool);
+	free(m->b);
+	free(m->dump);
 	free(m);
+}
+
+void waboros_module_free(waboros_module *m) {
+	waboros_engine *g;
+	if (!m) return;
+	g = m->eng;
+#ifdef WABOROS_RUNTIME
+	os_lock(g->lock);
+#endif
+	waboros_module_unref(m);
+#ifdef WABOROS_RUNTIME
+	os_unlock(g->lock);
+#endif
+	(void)g;
 }
 
 int waboros_module_dump(const waboros_module *m, char *buf, size_t *n) {

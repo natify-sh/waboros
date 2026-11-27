@@ -1,6 +1,7 @@
 # pyright: basic
-"""The ctypes shim over `waboros_loader_shared` (S0017 "The harness"), reader part: an engine that
-loads bytes and dumps them. The library is `build/native/libwaboros_loader_shared.so` (or
+"""The ctypes shim over `waboros_loader_shared` (S0017 "The harness"): an engine that loads bytes
+and dumps them (step 1); stores, instantiation and calls (step 2, `Store`; the spec engines are in
+`engine.py`). The library is `build/native/libwaboros_loader_shared.so` (or
 `WABOROS_LOADER_LIB`, a file or a directory, as `tests/sljit` finds its library: by ELF machine,
 refused when older than a `native/` source). The test compiler is a callback into the Python
 compiler of a target (the compiler seam, `compiler.h`), until the embedded one exists (D68)."""
@@ -21,6 +22,8 @@ from waboros.targets.jit.common import artifact as A
 
 NAME = "libwaboros_loader_shared.so"
 OK, NOT_OURS, REFUSED, NEEDS_COMPILER, E_INTERNAL = 0, 1, 2, 3, 16
+E_LINK, E_ARG, E_THREAD, E_TRAP, E_INTERRUPT, E_HOST, E_RESOURCE = 6, 8, 9, 10, 11, 13, 15
+EXTERN_FUNC, EXTERN_GLOBAL = 0, 3
 
 
 def _library() -> Path | None:
@@ -64,6 +67,10 @@ _COMPILE = ctypes.CFUNCTYPE(
 _RELEASE = ctypes.CFUNCTYPE(None, ctypes.c_void_p, _U8P)
 
 
+class Extern(ctypes.Structure):  # waboros_extern
+    _fields_ = [("kind", ctypes.c_uint32), ("index", ctypes.c_uint32), ("inst", ctypes.c_void_p)]
+
+
 class _Compiler(ctypes.Structure):  # waboros_compiler
     _fields_ = [
         ("e_machine", ctypes.c_uint16),
@@ -84,6 +91,14 @@ def _lib() -> ctypes.CDLL:
     lib.waboros_module_load.argtypes = [vp, _U8P, ctypes.c_size_t, vp, ctypes.POINTER(_Error)]
     lib.waboros_module_dump.argtypes = [vp, ctypes.c_char_p, _SIZEP]
     lib.waboros_module_free.argtypes = [vp]
+    ep, xp, u64p = ctypes.POINTER(_Error), ctypes.POINTER(Extern), ctypes.POINTER(ctypes.c_uint64)
+    lib.waboros_store_new.argtypes = [vp, vp, vp, ep]
+    lib.waboros_store_free.argtypes = [vp]
+    lib.waboros_instantiate.argtypes = [vp, vp, vp, ctypes.c_size_t, vp, ep]
+    lib.waboros_export.argtypes = [vp, ctypes.c_char_p, ctypes.c_size_t, xp]
+    lib.waboros_call.argtypes = [vp, xp, u64p, ctypes.c_size_t, ep]
+    lib.waboros_global_get.argtypes = [vp, xp, u64p]
+    lib.waboros_store_interrupt.argtypes = [vp]
     return lib
 
 
@@ -116,6 +131,7 @@ class Engine:
 
     def __init__(self, target: str | None = None) -> None:
         self.lib, self.kept, self.comp = _lib(), {}, None
+        self.modules: list[int | None] = []
         if target is not None:
             compile_ = _COMPILE(
                 lambda _s, w, n, _f, o, on, e: self._compile(target, w, n, o, on, e)
@@ -157,5 +173,74 @@ class Engine:
         self.lib.waboros_module_free(mod)
         return Result(OK, "", "", "", text.raw[: n.value].decode())
 
+    def load_module(self, b: bytes) -> int:
+        """`waboros_module_load` kept (a handle), or `CError`."""
+        buf = (ctypes.c_uint8 * len(b)).from_buffer_copy(b)
+        mod, err = ctypes.c_void_p(), _Error()
+        st = self.lib.waboros_module_load(
+            self.eng, buf, len(b), ctypes.byref(mod), ctypes.byref(err)
+        )
+        if st != OK:
+            raise CError(err)
+        self.modules.append(mod.value)
+        return cast_int(mod.value)
+
     def close(self) -> None:
+        for m in getattr(self, "modules", []):
+            self.lib.waboros_module_free(m)
         self.lib.waboros_engine_free(self.eng)
+
+
+def cast_int(v: int | None) -> int:
+    assert v is not None
+    return v
+
+
+class CError(Exception):
+    """A status of the C API other than OK, with its `waboros_error`."""
+
+    def __init__(self, err: _Error) -> None:
+        self.code, self.trap = err.code, err.trap
+        self.msg = err.msg.decode(errors="replace")
+        super().__init__(f"C loader status {self.code}: {self.msg}")
+
+
+class Store:
+    """A `waboros_store` of `engine` (step 2): instantiate, export, call, global_get, interrupt.
+    Values are part-3 slots (a v128 takes two)."""
+
+    def __init__(self, engine: Engine) -> None:
+        self.engine, self.lib = engine, engine.lib
+        self.st, err = ctypes.c_void_p(), _Error()
+        if self.lib.waboros_store_new(engine.eng, None, ctypes.byref(self.st), ctypes.byref(err)):
+            raise CError(err)
+
+    def instantiate(self, module: int) -> int:
+        inst, err = ctypes.c_void_p(), _Error()
+        if self.lib.waboros_instantiate(
+            self.st, module, None, 0, ctypes.byref(inst), ctypes.byref(err)
+        ):
+            raise CError(err)
+        return cast_int(inst.value)
+
+    def export(self, inst: int, name: str) -> Extern | None:
+        x, b = Extern(), name.encode()
+        return x if self.lib.waboros_export(inst, b, len(b), ctypes.byref(x)) == OK else None
+
+    def call(self, func: Extern, args: list[int], nslots: int) -> list[int]:
+        """`nslots` >= max(arguments, results); the slots after the call (results first)."""
+        slots, err = (ctypes.c_uint64 * max(nslots, 1))(*args), _Error()
+        if self.lib.waboros_call(self.st, ctypes.byref(func), slots, nslots, ctypes.byref(err)):
+            raise CError(err)
+        return list(slots)
+
+    def global_get(self, g: Extern) -> tuple[int, int]:
+        v = (ctypes.c_uint64 * 2)()
+        assert self.lib.waboros_global_get(self.st, ctypes.byref(g), v) == OK
+        return v[0], v[1]
+
+    def interrupt(self) -> None:
+        self.lib.waboros_store_interrupt(self.st)
+
+    def close(self) -> None:
+        self.lib.waboros_store_free(self.st)
