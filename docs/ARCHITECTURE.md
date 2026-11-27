@@ -2,7 +2,7 @@
 title: Architecture
 kind: reference
 status: current
-updated: 2026-11-05
+updated: 2026-11-24
 ---
 
 # Architecture
@@ -92,6 +92,18 @@ MICRO-COMPILERS.md). There is no separate `ir/` yet: the JIT core reads the vali
 (D26) and `pyc` has its own tree builder; HIR and its analyses wait for a measurement that needs
 them. `mpy`, `cache/`, `wasi/`, `cli/` and the public runtime objects do not exist yet; `jit-riscv64` is planned (D48).
 
+`native/` (S0016) holds C built with CMake alone and never shipped in the package: sljit as a git
+submodule (`third_party/sljit`), our one translation unit `sljit/waboros_sljit.c`, ctest self-tests.
+`loader/` and `micro/` (D36, D68) are not created yet.
+
+A **development target** (`development = True`, `complete = False`) is registered by `tests/`, never
+shipped and never selected by `auto`: `jit-sljit-<arch>` (`tests/sljit/`, D74), our Python core with
+sljit as the encoder, built from `native/`. A **store may hold instances of several JIT targets of
+one architecture**, each loaded under its own exact compiler string; the walk and the walk check
+use the store's sets of entry and restore points, and two targets never share a bridge address
+(S0016, D70). The GC collector is compiled by any compiler of the architecture, by default the
+target of the instance that first needs it (D61).
+
 The PoC files map onto this as follows: `w2py.py` holds the reader, the decoder, the stack-to-tree
 builder, the value-bounds analysis and the `pyc` code generator in one file; `w2jit.py`/`w2jit2.py`
 hold the assembler, the executable-memory and ctypes bridge and the x86-64 lowering. Splitting them
@@ -129,7 +141,15 @@ implement the wasm semantics itself: `common/lower.py` writes them once over the
 `ll_*` methods of each backend. The group is the bounds checks, the bulk end checks with the order and
 widths of their operands, and the table element check. The low layer names the machine registers and
 fits immediates to the encodings, under the contract S0011 states. It sits inside the backend side of
-D39, is never serialized and is not part of D39's frozen interface. GC is to be written on it as well.
+D39, is never serialized and is not part of D39's frozen interface.
+
+**GC is lowered once, in the shared core (S0013 Q9, D57).** `common/gc.py` lowers every GC
+instruction (allocation, struct and array access, casts, i31, the bulk array operators) onto D39
+methods only: the heap is a hidden i32 memory, so a field access is a `load` or `store` and S0011's
+bounds checks and guard fault points apply unchanged; a backend only lists the opcodes in its
+`supported` set. The same file builds the stack maps of every call site (D56), with the live sets
+of `common/liveness.py`, a backward pass over the structured body (S0013 step 7, D65). aarch64 gets GC by
+claiming the opcodes (S0013 step 4); no GC semantics is written per architecture.
 
 **Why structured, not a CFG of basic blocks**: Python (and Lua 5.1) has no `goto`, so `pyc`/`mpy` need
 structure; a JIT lowers structure to labels trivially. **Why not SSA**: phi nodes buy GVN/LICM-class
@@ -141,10 +161,11 @@ ones (TARGETS.md).
 
 * value bounds and wrap state of integer expressions (when a `& 0xFFFFFFFF` or compare-and-adjust is
   needed — worth ~15 % in `pyc`);
-* local use weights by loop depth (which locals to pin in registers), liveness where it helps;
+* local use weights by loop depth (which locals to pin in registers), liveness where it helps
+  (today the JIT's reference locals at call sites, for the stack maps: `jit/common/liveness.py`, D65);
 * side-effect order (memory, globals, calls, traps): when a tree may stay lazy and when it must be
   materialised;
-* branch targets with arities; trap points with wasm byte offsets (for `TRAPMAP` and `Trap.frames`);
+* branch targets with arities; trap points with wasm byte offsets (for the address map of `Trap.frames`, S0014 `.waboros.traps`);
 * call graph (leaf functions, recursion, inlining candidates).
 
 **Language-neutral by design (a principle, not a goal).** HIR, LIR and the JIT artifact contain
@@ -229,10 +250,10 @@ memory without knowing the target.
   default action. In the package (S0006, complete: steps 1-5 and 7): guard code on Linux glibc (`jit-x86_64` since step 1, `jit-aarch64` since step 2), on Linux musl and Android for `jit-x86_64`, on macOS and on Windows — accesses with `offset + size ≤ 32 MiB` unchecked (stores too, as in Wasmtime: precise on native x86-64; an emulator that splits a store, or Arm hardware, may tear it; D45), a fault map of the instructions
   that touch memory, a handler (`x86_64/abi.py`, `aarch64/abi.py`, registry in `common/guard.py`) that resumes at the
   function's own out-of-bounds stub and chains every other fault. The mode is `auto` by default (D44):
-  guard on the verified rows (Linux glibc x86-64 and aarch64, Linux musl x86-64, macOS x86-64 and arm64, Windows x64 and arm64, Android x86-64), explicit elsewhere (Linux musl aarch64, Android arm64), silently; `WABOROS_JIT_BOUNDS=explicit`
+  guard on the verified rows (Linux glibc x86-64 and aarch64, Linux musl x86-64, macOS x86-64 and arm64, Windows x64 and arm64, Android x86-64), explicit elsewhere (Linux musl aarch64; Android arm64, where `guard` is opt-in and unverified), silently; `WABOROS_JIT_BOUNDS=explicit`
   opts out, `=guard` requires it. macOS (both architectures, S0006 step 3) has a handler on SIGSEGV
   and SIGBUS, verified in CI; Windows (S0006 step 4) has a vectored exception handler, and Android x86-64 (step 5) a bionic `sigaction` behind ART's `libsigchain`, verified in CI (`platforms.yml`; D47: a per-OS optimisation starts on one row and grows by exception). CoreMark: +9 % on x86-64 on a quiet machine (BENCHMARKS.md, "Guard
-  pages"; +14 % on a loaded one, the PoC measured +20–25 % on another day) and +11 % on native aarch64, 20 % less machine code. The guard flag and the fault map (`TRAPMAP`) are not serialized yet: they go into the phase-5 artifact-format spec (ARTIFACT.md). Explicit checks stay the fallback (larger offsets,
+  pages"; +14 % on a loaded one, the PoC measured +20–25 % on another day) and +11 % on native aarch64, 20 % less machine code. The guard flag and the fault map are in the artifact file (`BOUNDS_GUARD` in the header, the map in `.waboros.traps`; [S0014](specs/S0014-artifact-format.md)). Explicit checks stay the fallback (larger offsets,
   platforms without the handler yet, every access to an i64 memory, `memory64`, S0009); risks in RISKS.md, R6.
 
 ## State shared across targets
@@ -289,8 +310,9 @@ limits (`sys.getrecursionlimit()`, 1000 by default, and the C stack). Plan:
   Only SIMD operations see the pair; they use vector registers as scratch inside one backend call
   (`simd`, D41, S0005), never across calls, so there is no vector register class and no save around host
   calls. The core itself moves a v128 pair whole through `move_v128` (locals, constants, `select`). In `pyc` a v128 is a Python `int`.
-* Trampolines: `abi.assemble()` of an architecture only returns bytes (compiler side); the host side
-  (`instance.load_trampolines`) puts them into a code area and seals it, so the compiler side stays free
+* Trampolines: an architecture's `conventions()` (the compiler's bridge and `tail_switch`) and
+  `runtime()` (the runtime's entry and `sp_stub`, S0015) only return bytes; the host side
+  (`instance.load_trampolines`) puts both into one code area and seals it, so the compiler side stays free
   of `ctypes`/`mmap`.
 
 ## Long calls and the GIL
@@ -372,7 +394,7 @@ Like Wasmtime's cache (and `Module.serialize`), compiled artifacts are kept on d
   architecture, ABI and CPU features the code assumes.
 * **Content**: `pyc` → the marshalled code object (exactly what a `.pyc` holds) plus metadata;
   `mpy` → the `.mpy`; JIT → the artifact of [ARTIFACT.md](ARTIFACT.md) (position-independent code,
-  entry trampolines per calling convention, tables, segments; declared ISA level and context ABI).
+  the compiler's bridge and `tail_switch` and a C entry per function, tables, segments; declared ISA level and context ABI).
 * **Where**: `$XDG_CACHE_HOME/waboros` (or the platform's equivalent, computed with stdlib only); atomic
   writes (temp file + `os.replace`); a size limit with LRU eviction; `waboros cache` in the CLI.
 * `Module.serialize()` / `deserialize()` write and read the same artifact format, so a module can
@@ -386,7 +408,7 @@ Like Wasmtime's cache (and `Module.serialize`), compiled artifacts are kept on d
 ## Targets and architectures (D48)
 
 Native JIT targets exist for x86-64 and aarch64 and are planned for riscv64 (the first
-micro-compiler after `arm64.wasm`, MICRO-COMPILERS.md); the JIT artifact is independent of the
+micro-compiler after `aarch64.wasm`, MICRO-COMPILERS.md); the JIT artifact is independent of the
 operating system (D23). Every other architecture (s390x, i686 and 32-bit Windows, armv7, ppc64le,
 loongarch64, …) runs `pyc` (optionally, later, a sljit backend under our core: D48 amendment), with the D31 warning from `auto`. Pyodide is a track of its
 own (PYODIDE.md), not a JIT target. `mpy` is separate from this list (D48).
@@ -398,8 +420,40 @@ the architecture and its declared ISA level only (D23, D24). So any host compile
 waboros has, as Wasmtime's `--target` does (D35): a portable artifact made on x86-64 for aarch64 is
 loaded and run on aarch64 only, the loader refusing another architecture or a missing ISA level.
 Only explicit levels are valid for another target (`"native"` is the compiling CPU, D33). Artifact
-files come in phase 5; from phase 4 CI compares the aarch64 artifact made on x86-64 with the one made
+files are written since S0014 (`.wbo`, ELF64, D59); from phase 4 CI compares the aarch64 artifact made on x86-64 with the one made
 on the arm64 runner byte for byte. `pyc`/`mpy` artifacts belong to an interpreter version, not a CPU.
+
+## The kernel and runtime modules
+
+The direction (maintainer, 2026-11-10): a small native **kernel** that can do almost nothing, and
+everything else as wasm modules that run inside it and cannot reach past the memory they are given.
+The kernel is what cannot be done otherwise: allocate memory, run machine code, catch a trap, call
+the host (the context ABI, a few services, the runtime's `entry` and each compiler's bridge). The rest is
+runtime modules under D54 ([RUNTIME-MODULES.md](RUNTIME-MODULES.md)): the GC collector first (S0013),
+then the decoder and validator (instantiation and the segment libcalls stay host code, D72), later the compilers
+themselves ([JIT-AS-WASM.md](JIT-AS-WASM.md)) and WASI's computing part. A new host (the C loader of
+D36, MicroPython, a host in another language) implements only the kernel; every capability comes
+as bytes, the same for all, written and tested once.
+
+What keeps it honest:
+* **The trusted base is the kernel and the machine-code generator**, not the kernel alone. A module
+  cannot reach outside its memory only if the code it was compiled to is correct; a JIT bug (a wrong
+  bounds check, a clobbered register) breaks isolation for every module at once. The spec suite, the
+  differential fuzz, the byte-identity lists (D35) and the ISA gates are therefore the safety
+  foundation, not only a quality measure. That stays true once the compiler is itself a module.
+* **Bootstrap is a required link**: modules need a compiler, and the compiler becomes a module. The
+  seed is an AOT artifact of the compiler in the wheel ([MICRO-COMPILERS-SHIPPING.md](MICRO-COMPILERS-SHIPPING.md)),
+  with `pyc` as the slowest path that is always there.
+* **The kernel boundary is described and frozen**: the context ABI v1 and the runtime services
+  specification (D36), fixed with the artifact format (ROADMAP "Next" item 6). The whole design
+  rests on that boundary being stable, which is why item 6 comes right after GC.
+* **Hot paths stay inline**: a call into a module costs a few ns, so whatever runs per instruction or
+  per memory access stays in the generated code (RUNTIME-MODULES.md, the criterion).
+
+Prior art for parts of it: RLBox in Firefox (C libraries sandboxed by compiling them to wasm),
+Wasmtime's `wasi_snapshot_preview1` adapter shipped as a wasm module, and self-hosting systems that
+grow from a small core (Forth, Smalltalk). A wasm runtime that grows itself this way from a kernel
+that ports by implementing only its ABI and services is not known to us.
 
 ## Versioned contracts
 

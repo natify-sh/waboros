@@ -1,11 +1,13 @@
 ---
 title: The artifact container - our own format or ELF (as Wasmtime does)
 kind: reference
-status: draft
-updated: 2026-11-03
+status: outdated
+updated: 2026-11-23
 ---
 
 # The artifact container: our own format or an ELF container
+
+**Decided (2026-11-15): ELF64, option (b) — [DECISIONS.md](DECISIONS.md) D59; prototype `poc/artifact/elf64.py`.** The text below is the analysis that led to it; the format built on it is [S0014](specs/S0014-artifact-format.md) (`.waboros.*` sections in the ELF container, `.wbo` files, written and read by the package).
 
 A question from the maintainer, for the orchestrator. It belongs to the phase-5 spec that fixes the
 artifact format (D36). **Nothing is decided here.** [ARTIFACT.md](ARTIFACT.md) part 2 describes our
@@ -68,7 +70,8 @@ Every file is `ET_REL` with OS/ABI `0xc8`, on Linux, macOS and Windows alike. Wh
   target would make the container big-endian unless we fix `EI_DATA` to LE.
 * **Wasmtime's artifacts differ per OS** (`x86_64-unknown-linux-gnu`, `-apple-darwin` and
   `-pc-windows-msvc` give three different files, first difference at byte 69), while our D23 gives
-  one artifact for every OS (both entry trampolines inside). The container is the same idea; the
+  one artifact for every OS (both conventions' trampolines inside; since S0015 the compiler's
+  bridge and `tail_switch`, the entry being the runtime's). The container is the same idea; the
   per-OS split is Wasmtime's, not ELF's.
 
 ## What our sections would become
@@ -77,7 +80,7 @@ Every file is `ET_REL` with OS/ABI `0xc8`, on Linux, macOS and Windows alike. Wh
 |---|---|
 | header: `magic`, `format_version`, `ctx_abi_version`, `isa_level`, `isa_features`, `flags`, `compiler`, `module_sha256`, `config_sha256` | ELF header (`e_machine` = `EM_X86_64` / `EM_AARCH64` / `EM_RISCV` replaces our `arch`; a private `EI_OSABI`) + a `.waboros.header` section with the remaining fields |
 | 1 `CODE` | `.text` (`SHF_ALLOC | SHF_EXECINSTR`, page-aligned) |
-| 2 `ENTRIES` | symbols `__waboros_entry_sysv`, `__waboros_entry_win64`, … in `.symtab` |
+| 2 `ENTRIES` | `.waboros.trampolines` (the compiler's bridge and `tail_switch` per convention); since S0015 every symbol is local (`__waboros_bridge_<conv>`, `__waboros_tail_switch_<conv>`, `__waboros_centry_<conv>`) and the entry is the runtime's, not in the file |
 | 3 `FUNCS` | `.symtab` entries (`STT_FUNC`, offset and size; names from the name section or `wasm[N]`) + `.waboros.funcs` for type index and frame size |
 | 4-11 `TYPES` … `START` | `.waboros.types`, `.waboros.imports`, … the same payloads, one section each |
 | 12 `TRAPMAP` (frames and, with `BOUNDS_GUARD`, the guard fault map) | `.waboros.traps` |
@@ -148,6 +151,6 @@ level, and the bounds mode: guard or explicit, S0006).
 
 ## Also open: the guard flag and the fault map
 
-S0006 step 6 (the `BOUNDS_GUARD` flag and the fault map in `TRAPMAP` in the serialized artifact, and
+*Done by S0014: the flag is in the header and the fault map is `.waboros.traps`; the C loader's fault handler stays with the C loader.* Originally: S0006 step 6 (the `BOUNDS_GUARD` flag and the fault map in `TRAPMAP` in the serialized artifact, and
 the C loader's fault handler) moved to the phase-5 artifact-format spec, to be done with the
-container chosen here. The package builds both in memory today and writes neither to a file.
+container chosen here. At the time of writing the package built both in memory and wrote neither to a file.

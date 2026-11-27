@@ -12,11 +12,14 @@ from dataclasses import dataclass, field
 SAVED_SP, TRAP_CODE, INTERRUPT, FUEL, EPOCH_DEADLINE = 0, 1, 2, 3, 4
 VSTACK_LIMIT, NSTACK_LIMIT, HOST_ERROR, HOST_BRIDGE = 5, 6, 7, 8
 TAIL_SWITCH = 9  # address of the cross-context tail-call trampoline (D30)
-# exceptions (S0012): addresses of the store's pending-exception word and of its arena cursor and
-# limit (one arena per store: every context of the store allocates from it), and the service that
-# gives the arena a new chunk, called through the bridge only when the current one is full
-EXCEPTION, EXN_REFILL, ARENA_CURSOR, ARENA_LIMIT = 10, 11, 12, 13
-FIRST_VAR = 16  # words 14-15 are reserved, zero
+# exceptions (S0012): the address of the store's pending-exception word (0 or the u32 heap offset
+# of the exception in flight, S0013 step 6). Words 11-13 are reserved, zero (S0013 step 6: the
+# arena's refill service, cursor and limit until then)
+EXCEPTION = 10
+# the address of the store's exit record {sp, pc, frame}: written by the bridge at every host
+# call, sp cleared after it, saved and restored by every entry (S0013 3a)
+EXIT_RECORD = 14
+FIRST_VAR = 16  # word 15 is reserved, zero
 
 # Status values returned by the entry, the bridge and every function (0 = success).
 STATUS_INTERRUPT = 12
@@ -26,7 +29,17 @@ STATUS_EXCEPTION = 14  # inside code: an exception is in flight (S0012)
 # Libcalls (S0003): runtime services, one context word each after the imports, in this order.
 MEMORY_GROW, TABLE_GROW, TABLE_INIT, ELEM_DROP, MEMORY_INIT, DATA_DROP = range(6)
 LIBCALLS = 6
+# the block's words (D58): the LIBCALLS used, then 4 reserved, zero (wait32, wait64, notify later)
+LIBCALL_WORDS = 10
 RECORD = 3  # words of a function record: code address, canonical type id, context address
+# The GC group (S0013 3b), after the tag words of a module that needs the heap (`gc.needs_heap`):
+# these services, in this order (word 7 reserved, zero: FUNC_SUBTYPE until S0013 5.6), then one
+# RTT word per type of `Compiled.rtts` (its type-info record's offset in the heap) and one per tag
+# of `Compiled.thrown` (its exception record, S0013 step 6), then the IS_SUBTYPE function record
+# `{code, 0, context}` of the collector module's `is_subtype` (S0013 5.6)
+ALLOC, ARRAY_NEW, ARRAY_NEW_DATA, ARRAY_NEW_ELEM, ARRAY_FILL = range(5)
+ARRAY_INIT_DATA, ARRAY_INIT_ELEM, GC_RESERVED = 5, 6, 7
+GC_SERVICES = 8
 
 
 @dataclass(frozen=True)
@@ -43,27 +56,32 @@ class Layout:
     # without v128 stay as they were (the word numbers in the code show it anyway)
     wide: tuple[int, ...] = field(default=(), repr=False)
     tags: int = field(default=0, repr=False)  # tag identity words after the records (S0012)
+    # GC (S0013 3b), not in the repr (D35 lists): the store's heap as a hidden memory, its two
+    # words right after the declared memories; the GC group's services and RTT words after the tags
+    heap: bool = field(default=False, repr=False)
+    gcsvc: int = field(default=0, repr=False)
+    rtts: int = field(default=0, repr=False)
 
     def memory(self, i: int) -> int:
-        """`base`; `size_bytes` is the next word."""
+        """`base`; `size_bytes` is the next word. i = `memories` is the hidden heap (`heap`)."""
         return FIRST_VAR + 2 * i
 
     def table(self, i: int) -> int:
         """`base` (address of the element words); `size` (elements) is the next word."""
-        return FIRST_VAR + 2 * self.memories + 2 * i
+        return FIRST_VAR + 2 * (self.memories + self.heap) + 2 * i
 
     def global_(self, i: int) -> int:
         """Global i (imports first): its value, or for an imported one the address of it."""
-        return FIRST_VAR + 2 * self.memories + 2 * self.tables + i + sum(w < i for w in self.wide)
+        return self.table(self.tables) + i + sum(w < i for w in self.wide)
 
     def import_(self, i: int) -> int:
-        return FIRST_VAR + 2 * self.memories + 2 * self.tables + self.globals + len(self.wide) + i
+        return self.table(self.tables) + self.globals + len(self.wide) + i
 
     def libcall(self, j: int) -> int:
         return self.import_(self.imports) + j
 
     def sig(self, k: int) -> int:
-        return self.libcall(LIBCALLS) + k
+        return self.libcall(LIBCALL_WORDS) + k
 
     def record(self, r: int) -> int:
         return self.sig(self.sigs) + RECORD * r
@@ -71,7 +89,18 @@ class Layout:
     def tag(self, t: int) -> int:
         return self.record(self.records) + t
 
+    def service(self, j: int) -> int:
+        """GC service j (ALLOC, ...), when `gcsvc`."""
+        return self.tag(self.tags) + j
+
+    def rtt(self, k: int) -> int:
+        return self.service(self.gcsvc) + k
+
+    def subtype(self) -> int:
+        """The IS_SUBTYPE record (RECORD words), when `gcsvc`."""
+        return self.rtt(self.rtts)
+
     @property
     def words(self) -> int:
         # at least memory 0's two words: the entry loads them whether or not the module has a memory
-        return max(self.tag(self.tags), FIRST_VAR + 2)
+        return max(self.subtype() + (RECORD if self.gcsvc else 0), FIRST_VAR + 2)

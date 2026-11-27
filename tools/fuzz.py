@@ -21,17 +21,24 @@ GC, threads or memory64; exceptions only in the cross-target mode) with a 20 s a
 smith modules get the process OOM-killed. Termination is ensured by smith (--ensure-termination).
 Needs wasm-tools (the dev group; WASM_TOOLS overrides the lookup).
 
-    python tools/fuzz.py --targets pyc,jit,wasmtime [--minutes M] [--seed S] [--gen] [--out D]
+    python tools/fuzz.py --targets pyc,jit,wasmtime [--minutes M] [--seed S] [--gen] [--refs]
+                         [--out D]
 
 is the cross-target mode (TESTING.md): pyc, jit-x86_64 (guard, explicit) and Wasmtime for M minutes;
-a divergence is saved as `div_<seed>.wasm` + `.txt` in DIR and the exit status stays 0."""
+a divergence is saved as `div_<seed>.wasm` + `.txt` in DIR and the exit status stays 0. `--refs`
+also turns on smith's reference types and GC (exceptions are always on here; S0013 step 7, D65); a
+nullable reference parameter is passed null, an export with a non-nullable one is not called;
+each engine runs in a process of its own, one after the other, with its own alarm and its data
+limited to DATA_LIMIT (a GiB array then fails on every side: the documented heap limit)."""
 
 import argparse
 import ctypes
 import gc
 import hashlib
 import os
+import pickle
 import random
+import resource
 import shutil
 import signal
 import subprocess
@@ -47,6 +54,7 @@ sys.path.insert(0, str(ROOT / "poc" / "pyc-bropt"))
 
 import bropt  # noqa: E402  # type: ignore[import-not-found]
 
+from waboros.frontend import types  # noqa: E402
 from waboros.frontend.binary import parse  # noqa: E402
 from waboros.frontend.validate import validate  # noqa: E402
 from waboros.runtime import link  # noqa: E402
@@ -57,7 +65,10 @@ from waboros.targets.pyc import (  # noqa: E402
     codegen,  # noqa: E402
 )
 
-ALARM = 20  # seconds per module
+# seconds per module; WABOROS_JIT_GC_VERIFY digests the heap around every collection: S0013 7.3's
+# seed 11609 took 297 s with it, 28 s without, so the factor is 20
+ALARM = 20 * (20 if os.environ.get("WABOROS_JIT_GC_VERIFY") == "1" else 1)
+DATA_LIMIT = 8 << 30  # --refs: private writable memory; an allocation fails, not the OOM killer
 _bin = Path(sys.executable).parent
 WT = os.environ.get("WASM_TOOLS") or shutil.which(
     "wasm-tools", path=f"{_bin}{os.pathsep}{os.environ.get('PATH', '')}"
@@ -486,7 +497,7 @@ class _Side:
         self.name, self.eng, self.inst, self.mems = name, eng, inst, mems
         self.mod = mod  # None for Wasmtime, which types its own values
 
-    def call(self, ty: tuple[list[int], list[int]], name: str, args: list[int]) -> tuple[Any, ...]:
+    def call(self, ty: tuple[list[int], list[int]], name: str, args: list[Any]) -> tuple[Any, ...]:
         from tests.spec.engine import EngineError, Trap
 
         try:
@@ -507,14 +518,24 @@ class _Side:
 
     def memhash(self) -> str:
         h = hashlib.sha1()
-        for n in self.mems:
+        for n in self.mems:  # in chunks: a memory can reach 4 GiB (string_at's size is a C int)
             if self.mod is None:  # wasmtime
-                m = self.inst.exports(self.eng._store)[n]
-                b = m.read(self.eng._store, 0, m.data_len(self.eng._store))
+                m, st = self.inst.exports(self.eng._store)[n], self.eng._store
+                size = m.data_len(st)
+                read = lambda a, b, m=m, st=st: m.read(st, a, b)  # noqa: E731
             else:
                 v = self.inst.provider[1].export(n).value
-                b = ctypes.string_at(v.res.addr, v.pages << 16) if hasattr(v, "res") else bytes(v)
-            h.update(len(b).to_bytes(8, "little") + hashlib.sha1(b).digest())
+                if hasattr(v, "res"):  # the JIT's memory: no copy of the whole
+                    size = v.pages << 16
+                    mv = memoryview((ctypes.c_char * size).from_address(v.res.addr)).cast("B")
+                else:
+                    mv = memoryview(v).cast("B")
+                    size = len(mv)
+                read = lambda a, b, mv=mv: mv[a:b]  # noqa: E731
+            d = hashlib.sha1()
+            for a in range(0, size, 1 << 26):
+                d.update(read(a, min(a + (1 << 26), size)))
+            h.update(size.to_bytes(8, "little") + d.digest())
         return h.hexdigest()
 
 
@@ -555,26 +576,94 @@ def _open(name: str, wasm: bytes, mod: Any) -> _Side | str:
     return _Side(name, eng, None if wt else mod, inst, [n for n, k, _ in mod["exports"] if k == 2])
 
 
-def _args(rnd: random.Random, ps: list[int]) -> list[int] | None:
-    out: list[int] = []
+class _Remote:
+    """The recorded outcomes of one engine that ran the whole plan alone (`--refs`)."""
+
+    def __init__(self, name: str, out: list[tuple[Any, str]]) -> None:
+        self.name, self.out, self.i = name, out, -1
+
+    def call(self, _ty: object, _name: str, _args: object) -> tuple[Any, ...]:
+        self.i += 1
+        return self.out[self.i][0]
+
+    def memhash(self) -> str:
+        return self.out[self.i][1]
+
+
+def _remote(name: str, wasm: bytes, mod: Any, plan: list[tuple[str, Any, list[Any]]]) -> Any:
+    """`_open(name)` and every call of the plan in a forked process of its own (the parent keeps no
+    engine, so each one has the whole DATA_LIMIT): a `_Remote`, a string as `_open` gives (also
+    `inst:ChildDied <code>`), or TimeoutError when the engine did not finish."""
+    r, w = os.pipe()
+    pid = os.fork()
+    if pid == 0:  # the child: an alarm ends it without a result
+        status = 3
+        try:
+            os.close(r)
+            signal.signal(signal.SIGALRM, lambda *_: os._exit(3))
+            signal.alarm(ALARM)
+            s = _open(name, wasm, mod)
+            res = s if isinstance(s, str) else [(s.call(t, n, a), s.memhash()) for n, t, a in plan]
+            with os.fdopen(w, "wb") as f:
+                pickle.dump(res, f)
+            status = 0
+        finally:
+            os._exit(status)
+    os.close(w)
+    signal.alarm(ALARM + 10)  # the parent's guard, if the child is stuck in native code
+    data, late = b"", False
+    try:
+        with os.fdopen(r, "rb") as f:
+            data = f.read()
+    except TimeoutError:
+        os.kill(pid, signal.SIGKILL)
+        late = True
+    finally:
+        signal.alarm(0)
+        code = os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1])
+    if not data:
+        if late or code == 3:  # the child's alarm, or ours
+            raise TimeoutError
+        return f"inst:ChildDied {code}"  # killed from outside (the OOM killer: -9) or crashed
+    res = pickle.loads(data)
+    return res if isinstance(res, str) else _Remote(name, res)
+
+
+def _args(rnd: random.Random, ps: list[int]) -> list[int | None] | None:
+    out: list[int | None] = []
     for t in ps:
         if t not in _BITS:
-            return None  # a reference type: not driven from here
+            if not types.isref(t) or not types.nn(t)[0]:
+                return None  # a non-nullable reference: not driven from here
+            out.append(None)
+            continue
         w = _BITS[t]
         out.append(rnd.choice(EDGE) & (1 << w) - 1 if t in (0x7F, 0x7E) and rnd.random() < 0.4
                    else rnd.getrandbits(w))  # fmt: skip
     return out
 
 
-def compare(wasm: bytes, rnd: random.Random, gen: bool, skips: dict[str, int]) -> str | None:
+def compare(
+    wasm: bytes, rnd: random.Random, gen: bool, skips: dict[str, int], refs: bool = False
+) -> str | None:
     """Run `wasm` on every side: None if they agree, else the first divergence described."""
     mod = parse(wasm)
     validate(mod)
-    sides: list[_Side] = []
+    plan: list[tuple[str, Any, list[Any]]] = []  # the calls, drawn before any side runs (`refs`)
+    for name, kind, idx in mod["exports"]:
+        if kind != 0:
+            continue
+        ty = tuple(link.func_type(mod, idx))
+        trials = [list(a) for a in GEN_ARGS] if gen else [_args(rnd, ty[0]) for _ in range(3)]
+        for args in trials:
+            if args is None:
+                break
+            plan.append((name, ty, args))
+    sides: list[_Side | _Remote] = []
     insts: dict[str, str] = {}
     for name in SIDES:
-        r = _open(name, wasm, mod)
-        if isinstance(r, _Side):
+        r = _remote(name, wasm, mod, plan) if refs else _open(name, wasm, mod)
+        if isinstance(r, (_Side, _Remote)):
             sides.append(r)
         elif r.startswith("skip:"):
             skips[name] = skips.get(name, 0) + 1
@@ -584,33 +673,27 @@ def compare(wasm: bytes, rnd: random.Random, gen: bool, skips: dict[str, int]) -
         return f"instantiate: {insts} (ok on {[s.name for s in sides]})"
     if len(sides) + len(insts) < 2:
         return None
-    for name, kind, idx in mod["exports"]:
-        if kind != 0 or not sides:
-            continue
-        ps, rs = link.func_type(mod, idx)
-        ty = (ps, rs)
-        trials = [list(a) for a in GEN_ARGS] if gen else [_args(rnd, ps) for _ in range(3)]
-        for args in trials:
-            if args is None:
-                break
-            got = [(s.name, s.call(ty, name, args), s.memhash()) for s in sides]
-            ref = got[-1] if got[-1][0] == "wasmtime" else got[0]
-            bad = [g[0] for g in got if not _same(g[1], ref[1]) or g[2] != ref[2]]
-            if bad:
-                return (
-                    f"export {name} args {args}\n"
-                    + "\n".join(f"  {n}: {o} mem {h[:12]}" for n, o, h in got)
-                    + f"\ndiffering from {ref[0]}: {bad}"
-                )
+    for name, ty, args in plan if sides else []:
+        got = [(s.name, s.call(ty, name, args), s.memhash()) for s in sides]
+        ref = got[-1] if got[-1][0] == "wasmtime" else got[0]
+        bad = [g[0] for g in got if not _same(g[1], ref[1]) or g[2] != ref[2]]
+        if bad:
+            return (
+                f"export {name} args {args}\n"
+                + "\n".join(f"  {n}: {o} mem {h[:12]}" for n, o, h in got)
+                + f"\ndiffering from {ref[0]}: {bad}"
+            )
     return None
 
 
-def cross(minutes: float, seed0: int, gen: bool, out: Path) -> int:
+def cross(minutes: float, seed0: int, gen: bool, out: Path, refs: bool = False) -> int:
     if not WT:
         sys.exit("wasm-tools not found (uv sync, or set WASM_TOOLS)")
     sys.path.insert(0, str(ROOT))
     out.mkdir(parents=True, exist_ok=True)
     signal.signal(signal.SIGALRM, _alarm)
+    if refs:  # smith's GC arrays reach 2^32 elements: pyc's lists would take the machine's memory
+        resource.setrlimit(resource.RLIMIT_DATA, (DATA_LIMIT, resource.RLIM_INFINITY))
     end = time.monotonic() + minutes * 60
     n = ok = div = timeouts = 0
     skips: dict[str, int] = {}
@@ -628,6 +711,7 @@ def cross(minutes: float, seed0: int, gen: bool, out: Path) -> int:
                 "--max-memories": rnd.choice([1, 1, 3]), "--max-memory64-bytes": 1048576,
                 "--wide-arithmetic-enabled": rnd.random() < 0.2, "--canonicalize-nans": True,
                 "--exceptions-enabled": True,
+                "--reference-types-enabled": refs, "--gc-enabled": refs,
             }.items():  # fmt: skip
                 if k in fl:
                     fl[fl.index(k) + 1] = str(v).lower()
@@ -638,9 +722,9 @@ def cross(minutes: float, seed0: int, gen: bool, out: Path) -> int:
         if r.returncode:
             skips["generator"] = skips.get("generator", 0) + 1
             continue
-        signal.alarm(ALARM)
+        signal.alarm(0 if refs else ALARM)  # `refs`: each engine's process has its own
         try:
-            d = compare(r.stdout, rnd, gen, skips)
+            d = compare(r.stdout, rnd, gen, skips, refs)
         except TimeoutError:
             timeouts += 1
             continue
@@ -655,8 +739,9 @@ def cross(minutes: float, seed0: int, gen: bool, out: Path) -> int:
             (out / f"div_{s}.wasm").write_bytes(r.stdout)
             (out / f"div_{s}.txt").write_text(f"seed {s} mode {'gen' if gen else 'smith'}\n{d}\n")
             print("DIVERGENCE seed", s, d.splitlines()[0][:200], flush=True)
+        if refs or n % 200 == 0:
+            gc.collect()  # the JIT's address-space reservations; with --refs GC arrays of GiBs
         if n % 200 == 0:
-            gc.collect()  # the JIT's address-space reservations
             print(f"  ... {n} modules, {div} divergences", flush=True)
     print(
         f"cross-target {'gen' if gen else 'smith'} seeds {seed0}..{seed - 1}: generated {n}, "
@@ -673,11 +758,12 @@ if __name__ == "__main__":
         ap.add_argument("--seed", type=int, default=0)
         ap.add_argument("--gen", action="store_true")
         ap.add_argument("--fbits", action="store_true")
+        ap.add_argument("--refs", action="store_true")
         ap.add_argument("--out", type=Path, default=Path("fuzz-out"))
         a = ap.parse_args()
         if set(a.targets.split(",")) != {"pyc", "jit", "wasmtime"}:
             sys.exit("--targets: only pyc,jit,wasmtime is implemented")
-        sys.exit(cross(a.minutes, a.seed, a.gen, a.out))
+        sys.exit(cross(a.minutes, a.seed, a.gen, a.out, a.refs))
     args = [a for a in sys.argv[1:] if a not in ("--fbits", "--gen")]
     if len(args) != 2:
         sys.exit(__doc__)

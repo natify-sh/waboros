@@ -87,14 +87,15 @@ def test_backend_code_passes(tmp_path: Path) -> None:
 
 def test_trampolines_host_thunk_and_probe_pass(tmp_path: Path) -> None:
     need(LLVM_MC, "llvm-mc")
-    from waboros.targets.jit.aarch64 import JitAarch64Target
-    from waboros.targets.jit.aarch64.abi import assemble, host_thunk
+    from waboros.targets.jit.aarch64 import JitAarch64Target, conventions, runtime
+    from waboros.targets.jit.aarch64.abi import host_thunk
     from waboros.targets.jit.aarch64.encoder import Asm
 
     thunk = Asm()
     host_thunk(thunk, 5)
     blobs = {
-        "trampolines": assemble()[0],
+        "compiler trampolines": conventions()["aapcs64"][0],
+        "runtime trampolines": runtime()[0],
         "host thunk": thunk.finish(),
         "probe": JitAarch64Target().probe_code(),
     }

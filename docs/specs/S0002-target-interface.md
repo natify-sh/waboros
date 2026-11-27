@@ -6,7 +6,7 @@ status: implemented
 superseded_by:
 related: [D5, D6, D10, D16, D17, D18, D23, D24, S0001, S0003]
 owner: maintainer
-updated: 2026-11-05
+updated: 2026-11-24
 ---
 
 # S0002 Target interface
@@ -75,6 +75,16 @@ class TargetInstance(Protocol):
     def global_set(self, global_index: int, value: Raw) -> None: ...           # later (phase 6)
     def interrupt(self) -> None: ...                           # JIT: sets the word; pyc: later
 ```
+* Two attributes outside the Protocol, read with `getattr` and a default (`PycTarget` defines
+  neither): `complete` (default True; False: `auto` never selects the target, S0004) and
+  `development` (default False, on `JitTarget`; True: a development target outside the package,
+  registered by `tests/`, with no FEATURES.md column, and held to pyc's expected failures like a
+  complete JIT; S0016).
+* `JitTarget` also gives what the artifact format needs (S0016 step 2): `e_machine` and `isa_name`
+  (the file's ELF machine and the name of ISA level 1; `artifact.targets()` is built from them,
+  so a target registered later writes and reads files too) and `digest_sources() -> list[Path]`
+  (default empty): files outside the package that make the compiler's code, folded into a
+  development build's `compiler` string (one 16-digit digest with the package's).
 * `ValidModule` is what the front end's validator returns (decoded sections, function types,
   per-function bodies already validated). No target ever sees an invalid module. While the validator
   does not cover a construct (typed function references, tags, some table instructions), it ends
@@ -281,3 +291,15 @@ weights itself until then.
   A tag `Extern`'s `value` is `(exporting instance, tag index)` from `link.resolve`, each target
   resolves it to its own tag; `TargetInstance.export` of a tag returns the target's tag; a tag of
   another target is a `LinkError`.
+* 2026-11-11 (S0013 step 1a): `runtime/link.py` checks an import's type by the GC rules: a function
+  if the exported function's type is a subtype of the declared one, an immutable global
+  covariantly, a mutable global, a table's element type and a tag by type equivalence. Type identity
+  is `frontend.types.key(mod, i)`, the iso-recursive canonical key (rec group, position), which
+  replaces `functype_key`; the JITs' type ids (`jit/common/instance.type_id(mod, ti)`) use it too.
+  A module with GC types is refused by `pyc` and the JITs (`supports()`) until each claims `gc`.
+* 2026-11-24 (S0016 step 1): `development` (default False, on `JitTarget`): a development target
+  (`jit-sljit-<arch>`, registered by `tests/sljit/` where `native/` is built) is never selected by
+  `auto` (`complete = False`), has no FEATURES.md column, and its expected failures must equal
+  pyc's (`tests/spec/test_runner.py` `_jits`).
+* 2026-11-24 (S0016 step 2): `e_machine`, `isa_name` and `digest_sources()` on `JitTarget`;
+  `artifact.targets()` replaces the fixed `TARGETS` table of `artifact.py`.

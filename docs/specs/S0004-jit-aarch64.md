@@ -6,7 +6,7 @@ status: implemented
 superseded_by:
 related: [D10, D14, D23, D24, D25, D26, D29, D30, D31, D32, D34, D35, D36, D37, R2, R3, R6, S0002, S0003]
 owner: maintainer
-updated: 2026-11-05
+updated: 2026-11-23
 ---
 
 # S0004 jit-aarch64, the second architecture (phase 4, integer core)
@@ -81,38 +81,64 @@ memory and tail calls reuse the x86-64 lowering shapes through context words. Es
 
 The pool is 13 registers (x86-64: 8), preferred order `x19…x24, x2…x8` (`choose_pins` takes the
 pool in order). Whether 13 pays over 8 is measured on CoreMark on the arm64 runner, not assumed.
-Native stack per frame: frame record 16 + pins ≤ 7·16 + 16 for a record call's saved context =
-**≤ 144 bytes** (x86-64: 96); the S0003 budget rule (bytes) is unchanged, so the maximum wasm
-recursion depth on aarch64 is lower for the same budget. Frames stay below one page (Windows probes).
+Native stack per frame: frame record 16 + pins ≤ 7·16 = **≤ 128 bytes**, plus at a call through a
+record 16 (another context of this compiler: `x28`) or 64 (another compiler's C entry: `x2`–`x8`;
+S0015 step 3), and a C entry's `centry` frame of 48 below the callee; the S0003 budget rule (bytes)
+is unchanged, so the maximum wasm recursion depth on aarch64 is lower for the same budget.
+Measured at 512 KiB (BENCHMARKS.md, "The boundary convention on `jit-aarch64`", under QEMU): a
+direct `call` with one pin and a `call_indirect` through the own table 16 382 levels (32 bytes),
+a call across instances 10 922 calls (48 bytes). Frames
+stay below one page (Windows probes). The most allocated before the next stack check (S0015's
+headroom rule) is 64 + 48 + 128 = 240 bytes through a C path, 80 + 48 + 128 = 256 through
+`tail_switch`'s first hop.
 
 ### Trampolines (one set; AAPCS64 and Windows Arm64 share it)
 AAPCS64 (Linux), Apple arm64 and Windows Arm64 agree on everything the trampolines touch: arguments
 in `x0`–`x7`, result in `w0`/`x0`, callee-saved `x19`–`x29`, `sp`, `d8`–`d15`; they differ only in
 what our code never uses (`x18`, Apple's 128-byte red zone and variadic and sub-word argument rules,
 Windows unwind data and stack probes). So **one entry, one bridge, one stub, one `tail_switch` serve
-all of them**; the artifact's `ENTRIES` gives the same offset for `aapcs64` and `win-arm64`.
+all of them** *(from S0015, one runtime `entry` and `sp_stub` and one compiler bridge and
+`tail_switch` per architecture, as below)*; the artifact's `ENTRIES` gives the same offset for `aapcs64` and `win-arm64`.
+From S0015 step 3 the entry and the stub are the runtime's (`aarch64/entry.py`), the bridge and
+`tail_switch` this compiler's (`aarch64/abi.py`), and every function and host thunk has a C entry
+(below); the list describes that state.
 
-* **Entry** `int32_t entry(x0 = ctx, x1 = frame, x2 = code)`: `bti c`; `stp x29, x30, [sp, #-96]!`;
-  `mov x29, sp`; `stp` x19–x28 (five pairs); `x28 ← x0`, `x27 ← x1`, `ldp x26, x25, [x28, #128]`;
-  `blr x2`; `cbz w0, done`; `str x0, [x28, #8]`
-  (`TRAP_CODE`; w0 was written by a 32-bit op, so x0 is zero-extended); restore; `ret`.
+* **Entry** (the runtime's; reference listing in ARTIFACT.md part 3) `int32_t entry(x0 = ctx, x1 = frame, x2 = c_entry)`:
+  `bti jc`; `stp x29, x30, [sp, #-128]!`; `mov x29, sp`; `stp x19, x20` (x19 keeps ctx); the
+  store's exit record (word 14) and the frame saved at `[sp, #96]` (S0013 3a); `blr x2`;
+  `mov w0, w0`; the exit record put back; `cbz w0, done`; `str x0, [x19, #8]` (`TRAP_CODE`);
+  restore; `ret`. It sets up no register.
+* **C entry** (S0015): a 12-byte stub before each body and host thunk, `bti jc; adr x16, body;
+  b centry` (the body at `code + 12`), and one `centry` per module after the last thunk: frame
+  record, `x25`–`x28` saved (48 bytes; the bodies keep `x19`–`x24`, `x29` and never touch
+  `d8`–`d15`), `x28 ← x0`, `x27 ← x1`, `ldp x26, x25`, `blr x16` (a site: `ret_at` 8, `up` 48,
+  shift 0, no map); a returned private hop status `0x80000001` (a 32-bit compare) means a tail
+  call left with the record in `x16`: restore, then `br` to the record's C entry with `x0`, `x1`
+  set; any other status is returned.
 * **Bridge**, reached by wasm code as `ldr x16, [x28, #8*HOST_BRIDGE]; blr x16` with
-  **`x0` = context word of the host function, `x1` = slots**: `bti c`; frame record; save `x2`–`x8`
+  **`x0` = context word of the host function, `x1` = slots**: `bti c`; the exit record `{sp, x30,
+  x27}` written through x10/x11 (S0013 3a); frame record; save `x2`–`x8`
   and `ctx[HOST_ERROR]` (the enclosing call's preset) in 64 bytes; `ctx[HOST_ERROR] ← 13`;
   `ldr x16, [x28, x0, lsl #3]`; `mov x0, x28`; `blr x16`; `ldr w0, [x28, #56]`; put the saved word
-  back; restore; `ret` with the status in `w0` (D34; the C return value is ignored). The call site
+  back (after `sp` of the exit record is cleared); restore; `ret` with the status in `w0` (D34; the
+  C return value is ignored). The call site
   then reloads `x26`/`x25` and does `cbnz w0, unwind`.
 * **Host thunk** (per module, the record target of a host import): `bti c`; frame record;
   `mov x1, x27`; `mov w0, #word`; bridge call; reload `x26`/`x25` (S0003 3e: it returns to callers
   that do not); `ret`.
-* **sp stub**: `bti c; mov x16, sp; str x16, [x27]; mov w0, #0; ret` (frame[0] = sp as a wasm
-  function sees it).
-* **tail_switch** (D30), entered by `br x17` after the caller dropped its frame, with
-  **`x16` = the record** and the caller's return address **in `x30`** (not on the stack, as on
-  x86-64): `bti c`; `adr x17, restore; cmp x30, x17; b.eq hop`; `stp x28, x30, [sp, #-16]!`;
-  `ldr x28, [x16, #16]`; reload x26/x25; `ldr x17, [x16]; blr x17`; `restore:` `ldp x28, x30,
-  [sp], #16`; reload x26/x25; `ret`. `hop:` `ldr x28, [x16, #16]`; reload; `ldr x17, [x16];
-  br x17`. The restore frame is 16 bytes and saves `x30`, which `blr` overwrites; every `ret`
+* **sp stub** (a C entry): `bti jc; mov x16, sp; str x16, [x1]; mov w0, #0; ret` (frame[0] = sp
+  as a C entry sees it).
+* **Calls through a record** (S0015, D71): our own context: `blr` to `code + 12`; another context
+  of this compiler (equal `HOST_BRIDGE` words): `x28` saved in 16 bytes, switched, `blr` to
+  `code + 12`; otherwise the C entry with `x2`–`x8` saved in 64 bytes, `x0` = the context and
+  `x1` = the frame; memory 0's registers reloaded before the status test.
+* **tail_switch** (D30, S0015 form 2b), entered by `br x17` after the caller dropped its frame,
+  with **`x16` = the record** and the caller's return address **in `x30`** (not on the stack, as
+  on x86-64): `bti c`; `adr x17, restore; cmp x30, x17; b.eq hop`; the restore frame: frame
+  record, `x2`–`x8`, `x28` (80 bytes); `bl hop`; `restore:` restore, reload x26/x25, `ret`.
+  `hop:` a context of this compiler: `x28` switched, reload, `br` to `code + 12`; another
+  compiler's: `br` to its C entry with `x0`, `x1` set. A body whose return address is its
+  module's `centry` return point returns the hop status instead (later hops). Every `ret`
   returns to its `bl`/`blr`.
 
 **Traps return through frames** (S0003): a trap point branches to a cold stub
@@ -121,9 +147,10 @@ all of them**; the artifact's `ENTRIES` gives the same offset for `aapcs64` and 
 Arm GCS (Guarded Control Stack, Armv9.4, Linux 6.13 opt-in), the arm64 analogue of CET shadow
 stacks (R2).
 
-**BTI** (R2). `bti c` at every address reached by `blr` or `br x16/x17`: the entry, bridge, sp
-stub, `tail_switch`, every function (reached from the entry, records, tail calls) and the host
-thunk. Jump-table targets get `bti j` pads. Because every indirect branch uses `x16`/`x17`
+**BTI** (R2). `bti c` at every address reached by `blr` or `br x16/x17`: the bridge,
+`tail_switch`, every function body (reached from its C entry, records, tail calls) and the host
+thunk; from S0015 step 3 `bti jc` at the boundary (the entry, the sp stub, every C entry), which
+accepts `br` through any register (S0015 Q5). Jump-table targets get `bti j` pads. Because every indirect branch uses `x16`/`x17`
 (BTYPE 01), `bti c` also accepts the tail-call `br`. `bti` is in the HINT space: a NOP before
 ARMv8.5, so the baseline holds. Linux enforces BTI only on pages mapped `PROT_BTI` (0x10); the
 loader adds `PROT_BTI` when `getauxval(AT_HWCAP2) & HWCAP2_BTI`. The arm64 Linux CI runner's CPU
@@ -172,9 +199,11 @@ AArch64 does not keep the instruction cache coherent with data writes. `execmem.
 RW, write, `mprotect` RX (plus `PROT_BTI` where supported), then **invalidate the range** before the
 first call: Linux: `__clear_cache(start, end)` through ctypes from the process (`CDLL(None)`, else
 `libgcc_s.so.1`; it does `dc cvau`/`dsb ish`/`ic ivau`/`dsb ish`/`isb` with the line sizes from
-`CTR_EL0` and skips what `CTR_EL0.IDC/DIC` make unnecessary). macOS: `sys_icache_invalidate`
+`CTR_EL0` and skips what `CTR_EL0.IDC/DIC` make unnecessary); where the process has neither (musl
+without libgcc, Android bionic), our own routine with that sequence (`aarch64/abi.py`
+`icache_flush`, Changes 2026-11-25). macOS: `sys_icache_invalidate`
 (libSystem) with `MAP_JIT` + `pthread_jit_write_protect_np`; Windows: `FlushInstructionCache`.
-x86-64 keeps a no-op. A process where no flush function is found fails the probe (D31 warning),
+x86-64 keeps a no-op. A process where no flush function is found (macOS) fails the probe (D31 warning),
 never runs unflushed code. Code areas are written once and never patched (W^X), so a fresh area
 needs only this one flush (`ic ivau` is broadcast to every core, inner-shareable). Remaining
 theoretical case: another core that prefetched a freed area's address before it was reused; Linux
@@ -260,7 +289,7 @@ part 3 as a table, an amendment of v1 without a version bump (v1 is fixed in pha
 | bridge call | `eax` = word, `rdx` = slots; `call` | `x0` = word, `x1` = slots; `blr x16` |
 | bridge preserves | pool (`rbx rbp rsi rdi r8–r11`), r12–r15 | `x2`–`x8`, `x19`–`x28`, `x29`, `sp` |
 | `tail_switch` | record in `rdx`, return address at `[rsp]` | record in `x16`, return address in `x30` |
-| landing pad | `endbr64` | `bti c` (functions, trampolines), `bti j` (jump-table pads) |
+| landing pad | `endbr64` | `bti c` (functions, trampolines), `bti j` (jump-table pads); from S0015 step 3 `bti jc` at the boundary |
 | `CODE` alignment | none | load address ≡ 0 mod 4096 (`adrp`) |
 
 Header: `arch` = 2 (aarch64), `isa_level` = 1 (ARMv8.0-A with FP and Advanced SIMD), `isa_features`
@@ -321,10 +350,10 @@ Each JIT step follows CLAUDE.md: plan approved first, review after.
   functions. **Veneer islands** (V8's assembler): exact but complex in one pass.
 * **Upfront far mode from the wasm body size**: needs a safe bytes-per-instruction bound; a loose
   bound puts ordinary large functions in far mode, a tight one is fragile.
-* **Own I-cache routine** (`mrs ctr_el0`, `dc`/`ic` loops) emitted as code: it would need a flush
-  before it can run (bootstrap), relying on the kernel syncing fresh executable pages; `__clear_cache`
-  exists in every glibc and libgcc process we target. Kept as the fallback to consider for musl
-  without libgcc.
+* **Own I-cache routine** (`mrs ctr_el0`, `dc`/`ic` loops) emitted as code instead of
+  `__clear_cache` everywhere: it needs the kernel's sync for its own page (bootstrap). Taken as the
+  fallback only (Changes 2026-11-25): `__clear_cache` stays first where it exists, so glibc is
+  unchanged.
 * **QEMU instead of a native runner**: misses I-cache bugs and is slow; ROADMAP keeps it for
   architectures without runners.
 * **A pool of 8 (as x86-64)**: simpler comparison; 13 used first and measured against 8.
@@ -475,3 +504,48 @@ Resolved by the maintainer on 2026-11-01 (see Changes); none open.
 * 2026-11-05: S0012 step 4 (exceptions, D52): the frame's `error` label and the six exception
   methods; the call sites' `cbnz w0` goes to `error` (the epilogue outside a `try_table`, so code
   without one is unchanged). `jit-aarch64` claims `exceptions/`.
+* 2026-11-11 (S0013 step 3a.2, an amendment of v1 without a bump, S0013 Q5): context word 14
+  `EXIT_RECORD`; the bridge writes the store's exit record `{sp, pc, frame}` before the host and
+  clears its `sp` after; the entry keeps the enclosing record and its frame on the native stack
+  during its call and puts the record back (the entry frame 96 → 128 bytes, the block at `[sp + 96, sp + 128)`). Module code is unchanged.
+* 2026-11-11 (S0013 steps 3a.3-3a.4, D56): the runtime walks a store's frames from the exit record by the per-site numbers of the `STACKMAPS` section and the trampolines' points (the entry's return point and its saved block, `tail_switch`'s 16-byte restore frame: the saved context, then the real return address); `WABOROS_JIT_WALK_CHECK=1` checks the walk at every host call. A compiled module without its site table is refused at instantiation (`ValueError`). No change of code or context words beyond step 3a.2's.
+* 2026-11-15 (S0013 step 4, D57): `jit-aarch64` claims `gc`. Its `supported` set gains the GC
+  opcodes (`gc.OPS`); the lowering is the shared core's (`common/gc.py`, D39 methods only), and
+  the first run under QEMU found no backend gap: no new method, no ABI or artifact change, module
+  code of every module without GC unchanged (D35 lists). Spec under QEMU, guard and explicit with
+  the walk check, and with poison: 64 229 pass, no expected failure, as `pyc`.
+* 2026-11-16 (S0013 step 5.6, D39 amendment): `func_type(dst, rec)` is `ldr dst, [rec, #8]` (a slot
+  or an immediate is loaded into `dst` first; never `xzr` as the base, LESSONS 118), tested against
+  llvm-mc. Only modules with a function-subtype site change code (the 12 `gc/type-subtyping`
+  modules 29-40, guard and explicit).
+* 2026-11-22 (S0015 step 3): the boundary convention: the runtime's entry and sp stub move to
+  `aarch64/entry.py` (`bti jc`, the entry zero-extends `w0` and sets up no register); 12-byte C
+  entries and a per-module `centry`; record calls on three paths (D71); `tail_switch` with an
+  80-byte restore frame and the hop by `HOST_BRIDGE`; later hops by return-then-jump; frame
+  bounds and the headroom numbers.
+* 2026-11-23: S0015 step 5 (docs): the per-frame bounds gain the measured recursion depth
+  (BENCHMARKS.md, step 3); the body text of "Trampolines" says who owns each. No code change.
+* 2026-11-25 (maintainer, option B): **our own I-cache flush** where the process has no
+  `__clear_cache` (Linux musl without libgcc; Android, whose bionic exports none: `libc.map.txt`
+  lists only arm's `cacheflush`, and no library of python.org's 3.14.0 Android aarch64 build has
+  it). `aarch64/abi.py` `icache_flush` emits `void flush(start, end)`: `bti c` (ctypes calls it
+  with `blr`), `mrs ctr_el0`, `dc cvau` per D-line (DminLine), `dsb ish`, `ic ivau` per I-line
+  (IminLine), `dsb ish`, `isb`; the clean skipped under CTR_EL0.IDC, the invalidate under DIC, as
+  the Arm ARM's sequence for modified code and libgcc's/compiler-rt's `__clear_cache` (read, not
+  copied). ARMv8.0-A only. `execmem.py` builds it once, behind a lock, in a page of its own never
+  unmapped, and uses it only when `__clear_cache` was not found. Bootstrap: that page is not
+  flushed by anything of ours; arm64 Linux makes a user page coherent when it first becomes
+  executable (`set_pte_at` calls `__sync_icache_dcache` for a present user-executable PTE,
+  arch/arm64/include/asm/pgtable.h; `__sync_icache_dcache` cleans and invalidates to PoU unless
+  the folio's `PG_dcache_clean` is set, arch/arm64/mm/flush.c; a newly allocated page has it
+  clear). Only this page relies on it. The routine is verified by its structure (the llvm-mc
+  round trip of `test_execmem.py`, ARMv8.0-A only), by a test that runs every CTR_EL0 case
+  (IDC/DIC, line sizes) with the value passed in, and by reading it against compiler-rt's
+  `__clear_cache`. Best-effort evidence only: a test that rewrites one page in place (RW, write,
+  RX: the kernel does not sync it again) and runs it after our flush; under QEMU (no I-cache
+  model) it proves nothing, and natively a missing flush shows only if stale lines are hit
+  (timing, and cores with CTR_EL0.DIC/IDC are coherent anyway). With `__clear_cache` hidden,
+  loaded code also runs on a second thread and a wasm module runs (fresh pages: the kernel syncs
+  them). CI: the `arm64` job runs `tests/jit` and CoreMark in the stock `python:3.13-alpine`
+  image (no libgcc) on the native runner (`MUSL_ARM64`, ci.yml), so the routine is the flush
+  there. The musl aarch64 JIT now runs (explicit; no guard handler there, S0017 Decision 10).

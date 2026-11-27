@@ -1,4 +1,4 @@
-# pyright: reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false
+# pyright: reportPrivateUsage=false, reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false
 """Every waboros target as a SpecEngine (docs/specs/S0001): a thin adapter over S0002 (select,
 compile, instantiate, call). `TargetEngine(name)`: a target name (`pyc`, `jit-x86_64`, ...) or
 `auto` (D25).
@@ -9,7 +9,9 @@ never pass.
 
 Values: i32/i64 are signed at the interface and unsigned `Raw` below; f32/f64 are bit patterns at
 both. References: null is None, an externref is the runner's ExternRef, a funcref is the function
-object (a `pyc` reference passes through the `Raw` slot as it is until stage 2).
+object (a `pyc` reference passes through the `Raw` slot as it is until stage 2). A GC value
+(S0013) is told by its `pyc` representation: only `pyc` claims `gc` yet; the JITs (step 3b) read
+their words here.
 """
 
 import struct
@@ -17,21 +19,27 @@ from collections.abc import Iterator, Mapping, Sequence
 from typing import Any, cast
 
 from tests.spec.engine import (
+    ExternRef,
     FuncRef,
+    HostRef,
     Instance,
     LinkError,
     LoadError,
     Module,
+    OpaqueRef,
     Trap,
     TrapCode,
     Unsupported,
     Value,
 )
 from waboros.frontend.binary import F32, F64, I32, I64, ImplLimit, Malformed, parse
+from waboros.frontend.types import ANY, EXTERN, isref, nn, top
 from waboros.frontend.validate import Invalid, validate
 from waboros.runtime import link
 from waboros.runtime.store import StoreState
 from waboros.targets import base
+from waboros.targets.jit.common.instance import GcRef
+from waboros.targets.pyc import runtime as _pyc
 
 _PARSE_ERRORS = (AssertionError, IndexError, ValueError, struct.error, UnicodeDecodeError)
 _MASK = {
@@ -75,22 +83,34 @@ class _Instance:
         self.provider = link.Provider(module, instance)
 
 
-def _isref(ty: Any) -> bool:
-    return ty.__class__ is tuple or ty in (0x70, 0x6F)
-
-
 def _to_raw(ty: Any, v: Value) -> Any:
-    if _isref(ty):  # a reference: null, ExternRef or the function
-        return v.handle if isinstance(v, FuncRef) else v
+    if isref(
+        ty
+    ):  # a reference: null, ExternRef, HostRef (an anyref of a host value) or the function
+        return (
+            v.handle
+            if isinstance(v, FuncRef)
+            else ExternRef(v.n)  # `pyc` internalizes it (S0013)
+            if isinstance(v, HostRef)
+            else v
+        )
     if not isinstance(v, int):
         raise NotImplementedError("reference values unsupported")
     return v & _MASK[ty]
 
 
-def _from_raw(ty: Any, r: Any) -> Value:
-    if _isref(ty):
-        if (ty[1] == -17) if ty.__class__ is tuple else (ty == 0x6F):
-            return cast(Value, r)
+def _from_raw(mod: base.ValidModule, ty: Any, r: Any) -> Value:
+    if isref(ty):
+        hierarchy = top(mod, nn(ty)[1])
+        if hierarchy == EXTERN:  # a host value, or a GC value boxed by extern.convert_any
+            gcval = r.__class__ is _pyc._Ext or isinstance(r, GcRef)  # pyc's box, the JIT's handle
+            return OpaqueRef("extern") if gcval else cast(Value, r)
+        if hierarchy == ANY and r is not None:
+            if isinstance(r, ExternRef):  # a host value: the object itself (S0013 3b.1)
+                return HostRef(r.n)
+            if isinstance(r, GcRef):  # the JIT (S0013 3b)
+                return OpaqueRef(r.kind)
+            return OpaqueRef("i31" if r.__class__ is int else r[0].kind)
         return None if r is None else FuncRef(r)
     if ty in (I32, I64):
         return cast(int, r) - ((r & (_MASK[ty] + 1 >> 1)) << 1)
@@ -150,11 +170,11 @@ class TargetEngine:
             res = inst.call(idx, raw)
         except base.Trap as e:
             raise _trap(e) from None
-        return [_from_raw(t, v) for t, v in zip(rs, res, strict=True)]
+        return [_from_raw(mod, t, v) for t, v in zip(rs, res, strict=True)]
 
     def get_global(self, instance: Instance, name: str) -> Value:
         mod, inst = cast(_Instance, instance).provider
         idx = next((i for n, k, i in mod["exports"] if n == name and k == 3), None)
         if idx is None:
             raise LookupError(f"no exported global {name}")
-        return _from_raw(link.global_type(mod, idx)[0], inst.global_get(idx))
+        return _from_raw(mod, link.global_type(mod, idx)[0], inst.global_get(idx))

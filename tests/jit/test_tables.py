@@ -467,8 +467,8 @@ def test_table_set_of_a_funcref_parameter_at_a_computed_index() -> None:
 def test_segment_drops_without_memory_or_table() -> None:
     """data.drop of a passive segment in a module without memory, elem.drop without a table: the
     services exist (a zero libcall word would be a call to address 0); and every libcall word of
-    a module without any of them is callable."""
-    from waboros.targets.jit.common.context import LIBCALLS
+    a module without any of them is callable; the block's 4 reserved words (D58) are zero."""
+    from waboros.targets.jit.common.context import LIBCALL_WORDS, LIBCALLS
 
     jit = build(
         wat("""(module (data "x") (elem func $f) (func $f)
@@ -478,6 +478,8 @@ def test_segment_drops_without_memory_or_table() -> None:
     bare = build(wat('(module (func (export "n")))'))
     ctx, lay = cast(Any, bare.inst).ctx, cast(Any, bare.inst).layout
     assert all(ctx[lay.libcall(j)] for j in range(LIBCALLS))
+    assert (LIBCALLS, LIBCALL_WORDS, lay.sig(0)) == (6, 10, lay.libcall(10))
+    assert [ctx[lay.libcall(j)] for j in range(LIBCALLS, LIBCALL_WORDS)] == [0] * 4
 
 
 def test_references_and_imports_of_another_store_are_refused() -> None:
@@ -569,7 +571,8 @@ def test_type_ids_from_threads_are_distinct() -> None:
     def work(n: int) -> None:
         types = [([0x7F] * (5000 + 1000 * n + i), [0x7E]) for i in range(300)]
         start.wait()
-        got[n] = [type_id(types, i) for i in range(len(types))]
+        tdefs = [(("func", ps, rs), (), True, i, i + 1) for i, (ps, rs) in enumerate(types)]
+        got[n] = [type_id({"types": types, "tdefs": tdefs}, i) for i in range(len(types))]
 
     threads = [threading.Thread(target=work, args=(n,)) for n in range(8)]
     for t in threads:

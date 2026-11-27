@@ -31,7 +31,7 @@ from waboros.targets.jit.common.instance import (
     native_budget,
 )
 from waboros.targets.jit.x86_64 import trampolines
-from waboros.targets.jit.x86_64.abi import bridge, entry
+from waboros.targets.jit.x86_64.abi import bridge
 from waboros.targets.jit.x86_64.backend import Backend, Frame
 from waboros.targets.jit.x86_64.encoder import (
     R8,
@@ -50,6 +50,7 @@ from waboros.targets.jit.x86_64.encoder import (
     Label,
     Mem,
 )
+from waboros.targets.jit.x86_64.entry import entry
 
 Emit = Callable[[Backend, Frame, list[Label]], None]
 M32, M64 = 0xFFFFFFFF, (1 << 64) - 1
@@ -74,14 +75,15 @@ def build(
     labels = [b.new_label() for _ in funcs]
     table: list[tuple[int, int]] = []
     for label, (pins, nslots, nres, body) in zip(labels, funcs, strict=True):
-        table.append((len(b.a.buf), nres))
+        table.append((b.c_entry(), nres))  # the entry calls C entries (S0015)
         f = b.func_begin(label, pins)
         body(b, f, labels)
         b.ret_ok(f)
         b.func_end(f, nslots)
+    b.c_entry_shared()
     inst = Instance(store, tramp, b.a.finish(), table, imports, [memory] if memory else [])
     code = ctypes.string_at(inst.code.addr, len(b.a.buf))
-    assert all(code[off : off + 4] == ENDBR64 for off, _ in table)
+    assert all(code[off : off + 4] == code[off + 16 : off + 20] == ENDBR64 for off, _ in table)
     return inst
 
 
@@ -364,7 +366,9 @@ def run_native_recursion(store: StoreState, tramp: Trampolines) -> tuple[int, Tr
 
 def test_native_stack_overflow_small_budget(tramp: Trampolines) -> None:
     depth, code = run_native_recursion(StoreState(max_wasm_stack=64 << 10), tramp)
-    assert code is TrapCode.STACK_OVERFLOW and 64 << 10 >> 5 < depth <= 64 << 10 >> 4
+    # the limit is measured by the sp stub's entry, the run starts from another: PyPy's differs by
+    # up to ~0.5 KiB (LESSONS 160), so the upper bound has 1 KiB of slack
+    assert code is TrapCode.STACK_OVERFLOW and 64 << 10 >> 5 < depth <= (64 << 10 >> 4) + 64
 
 
 def test_native_limit_set_by_the_first_jit_entry_at_any_store_depth(tramp: Trampolines) -> None:

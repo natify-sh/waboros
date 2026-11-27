@@ -4,8 +4,9 @@ demand. POSIX: mmap/mprotect/munmap through ctypes. Windows: VirtualAlloc/Virtua
 (the D23 shape; run by the Windows CI job).
 
 AArch64 (S0004) does not keep the instruction cache coherent with data writes: a sealed area is
-invalidated before its first call (Linux `__clear_cache`, macOS `sys_icache_invalidate`, Windows
-`FlushInstructionCache`); no flush function means no executable memory (the probe fails, D31).
+invalidated before its first call (Linux `__clear_cache`, else our own routine where the process
+has none, as on musl without libgcc and on Android; macOS `sys_icache_invalidate`, Windows
+`FlushInstructionCache`).
 Linux maps it `PROT_BTI` where the CPU reports BTI (landing pads enforced). macOS arm64 maps
 `MAP_JIT` and switches the calling thread between writing and executing
 (`pthread_jit_write_protect_np`), as Apple requires; a hardened runtime without the JIT
@@ -13,15 +14,34 @@ entitlement refuses the mapping. x86-64 needs none of this."""
 
 import ctypes
 import errno
+import gc
 import mmap
 import os
 import platform
 import sys
+import threading
 import weakref
 from collections.abc import Callable
 from typing import Any
 
 ARM64 = platform.machine().lower() in ("aarch64", "arm64")
+
+
+def _retry(fn: Callable[..., Any], *args: Any) -> Any:
+    """Call `fn`; when it fails for lack of memory (ENOMEM, Windows' ERROR_NOT_ENOUGH_MEMORY 8 and
+    ERROR_COMMITMENT_LIMIT 1455, MemoryError), collect once and call it once more: a dropped store
+    waits in reference cycles for the collector (LESSONS 135), most of all on free-threaded
+    builds. Frees only unreachable objects, so a live store is safe; every caller runs on the
+    thread of its store, outside signal handlers, holding no lock a finalizer takes."""
+    try:
+        return fn(*args)
+    except (MemoryError, OSError) as e:
+        if not isinstance(e, MemoryError) and (
+            e.errno != errno.ENOMEM and getattr(e, "winerror", None) not in (8, 1455)
+        ):
+            raise
+    gc.collect()
+    return fn(*args)
 
 
 class ExecMem:
@@ -30,7 +50,7 @@ class ExecMem:
     def __init__(self, size: int) -> None:
         page = mmap.PAGESIZE
         self.size = max(page, (size + page - 1) // page * page)
-        self.addr = _alloc(self.size)
+        self.addr = _retry(_alloc, self.size)
         self.sealed = False
         # unmapped when unreachable: records cross only within a store, which keeps its
         # instances (and so their code areas) alive while any of its code can run
@@ -63,14 +83,15 @@ class ExecMem:
 class Reservation:
     """Address space reserved up front (no access), committed read-write from its start on demand;
     it never moves (LESSONS 7: an i64 memory that outgrows it gets a new one, S0009). Linear
-    memories (4 GiB + 32 MiB for an i32 one, Wasmtime's 64-bit defaults) and value stacks."""
+    memories (4 GiB + 32 MiB for an i32 one, Wasmtime's 64-bit defaults) and value stacks; the GC
+    heap also commits ranges apart (`commit_range`, D69)."""
 
     def __init__(self, size: int, commit: int = 0) -> None:
         if not 0 <= size < 1 << 63:  # ctypes would truncate it for c_size_t silently (LESSONS 77)
             raise OSError(errno.ENOMEM, f"reservation of {size} bytes")
         self.size = size
         self.committed = 0
-        self.addr = _reserve(size)
+        self.addr = _retry(_reserve, size)
         self._release: weakref.finalize[..., Any] = weakref.finalize(self, _free, self.addr, size)
         self._release.atexit = False  # a daemon thread may still use this memory at exit
         self.commit(commit)
@@ -82,8 +103,17 @@ class Reservation:
             raise ValueError(f"commit of {nbytes} bytes outside a {self.size}-byte reservation")
         nbytes = (nbytes + page - 1) // page * page
         if nbytes > self.committed:
-            _commit(self.addr + self.committed, nbytes - self.committed)
+            _retry(_commit, self.addr + self.committed, nbytes - self.committed)
             self.committed = nbytes
+
+    def commit_range(self, lo: int, hi: int) -> None:
+        """Make [addr + lo, addr + hi) read-write, both page-aligned, apart from `committed` (the
+        GC heap's regions, D69); new pages read as zero."""
+        page = mmap.PAGESIZE
+        if lo % page or hi % page or not 0 <= lo <= hi <= self.size:
+            raise ValueError(f"commit of [{lo}, {hi}) in a {self.size}-byte reservation")
+        if hi > lo:
+            _retry(_commit, self.addr + lo, hi - lo)
 
     def free(self) -> None:
         self.addr = 0
@@ -281,7 +311,35 @@ else:
             if _libc.mprotect(addr, size, mmap.PROT_READ | mmap.PROT_EXEC | _PROT_BTI) != 0:
                 raise _oserror()
 
+        _own: list[Any] = []  # the own flush routine, once built: [function, its page]
+        # not re-entrant: held while ExecMem maps (its _retry may collect; finalizers only unmap,
+        # never flush); a fork while it is held would leave the child's copy locked
+        _own_lock = threading.Lock()
+
+        def _own_flush() -> Any:
+            """Our own flush (aarch64/abi.py `icache_flush`) where the process has no
+            `__clear_cache` (musl without libgcc, Android bionic; S0004). Its page needs no flush
+            of its own: the page is fresh, and arm64 Linux makes a user page coherent when it
+            first becomes executable (`set_pte_at` -> `__sync_icache_dcache`,
+            arch/arm64/include/asm/pgtable.h and arch/arm64/mm/flush.c: a page whose
+            PG_dcache_clean is not yet set, as every newly allocated page). Built once, never
+            unmapped."""
+            with _own_lock:
+                if not _own:
+                    from waboros.targets.jit.aarch64.abi import icache_flush
+                    from waboros.targets.jit.aarch64.encoder import Asm
+
+                    a = Asm()
+                    icache_flush(a)
+                    code = a.finish()
+                    mem = ExecMem(len(code))
+                    mem.write(code)
+                    _protect(mem.addr, mem.size)  # not seal(): that would flush
+                    mem.sealed = True
+                    mem._release.detach()  # pyright: ignore[reportPrivateUsage]
+                    fn = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p)(mem.addr)
+                    _own[:] = [fn, mem]
+                return _own[0]
+
         def _flush(addr: int, size: int) -> None:
-            if _clear_cache is None:
-                raise OSError("no instruction-cache flush function (__clear_cache)")
-            _clear_cache(addr, addr + size)
+            (_clear_cache or _own_flush())(addr, addr + size)

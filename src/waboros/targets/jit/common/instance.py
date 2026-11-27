@@ -7,27 +7,55 @@ An `Instance` runs code assembled elsewhere (hand-built in the ABI tests); a `Ji
 compiled module (common/compiler.py)."""
 
 import ctypes
+import heapq
 import mmap
 import os
 import sys
 import threading
+import weakref
+from collections import deque
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
-from waboros.frontend import validate
+from waboros.frontend.types import (
+    ANY,
+    ARRAY,
+    EQ,
+    EXN,
+    EXTERN,
+    FUNC,
+    I31,
+    NOEXN,
+    NOEXTERN,
+    NOFUNC,
+    NONE,
+    STRUCT,
+    nn,
+    top,  # pyright: ignore[reportUnknownVariableType]
+)
+from waboros.frontend.types import isref as types_isref
+from waboros.frontend.types import key as types_key
+from waboros.frontend.validate import _root  # pyright: ignore[reportPrivateUsage, reportUnknownVariableType]
 from waboros.runtime.link import LinkError
 from waboros.runtime.store import StoreState
 from waboros.targets.base import Extern, HostError, HostFunc, Raw, Trap, TrapCode
-from waboros.targets.jit.common import guard, simd
+from waboros.targets.jit.common import gc, guard, simd, walk
+from waboros.targets.jit.common.artifact import ModuleView
 from waboros.targets.jit.common.compiler import I64, M32, M64, NARROW, Compiled
 from waboros.targets.jit.common.context import (
-    ARENA_CURSOR,
-    ARENA_LIMIT,
+    ALLOC,
+    ARRAY_FILL,
+    ARRAY_INIT_DATA,
+    ARRAY_INIT_ELEM,
+    ARRAY_NEW,
+    ARRAY_NEW_DATA,
+    ARRAY_NEW_ELEM,
     DATA_DROP,
     ELEM_DROP,
     EXCEPTION,
-    EXN_REFILL,
+    EXIT_RECORD,
+    GC_RESERVED,
     HOST_BRIDGE,
     HOST_ERROR,
     INTERRUPT,
@@ -72,12 +100,29 @@ _TYPE_IDS: dict[Any, int] = {}  # canonical function type ids of the process (st
 _TYPE_IDS_LOCK = threading.Lock()  # stores on different threads register types concurrently
 
 
-def type_id(types: Any, ti: int) -> int:
+def type_id(mod: Any, ti: int) -> int:
     """The canonical id of function type `ti` of a module: equal for equivalent types of any
     module (never 0)."""
-    key: Any = validate.functype_key(types, ti)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+    key: Any = types_key(mod, ti)
     with _TYPE_IDS_LOCK:  # the size read and the insert must be one step: ids stay distinct
-        return _TYPE_IDS.setdefault(key, len(_TYPE_IDS) + 1)
+        tid = _TYPE_IDS.setdefault(key, len(_TYPE_IDS) + 1)
+    if tid not in _TYPE_SUPER:  # its declared supertype's id, 0 for none (at most 63 deep)
+        sup = mod["tdefs"][ti][1]
+        _TYPE_SUPER[tid] = type_id(mod, sup[0]) if sup else 0
+    return tid
+
+
+_TYPE_SUPER: dict[int, int] = {}
+
+
+def func_subtype(q: int, t: int) -> bool:
+    """Function type id `q` is `t` or a declared subtype of it: the host boundary's type check
+    (JIT code calls the collector module's `is_subtype`, S0013 5.6)."""
+    while q:
+        if q == t:
+            return True
+        q = _TYPE_SUPER.get(q, 0)
+    return False
 
 
 def mask(t: Any) -> int:
@@ -85,14 +130,28 @@ def mask(t: Any) -> int:
 
 
 def isref(t: Any) -> bool:
-    return t.__class__ is tuple or t in (0x70, 0x6F, 0x69, 0x74)
+    return types_isref(t)  # every reference type, the GC ones included (S0013)
 
 
-def isexn(t: Any) -> bool:
-    return t in (0x69, 0x74) or t.__class__ is tuple and t[1] in (-23, -12)
+RefType = tuple[int, bool, int, Any, int]  # hierarchy, nullable, heap type, module, func type id
 
 
-ARENA_WORDS = 8192  # exception objects are bump-allocated in chunks of 64 KiB (S0012 Q3)
+def reftypes(mod: Any, ts: Sequence[Any]) -> list[RefType | None]:
+    """Per value type of `mod`, None for a number, else what the host boundary checks a value
+    against (S0013 3b): its hierarchy (FUNC, EXTERN, EXN or ANY, by the type: `anyref` and a struct
+    reference are not funcrefs), nullable, its heap type, the module, and a concrete function type's
+    canonical id. Found once per signature, not per value (a host call crosses at ctypes speed)."""
+    out: list[RefType | None] = []
+    for t in ts:
+        if not isref(t):
+            out.append(None)
+            continue
+        null, ht = nn(t)
+        h = top(mod, ht)
+        out.append((h, bool(null), ht, mod, type_id(mod, ht) if ht >= 0 and h == FUNC else 0))
+    return out
+
+
 _TAG_IDS = iter(range(1, 1 << 63))  # tag identities of the process (S0012), never 0
 _TAG_LOCK = threading.Lock()
 
@@ -101,24 +160,32 @@ class Tag:
     """A tag's handle on the JIT targets (S0012): its identity, which code compares, and its
     parameter types (of the defining module) to read a payload."""
 
-    __slots__ = ("id", "params", "store")
+    __slots__ = ("id", "params", "store", "module")
 
-    def __init__(self, params: Sequence[Any], store: object) -> None:
+    def __init__(self, params: Sequence[Any], store: object, module: Any) -> None:
         with _TAG_LOCK:
             self.id = next(_TAG_IDS)
-        self.params, self.store = tuple(params), store
+        self.params, self.store, self.module = tuple(params), store, module
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class ExnRef:
-    """A non-null exnref outside the code: the address of an exception object of its store."""
+    """A non-null exnref outside the code: entry `index` of its store's handle table, which holds
+    the exception object's offset in the heap, as for a `GcRef` (S0013 step 6, D5)."""
 
-    addr: int
+    index: int
     store: object
 
 
-def isextern(t: Any) -> bool:
-    return t == 0x6F or t.__class__ is tuple and t[1] in (-17, -14)
+@dataclass(frozen=True, eq=False)
+class GcRef:
+    """A GC object (or, seen as an externref, an i31) outside the code: entry `index` of its store's
+    handle table, which holds the word (the collector rewrites it, S0013 Q10); one object per word.
+    `kind`: "struct", "array" or "i31"."""
+
+    index: int
+    kind: str
+    store: object
 
 
 @dataclass(frozen=True)
@@ -129,6 +196,16 @@ class Trampolines:
     bridge: int
     sp_stub: int
     tail_switch: int
+    # the walk's table (S0013 3a): the entry's return point, tail_switch's `restore` point, and
+    # where the entry keeps {exit record of the enclosing host call, its frame} from the stack
+    # pointer at its call
+    entry_ret: int
+    restore: int
+    saved: int
+    # the restore frame: from the stack pointer at tail_switch's call, the real return address and
+    # the caller's stack pointer (per architecture, the compiler's: in the artifact, S0015)
+    restore_ret_at: int
+    restore_up: int
     keep: object = None  # the code area
 
 
@@ -139,6 +216,13 @@ class FuncRef:
 
     addr: int
     store: object
+
+
+class _Slot(weakref.ref[GcRef | ExnRef]):
+    """The store's weak entry for a handle: `index` is its slot in `gc_handles`."""
+
+    __slots__ = ("index",)
+    index: int
 
 
 class _StoreStacks:
@@ -155,62 +239,195 @@ class _StoreStacks:
         # reference values at the boundary (S0002: opaque objects, None = null): an externref is
         # a handle (index + 1) of the object kept here for the store's lifetime; a funcref is a
         # record address, seen by the host as a `FuncRef` (one object per address)
-        self.externs: list[object] = []
+        self.externs: list[object] = []  # None: freed after a collection (D61)
         self.extern_ids: dict[int, int] = {}
+        self.free_externs: list[int] = []  # a heap: freed handle numbers, reused lowest first
         self.funcrefs: dict[int, FuncRef] = {}
-        # exceptions (S0012): {pending exnref, arena cursor, arena limit}, which context words
-        # 10, 12 and 13 point to; code bumps objects {tag, payload words} from the arena's last
-        # chunk. Chunks never move and are kept until the store is dropped (Q3); the first comes
-        # with the store, so only a throw that fills one calls into Python (`refill`).
-        self.exn = (ctypes.c_uint64 * 3)()
-        self.chunks: list[ctypes.Array[ctypes.c_uint64]] = []
-        self.new_chunk(ARENA_WORDS)
-        self.exnrefs: dict[int, ExnRef] = {}
+        # GC (S0013 3b): the store's heap (heap.GcHeap, with the first instance that uses GC) and
+        # the handle table: the word of each GcRef given to the host (S0017 Decision 11: a slot is
+        # released when the host drops the handle). A handle's finalizer only appends its dead
+        # `_Slot` to `released` (atomic, from any thread or point, also on a free-threaded build);
+        # `drain` empties it on the store's own thread, at the start of a collection and of a new
+        # handle: no lock, the contract is one thread per store. A released slot holds word 0
+        # (a null root) and is reused lowest first.
+        self.heap: Any = None
+        self.gc_handles: list[int] = []
+        self.gcrefs: dict[int, _Slot] = {}  # word -> weak entry of its handle (exnrefs too)
+        self.released: deque[_Slot] = deque()
+        self.free_handles: list[int] = []
+        self.lost: str | None = None  # a collection did not complete: every call refused (D61)
+        # exceptions (S0012): the pending word, which context word 10 points to: 0 or the u32
+        # heap offset of the last exception thrown, a root (S0013 step 6, D7)
+        self.exn = (ctypes.c_uint64 * 1)()
         self.tags: dict[int, Tag] = {}  # every tag of the store by identity
-        self.refill: Any = None  # context word EXN_REFILL (a ctypes callback)
+        # the exit record {sp, pc, frame} of the innermost host call (S0013 3a), word EXIT_RECORD
+        self.exit = (ctypes.c_uint64 * 3)()
+        self.walk_ranges: Any = None  # walk.py: the store's code ranges, built at the first walk
+        self.walk_vsp: list[int] = []  # check mode: the frames of the nested entries (walk.check)
+        # the store's trampolines, of every compiler in it (S0016): the walk's entry points (each
+        # target seals its own copy of the runtime's blob) -> the entry's saved block, its restore
+        # points -> (restore_ret_at, restore_up), and each bridge address -> its target (D71)
+        self.entries: dict[int, int] = {}
+        self.restores: dict[int, tuple[int, int]] = {}
+        self.bridges: dict[int, str] = {}
 
-    def new_chunk(self, words: int) -> None:
-        c = (ctypes.c_uint64 * words)()
-        self.chunks.append(c)
-        self.exn[1], self.exn[2] = ctypes.addressof(c), ctypes.addressof(c) + 8 * words
+    def attach(self, tramp: Trampolines, owner: str | None = None) -> None:
+        """Add an instance's trampolines to the store's sets. With `owner` (a compiled module's
+        target), first D71's precondition: one compiler per bridge address (in-process the target
+        name stands for the compiler string)."""
+        if owner is not None:
+            other = self.bridges.setdefault(tramp.bridge, owner)
+            if other != owner:
+                raise RuntimeError(
+                    f"targets {other} and {owner} share one bridge address {tramp.bridge:#x} in "
+                    "a store (D71: word 8 must identify the compiler)"
+                )
+        self.entries[tramp.entry_ret] = tramp.saved
+        self.restores[tramp.restore] = (tramp.restore_ret_at, tramp.restore_up)
 
-    def to_raw(self, t: Any, v: object) -> int:
+    def to_raw(self, k: RefType, v: object) -> int:
+        """A host value for reference type `k` (`reftypes`) -> its word, or `TypeError` before
+        anything runs when it does not match the type, as Wasmtime checks (S0013 3b.2 review: a
+        wrong word corrupts the heap). An externref host value is `(h << 2) | 2`, h its 1-based
+        handle; for `any`, `eq` and `i31` an int is an i31 in [-2**30, 2**30); for `any` any other
+        non-GC value is internalized as `any.convert_extern` does."""
+        h, null, ht, mod, tid = k
         if v is None:
+            if not null:
+                raise TypeError("null for a non-nullable reference")
             return 0
-        if isexn(t):
-            if not isinstance(v, ExnRef) or self.exnrefs.get(v.addr) is not v:
+        if h == EXTERN and ht == EXTERN and v.__class__ is not GcRef:  # the common host value
+            return self._host_word(v)
+        if ht in (NOFUNC, NOEXTERN, NONE, NOEXN):
+            raise TypeError(f"{v!r} for a reference type that holds only null")
+        if h == EXN:  # a handle this store gave out (LESSONS 35)
+            i = v.index if isinstance(v, ExnRef) else -1
+            if not self._is_handle(i, v):
                 raise TypeError(f"not an exception reference of this store: {v!r}")
-            return v.addr
-        if not isextern(t):
+            return self.gc_handles[i]
+        if h == FUNC:
             # only a reference this store handed out: a record of another store would run on that
             # store's context and value stack, a forged address anywhere (LESSONS 35)
             if not isinstance(v, FuncRef) or self.funcrefs.get(v.addr) is not v:  # one object each
                 raise TypeError(f"not a function reference of this store: {v!r}")
+            if tid and not func_subtype(ctypes.c_uint64.from_address(v.addr + 8).value, tid):
+                raise TypeError(f"{v!r} is not a function of the parameter's type")
             return v.addr
-        h = self.extern_ids.get(id(v))
-        if h is None:
-            self.externs.append(v)
-            h = self.extern_ids[id(v)] = len(self.externs)
-        return h
+        if isinstance(v, GcRef):
+            i = v.index
+            if not self._is_handle(i, v):
+                raise TypeError(f"not a GC reference of this store: {v!r}")
+            w = self.gc_handles[i]
+            if h == ANY and not self._fits(w, ht, mod):
+                raise TypeError(f"{v!r} does not match the parameter's type")
+            return w
+        if h == ANY and v.__class__ is int:
+            if ht not in (ANY, EQ, I31):
+                raise TypeError(f"an i31 ({v}) for a reference type it does not match")
+            if not -(1 << 30) <= v < 1 << 30:  # pyright: ignore[reportOperatorIssue]
+                raise ValueError(f"{v} is not an i31 value (from -2**30 to 2**30 - 1)")
+            return (cast(int, v) << 1 | 1) & M32
+        if h == ANY and ht != ANY:  # a host value is an `any` and nothing below it
+            raise TypeError(f"{v!r} is a host value: only anyref or externref takes it")
+        return self._host_word(v)
 
-    def from_raw(self, t: Any, r: int) -> object:
+    def _is_handle(self, i: int, v: object) -> bool:
+        """`v` is the live handle of slot `i` of this store (a released slot holds word 0)."""
+        if not 0 <= i < len(self.gc_handles):
+            return False
+        e = self.gcrefs.get(self.gc_handles[i])
+        return e is not None and e() is v
+
+    def drain(self) -> None:
+        """Release the slots of the handles the host dropped: word 0, to the free list."""
+        while self.released:
+            e = self.released.popleft()
+            w = self.gc_handles[e.index]
+            if self.gcrefs.get(w) is e:  # not already replaced by a new handle of the word
+                del self.gcrefs[w]
+            self.gc_handles[e.index] = 0
+            heapq.heappush(self.free_handles, e.index)
+
+    def _host_word(self, v: object) -> int:
+        """The word of host value `v`: `(h << 2) | 2`, h its 1-based handle in the store."""
+        n = self.extern_ids.get(id(v))
+        if n is None:
+            if self.free_externs:
+                n = heapq.heappop(self.free_externs)
+                self.externs[n - 1] = v
+            else:
+                if len(self.externs) >= (1 << 30) - 1:  # a host word fits a 4-byte reference field
+                    raise MemoryError("too many host references in one store")
+                self.externs.append(v)
+                n = len(self.externs)
+            self.extern_ids[id(v)] = n
+        return n << 2 | 2
+
+    def _fits(self, w: int, ht: int, mod: Any) -> bool:
+        """The any-hierarchy word `w` (an i31 or an object) is of heap type `ht` of `mod`."""
+        if w & 1:
+            return ht in (ANY, EQ, I31)
+        if ht in (ANY, EQ):
+            return True
+        heap, kind = self.heap, self.heap.kind_of(w)
+        if ht < 0:
+            return ht == (STRUCT if kind == "struct" else ARRAY)
+        t = heap.rtt(mod, ht)  # the display of the object's type at the target's depth
+        d, disp = len(heap.display[t]) - 1, heap.display[heap.u32(w)]
+        return len(disp) > d and disp[d] == t
+
+    def from_raw(self, h: int, r: int) -> object:
         if not r:
             return None
-        if isextern(t):
-            return self.externs[r - 1]
-        if isexn(t):
-            return self.exnrefs.setdefault(r, ExnRef(r, self))
-        ref = self.funcrefs.get(r)
+        if h == FUNC:
+            ref = self.funcrefs.get(r)
+            if ref is None:
+                ref = self.funcrefs[r] = FuncRef(r, self)
+            return ref
+        if r & 3 == 2 and h != EXN:
+            return self.externs[(r >> 2) - 1]
+        if h == ANY and r & 1:
+            v = r >> 1 & 0x7FFFFFFF
+            return v - (v >> 30 << 31)
+        self.drain()
+        e = self.gcrefs.get(r)
+        ref = e() if e is not None else None  # None: dropped, not drained yet
         if ref is None:
-            ref = self.funcrefs[r] = FuncRef(r, self)
+            obj = h == EXN or not r & 1  # an exnref is always an object
+            if obj and (self.heap is None or not self.heap.is_object(r)):
+                raise RuntimeError(f"JIT code returned {r:#x}, not a reference of this store")
+            if self.free_handles:
+                n = heapq.heappop(self.free_handles)
+                self.gc_handles[n] = r
+            else:
+                n = len(self.gc_handles)
+                self.gc_handles.append(r)
+            kind = "i31" if r & 1 else self.heap.kind_of(r)
+            ref = ExnRef(n, self) if h == EXN else GcRef(n, kind, self)
+            e = self.gcrefs[r] = _Slot(ref, self.released.append)
+            e.index = n
         return ref
 
 
-def load_trampolines(code: bytes, offsets: Sequence[int]) -> Trampolines:
-    """Seal an architecture's trampoline blob (its abi.assemble) into one code area, kept for the
-    process's lifetime by the cache of the target that calls this."""
-    mem = load(code)
-    return Trampolines(*(mem.addr + o for o in offsets), keep=mem)
+def load_trampolines(
+    runtime: tuple[bytes, tuple[int, int], int],
+    compiler: tuple[bytes, tuple[int, ...], tuple[int, int]],
+) -> Trampolines:
+    """Seal the runtime's blob (entry, sp_stub; `Target.runtime()`) and a compiler's (bridge,
+    tail_switch, `restore` and the restore frame's numbers; `Target.conventions()`, or a file's
+    copy) into one code area, kept for the process's lifetime by the cache of the target that
+    calls this. The compiler's blob starts at the next multiple of 16."""
+    (rblob, (entry_ret, sp_stub), saved), (cblob, (bridge, tail_switch, restore), nums) = (
+        runtime,
+        compiler,
+    )
+    c = len(rblob) + -len(rblob) % 16
+    mem = load(rblob + bytes(c - len(rblob)) + cblob)
+    a = mem.addr
+    return Trampolines(
+        a, a + c + bridge, a + sp_stub, a + c + tail_switch, a + entry_ret, a + c + restore,
+        saved=saved, restore_ret_at=nums[0], restore_up=nums[1], keep=mem,
+    )  # fmt: skip
 
 
 def _stacks(store: StoreState) -> _StoreStacks:
@@ -219,22 +436,28 @@ def _stacks(store: StoreState) -> _StoreStacks:
     return store.target_state
 
 
-def _refill_service(store: StoreState, st: _StoreStacks) -> Any:
-    """Context word EXN_REFILL (S0012): slots[0] = the words a throw needs; a new arena chunk of
-    at least that many. Status 0 written last (D34); 13 with the error pending if it fails."""
+def _checked(store: StoreState, cb: Callable[[int, int], int], n: int) -> Callable[[int, int], int]:
+    """Check mode (S0013 3a, walk.py): walk the store's frames before serving a host call; a nested
+    entry of this call gets the frame slots + 8n, which the check of a deeper call expects."""
 
-    def refill(ctx: int, slots: int) -> int:
-        status = STATUS_HOST_ERROR
+    def checked(ctx: int, slots: int) -> int:
+        st = _stacks(store)
         try:
-            st.new_chunk(max(ARENA_WORDS, ctypes.c_uint64.from_address(slots).value))
-            status = 0
+            walk.check(store, st, slots)
         except BaseException as e:
             store.pending = e
+            ctypes.c_uint64.from_address(ctx + 8 * HOST_ERROR).value = STATUS_HOST_ERROR
+            return 0
+        # an asynchronous exception can land at the push itself (before or after it): undo to the
+        # length before it, never pop an outer entry (D34; LESSONS 132)
+        depth = len(st.walk_vsp)
+        try:
+            st.walk_vsp.append(slots + 8 * n)
+            return cb(ctx, slots)
         finally:
-            ctypes.c_uint64.from_address(ctx + 8 * HOST_ERROR).value = status  # last
-        return 0
+            del st.walk_vsp[depth:]
 
-    return HOST(refill)
+    return checked
 
 
 _thread = threading.local()
@@ -245,6 +468,14 @@ def _stack_low() -> int | None:
     if not hasattr(_thread, "low"):
         _thread.low = _read_stack()[0]
     return _thread.low
+
+
+def stack_top() -> int | None:
+    """The end of the current thread's native stack (cached per thread), None if unknown: the
+    frame walk (walk.py) reads no stack word at or above it."""
+    if not hasattr(_thread, "high"):
+        _thread.high = _stack_bounds()[1]
+    return _thread.high
 
 
 def linux_main_low(high: int, soft: int | None) -> int | None:
@@ -272,13 +503,19 @@ def _linux_stack_vma_top() -> int | None:
 
 def _read_stack() -> tuple[int | None, str]:
     """(low, the rule that gave it)."""
+    low, _, rule = _stack_bounds()
+    return low, rule
+
+
+def _stack_bounds() -> tuple[int | None, int | None, str]:
+    """(low, high, the rule that gave low) of the current thread's native stack."""
     vp, size_t = ctypes.c_void_p, ctypes.c_size_t
     try:
         if sys.platform == "win32":
             lo, hi = vp(), vp()
             k32 = ctypes.WinDLL("kernel32")
             k32.GetCurrentThreadStackLimits(ctypes.byref(lo), ctypes.byref(hi))
-            return lo.value, "GetCurrentThreadStackLimits"
+            return lo.value, hi.value, "GetCurrentThreadStackLimits"
         libc = ctypes.CDLL(None)
         libc.pthread_self.restype = vp
         me = libc.pthread_self()
@@ -294,11 +531,11 @@ def _read_stack() -> tuple[int | None, str]:
 
                 soft = resource.getrlimit(resource.RLIMIT_STACK)[0]
                 size = min(size, soft) if soft > 0 else size
-            return (top - size + mmap.PAGESIZE if top else None), "pthread_get_stack*_np"
+            return (top - size + mmap.PAGESIZE if top else None), top, "pthread_get_stack*_np"
         attr = ctypes.create_string_buffer(256)  # >= sizeof(pthread_attr_t) on glibc and musl
         libc.pthread_getattr_np.argtypes = [vp, ctypes.c_char_p]
         if libc.pthread_getattr_np(me, attr) != 0:
-            return None, "pthread_getattr_np failed"
+            return None, None, "pthread_getattr_np failed"
         addr, size = vp(), size_t()
         libc.pthread_attr_getstack(attr, ctypes.byref(addr), ctypes.byref(size))
         libc.pthread_attr_destroy(attr)
@@ -308,10 +545,10 @@ def _read_stack() -> tuple[int | None, str]:
             soft = resource.getrlimit(resource.RLIMIT_STACK)[0]
             finite = None if soft == resource.RLIM_INFINITY else soft
             high = _linux_stack_vma_top() or (addr.value or 0) + size.value
-            return linux_main_low(high, finite), "linux main thread: top - RLIMIT_STACK"
-        return addr.value, "pthread_getattr_np"
+            return linux_main_low(high, finite), high, "linux main thread: top - RLIMIT_STACK"
+        return addr.value, (addr.value or 0) + size.value or None, "pthread_getattr_np"
     except (OSError, AttributeError):
-        return None, "unavailable"
+        return None, None, "unavailable"
 
 
 def native_budget(sp: int, low: int | None, budget: int) -> int:
@@ -435,6 +672,7 @@ class Table:
         except (MemoryError, OverflowError):
             raise MemoryError(f"out of memory (failed to allocate {8 * size} bytes)") from None
         self.users: list[tuple[ctypes.Array[ctypes.c_uint64], int]] = []
+        self.refs = False  # any-, extern- or exn-hierarchy elements: roots (its creator sets it)
 
     def bind(self, ctx: "ctypes.Array[ctypes.c_uint64]", word: int) -> None:
         ctx[word], ctx[word + 1] = ctypes.addressof(self.buf), self.size
@@ -444,6 +682,8 @@ class Table:
         """table.grow: the old size, or -1 at the table's address width (S0009). Another thread
         than the store's raises RuntimeError before anything changes."""
         st = cast(StoreState | None, self.store)
+        if st is not None:
+            refuse_lost(st)
         took = st.claim() if st is not None else False
         try:
             return self._grow(delta, init)
@@ -468,9 +708,20 @@ class Table:
 
     def write(self, at: int, values: Sequence[int]) -> None:
         """Elements `at`... (table.init, segments): all or nothing."""
+        if self.store is not None:
+            refuse_lost(self.store)
         if at + len(values) > self.size:
             raise Trap(TrapCode.TABLE_OUT_OF_BOUNDS, "out of bounds table access")
         self.buf[at : at + len(values)] = list(values)
+
+
+def refuse_lost(store: object) -> None:
+    """Nothing runs on a store whose collection did not complete (D61): the heap may be half
+    moved. Entries, host calls returning into wasm, instantiation, host access to globals and
+    tables raise its error."""
+    lost = _stacks(cast(StoreState, store)).lost
+    if lost:
+        raise RuntimeError(lost)
 
 
 def _no_service(args: Sequence[Raw]) -> list[Raw]:
@@ -507,8 +758,12 @@ class Instance:
         memories: Sequence[Memory] = (),
         nglobals: int = 0,
         layout: Layout | None = None,
+        sites: dict[int, gc.SiteMap] | None = None,
     ) -> None:
         self.store, self.tramp, self.funcs = store, tramp, funcs
+        # the decoded STACKMAPS section (S0013 3a): None for hand-assembled code, never walked
+        self.walk_sites = sites
+        self.walk = sites is not None and walk.checking()
         self.nimports = len(imports)
         self.layout = layout or Layout(
             memories=len(memories), globals=nglobals, imports=len(imports)
@@ -517,12 +772,11 @@ class Instance:
         self.ctx[HOST_BRIDGE] = tramp.bridge
         self.ctx[TAIL_SWITCH] = tramp.tail_switch
         st = _stacks(store)  # call_indirect may enter this context without `call`: limits now
+        st.attach(tramp)  # its entry returns to this copy's entry_ret (hand-assembled code too)
         self.ctx[NSTACK_LIMIT], self.ctx[VSTACK_LIMIT] = st.nlimit, st.vtop
-        if st.refill is None:
-            st.refill = _refill_service(store, st)
-        exn = ctypes.addressof(st.exn)  # S0012: in every context (throw_ref needs no tag)
-        self.ctx[EXCEPTION], self.ctx[ARENA_CURSOR], self.ctx[ARENA_LIMIT] = exn, exn + 8, exn + 16
-        self.ctx[EXN_REFILL] = ctypes.cast(st.refill, ctypes.c_void_p).value or 0
+        # S0012: in every context (throw_ref needs no tag); words 11-13 reserved, zero
+        self.ctx[EXCEPTION] = ctypes.addressof(st.exn)
+        self.ctx[EXIT_RECORD] = ctypes.addressof(st.exit)  # every entry reads it (S0013 3a)
         self.code: ExecMem = load(code)
         self.entry = ENTRY(tramp.entry)
         self.callbacks = [HOST(self._host(*im)) for im in imports]  # kept alive here
@@ -530,6 +784,12 @@ class Instance:
             self.ctx[self.layout.import_(i)] = ctypes.cast(cb, ctypes.c_void_p).value or 0
         for i, mem in enumerate(memories):
             mem.bind(self.ctx, self.layout.memory(i))
+        if self.layout.heap:  # the store's GC heap, as the memory after the declared ones (S0013)
+            if st.heap is None:
+                from waboros.targets.jit.common.heap import GcHeap  # (heap imports this module)
+
+                st.heap = GcHeap(store)
+            st.heap.mem.bind(self.ctx, self.layout.memory(self.layout.memories))
         if memories:  # delta, then the memory index if there are several (S0003)
             many = len(memories) > 1
 
@@ -544,13 +804,16 @@ class Instance:
             )
         self.memories = list(memories)
         self.memory = self.memories[0] if memories else None  # memory 0
-        # every libcall word is callable: one the instance does not provide reports an error
-        # instead of the bridge calling address 0 (a subclass replaces the ones it serves)
+        # every libcall word in use is callable: one the instance does not provide reports an error
+        # instead of the bridge calling address 0 (a subclass replaces the ones it serves); the
+        # block's reserved words (D58) stay zero, as the fresh context is
         missing = HOST(self._host(_no_service, 0, []))
         self.callbacks.append(missing)
-        for j in range(LIBCALLS):
-            if not self.ctx[self.layout.libcall(j)]:
-                self.ctx[self.layout.libcall(j)] = ctypes.cast(missing, ctypes.c_void_p).value or 0
+        words = [self.layout.libcall(j) for j in range(LIBCALLS)]
+        words += [self.layout.service(j) for j in range(self.layout.gcsvc) if j != GC_RESERVED]
+        for w in words:
+            if not self.ctx[w]:
+                self.ctx[w] = ctypes.cast(missing, ctypes.c_void_p).value or 0
         store.instances.append(self)
 
     def call(self, func_index: int, args: Sequence[Raw]) -> list[Raw]:
@@ -573,6 +836,9 @@ class Instance:
                     for inst in store.instances:
                         if isinstance(inst, Instance):
                             inst.ctx[NSTACK_LIMIT] = nlimit
+                # is_subtype runs on the collector's own context, and a collection lowers its limit
+                if st.heap is not None and st.heap.collector:
+                    st.heap.collector[0].ctx[NSTACK_LIMIT] = nlimit
             frame, n = st.vsp, max(len(args), nres)
             if frame + 8 * n > st.vtop:
                 raise Trap(TrapCode.STACK_OVERFLOW, "call stack exhausted")
@@ -622,31 +888,43 @@ class Instance:
 
     def _uncaught(self) -> BaseException:
         """Status 14 at an entry: `Trap(UNCAUGHT_EXCEPTION)` with (tag, payload values as `call`
-        returns them on this target), read from the pending object (S0012 Q4)."""
+        returns them on this target), read from the pending object in the heap before any wasm
+        or collection runs (S0012 Q4, S0013 step 6); references become rooted handles."""
         st = _stacks(self.store)
-        addr = st.exn[0]
-        tag = st.tags.get(ctypes.c_uint64.from_address(addr).value) if addr else None
+        off, heap = st.exn[0], st.heap
+        if not off or heap is None:
+            return RuntimeError("JIT code returned status 14 without an exception")
+        tag = st.tags.get(ctypes.c_uint64.from_address(heap.base + off + 8).value)
         if tag is None:
             return RuntimeError("JIT code returned status 14 without an exception")
-        raw = list((ctypes.c_uint64 * simd.width(tag.params)).from_address(addr + 8))
-        vals = zip(tag.params, simd.join(tag.params, raw), strict=True)
+        mod = tag.module
+        offs, _ = gc.exn_layout(mod, tag.params)
+        sizes = [16 if p == simd.V128 else gc.storage_size(mod, p) for p in tag.params]
+        at = [heap.base + off + o for o in offs]
+        raw = [
+            int.from_bytes(ctypes.string_at(a, n), "little") for a, n in zip(at, sizes, strict=True)
+        ]
+        vals = zip(reftypes(mod, tag.params), raw, strict=True)
         t = Trap(TrapCode.UNCAUGHT_EXCEPTION, "thrown Wasm exception")
-        t.exn = (tag, tuple(st.from_raw(p, v) if isref(p) else v for p, v in vals))
+        t.exn = (tag, tuple(v if k is None else st.from_raw(k[0], v) for k, v in vals))
         return t
 
-    def _host(self, f: HostFunc, nparams: int, masks: Sequence[int]) -> Callable[[int, int], int]:
+    def _host(
+        self, f: HostFunc, nparams: int, masks: Sequence[int], live: bool = False
+    ) -> Callable[[int, int], int]:  # fmt: skip
         """The status of a host call is context word HOST_ERROR, which the bridge presets to 13
         (D34): the callback writes the results, then the status, as its last action. An
         asynchronous exception (KeyboardInterrupt) escaping the callback leaves the preset: the
         call fails (`_error`), never "succeeds" with unwritten results. The C return value is
         ignored (ctypes leaves it undefined when an exception escapes). A host exception waits in
-        the store."""
+        the store. `live`: `f` gets the slots themselves (a GC service reads them after a
+        collection rewrote them, S0013 B2), not a copy."""
         store, n = self.store, max(nparams, len(masks))
 
         def serve(slots: int) -> int:
             try:
                 vals = (ctypes.c_uint64 * n).from_address(slots)
-                res = f(vals[:nparams])
+                res = f(cast(Sequence[Raw], vals) if live else vals[:nparams])
                 for i, (r, m) in enumerate(zip(res, masks, strict=True)):
                     vals[i] = r & m
                 return 0
@@ -669,6 +947,9 @@ class Instance:
                 if why:
                     store.pending = RuntimeError(f"{guard.LOST} ({why})")
                     status = STATUS_HOST_ERROR
+                if not status and st.lost:  # a host caught it: wasm must not resume (D61)
+                    store.pending = RuntimeError(st.lost)
+                    status = STATUS_HOST_ERROR
             except BaseException as e:  # after serve() too (guard.broken()): the call fails
                 store.pending = store.pending or e
                 status = STATUS_HOST_ERROR
@@ -677,7 +958,7 @@ class Instance:
                 ctypes.c_uint64.from_address(ctx + 8 * HOST_ERROR).value = status  # last
             return 0
 
-        return callback
+        return _checked(store, callback, n) if self.walk else callback
 
     def interrupt(self) -> None:
         """Any thread: the next poll of this instance's code returns INTERRUPT."""
@@ -714,19 +995,23 @@ class JitFunc:
     def record(self) -> tuple[int, int, int]:
         inst = self.inst
         offset = inst.funcs[self.idx - inst.nimports][0]
-        tid = type_id(inst.module["types"], inst.ftypes[self.idx])
+        tid = type_id(inst.module, inst.ftypes[self.idx])
         return inst.code.addr + offset, tid, ctypes.addressof(inst.ctx)
 
 
-def _ref_host(st: _StoreStacks, f: HostFunc, ps: Sequence[Any], rs: Sequence[Any]) -> HostFunc:
-    """A host function whose signature has references: they cross as objects (S0002)."""
+def _ref_host(
+    st: _StoreStacks, mod: Any, f: HostFunc, ps: Sequence[Any], rs: Sequence[Any]
+) -> HostFunc:  # fmt: skip
+    """A host function whose signature (in `mod`) has references: they cross as objects (S0002)."""
+
+    kp, kr = reftypes(mod, ps), reftypes(mod, rs)
 
     def call(args: Sequence[Raw]) -> list[Raw]:
         objs: list[Any] = [
-            st.from_raw(t, a) if isref(t) else a for t, a in zip(ps, args, strict=True)
+            a if k is None else st.from_raw(k[0], a) for k, a in zip(kp, args, strict=True)
         ]
         res = f(objs)
-        return [st.to_raw(t, r) if isref(t) else r for t, r in zip(rs, res, strict=True)]
+        return [r if k is None else st.to_raw(k, r) for k, r in zip(kr, res, strict=True)]
 
     return cast(HostFunc, call)
 
@@ -755,20 +1040,32 @@ class JitInstance(Instance):
         self,
         store: StoreState,
         tramp: Trampolines,
-        c: Compiled,
+        c: "Compiled | ModuleView",
         imports: Sequence[Extern],
         owner: str,
     ) -> None:
+        if c.stackmaps is None:  # every frame of a store must be walkable (S0013 Q5)
+            raise ValueError("compiled module has no stack-map table (STACKMAPS); recompile it")
+        cached, table = c.sites, c.stackmaps  # decoded once per table (S0013 7.5)
+        if cached is None or cached[0] is not table:
+            cached = c.sites = (table, gc.decode(table))  # checked: refused here (D65)
+        sites = cached[1]
+        refuse_lost(store)
         mod = self.module = c.module
+        self.hier: dict[int, tuple[list[RefType | None], list[RefType | None]]] = {}  # per export
         types = mod["types"]
         self.owner = owner
         st = _stacks(store)
+        st.attach(tramp, owner)  # before anything of the instance is in the store
         hosts: list[tuple[HostFunc, int, Sequence[int]]] = []
         self.hosts: list[HostFunc] = []
         memories: list[Memory] = []
         tables: list[Table] = []
         self.gaddr: list[int] = []
         self.cells: list[GlobalCell] = []  # keeps the owners of imported globals alive
+        # roots of a collection from registration on, even if instantiation fails later (B6)
+        self.tables: list[Table] = []
+        self.elems: list[list[int]] = []
         self.tags: list[Tag] = []
         for im, ext in zip(mod["imports"], imports, strict=True):
             _check_store(store, im[0], ext.value)
@@ -777,7 +1074,7 @@ class JitInstance(Instance):
                 f = cast(HostFunc, ext.value)
                 self.hosts.append(f)
                 if any(isref(t) for t in (*ps, *rs)):
-                    f = _ref_host(st, f, ps, rs)
+                    f = _ref_host(st, mod, f, ps, rs)
                 if simd.V128 in (*ps, *rs):
                     f = _v128_host(f, ps, rs)
                 hosts.append((f, simd.width(ps), _masks(rs)))
@@ -798,7 +1095,7 @@ class JitInstance(Instance):
                     raise ValueError("tag import belongs to another store")
                 self.tags.append(tag)
         for ti in mod["tags"]:
-            self.tags.append(Tag(types[ti][0], store))
+            self.tags.append(Tag(types[ti][0], store, mod))
         for tag in self.tags:
             st.tags[tag.id] = tag
         for mt in mod["mems"]:
@@ -808,14 +1105,31 @@ class JitInstance(Instance):
         self.gtypes = [im[3][0] for im in mod["imports"] if im[0] == "global"]
         self.gtypes += [g[0] for g in mod["globals"]]
         ng = len(self.gtypes)
-        super().__init__(store, tramp, c.code, c.funcs, hosts, memories, ng, c.layout)
+        super().__init__(store, tramp, c.code, c.funcs, hosts, memories, ng, c.layout, sites)
         lay, ctx = self.layout, self.ctx
         if c.flags & guard.BOUNDS_GUARD:  # before any of its code can run (S0006)
             guard.add_code(self.code, c.faults)
             for m in memories:  # an i64 memory has no fault point and may move (S0009)
                 if not m.a64:
                     guard.add_reservation(m.res)
+            if lay.heap:
+                guard.add_reservation(st.heap.mem.res)
             st.guard = True
+        for k, ti in enumerate(c.rtts):  # type-info records before any code runs (S0013 3b)
+            ctx[lay.rtt(k)] = st.heap.rtt(mod, ti)
+        tts = [im[3] for im in mod["imports"] if im[0] == "tag"] + mod["tags"]
+        for k, t in enumerate(c.thrown, len(c.rtts)):  # exception records (S0013 step 6, D3)
+            ctx[lay.rtt(k)] = st.heap.rtt(mod, tts[t], exn=True)
+        if lay.heap:  # function types a subtype test may meet, with the tid map (S0013 5.6)
+            for ti, (comp, sups, final, *_) in enumerate(mod["tdefs"]):
+                if comp[0] == "func" and (sups or not final):
+                    st.heap.rtt(mod, ti)
+        if c.subtype:  # IS_SUBTYPE: the collector's is_subtype (decided by the compiler)
+            from waboros.targets.jit.common import collect  # (collect imports this module)
+
+            coll, idx = collect._collector(self, st.heap)  # pyright: ignore[reportPrivateUsage]
+            code, _, cctx = JitFunc(coll, idx["is_subtype"]).record()
+            ctx[lay.subtype() : lay.subtype() + RECORD] = [code, 0, cctx]
         base = ctypes.addressof(ctx)
         self.records = {f: base + 8 * lay.record(r) for r, f in enumerate(c.records)}
         for f, addr in self.records.items():
@@ -825,11 +1139,11 @@ class JitInstance(Instance):
             elif isinstance(v, JitFunc) and v.inst.store is store:
                 rec = v.record()  # a direct call into the exporting instance
             else:  # a host function: the module's thunk calls it through the bridge
-                rec = (self.code.addr + c.thunks[f], type_id(types, self.ftypes[f]), base)
+                rec = (self.code.addr + c.thunks[f], type_id(mod, self.ftypes[f]), base)
             word = (addr - base) // 8
             ctx[word : word + RECORD] = list(rec)
         for k, ti in enumerate(c.sigs):
-            ctx[lay.sig(k)] = type_id(types, ti)
+            ctx[lay.sig(k)] = type_id(mod, ti)
         for t, tag in enumerate(self.tags):
             ctx[lay.tag(t)] = tag.id
         for i in range(ng):
@@ -847,6 +1161,7 @@ class JitInstance(Instance):
         for (mn, mx), init in zip(mod["tables"], mod["tinit"], strict=True):
             at = mod["taddr"][len(tables)] == I64
             tables.append(Table(mn, mx, 0 if init is None else self._const(init), store, a64=at))
+            tables[-1].refs = _root(mod, mod["ttypes"][len(tables) - 1])
         for i, t in enumerate(tables):
             t.bind(ctx, lay.table(i))
         self.tables = tables
@@ -866,6 +1181,14 @@ class JitInstance(Instance):
             cb = HOST(self._host(fn, nargs, [M64] * nres))  # table.grow: masked by the table
             self.callbacks.append(cb)
             ctx[lay.libcall(j)] = ctypes.cast(cb, ctypes.c_void_p).value or 0
+        gcs = [(ALLOC, self._alloc, 1, 0)]
+        gcs += [(ARRAY_NEW, self._array_new, 4, 1), (ARRAY_NEW_DATA, self._array_data, 4, 1)]
+        gcs += [(ARRAY_NEW_ELEM, self._array_elem, 4, 1), (ARRAY_FILL, self._array_fill, 6, 0)]
+        gcs += [(ARRAY_INIT_DATA, self._init_data, 6, 0), (ARRAY_INIT_ELEM, self._init_elem, 6, 0)]
+        for j, fn, nargs, nres in gcs if lay.gcsvc else ():  # the GC group (S0013)
+            cb = HOST(self._host(fn, nargs, [M64] * nres, live=True))
+            self.callbacks.append(cb)
+            ctx[lay.service(j)] = ctypes.cast(cb, ctypes.c_void_p).value or 0
         segs: list[tuple[int, Any, Any, Any]] = mod["elem_info"]
         for i, ((ti, off, _, _), mode) in enumerate(zip(segs, mod["elem_mode"], strict=True)):
             if mode == "active":
@@ -884,18 +1207,113 @@ class JitInstance(Instance):
             self.call(mod["start"], [])
 
     def _const(self, e: tuple[Any, ...]) -> int:
-        k = e[0]
-        if k in ("i32", "i64", "f32", "f64", "v128"):
-            return e[1]
-        if k == "global":
-            g: int = e[1]
-            return self._read_global(g)
-        if k == "func":
-            return self.records[e[1]]
-        if k == "null":
-            return 0
-        x, y, m = self._const(e[2]), self._const(e[3]), M32 if e[1] == "i32" else M64
-        return (x + y if k == "add" else x - y if k == "sub" else x * y) & m
+        """A constant expression's value: its nodes in order over a value stack, of any length
+        (S0014 "Constant expressions"): the front end's nodes or the artifact reader's."""
+        vals: list[int] = []
+        for n in e:
+            k = n[0]
+            if k in ("i32", "i64", "f32", "f64", "v128"):
+                vals.append(n[1])
+            elif k == "global":
+                vals.append(self._read_global(n[1]))
+            elif k == "func":
+                vals.append(self.records[n[1]])
+            elif k == "null":
+                vals.append(0)
+            elif k == "gc":
+                a = vals[len(vals) - n[2] :]
+                del vals[len(vals) - n[2] :]
+                vals.append(self._gc_op(n[1], a))
+            else:
+                y, x, m = vals.pop(), vals.pop(), M32 if n[1] == "i32" else M64
+                vals.append((x + y if k == "add" else x - y if k == "sub" else x * y) & m)
+        return vals[0]
+
+    def _gc_op(self, ins: tuple[int, ...], a: list[int]) -> int:
+        """One allocating or converting operation of a constant expression (S0013): ref.i31, the
+        two conversions, struct.new(_default), array.new(_default, _fixed)."""
+        o = ins[0]
+        if o == 0xFB1C:
+            return (a[0] << 1 | 1) & M32
+        if o in (0xFB1A, 0xFB1B):
+            return a[0]
+        heap = _stacks(self.store).heap
+        if o in (0xFB00, 0xFB01):  # struct.new, struct.new_default
+            return heap.new_struct(self.module, ins[1], a or None)
+        if o == 0xFB08:  # array.new_fixed (values)
+            return heap.new_array(self.module, ins[1], len(a), vals=a)
+        return heap.new_array(self.module, ins[1], a[-1], a[0] if o == 0xFB06 else 0)  # (value, n)
+
+    # the GC group's services (S0013): arguments as the compiler put them in the slots
+    # The services that allocate may collect (D1): they read reference operands from their slots
+    # and segment items after allocating (B2, B3), never before.
+    def _alloc(self, a: Sequence[Raw]) -> list[Raw]:
+        """ALLOC: room for a[0] bytes past the cursor; the code bumps it when it retries."""
+        _stacks(self.store).heap.room(a[0], self)
+        return []
+
+    def _array_new(self, a: Sequence[Raw]) -> list[Raw]:  # (value low, high, n) + type
+        heap, n, ti = _stacks(self.store).heap, a[2], a[3]
+        r = heap.new_array(self.module, ti, n, vals=(), inst=self)
+        heap.fill(r + gc.ARRAY_DATA, self._es(ti), a[0] | a[1] << 64, n)  # the value, rewritten
+        return [r]
+
+    def _array_data(self, a: Sequence[Raw]) -> list[Raw]:
+        """(offset, n) + type, segment: the segment's bounds first (Wasmtime, LESSONS 102)."""
+        o, n, ti, seg = a
+        heap, data, es = _stacks(self.store).heap, self.datas[seg], self._es(ti)
+        if o + n * es > len(data):
+            raise Trap(TrapCode.MEMORY_OUT_OF_BOUNDS, "out of bounds memory access")
+        r = heap.new_array(self.module, ti, n, vals=(), inst=self)
+        ctypes.memmove(heap.base + r + gc.ARRAY_DATA, data[o : o + n * es], n * es)
+        return [r]
+
+    def _array_elem(self, a: Sequence[Raw]) -> list[Raw]:
+        o, n, ti, seg = a  # (offset, n) + type, segment
+        if o + n > len(self.elems[seg]):
+            raise Trap(TrapCode.TABLE_OUT_OF_BOUNDS, "out of bounds table access")
+        heap, es = _stacks(self.store).heap, self._es(ti)
+        r = heap.new_array(self.module, ti, n, vals=(), inst=self)
+        for k, v in enumerate(self.elems[seg][o : o + n]):  # after the allocation (B3)
+            heap.put(r + gc.ARRAY_DATA + k * es, es, v)
+        return [r]
+
+    def _range(self, r: int, i: int, n: int, ti: int) -> tuple[Any, int]:
+        """(heap, element size) after array `r`'s null and range checks, in that order."""
+        heap = _stacks(self.store).heap
+        if not r:
+            raise Trap(TrapCode.NULL_REFERENCE, "null array reference")
+        if i + n > heap.u32(r + gc.ARRAY_LEN):
+            raise Trap(TrapCode.ARRAY_OUT_OF_BOUNDS, "out of bounds array access")
+        return heap, self._es(ti)
+
+    def _es(self, ti: int) -> int:  # the element size of array type ti in the heap
+        return gc.storage_size(self.module, self.module["tdefs"][ti][0][1][0])
+
+    def _array_fill(self, a: Sequence[Raw]) -> list[Raw]:
+        r, i, lo, hi, n, ti = a  # (array, i, value low, high, n) + type
+        heap, es = self._range(r, i, n, ti)
+        heap.fill(r + gc.ARRAY_DATA + i * es, es, lo | hi << 64, n)
+        return []
+
+    def _init_data(self, a: Sequence[Raw]) -> list[Raw]:
+        r, d, s, n, ti, seg = a  # (array, d, s, n) + type, segment: array, then segment checks
+        heap, es = self._range(r, d, n, ti)
+        data = self.datas[seg]
+        if s + n * es > len(data):
+            raise Trap(TrapCode.MEMORY_OUT_OF_BOUNDS, "out of bounds memory access")
+        ctypes.memmove(heap.base + r + gc.ARRAY_DATA + d * es, data[s : s + n * es], n * es)
+        return []
+
+    def _init_elem(self, a: Sequence[Raw]) -> list[Raw]:
+        r, d, s, n, ti, seg = a  # (array, d, s, n) + type, segment
+        heap, es = self._range(r, d, n, ti)
+        items = self.elems[seg]
+        if s + n > len(items):
+            raise Trap(TrapCode.TABLE_OUT_OF_BOUNDS, "out of bounds table access")
+        for k, v in enumerate(items[s : s + n]):
+            heap.put(r + gc.ARRAY_DATA + (d + k) * es, es, v)
+        return []
 
     # runtime services (libcalls): arguments as the compiler put them in the slots
     def _table_grow(self, a: Sequence[Raw]) -> list[Raw]:
@@ -927,6 +1345,7 @@ class JitInstance(Instance):
         return []
 
     def call(self, func_index: int, args: Sequence[Raw]) -> list[Raw]:
+        refuse_lost(self.store)
         if func_index < self.nimports:
             # an exported import: the host function itself (refs: objects); `me` as in Instance.call
             me, depth = threading.get_ident(), self.store.depth
@@ -946,9 +1365,12 @@ class JitInstance(Instance):
         if not any(isref(t) or t == simd.V128 for t in (*ps, *rs)):
             return super().call(func_index, args)
         st = _stacks(self.store)
-        raw = [st.to_raw(t, a) if isref(t) else a for t, a in zip(ps, args, strict=True)]
+        ks = self.hier.get(func_index)
+        if ks is None:
+            ks = self.hier[func_index] = (reftypes(self.module, ps), reftypes(self.module, rs))
+        raw = [a if k is None else st.to_raw(k, a) for k, a in zip(ks[0], args, strict=True)]
         res = simd.join(rs, super().call(func_index, simd.split(ps, raw)))
-        return [st.from_raw(t, r) if isref(t) else r for t, r in zip(rs, res, strict=True)]  # pyright: ignore[reportReturnType]
+        return [r if k is None else st.from_raw(k[0], r) for k, r in zip(ks[1], res, strict=True)]  # pyright: ignore[reportReturnType]
 
     def export(self, name: str) -> Extern:
         exports: list[tuple[str, int, int]] = self.module["exports"]
@@ -985,6 +1407,8 @@ class JitInstance(Instance):
         return ctypes.c_uint64.from_address(self.gaddr[g]).value
 
     def global_get(self, global_index: int) -> Raw:
+        refuse_lost(self.store)
         r = self._read_global(global_index)
         t = self.gtypes[global_index]
-        return _stacks(self.store).from_raw(t, r) if isref(t) else r  # pyright: ignore[reportReturnType]
+        k = reftypes(self.module, [t])[0]
+        return r if k is None else _stacks(self.store).from_raw(k[0], r)  # pyright: ignore[reportReturnType]

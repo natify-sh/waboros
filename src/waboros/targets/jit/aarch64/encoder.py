@@ -382,8 +382,9 @@ class Asm:
         self._fix(1 << 31 | 0x22 << 23 | _rs(n) << 5 | _rs(d), "lo12", label)
 
     def bti(self, kind: str = "c") -> None:
-        """Landing pad (R2): `c` for blr/br x16/x17 targets, `j` for jump-table pads."""
-        self.emit({"c": 0xD503245F, "j": 0xD503249F}[kind])
+        """Landing pad (R2): `c` for blr/br x16/x17 targets, `j` for jump-table pads, `jc` for
+        both (the boundary: blr or br through any register, S0015 Q5)."""
+        self.emit({"c": 0xD503245F, "j": 0xD503249F, "jc": 0xD50324DF}[kind])
 
     # --- Advanced SIMD and FP (baseline)
     def fmov_to(self, v: int, r: int, wide: bool = True) -> None:

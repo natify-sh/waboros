@@ -96,8 +96,32 @@ def test_windows_offsets_match_the_sdk_headers() -> None:
     assert _off(ARM64_CONTEXT, "pc") == a64.WIN_CTX_PC == 0x108
 
 
+# bionic arm64 (aosp-mirror/platform_bionic main, read 2026-11-25): libc/include/sys/ucontext.h
+# (__aarch64__) and the kernel's uapi asm/sigcontext.h, siginfo_t the kernel's (asm-generic)
+B_STACK = _s(("sp", C.c_void_p), ("flags", C.c_int32), ("size", C.c_size_t))  # bionic stack_t
+B_UC_HEAD = _s(("flags", C.c_ulong), ("link", C.c_void_p), ("stack", B_STACK),
+               ("sigmask", U64), ("padding", C.c_char * (128 - 8)))  # fmt: skip
+B_SIGCONTEXT = _s(("fault_address", U64), ("regs", U64 * 31), ("sp", U64), ("pc", U64))
+B_SIGINFO = _s(("signo", C.c_int32), ("errno", C.c_int32), ("code", C.c_int32), ("pad", C.c_int32),
+               ("addr", C.c_void_p))  # fmt: skip
+
+
+@only_64bit
+def test_bionic_arm64_offsets_match_the_headers() -> None:
+    """Android arm64 (S0006, opt-in): the handler's Linux offsets are bionic's too. uc_mcontext
+    is 16-aligned (struct sigcontext's `__reserved[4096] __aligned__(16)`), so it starts at the
+    head's size rounded up to 16; ctypes cannot say `aligned` before 3.13, hence the rounding."""
+    mcontext = (C.sizeof(B_UC_HEAD) + 15) // 16 * 16
+    assert mcontext == 176
+    assert mcontext + _off(B_SIGCONTEXT, "pc") == a64.UC_PC
+    assert (_off(B_SIGINFO, "code"), _off(B_SIGINFO, "addr")) == (a64.SI_CODE, a64.SI_ADDR)
+    sigaction = type("S", (C.Structure,), {"_fields_": guard._SIGACTION["android"]})  # pyright: ignore[reportPrivateUsage]
+    assert sigaction.handler.offset == a64.BIONIC_SA_HANDLER == x64.BIONIC_SA_HANDLER  # pyright: ignore[reportAttributeAccessIssue]
+
+
 ARGS = (0x7F00_1122_3340, 0x7F00_5566_7780, 0x7F00_99AA_BBC0, 0x7F00_CCDD_EEF0)
-OSES = {"linux": {}, "darwin": {"darwin": True}, "windows": {"windows": True}}
+OSES = {"linux": {}, "darwin": {"darwin": True}, "windows": {"windows": True},
+        "android": {"bionic": True}}  # fmt: skip
 
 
 def test_the_aarch64_handlers_round_trip_through_llvm_mc() -> None:
@@ -117,6 +141,7 @@ def test_the_aarch64_handlers_round_trip_through_llvm_mc() -> None:
         assert not any(re.search(r"\b[xw]18\b", ln) for ln in lines)  # the platform register
         only = {"darwin": {"ldr x10, [x2, #48]", "ldr x10, [x10, #272]", "ldr x9, [x1, #24]",
                            "str x13, [x9, #272]", "cmp w0, #10"},
+                "android": {"ldr x16, [x16, #8]"},
                 "windows": {"ldr x1, [x0]", "ldr x2, [x0, #8]", "ldr x10, [x2, #264]",
                             "ldr x9, [x1, #40]", "str x13, [x2, #264]", "mov w0, #-1"}}  # fmt: skip
         texts = {re.sub(r"\s+", " ", ln.split("//")[0].strip()) for ln in lines}
@@ -184,13 +209,11 @@ def test_the_handler_on_fabricated_contexts(os_: str) -> None:
         pytest.skip("no signal handler on Windows")
     jit = native_jit()
     native(jit)
-    if os_ == "android" and jit != "jit-x86_64":
-        pytest.skip("Android arm64 has no guard mode (S0006)")
     sigaction = type("S", (C.Structure,), {"_fields_": guard._SIGACTION[os_]})  # pyright: ignore[reportPrivateUsage]
     size, at = C.sizeof(sigaction), sigaction.handler.offset  # pyright: ignore[reportAttributeAccessIssue]
     # glibc/musl, xnu's user struct, bionic LP64 (libc/include/bits/signal_types.h)
     assert (size, at) == {"linux": (152, 0), "darwin": (16, 0), "android": (32, 8)}[os_]
-    assert os_ != "android" or at == x64.BIONIC_SA_HANDLER
+    assert os_ != "android" or at == x64.BIONIC_SA_HANDLER == a64.BIONIC_SA_HANDLER
     sig, pc_at, addr_at, indirect = LAYOUTS[jit, darwin]
     area, res = (C.c_uint8 * 4096)(), (C.c_uint8 * 256)()
     lo, rlo = C.addressof(area), C.addressof(res)

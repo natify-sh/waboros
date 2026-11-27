@@ -59,6 +59,12 @@ class Backend(Protocol[L, F]):
     pool: tuple[int, ...]
     tos: int
     supported: frozenset[int]  # the opcodes this backend compiles (S0004)
+    record_sites: int  # call sites of one call through a function record (S0015, D71)
+    # D39 amendment (S0013 3a): every method that emits a call (call_*, call_host, host_thunk)
+    # appends (ret, ret_at, up), in code order: the offset of the return address; the bytes from
+    # the stack pointer at the call (before a pushing `call`) to this frame's own return address,
+    # and to the caller's stack pointer at its call
+    sites: list[tuple[int, int, int]]
 
     # frames, traps, labels. A function whose conditional branches do not all reach their
     # targets (func_end returns False) is dropped (`rewind` to its start) and compiled again
@@ -117,6 +123,9 @@ class Backend(Protocol[L, F]):
     def ctx_store(self, word: int, src: Operand, indirect: bool) -> None: ...
 
     def ctx_addr(self, dst: Reg, word: int) -> None: ...  # a function record (ref.func)
+    # D39 amendment (S0013 5.6): dst = word 1 (the canonical type id) of the function record at
+    # address `rec` (non-null); writes only dst
+    def func_type(self, dst: Reg, rec: Operand) -> None: ...
 
     # SIMD (S0005, the D39 amendment): `op` = 0xFD000 + sub-opcode, or 0x23/0x24 for a v128
     # global (`imm` = (word, indirect)); `args` in wasm order. A v128 operand or result is
@@ -174,6 +183,10 @@ class Backend(Protocol[L, F]):
     def call_ref(self, f: F, ref: Operand, shift_slots: int) -> None: ...  # null: NULL_REFERENCE
     def call_record(self, f: F, word: int, shift_slots: int) -> None: ...  # a function import
     def host_thunk(self, word: int) -> int: ...  # code offset of an import's record entry
+    # S0015: the C entry of the body that follows (its offset; a record's `code`), and the
+    # module's shared part after the last body (the number of call sites it recorded)
+    def c_entry(self) -> int: ...
+    def c_entry_shared(self) -> int: ...
     def null_check(self, f: F, x: Operand, code: int) -> None: ...  # trap if the reference is 0
 
     # tail calls: the arguments (slots src..src+n) become the callee's frame at our frame base,
@@ -188,13 +201,7 @@ class Backend(Protocol[L, F]):
     # exceptions (S0012, the D39 amendment; aarch64 in step 4). The frame's `error` label is where
     # every call_* / call_host method sends a non-zero status: `unwind` outside a try_table (the
     # core sets it, today's bytes), the innermost landing pad inside one. Trap stubs and the
-    # interrupt poll keep `unwind`. At a pad only the status register and pins are live; these
-    # methods keep the status register and leave no flags live.
+    # interrupt poll keep `unwind`. At a pad only the status register and pins are live. `throw`
+    # and the clauses are lowered in the core (gc.throw, gc.catch; S0013 step 6, D63).
     def landing(self, f: F, pad: L, outer: L) -> None: ...  # bind pad; to outer unless status 14
-    def exn_match(self, word: int, miss: L) -> None: ...  # to miss unless tag == context word
-    def exn_field(self, dst: Slot, k: int) -> None: ...  # payload word k of the pending object
-    def exn_load(self, dst: Slot) -> None: ...  # the pending exnref
-    # a new object {tag word, slots base..base+n} from the store's arena (slot base+n carries the
-    # size to the refill service when the chunk is full), pending, status 14, to `error`
-    def throw(self, f: F, word: int, base: int, n: int) -> None: ...
-    def throw_ref(self, f: F, x: Operand) -> None: ...  # null: NULL_REFERENCE; else as `throw`
+    def throw_ref(self, f: F, x: Operand) -> None: ...  # null: NULL_REFERENCE; else pending, 14

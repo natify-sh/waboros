@@ -58,6 +58,7 @@ def jit_view() -> str:
     try:
         from waboros.targets.base import TARGETS
         from waboros.targets.jit.common import instance
+        from waboros.targets.jit.common.context import EXIT_RECORD
         from waboros.targets.jit.common.target import JitTarget
 
         mine = [
@@ -71,6 +72,8 @@ def jit_view() -> str:
             return f"jit: {mine[0].name} probe failed, no sp"
         t = mine[0].trampolines()
         ctx, frame = (ctypes.c_uint64 * 18)(), (ctypes.c_uint64 * 1)()
+        exit_record = (ctypes.c_uint64 * 3)()  # every entry saves and restores it (S0013 3a)
+        ctx[EXIT_RECORD] = ctypes.addressof(exit_record)
         instance.ENTRY(t.entry)(ctypes.addressof(ctx), ctypes.addressof(frame), t.sp_stub)
         sp, (low, rule) = frame[0], instance._read_stack()  # pyright: ignore[reportPrivateUsage]
         budget = instance.native_budget(sp, low, instance.DEFAULT_BUDGET)

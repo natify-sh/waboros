@@ -22,15 +22,23 @@ CLAIMS: dict[str, frozenset[str]] = {
         | {"wideArithmetic"}
     ),
     "pyc": frozenset({"bulkMemory", "multiMemory", "simd", "relaxedSimd", "wideArithmetic"})
-    | {"memory64", "exceptionsFinal"},
+    | {"memory64", "exceptionsFinal", "gc"},
     "jit-x86_64": frozenset(
         {"bulkMemory", "multiMemory", "simd", "relaxedSimd", "wideArithmetic", "memory64"}
-        | {"exceptionsFinal"}
+        | {"exceptionsFinal", "gc"}
     ),  # parity with pyc (D25)
     "jit-aarch64": frozenset(
         {"bulkMemory", "multiMemory", "simd", "relaxedSimd", "wideArithmetic", "memory64"}
-        | {"exceptionsFinal"}
+        | {"exceptionsFinal", "gc"}
     ),  # parity with pyc (D25; madd/nmadd fused, D49)
+    "jit-sljit-x86_64": frozenset(
+        {"bulkMemory", "multiMemory", "simd", "relaxedSimd", "wideArithmetic", "memory64"}
+        | {"exceptionsFinal", "gc"}
+    ),  # the claims of jit-x86_64 (S0016)
+    "jit-sljit-aarch64": frozenset(
+        {"bulkMemory", "multiMemory", "simd", "relaxedSimd", "wideArithmetic", "memory64"}
+        | {"exceptionsFinal", "gc"}
+    ),  # the claims of jit-aarch64 (S0016; aarch64/simd.py's fused madd/nmadd, D49)
 }
 
 

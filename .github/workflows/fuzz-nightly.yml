@@ -1,6 +1,7 @@
 name: fuzz-nightly
 # Differential fuzzing (ROADMAP.md, "Next"): pyc, jit-x86_64 (guard and explicit) and Wasmtime on
-# wasm-tools smith modules and on the structured --gen modules. Never blocking: it is outside `ci`
+# wasm-tools smith modules, on the structured --gen modules and on smith modules with reference
+# types, GC and exceptions (--refs: each engine in a process of its own, S0013 7.4). Never blocking: it is outside `ci`
 # and `platforms`, the fuzz step cannot fail the job, and a divergence is a finding to triage later
 # (the module and a description are kept in the artifact), not a red build.
 on:
@@ -9,14 +10,14 @@ on:
   workflow_dispatch:
     inputs:
       minutes:
-        description: "minutes for each of smith and gen"
+        description: "minutes for each of smith, gen and refs"
         default: "45"
 permissions:
   contents: read
 jobs:
   fuzz:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 180
     continue-on-error: true
     env:
       MINUTES: ${{ inputs.minutes || '45' }}
@@ -26,10 +27,10 @@ jobs:
         with: { cache-python: true }  # the managed Pythons too, not only the packages
       - run: uv sync --python 3.13
       # a seed that differs every night, printed so a finding can be reproduced:
-      # uv run python tools/fuzz.py --targets pyc,jit,wasmtime --seed N [--gen] --minutes M
+      # uv run python tools/fuzz.py --targets pyc,jit,wasmtime --seed N [--gen | --refs] --minutes M
       - run: |
-          for mode in smith gen; do
-            flag=; [ $mode = gen ] && flag=--gen
+          for mode in smith gen refs; do
+            flag=; [ $mode = gen ] && flag=--gen; [ $mode = refs ] && flag=--refs
             uv run python tools/fuzz.py --targets pyc,jit,wasmtime --minutes $MINUTES $flag \
               --seed $(( GITHUB_RUN_ID % 1000000 * 1000 )) --out fuzz-out/$mode | tee fuzz-out-$mode.log || true
           done
@@ -37,7 +38,7 @@ jobs:
         run: |
           {
             echo "## Differential fuzzing: pyc, jit-x86_64 (guard, explicit), Wasmtime"
-            for mode in smith gen; do
+            for mode in smith gen refs; do
               echo "- $mode: $(tail -n 1 fuzz-out-$mode.log 2>/dev/null || echo 'no result')"
             done
             echo

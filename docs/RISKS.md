@@ -2,7 +2,7 @@
 title: Risks and possible solutions
 kind: log
 status: current
-updated: 2026-11-05
+updated: 2026-11-25
 ---
 
 # Risks and possible solutions
@@ -13,8 +13,8 @@ comes. Decided matters live in DECISIONS.md.
 ## R1. Compiled artifacts moved between machines
 
 **What is possible.** A JIT artifact (ARTIFACT.md) is position-independent, does not depend on the
-Python version (byte-identical output under CPython 3.8 and 3.13) or on the OS when it carries both
-entry trampolines. It runs on another machine with the same architecture, a CPU at or above its
+Python version (byte-identical output under CPython 3.8 and 3.13) or on the OS: the host supplies `entry` (S0015, D70), and the file holds the compiler's bridge
+and `tail_switch` and a C entry per function. It runs on another machine with the same architecture, a CPU at or above its
 declared ISA level, and a loader that knows its format and context-ABI versions.
 
 **What to cache, what to ship — options.**
@@ -51,7 +51,7 @@ known-bad versions can force recompilation.
 **Status at HEAD: partly mitigated.** Mitigated on x86-64 Linux: the W^X executable-memory probe and the
 fallback to `pyc` with `JitUnavailableWarning` (D31; proved with executable memory forbidden by
 `tools/no_exec.py` in the CI `spec` job and `tests/test_fallback.py`); CET IBT (`endbr64` at every
-indirectly reachable entry, `backend.py`) and CET shadow stacks (traps return through frames, S0003). aarch64: `bti c` landing pads are emitted and the tests run under QEMU with BTI enforced; PAC is not used (S0004). macOS `MAP_JIT` under a hardened runtime: answered for python.org CPython (the JIT runs, row below; the macOS cells of `platforms.yml` keep checking it). Android: answered for x86_64 in an `untrusted_app` process (the JIT runs, row below; the Android cell of `platforms.yml`); arm64 is built but not run (no emulator on arm64 runners), so it stays explicit. Open: Windows ACG (the Windows cells of `platforms.yml` run `tests/jit` in a default process, which does not enable ACG).
+indirectly reachable entry, `backend.py`) and CET shadow stacks (traps return through frames, S0003). aarch64: `bti c` landing pads are emitted (`bti jc` at the boundary: C entries and the runtime's `entry`, S0015) and the tests run under QEMU with BTI enforced; PAC is not used (S0004). The aarch64 instruction-cache flush is `__clear_cache` where the process has it, else our own routine (musl without libgcc, Android bionic, which exports none): its own page relies on the arm64 kernel making a new executable page coherent (`__sync_icache_dcache`), every other area goes through it (S0004, 2026-11-25); jit-aarch64 on Android arm64 is still unrun on a device. macOS `MAP_JIT` under a hardened runtime: answered for python.org CPython (the JIT runs, row below; the macOS cells of `platforms.yml` keep checking it). Android: answered for x86_64 in an `untrusted_app` process (the JIT runs, row below; the Android cell of `platforms.yml`); arm64 is built but not run (no emulator on arm64 runners), so it stays explicit. Open: Windows ACG (the Windows cells of `platforms.yml` run `tests/jit` in a default process, which does not enable ACG). sljit code (the development target `jit-sljit`, S0016): sljit emits no BTI, so `bti jc` custom words are on its stubs, bodies and `tail_switch` and `bti c` on its bridge (the stub's direct `b` is the only way into `centry`, which has none); measured under QEMU `-cpu max` on `PROT_BTI` pages (a body without the pad gives SIGILL), and the full spec suite runs that way; x86-64 builds sljit with `SLJIT_CONFIG_X86_CET=1`.
 
 The direction is clear: more systems forbid writable-and-executable memory, and CPUs add control-flow
 integrity that hand-made code must respect.
@@ -61,13 +61,13 @@ integrity that hand-made code must respect.
 | iOS / iPadOS (Pythonista) | no JIT for third-party apps | JIT impossible | `pyc`; maybe a system engine (R3, JavaScriptCore) |
 | macOS on Apple Silicon | executable memory needs `MAP_JIT` and per-thread write/execute switching (`pthread_jit_write_protect_np`); hardened-runtime apps need a JIT entitlement | works if the interpreter binary allows it; depends on how it is signed | ctypes calls for `MAP_JIT` + toggling; probe; fall back to `pyc` |
 | macOS arm64, python.org CPython | notarized, hardened-runtime build (`flags=0x10000(runtime)`) | **the JIT runs** (run 41349579025 of the former CI job `macos-pythonorg`: python.org 3.13.17 pinned by sha256, PSF-signed; since then the macOS cells of `platforms.yml`, which use python.org CPython, run `tests/jit` on every push): the binary has `com.apple.security.cs.disable-executable-page-protection` (also `disable-library-validation`, `allow-dyld-environment-variables`, `debugger`, `get-task-allow`, `automation.apple-events`; no `allow-jit`), the probe returns None, `auto` selects `jit-aarch64` with no warning and the aarch64 ABI tests pass (56 passed) | if a future python.org build drops that entitlement, the macOS cells of `platforms.yml` (which use the python.org CPython) fail and `auto` falls back to `pyc` with the D31 warning; non-hardened CPython (uv, Homebrew, pyenv) is unaffected |
-| Android app process | SELinux policy of `untrusted_app` (anonymous executable memory, `execmem`; apps cannot execute files from their data directory since Android 10, which does not touch our `mmap` path) and the kernel's own limits | **x86_64: allowed** (CI run 41351056918 of the former job `android`; the Android cell of `platforms.yml` repeats it, run 41708608127): in the testbed app (python.org CPython 3.14.10, target API 35, `aosp_atd` x86_64 emulator, SELinux context `u:r:untrusted_app`) the `jit-x86_64` probe succeeds, `auto` selects it with no warning, CoreMark passes its self-check (15 424 it/s on the emulator: not a benchmark) and the JIT tests pass (75 passed, 5 skipped); logcat shows no `execmem` denial. The Android cell of `platforms.yml` keeps running the JIT tests on every push. Termux is a different, permissive environment and proves nothing for apps | probe; fall back; `arm64_v8a` is not checked in CI (no emulator on GitHub arm64 runners), so the aarch64 answer comes from a device |
+| Android app process | SELinux: AOSP `sepolicy` main (read 2026-11-25) has `allow appdomain self:process execmem;` (`private/app.te` 188-189, "WebView and other application-specific JIT compilers") for every app domain with no targetSdk split; `private/domain.te` forbids only `execstack execheap` ("We would also like to minimize execmem but it seems to be required"); the same rule is in Android 15/16 QPR1/17 policy (LineageOS mirrors 22.2/23.1/24.0); bionic does not use `PR_SET_MDWE`. So anonymous RW to RX works at any targetSdk. The recent restrictions are about **files**: no exec of app-data files (Android 10, targetSdk 29), dynamically loaded DEX/JAR read-only (Android 14, targetSdk 34), native files loaded with `System.load()` read-only ("Safer Native DCL", Android 17, targetSdk 37; developer.android.com/about/versions/10, /14, /17 behavior-changes). Whether a plain `dlopen` (CPython extension modules) is affected is unverified: to check by running the testbed at targetSdk 37. Cromite (a Chromium fork) blocks new executable memory in its JIT-less renderers on Android 17: its sandbox choice, not a platform rule (github.com/hawkff/cromite/pull/13); the likely origin of "JIT restricted on new Android" | **anonymous memory: allowed by policy; x86_64 confirmed** (CI run 41351056918 of the former job `android`; the Android cell of `platforms.yml` repeats it, run 41708608127): in the testbed app (python.org CPython 3.14.10, target API 35, `aosp_atd` x86_64 emulator, SELinux context `u:r:untrusted_app`) the `jit-x86_64` probe succeeds, `auto` selects it with no warning, CoreMark passes its self-check (15 424 it/s on the emulator: not a benchmark) and the JIT tests pass (75 passed, 5 skipped); logcat shows no `execmem` denial. The Android cell of `platforms.yml` keeps running the JIT tests on every push. Termux is a different, permissive environment and proves nothing for apps. arm64: no run; the JIT there needs our own I-cache flush (bionic has no `__clear_cache`, S0004) | probe; fall back (D31) stays for OEM and future limits; the loader copies `.text` into anonymous memory and never maps the file executable (ARTIFACT.md). `arm64_v8a` is not checked in CI (no emulator on GitHub arm64 runners), so the aarch64 answer comes from a device. **Google Play** "Device and Network Abuse" (support.google.com/googleplay/android-developer/answer/16273414): no downloading executable code from outside Play, except code that runs in a VM or interpreter; compiling Wasm on the device fits that exception (our reading, not a ruling); downloading prebuilt `.wbo` machine code from outside Play is a grey zone. **16 KB pages** (Android 15+; Play requires support for apps targeting API 35+ on 64-bit devices, updates without it refused from 2027-02-01; developer.android.com/guide/practices/page-sizes): our page-dependent code uses `mmap.PAGESIZE` (`execmem.py`, `instance.py`); the other 4096 constants are not page sizes (`.text` file alignment in `artifact.py`, a stack-read slack in `walk.py`, the aarch64 `adrp` 4 KiB granule, satisfied by 16 KiB-aligned addresses); the requirement mainly concerns the host app's `.so` alignment (CPython's) |
 | Linux, hardened | SELinux `deny_execmem`, PaX/grsecurity `MPROTECT`, systemd `MemoryDenyWriteExecute=yes` | `mmap`/`mprotect` to executable fails | probe; fall back; document for service authors |
 | Windows | Arbitrary Code Guard (process mitigation, opt-in) blocks dynamic code | same | probe; fall back |
 | Pyodide / browsers | no native code at all | JIT impossible | `pyc`, or the browser's `WebAssembly` (ROADMAP open question 7) |
 | x86-64 with CET **IBT** | indirect branch targets must start with `endbr64` | the entry trampoline and anything called through a pointer would fault | emit `endbr64` at every indirectly reachable entry (a no-op on older CPUs) |
 | x86-64 with CET **shadow stack** (Linux user space, Windows 11 hardware stack protection) | returns are checked against a hardware stack | the PoC's trap unwinding (reset `rsp`, then `ret`) would fault | unwind by returning through frames (each frame checks a trap flag), or a shadow-stack-aware unwind; never "jump" the stack |
-| aarch64 **BTI** / **PAC** | landing pads (`bti c`) for indirect targets; signed return addresses in some processes (arm64e) | indirect entries fault without pads | emit `bti c`; keep return addresses unsigned unless the host process requires PAC |
+| aarch64 **BTI** / **PAC** | landing pads (`bti c`) for indirect targets; signed return addresses in some processes (arm64e) | indirect entries fault without pads | emit `bti c` on bodies, the bridge and `tail_switch`, and `bti jc` where a `br` through any register may land: C entries and the runtime's `entry` (S0015 Q5); keep return addresses unsigned unless the host process requires PAC |
 
 General answers: W^X always (map writable, write, flip to executable; never both), the probe described
 in TARGETS.md, CFI-compatible code from the first version, and `pyc` as the guaranteed fallback.
@@ -82,6 +82,33 @@ QEMU (`qemu64`) in CI; the independent final review of phase 3 is done (S0002 st
 steps are read by a `reviewer` one by one (S0005). Open: differential fuzzing against wasmtime
 (phase 5: `tools/fuzz.py` exists since S0010 step 0 for `pyc` against `pyc`; the JITs and Wasmtime, as a
 nightly non-blocking job, follow, ROADMAP "Next"). The review of the SIMD steps as a whole (S0005, 5f) found no correctness defect.
+
+**New trusted code since S0013 step 5.3 (D61): the frame walk (`jit/common/walk.py`), the root
+gatherer (`jit/common/collect.py`) and the collector module (`runtime/gc/collector.wasm`).** A missed
+root or a wrong forward is a dangling reference, not a wrong result in one function. Mitigations:
+the collector module checks every record, header, forwarding offset and bound before it trusts it
+and traps (`unreachable`) instead of writing outside the region it owns (5.2's containment checks,
+each with a malformed image that only it stops, and 35 scratch mutants, 34 caught, the last
+reachable only with a to-space of almost 4 GiB); a collector trap or any exception inside a
+collection loses the store, so nothing runs on a half-moved heap; `WABOROS_JIT_GC_VERIFY=1` checks
+the new space's form and a digest of the reachable graph after every collection, independently of
+the module; `WABOROS_JIT_GC_POISON=1` turns a stale reference into garbage; `WABOROS_JIT_GC_STRESS=1`
+moves every object at every allocation, and CI's `jit` job runs `gc` and `exceptions` with all
+three; the walk check (`WABOROS_JIT_WALK_CHECK=1`) validates every frame and marked slot at each
+host call; `tests/jit/test_gc_collect.py` has one test per root class and per check of a
+collection, each failing when its root or check is removed (the 5.3 review's mutant table).
+
+**New trusted code since S0013 step 7 (D65): the live sets (`jit/common/liveness.py`).** The walk
+and the gatherer null `refs ∖ live` at every collection and in check mode, so a wrong set is
+retention (a dead object kept) or a live local read as null (a `NULL_REFERENCE` trap or a cast
+failure), never a stale offset: a nulled slot is not forwarded, and the gatherer refuses a frame
+whose slots leave the value stack. Mitigations: exact sets per edge kind (`test_liveness.py`),
+behaviour tests that collect between the write and the read on each edge (`test_gc_roots.py`
+t16-t26, under stress, poison and verify), the step-7.3 mutation table and both
+reviews' own mutants (each caught or argued equivalent; a review still found four unsound
+mutants the tests missed, now caught: the tests cover the shapes tried, not every shape; S0013
+Changes 7.3 and its review), `WABOROS_JIT_NOLIVE` to bisect per function, and
+`tools/fuzz.py --refs` with the GC switches.
 
 **Risk.** Encoding mistakes, register-allocation mistakes and missed checks are not exceptions but
 wrong results or sandbox escapes. The PoC already met three silent bugs (LESSONS.md 1, 2, 5).
@@ -155,7 +182,7 @@ know, otherwise recompile" is the simplest robust rule. It needs the wasm at han
 
 ## R6. A signal handler of our own (guard pages in the JIT)
 
-**Status at HEAD: mitigated where guard pages are the default, open elsewhere. S0006 is implemented (steps 1-5 and 7; step 6, the artifact flag, moved to the artifact-format spec of phase 5). Guard pages are the default (`auto`) on Linux glibc x86-64 and aarch64, Linux musl x86-64, macOS, Windows x64 and arm64, and Android x86_64 (CI run 41708608127); Linux musl aarch64 and Android arm64 use explicit checks. Open or documented: emulators that tear a split store, crash reporters and debuggers in front of the handler (below), and the C loader's handler (D36).** S0006 step 1:
+**Status at HEAD: mitigated where guard pages are the default, open elsewhere. S0006 is implemented (steps 1-5 and 7; step 6, the artifact flag, moved to the artifact-format spec of phase 5). Guard pages are the default (`auto`) on Linux glibc x86-64 and aarch64, Linux musl x86-64, macOS, Windows x64 and arm64, and Android x86_64 (CI run 41708608127); Linux musl aarch64 and Android arm64 use explicit checks (Android arm64 has the handler for `WABOROS_JIT_BOUNDS=guard`, not verified on a device). Open or documented: emulators that tear a split store, crash reporters and debuggers in front of the handler (below), and the C loader's handler (D36).** S0006 step 1:
 guard code on `jit-x86_64`; step 2 the same on `jit-aarch64` (`aarch64/abi.py`, verified under QEMU and on the native
 arm64 runner; CoreMark +11.4 % there, BENCHMARKS.md). The handler is emitted machine code (`x86_64/abi.py`, `aarch64/abi.py`) reading this copy's registry
 (`common/guard.py`), chaining every fault it does not claim (tests: `tests/jit/test_guard.py`, foreign faults
@@ -182,8 +209,10 @@ and arm64 (S0006 step 4): a vectored exception handler (offsets from the Windows
 runs 41633456821 (`arm64 (windows-11-arm)`) and 41640149866 (`os (windows-latest)`), jobs now in `platforms.yml`; `win32` is a verified
 row, so `auto` gives guard there. Android x86_64 (S0006 step 5): bionic's
 32-byte `struct sigaction`, installed through ART's libsigchain (below); `tests/jit/test_android.py` in the
-Android cell of `platforms.yml`, verified by CI run 41708608127. Open: Linux musl aarch64 (no
-`__clear_cache` without libgcc, S0004). Android arm64 stays explicit, a documented limitation (S0006).
+Android cell of `platforms.yml`, verified by CI run 41708608127. Open: Linux musl aarch64 (no handler;
+its JIT runs explicit with our own I-cache flush, S0004; S0017 Decision 10). Android arm64: the handler
+exists with bionic's `struct sigaction`, opt-in only (`guard_rows`, not `verified`): no device or arm64
+emulator has run it (S0006, 2026-11-25).
 
 Guard pages need a SIGSEGV handler in the process (ARCHITECTURE.md, "Memory"); the PoC emits it as
 machine code. Risks and possible answers:

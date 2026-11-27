@@ -9,6 +9,8 @@ reach ART first. The app has no wasmtime (no WAT), so the module is written in b
 import contextlib
 import ctypes
 import io
+import mmap
+import os
 import platform
 import runpy
 import sys
@@ -58,10 +60,9 @@ def test_the_jit_runs_in_an_app_process_and_auto_selects_it() -> None:
 
 
 def test_guard_faults_reach_us_through_libsigchain(monkeypatch: pytest.MonkeyPatch) -> None:
-    if platform.machine() != "x86_64":
-        pytest.skip("guard pages on Android x86_64 only (S0006)")
     tgt = base.TARGETS[native_jit()]()
-    monkeypatch.setenv("WABOROS_JIT_BOUNDS", "auto")
+    # arm64: opt-in only, not verified on a device (S0006; no CI cell runs this there)
+    monkeypatch.setenv("WABOROS_JIT_BOUNDS", "auto" if platform.machine() == "x86_64" else "guard")
     assert guard.host_row() == "android" and guard.wanted(tgt)  # installs the handler
     mod = parse(LOAD)
     validate(mod)
@@ -77,13 +78,14 @@ def test_guard_faults_reach_us_through_libsigchain(monkeypatch: pytest.MonkeyPat
     # which pytest enabled, or debuggerd's), not ours, not SIG_DFL/SIG_IGN
     prev = guard._handler["prev"][0].handler or 0
     assert prev > 1 and prev != guard._handler["addr"] and _owner(prev), hex(prev)
-    # the kernel's action, read with a raw rt_sigaction (13 on x86-64; read only): still
-    # libsigchain's handler, so ART's special handler runs first and calls ours after it
+    # the kernel's action, read with a raw rt_sigaction (13 on x86-64, 134 on arm64; read only):
+    # still libsigchain's handler, so ART's special handler runs first and calls ours after it
     assert "libsigchain.so" in Path("/proc/self/maps").read_text(errors="replace")
     kact = (ctypes.c_uint64 * 4)()  # the kernel's struct: handler, flags, restorer, mask
     syscall = ctypes.CDLL(None).syscall
     syscall.restype = ctypes.c_long
-    args = (ctypes.c_long(13), ctypes.c_long(guard.SIGSEGV), None, ctypes.byref(kact), 8)
+    nr = 13 if platform.machine() == "x86_64" else 134
+    args = (ctypes.c_long(nr), ctypes.c_long(guard.SIGSEGV), None, ctypes.byref(kact), 8)
     assert syscall(*args) == 0
     assert kact[0] != guard._handler["addr"]
     assert _owner(kact[0]).endswith("libsigchain.so"), hex(kact[0])
@@ -98,3 +100,11 @@ def test_coremark_passes_its_self_check(monkeypatch: pytest.MonkeyPatch) -> None
     with contextlib.redirect_stdout(out):
         runpy.run_path(str(tool), run_name="__main__")
     assert valid(out.getvalue()), out.getvalue()[-700:]
+
+
+def test_page_size_is_the_kernels() -> None:
+    """16 KiB on the ps16k emulator of platforms.yml (the cell asserts it with adb); the value is
+    in the warnings summary."""
+    kernel = os.sysconf("SC_PAGE_SIZE")
+    warnings.warn(f"page size {kernel}", stacklevel=1)
+    assert mmap.PAGESIZE == kernel

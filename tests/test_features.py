@@ -62,4 +62,7 @@ def test_every_registered_target_has_a_column() -> None:
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    assert set(TARGETS) == set(mod.TARGETS)
+    # development targets (S0016) are not package targets: no column
+    assert {n for n in TARGETS if not getattr(TARGETS[n](), "development", False)} == set(
+        mod.TARGETS
+    )

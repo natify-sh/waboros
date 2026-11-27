@@ -2,7 +2,7 @@
 title: Lessons
 kind: log
 status: current
-updated: 2026-11-05
+updated: 2026-11-24
 ---
 
 # Lessons
@@ -346,7 +346,8 @@ What went wrong or surprised us while building the PoC, so it is not found again
     The coordinator's question about S0004's note found it; the test run did not. Rule: before
     claiming a platform, run the product's probe on the platform's stock image with nothing added.
     List every package the test setup installs and ask which of them the product itself loads.
-    Found: S0006 musl step, 2026-11-02.
+    Found: S0006 musl step, 2026-11-02. (Superseded 2026-11-25 for the flush: our own routine
+    runs where `__clear_cache` is absent, S0004; the rule stands.)
 57. **On macOS, `si_code` does not tell a sent SIGSEGV or SIGBUS from a fault.** The Linux handler
     treats `si_code <= 0` as "sent by `kill`/`raise`": never ours, and re-sent with `raise` after
     SIG_DFL is put back (LESSONS 46). xnu's `sendsig` fills `si_code` by signal number, not by
@@ -732,3 +733,619 @@ What went wrong or surprised us while building the PoC, so it is not found again
     personality and libunwind's `Unwind-wasm.c` yourself, plus the tag `__cpp_exception` (an assembly
     `.tagtype` stub); `-mllvm -wasm-use-legacy-eh=false` then selects `try_table`. `zig c++ -S -o -` also
     writes a file named `-`. Found: corpus C++ exceptions, 2026-11-09.
+100. **Wasmtime 50.0.1's C API: `wasmtime_anyref_is_i31` answers true for every anyref; wasmtime-py's
+    `Func.type()` aborts on references.** Measured on an i31, a struct and a host value made by
+    `any.convert_extern`: `is_i31` is true for all three, while `wasmtime_anyref_i31_get_u`'s success
+    flag is right (true only for the i31), as are `_is_struct`, `_is_array`. Separately, `func.type()`
+    and `str(ValType)` abort the process on a concrete reference type; `wasmtime_valtype_new` into a
+    `wasmtime_valtype_t` does not (kind 5 = reference, heap kind 0-1 extern, 2-4 func, 5-12 any,
+    13 up exn). The binding of `is_i31` matches the C header (`bool (wasmtime_context_t*, const
+    wasmtime_anyref_t*)`), and the call leaves a non-normalised value in `rax` (0xb for an i31, 0x10
+    for a struct), so the fault is in the C library, not in wasmtime-py; in the v50 source both
+    functions call `AnyRef::is_i31`. Upstream's answer (2026-11-10): a Rust miscompilation in the
+    toolchain that built 50.x, fixed by a newer toolchain in a later release; their advice is to skip
+    wasmtime-py 50. We keep 50.0.1 with the workaround until a release built with the fixed
+    toolchain is pinned, then drop it. Upstream: [wasmtime#15216](https://github.com/bytecodealliance/wasmtime/issues/15216); the wrapper's gaps (the abort, no `anyref` in `Val`) in [wasmtime-py#283](https://github.com/bytecodealliance/wasmtime-py/issues/283#issuecomment-6770652941). Rule: classify an anyref by `i31_get_u`, never by `is_i31`;
+    read types through `wasmtime_valtype_t`. Found: S0013 step 0, 2026-11-10.
+101. **A canonical key that nests the keys it refers to is a tree with uncached hashes.** The
+    first `types.key` wrote a reference outside the rec group as that type's whole key, so a chain
+    where each type uses the previous one twice has 2**n leaves: every dict lookup (`type_id`, `pyc`
+    signatures) re-hashed the tree (64 s at n=30), and building it recursed once per chain link
+    (`RecursionError` at 250). Rule: reduce a key to a flat value as soon as it is made and refer to
+    that value (groups are keyed in index order, a group refers only to earlier ones or itself);
+    comparison and hashing are then constant, no recursion; and key only the groups
+    the asked type reaches (an explicit stack), not every type up to it: a caller without the
+    module's cache (a fresh dict per call) made that quadratic, 334 s of one test. Prefer a digest (SHA-256 of the flat
+    `repr`) to an interned counter: it is the same in every process (generated code may embed it)
+    and needs no shared state (a counter two threads read at once gives two types one id, 3.15t).
+    Also: `pyc` once compared
+    function types by parameter/result strings, which ignored rec groups and finality; an identity
+    that the language defines (type equivalence) has one function, used by every target. Found:
+    S0013 step 1a review, 2026-11-11.
+102. **The spec suite passes with the wrong order of two traps that have the same kind of cause.**
+    `gc/` passed on `pyc` with `array.copy` checking both nulls before any bound, and with
+    `array.new_data` / `array.new_elem` checking the allocation limit before the segment. One probe
+    of Wasmtime 50.0.1 showed otherwise: the order is destination null, destination bounds, source
+    null, source bounds (a null source with an out-of-range destination is `ARRAY_OUT_OF_BOUNDS`);
+    `array.init_data` / `init_elem` check the array, then the segment; a segment bound comes before
+    the allocation limit (the one `array.wast` case that did fail: `new_elem` of 2³¹ elements from
+    offset 2³¹). Separately, a reference that is unknown in unreachable code (`ref.as_non_null`,
+    `br_on_null`) cannot be the unknown type of a numeric operand: the validator gave the same
+    "any type" marker (`UNKNOWN`) and accepted `(unreachable) (ref.as_non_null) (i32.eqz)`, where
+    Wasmtime rejects 6 of the 30 probed forms. Rule: a rule that is an order or a type sentence is
+    verified by a table of mixed-failure cases run through wasmtime-py (`null` + `out of bounds`,
+    each operand failing alone), not by the spec files; keep the table as a test with the oracle's
+    verdicts written in. Found: S0013 step 2, 2026-11-11.
+103. **CPython frees a deep chain of lists recursively in C; a small C stack (Pyodide) overflows.** A
+    10 000-deep chain of GC structs on `pyc` (each a list holding the next) crashed the Pyodide CI
+    job with a JS `RangeError: Maximum call stack size exceeded` when the cyclic collector freed it
+    in a later test. Reproduced on Linux with `ulimit -s 128`: plain Python freeing `l = [0, l]`
+    3 000 deep segfaults (by refcount or by `gc.collect()`), a chain of `pyc` structs already at 1 000
+    (300 is fine; 1 000 needs 256 KiB), while on the default 8 MiB stack 3
+    million is fine on 3.11, 3.13 and 3.14: the trashcan that bounds this recursion triggers too late
+    for a small stack. So a long linked list of structs on `pyc` can crash a host with a small C
+    stack when it is freed; accepted as a platform limitation (D55). Rule: a test that builds a
+    deep object graph on `pyc` keeps it shallow on emscripten; find such a crash locally with
+    `ulimit -s 128` and `-p no:xdist`. Found: S0013 step 2 CI, 2026-11-11.
+104. **A hand-built context missed the new word, and only a CI tool used it.** S0013 step 3a.2 made
+    every entry trampoline read context word 14 (the store's exit record). The runtime sets it in
+    every context it makes, but `tools/stack_info.py` calls the entry with a zeroed context of its
+    own (to read the stack pointer through the stub), so the entry loaded from address 0 and the
+    tool died with SIGSEGV (exit 139) in three CI steps; no test ran the tool, and the spec suite and
+    `pytest` were green. Found by the reviewer reading every caller of the entry. Rule: when a
+    trampoline starts to rely on a context word, grep for every place that builds a context or
+    calls a trampoline by hand (tools, tests, PoC) and give each the word; a tool that CI runs gets a
+    test that runs it. Found: S0013 step 3a.2 review, 2026-11-11.
+105. **A defence that a correct invariant makes unobservable cannot have a mutation test.** The
+    bridge clears the exit record's `sp` after every host call (S0013), and the plan listed "the
+    bridge does not clear `sp`" as a mutation to be caught. It cannot be: every entry restores the
+    record it found, and the outermost one found 0 (the store's initial value), so outside a host call
+    the record is 0 whether or not the bridge clears it, and inside one it is current. The mutant
+    passed every test, as it must. Rule: before listing a mutation, say which observable result it
+    changes; if none does while the other invariants hold, it is a defence (kept or dropped by
+    decision), not a test target. Found: S0013 step 3a.2, 2026-11-11.
+106. **A test that builds native memory crashes where no JIT runs, before any skip.** The step-3b.1
+    heap tests built a `GcHeap` (a 4 GiB + 32 MiB reservation through ctypes `mmap`) and a store's
+    value stack directly, without a JIT target in sight, so nothing skipped them: on Pyodide the
+    64-bit size cannot reach `mmap` (a fatal error, not an exception), and the i686 and armv7l
+    cells failed too, while every native job was green. Rule: a test that reserves or maps memory
+    through the JIT's code (`GcHeap`, `_stacks`, an `Instance`) skips through `tests.jit.native`
+    first, as the instance tests already did. Found: S0013 step 3b.1 CI, 2026-11-13.
+107. **"Unchecked but memory-safe" needs the first write the unchecked value reaches.** The
+    step-3b plan left the type check of host values for reference parameters to phase 6, reasoning
+    that every word the host can produce is a valid object and every heap access is bounds-checked.
+    Both halves were true and the conclusion was wrong: a host int for a `(ref null $T)` became an
+    i31 word, which `struct.set` used as an object offset and wrote over the heap's own cursor and
+    limit (inside the bounds), and an object of another struct type read the next object's header
+    as a field. Bounds checks keep a write inside the heap, not inside the right object. Rule: before
+    calling an unchecked input harmless, follow it to the first write it can reach and ask what that
+    write corrupts inside the bounds; check types at the boundary as the oracle does. Found: S0013
+    step 3b.2 review, 2026-11-14.
+108. **A refactor that shares a sequence can drop the reservation its callers made.** `FUNC_SUBTYPE`
+    uses two value-stack slots; when its call was factored into one helper, the helper wrote both
+    and the cast path reserved only the first, so a cast at a function's deepest point wrote one
+    word past the frame (a canary at the value stack's end, explicit mode). No test saw it: the word
+    past the frame is free unless the stack is full. Rule: whoever writes a slot reserves it, in the
+    same function; the core asserts at every call site that the call's slots are inside the frame,
+    which catches any such slip at compile time. Found: S0013 step 3b.2 review, 2026-11-14.
+109. **The size of a lowering grows with the hierarchies and the decisions, not with the opcodes.**
+    S0013 budgeted step 3b by instruction groups; the casts alone cover three hierarchies with their
+    bottoms, abstract kinds, final and non-final concrete types and function types, and two decisions
+    added paths the spec's count did not have (`call_indirect` to a non-final type, the host
+    boundary's type check): 3b.2 came to about 375 core lines against 245. Rule: count a lowering's
+    size per case of its type matrix, and re-estimate when a decision adds a path, before the step
+    starts. Found: S0013 step 3b.2, 2026-11-13.
+110. **A slot above a host call's arguments is the next frame's, even when nothing calls wasm yet.**
+    The inline `array.new_default` kept the array's size in a scratch slot above `ALLOC`'s argument
+    and read it again when the allocation retried. No test could see it: no service entered wasm, so
+    the slot kept its value. A host call may enter wasm again, and the nested frame starts right
+    above the call's slots; step 5's collector runs in exactly such an entry, and one nested call from
+    `ALLOC` gave the array 16 bytes instead of 400 on both JITs. The frame check of LESSONS 108 looks
+    at the call's own slots, not at what lives above them. Rule: the arguments of a host call are the
+    topmost slots anything reads after it; the core asserts it at every call site (`site`, the
+    highest scratch slot taken before the call), and a test makes a nested entry from the services.
+    Found: S0013 interim review before step 5, 2026-11-15.
+111. **A collector test sees an early end of the scan only if the last object copied has a reference.**
+    The first heap image of the collector module's test ended with an empty struct, so a scan that
+    stopped one object early still produced a correct heap: the skipped object had nothing to forward.
+    A scratch mutant (the scan loop ending 24 bytes short) passed every test on both engines. Rule: in
+    a test of a copying collector, the object copied last holds a reference to an object copied
+    before it (a cycle reachable only through a late field), so the verifier sees a stale word when
+    the scan stops short; check each mutant of the plan's list against the test before trusting it.
+    Found: S0013 step 5.2, 2026-11-15.
+112. **A bounds check written as a sum wraps in 32 bits.** The collector module checked a traced
+    field's offset with `off + 4 > size` in i32: a record with offset `0xFFFFFFFC` makes the sum 0,
+    the check passes, and the scan writes 4 bytes below the object, outside to-space (reproduced on
+    Wasmtime and jit-x86_64 by the independent review). Wasm's own bounds check does not help: the
+    write stays inside the memory, only outside the region the module owns. Rule: compare an
+    untrusted value with a bound that cannot wrap (`off > size - 4` once `size >= 8` is checked), or
+    do the sum in 64 bits; audit every i32 add on an untrusted value. Found: S0013 step 5.2 review,
+    2026-11-15.
+113. **A service's argument list is a copy, so "read it after the allocation" from it still reads
+    before.** The host callback handed every service `vals[:nparams]`, a Python list made before
+    the service ran. B2's rule (read the `array.new` value after allocating) written against that
+    list would read the value from before the collection moved its object: the slot is a root and
+    is rewritten, the copy is not. Rule: a service that may collect gets the live slots
+    (`_host(..., live=True)`) and reads every reference operand from them after the allocation; a
+    scratch mutant that reads into a local first fails `test_gc_collect.py`. Found: S0013 step 5.3,
+    2026-11-15.
+114. **A scratch copy for an identity check must be made in a new, empty directory.** Step 5.3's
+    `git archive HEAD | tar -x` into a scratch directory left over from an earlier session kept that
+    session's files (a `.cache/spec` symlink among them), while the working-tree copy made by
+    another route lacked the symlink, so `tools/jit_dump.py` found 5 979 modules in one copy and 2
+    in the other: 5 981 differing lines, none from the change. Rule: make both copies the same way,
+    from `git archive` into fresh directories, overlay the changed files on the second, link the
+    spec cache into both, and check that the module counts are equal before reading the diff
+    (LESSONS 98). Found: S0013 step 5.3, 2026-11-15.
+115. **"Refuse a lost store" must cover the code already running, not only new calls.** Step 5.3
+    refused every later entry once a collection failed, but a host import that called wasm, met the
+    collector's trap and caught the error returned normally, and its wasm caller went on reading a
+    half-moved heap (the review returned 11 from it). The same review found a window where the
+    collector instance was in `store.instances` while it was being made, so another thread's
+    `store.interrupt()` set its interrupt word for good and every later collection trapped. Rule: a
+    state that forbids running is checked where control returns into wasm too (the host bridge,
+    after the host function), and a word that must stay clear is cleared before each use, not only
+    kept out of reach. Found: S0013 step 5.3 review, 2026-11-15.
+116. **A mutation run needs a test per way a root is reached, not per root class.** Step 5.5's first run
+    of the plan's list left three mutants alive. An imported global is also the exporter's own word, a
+    root while the exporter is in `store.instances`, and instances are never removed from it: the class
+    is a defence, tested only by taking the exporter out by hand. A table imported twice is sent twice,
+    which the collector tolerates (it skips words already in to-space): only the count of words it
+    receives differs. A frame below a tail call into another instance is the restore frame, which no
+    earlier test collected under. And `room`'s final check is unreachable: after a collection without
+    growth `end - lo == cap/2` and the no-growth branch gives `cur + r < end`, and on every other path
+    `_grow` has checked the same bound; a defence in the sense of 105. The independent review then found
+    three more survivors (the arena's earlier chunks, a `v128` payload parameter, the to-space chosen
+    from `lo`), and that t10 and t10b held no array across a collection: a test that builds an object
+    and reads it back with no allocation between does not move it. Rule: for each mutant ask what a
+    test would count or detach to see it, and check that the test allocates between the write and the
+    read; if nothing can see it, argue it equivalent in writing. Found: S0013 step 5.5, 2026-11-16.
+117. **An instance kept out of `store.instances` misses every per-store update once code calls it.**
+    The collector instance is removed from `store.instances` so that no interrupt, walk or gathering
+    reaches it (5.3). Step 5.6 made JIT code call its `is_subtype` directly, through a function
+    record, and its prologue checks its own context's native stack limit, which the store updates
+    only in the contexts of `store.instances` (at each outermost entry, from that entry's stack
+    pointer). The collector kept the limit of its creation, so a later entry from deeper in the
+    Python stack would trap `STACK_OVERFLOW` in `is_subtype` (a test sets a stale limit: the call
+    traps without the fix). Rule: list every per-store word a context carries (stack limits,
+    interrupt, fuel) and, for an instance outside `store.instances` that code can reach, update it
+    where the store updates the others, or clear it before each use (LESSONS 115). The update must
+    not depend on the store's value changing: a collection writes its own limit there, and the
+    first fix (only when the store's limit changed) left that value in place (review of 5.6).
+    Found: S0013 step 5.6, 2026-11-16.
+118. **On aarch64 an immediate 0 must not become a load's base register.** The backend's operand
+    helper returns `xzr` for an immediate 0, which is right for a source; in a load's base field
+    register 31 is `sp`, so `ldr x0, [xzr, #8]` would encode `ldr x0, [sp, #8]` and read the native
+    stack instead of trapping. `func_type` (5.6) asks for a real register (`zr=False`); its encoder
+    test has the immediate case. Rule: when a backend method takes an operand as an address, check
+    what the helper gives for `Imm(0)`. Found: S0013 step 5.6, 2026-11-16.
+119. **A value restored on every exit path changes code that never clobbered it.** Step 6.2's
+    landing pads use the status register as `tos` to compare tag identities, so the pad must make
+    it 14 again before passing the exception on; the first version did so on every pad's
+    fall-through, also for a `try_table` without clauses, where nothing had touched it. Every
+    test passed; the D35 check found one module (`try_table` 16) whose code changed outside the
+    predicted set, because the prediction was derived from the clauses, not from "has a
+    `try_table`". Rule: restore a register only on the paths that clobbered it, and derive an
+    identity prediction from what the lowering actually reads, so a stray change shows up as a
+    module outside the set. Found: S0013 step 6.2, 2026-11-16.
+120. **A module-level flag decided before the bodies misses what the bodies set.** The validator
+    turned the reference masks on from `mod["anyext"]` before walking the bodies, and the body
+    walk itself set `anyext` for an inline block or `select` type. That was harmless while such a
+    type could only hold null or an i31; step 6.2 made `exnref` a moving reference, and an exnref
+    needs no declared type (`catch_all_ref` into `(block (result exnref))`, LLVM's cleanup shape),
+    so its module got no masks, every stack map was 0, and a collection left the slot on the old
+    object: a stale exception rethrown. The spec suite has no such module, so only the independent
+    review found it. Rule: a flag that decides how a pass records its output is computed from
+    everything that can set it, or the pass is redone when it changes; when a value class gains a
+    new property (here: it moves), recheck every argument of the form "such a value is always
+    null or declared". Found: S0013 step 6.2 review, 2026-11-16.
+121. **A `git archive` copy runs the checkout's package through the editable install.** The
+    venv's `waboros` is installed in editable mode, so `python -m pytest` started inside a copy
+    imports `tests` from the copy (the current directory) but `waboros` from the checkout. The
+    mutant copy of step 6.3 (a `throw_ref` that reads context word 12) passed t11 that way;
+    with `PYTHONPATH=<copy>/src:<copy>` it failed, as it must. LESSONS 52 and 98 are the same
+    trap through a tool's own `sys.path`; this one needs no tool at all. Rule: in any copy, set
+    `PYTHONPATH` to the copy's `src` and print `waboros.__file__` in the same command before
+    trusting a pass. Found: S0013 step 6.3, 2026-11-16.
+122. **A second root and an even number of flips can hide a missing root.** Step 6.4's mutant
+    "exnref tables are not roots" passed the test that kept an exception only in a table across
+    two collections. The pending word (a root, D7) still named that exception at the first
+    collection, which therefore copied it; the second collection did not, but the semispaces had
+    flipped twice, and the live set, copied in the same order, put the object back at its old
+    offset, so the stale table word read a valid object. Rule: in a test of one root class, first
+    make every other root (the pending word, a handle, a frame) name something else, and collect
+    an odd number of times, so a stale word points into the poisoned half. Found: S0013 step 6.4,
+    2026-11-16.
+123. **A 32-bit read hides a dirty upper half.** The mutant "an i32 payload is loaded as 8 bytes"
+    left the next field in the slot's upper half, and t9's `i64.extend_i32_u` of it still gave
+    the right value: the JIT reads an i32 slot with a 32-bit load, which zero-extends. Only a
+    path that copies the slot in 64 bits sees it (a function result, which reaches the host as
+    the whole word). Rule: to test that a value is zero-extended in its slot (LESSONS 5), observe
+    it through a 64-bit copy, not through an operator that reads it as an i32. Found: S0013
+    step 6.4, 2026-11-16.
+124. **Run a new test the way CI runs it, without the spec cache.** The widened t11 asserted that
+    more than 250 modules compiled; locally the fetched spec suite is always there, but every CI
+    job that runs pytest (`ci` test and `jit`, `platforms` wheel harness) runs it before or
+    without `tests/spec/fetch.py`, so the test failed on every platform at once. Rule: a test that
+    reads `.cache/spec` either skips without it or scales its floor to what it found, and is run
+    once locally with the cache moved away before it is committed. The Android harness also runs
+    a copy of `tests/` with neither `src/` nor `poc/` beside it: package data is read through
+    `importlib.resources`, PoC files only if they exist. Found: S0013 step 6.4 CI,
+    2026-11-16.
+125. **An instruction that ends a path in wasm can still jump somewhere in the code.** The step-7
+    plan's liveness table gave `throw_ref` (and `throw`) the empty set, as `return`; inside a
+    `try_table` both jump to the landing pad, whose clauses branch to labels that may read a
+    reference local, so the local is live before them. The table would still have given the
+    right set, by accident: the validator lists `throw_ref` among its safepoints (the JIT never
+    lowers it as a call), and every site joins the pads' sets. The pass now gives both the pads'
+    set explicitly; while the validator lists them, a mutant that gives them the empty set
+    passes every test (checked: a defence in the sense of 105; `t7`'s `throw_ref` case pins the
+    set; step 7.3 added a test that calls the pass with the throw left out of the sites). Rule:
+    for each instruction a backward analysis treats as a terminator, list where the generated
+    code goes next (pads, outer pads, cold paths), not only where the wasm text says the path
+    ends. Found: S0013 step
+    7.2, 2026-11-16.
+126. **A fuzzer with GC on can take the machine's memory through one constant expression.** The
+    first `tools/fuzz.py --refs` runs were killed by the OOM killer (14 GB resident) within
+    minutes, and the kill took a background process of another command with them. Smith's global
+    and table initialisers compute array lengths from random `i32` arithmetic, so `array.new` of
+    10⁹ elements is common; Wasmtime commits lazily and the JIT stops at its semispace limit with
+    "GC heap out of memory", but `pyc` holds a non-`i8` array as a Python list, 8 bytes per
+    element, up to the allocation limit of 2³² bytes of elements. Rule: a fuzz mode that enables
+    GC limits its own data (`RLIMIT_DATA`, so the allocation raises `MemoryError`), collects
+    garbage after every module, and its triage reruns a one-sided `MemoryError` in a fresh
+    process before calling it a divergence. Found: S0013 step 7.3, 2026-11-16.
+127. **A forged input aimed at one check can be refused by an earlier one.** Step 7.3 added a
+    value-stack range check to the collection's gatherer, to be tested "with a forged shift", as
+    `walk.check` has one. No forged shift reaches it: the walk compares each segment's outermost
+    frame base with the one its entry saved, and shifts are unsigned, so an unbalanced shift is
+    refused there ("not its entry's") and a balanced pair keeps every base between the entry's and
+    the innermost one. The test forges `nslots` instead (a dead bit past the stack top), and keeps
+    the shift case to show where it is caught. Rule: before writing a test for a defence, trace
+    the forged value through every earlier check, and test both the check and the input it is
+    really for (LESSONS 105). Found: S0013 step 7.3, 2026-11-16.
+128. **Concurrent fuzz runs add up their data limits, and a child killed from outside looked like
+    a timeout.** Each `tools/fuzz.py --refs` engine process may hold 8 GiB (`DATA_LIMIT`, LESSONS
+    126), and `pyc` alone peaks at 7.7 GB on seed 9884; three runs at once on the 15 GB VM made
+    the cgroup's OOM killer take a 7.4 GB `python`, and the harness counted the module as a
+    timeout because the child sent no result. Rule: one memory-heavy fuzz run at a time; a
+    harness that forks a worker tells "no result" apart by the exit status (the alarm's code, or a
+    signal), and prints the signal. Found: S0013 step 7.4, 2026-11-17.
+129. **A scratch measurement that reuses a test's module must reuse the test's environment, and
+    one measurement per fresh process.** t24's loop "collects at each allocation" only because
+    the test's `setup` sets `WABOROS_JIT_GC_STRESS`; without it the same module ran 0 collections
+    and showed no difference between the builds (live bytes 33 554 560 in both). The Kotlin
+    program run after the 100-collection stage in the same process then looked 50-100 ms slower
+    on HEAD, and was not when it ran first in its own process. Rule: copy the fixture's
+    environment along with the module, check the counters the claim depends on (collections, live
+    bytes) before the times, and time each claim in a process that did nothing else. Found:
+    S0013 step 7.4, 2026-11-17.
+130. **A harness that copies a guest memory whole breaks at 2 GiB and can take the machine with
+    it.** The fuzz harness hashed each memory with `ctypes.string_at(addr, pages << 16)`: a smith
+    module that grows an i32 memory to 32 772 pages (2 GiB + 256 KiB, valid) made the size
+    negative in `string_at`'s C int (`SystemError`, counted as a harness skip, so hidden), and the
+    other engines' memories were copied whole into `bytes` (2 GiB each). Rule: hash or compare a
+    guest memory in chunks through a `memoryview`, never one copy, and treat a harness exception
+    as a finding to read, not a skip to count. Found: the first `fuzz-nightly` run with `--refs`
+    (the runner was lost in the smith mode, no log), seed 509584219, 2026-11-17.
+131. **A fold that drops an operand must still evaluate it when it can trap.** `pyc` rewrote the
+    signed comparison against a constant that makes it always true (`C <= INT_MAX`, `x >= INT_MIN`)
+    to `True` and forgot `x`; with `x` an `i32.trunc_f32_u` of a negative float the trap
+    INTEGER_OVERFLOW was lost (Wasmtime and the JITs trap). Since the PoC port, so it predates GC.
+    Rule: a rewrite that discards an operand emits it as a statement unless it is a plain name.
+    Found: `--smith` fuzz, seed 952237952 (first `fuzz-nightly` run, 2026-11-17).
+132. **Bookkeeping pushed before the `try` whose `finally` undoes it leaks when an asynchronous
+    exception lands at the push.** The walk check's `_checked` appended to `walk_vsp` and then
+    entered `try: ... finally: pop()`; `test_async_exception_at_every_delivery_point_restores_the_store`
+    delivers an exception at the append's own `c_return`, the entry stayed, and every later walk
+    check of the store failed ("segments at [X], entries at [X, X+24]"; with the profiler still on,
+    the `repr` in the test's handler then raised `KeyboardInterrupt`). Moving the push inside the
+    `try` is not enough: at the push's `c_call` the `finally` would pop an outer entry. Rule: take
+    the length before the `try`, push inside it, and truncate to that length in `finally`. Found:
+    under `WABOROS_JIT_WALK_CHECK=1` only, 2026-11-18.
+133. **Generated code executed for speed runs in a module's `__dict__`, never a plain dict.** `pyc`'s
+    `load()` and `instantiate()` executed the translation in `{"__name__": ...}`; on PyPy every global
+    read (`M`, `U32`, each function) became a guarded dict lookup instead of a constant the JIT folds
+    from a module's cell dict, and CoreMark ran 6.5-7.5 times slower than the PoC, which imports its
+    output as a module. Results were identical, so no test or spec run saw it, and the PyPy rows of
+    BENCHMARKS.md recorded the slow namespace for weeks. Rule: `ModuleType(name).__dict__` for any
+    `exec` of generated code whose speed matters; a test pins the namespace, since correctness tests
+    cannot. Found: the maintainer, comparing the package with the PoC on PyPy, 2026-11-19.
+
+134. **On Android, a child process started by CPython resets the app's signal chain.** CPython's
+    `subprocess` starts a child with `vfork()`; before `exec` the child sets every handled signal to
+    `SIG_DFL` (`_posixsubprocess.c`, `reset_signal_handlers`), through `sigaction`, which in an app
+    process is ART's libsigchain. For a signal ART has claimed (SIGSEGV) libsigchain does not call
+    the kernel: it writes the action into its table, and a `vfork` child writes the parent's memory.
+    After one `subprocess.run(["readelf", ...])` (the first test that started a real process in the
+    testbed app) faulthandler's SIGSEGV action in the chain was `SIG_DFL`, our handler, installed
+    later, saved that as its previous action, and `test_guard_faults_reach_us_through_libsigchain`
+    failed on `prev == 0`. A process started after our install would replace ours the same way
+    (`guard.broken()` then refuses guard calls). Rule: no child processes in the Android test app
+    (`tests/conftest.py` skips them); that an app which starts a process loses the guard handler is
+    a documented limitation (S0006, Android: refused with an error naming explicit bounds). Found: CI run 44421319412 (Android x86_64), 2026-11-19.
+135. **A dropped JIT store holds its committed memory until the cyclic GC, which does not see it.**
+    A store and its instances form reference cycles, so their memory goes when the cyclic GC runs;
+    each GC heap commits 66 MiB on its first allocation. A free-threaded build collects far less often
+    (`tests/jit/test_exceptions.py` in one process: up to 40 heaps alive at once on 3.15t, 12 with
+    the GIL), and with four xdist workers the Windows x64 cp315t cell ran out of commit charge:
+    `failed to reserve` skips already at 64da5a4, then 26 failures and a worker's `MemoryError` in
+    `ast.parse` once new tests moved the schedule. Reproduced on Linux with `prlimit --data=6000 MiB`
+    (`mprotect` to read-write counts against RLIMIT_DATA like a Windows commit): 3.15t 1-31 failures
+    per run at both commits, 3.15 with the GIL none. Rule: the tests collect garbage after every test
+    on a free-threaded build (`tests/conftest.py`); the runtime's part is planned (ROADMAP "Memory of
+    dropped stores": collect and retry on failure, lazy commit of the heap's service areas,
+    `Store.close()` in phase 6). Item (a) is done 2026-11-19: `execmem._retry` collects and retries once
+    around every reservation, commit and executable mapping (so linear memories, the GC heap and the
+    value stack too; `tests/jit/test_execmem.py`). Item (b) is done 2026-11-20 (D69): the heap's
+    regions are committed apart, so a store with one struct commits 2.1 MiB, and 16 live ones fit
+    under RLIMIT_DATA + 256 MiB where before the fifth failed (`tests/jit/test_gc_commit.py`). Found: CI
+    run 44421319412 (Windows x64), 2026-11-19.
+136. **A depth the wasm module chooses must never become Python recursion.** Constant expressions
+    nest without limit (extended constants: an `i32.add` chain of any length). The JIT instance's
+    `_const` recursed on `add`/`sub`/`mul`, and so did the validator's `validate._const`: a
+    300 000-deep chain raised `RecursionError` (a Python exception, not a crash, but not the
+    validator's verdict either). Rule: walk trees the input shapes with an explicit stack, as the
+    artifact's writer and reader and, since S0014 step 3, the instance do. Closed for the
+    validator 2026-11-19 (`validate._const`; the binary parser did not recurse). **The tree itself was
+    the deeper trap**: the parser kept a constant expression as nested tuples, and freeing a deep one
+    recurses in C: on CPython 3.13 a 10 000-deep tuple chain segfaults when freed in a thread with a
+    256 KiB stack (3.12 and 3.14 survive; the main thread's 8 MiB survives 3 000 000); Pyodide's stack
+    is small, so its interpreter died (CI on d9ae6e9 and b243c9e). Closed 2026-11-20: a constant
+    expression is a flat postfix tuple of nodes (S0014, Changes), every consumer (validator, `pyc`
+    codegen, the JIT instance, the artifact writer and reader) a loop over a value stack; `pyc`
+    emits one statement per operation. Test: `tests/test_deep_const.py` (300 000-deep chain on `pyc`
+    and `jit-x86_64`, direct and through the file, in a 256 KiB thread). Rule: a structure the input
+    shapes is never nested, in a tree, a closure or a generated source line. Found: S0014 step 3,
+    2026-11-19.
+137. **Commit each region before writing to it.** With the GC heap's regions committed apart
+    (D69), a function type's record lies in the type area but its tid-map entry in another region;
+    a prototype that committed only the map for such a record wrote the record into a PROT_NONE
+    page (SIGSEGV), as the S0013 3b.1 review's 64 KiB rounding did. Rule: every write commits the
+    pages of its own region first, in whole 64 KiB pages; a test reads every page of every
+    committed region and nothing else (`test_records_across_many_pages`). Host-side test code
+    that copied the whole image (`string_at(base, cursor)`) also crossed the gap: copy the
+    committed regions only. Found: S0014 step 4.2, 2026-11-20.
+138. **Aligning a section's start hides the end of what precedes it.** S0014 put the first
+    trampoline blob at the next multiple of 16 after the code and its data area, and also said the
+    two were "exactly the bytes `finish` returns": three quarters of x86-64 modules have code whose
+    length is not a multiple of 16, so a reader cannot tell the code's last byte from the padding
+    (a trailing zero is valid code or data), and the round trip `read(write(c)).code == c.code`
+    fails. Rule: when a format aligns what follows, the padding belongs to some field by
+    definition, and the writer applies that definition first (the code padded to 16 is the code
+    everywhere: `.text`, symbols, the view), so that `write(read(b)) == b`. Found: S0014 step 5
+    plan, 2026-11-21.
+139. **Same-size stubs before every function move CoreMark by ±5 % through placement alone.** The
+    C-ABI boundary prototype (D70) put a 16-byte stub before each function. CoreMark looked 5 %
+    *faster* (median 18 095 against 17 216 it/s) and `fib(27)` 0.3-0.5 ns slower, although neither
+    ran the new path more than rarely (`fib` not at all). A control with 16 bytes of `int3` in the
+    same places (`basepad`) showed the same shifts. Rule: a change that inserts code before
+    functions is measured against a padding control that has the same layout, never only against
+    the unchanged tree (LESSONS 51). Found: the D70 prototype, 2026-11-21 (BENCHMARKS.md, "C-ABI
+    boundary between instances").
+140. **sljit's `SLJIT_ENTER_KEEP(n)` keeps at most three registers, and only S0 upward.** The
+    option that lets sljit functions share registers across a `SLJIT_CALL_REG_ARG` call accepts
+    n = 1..3 and keeps S0..S(n-1): rbx, r15 and r14 on x86-64 SysV, x19-x21 on aarch64. Our
+    context and frame registers (r15/r12, x28/x27) and memory 0's (r13/r14, x26/x25) cannot all
+    be kept that way, and `sljit_emit_op_custom` does not change the registers sljit itself uses.
+    Rule: a register role that a sljit-based compiler must share with other code is either among
+    S0..S2 or needs a patched register map; check `sljitLir.h` before planning one. Found: the
+    D70 investigation, 2026-11-21 (sljit 39c508d).
+141. **sljit's x86-64 register map differs between its SysV and Win64 builds.** With `_WIN64`
+    sljit maps S1 to rsi instead of r15, and has eight saved registers instead of six, so code
+    from the same compiler source uses different registers depending on how sljit was built.
+    A micro-compiler shipped as wasm is built once; it must build sljit in one configuration for
+    every OS, with host calls only through our per-convention trampolines. Rule: never read
+    sljit's register roles from one build and assume them on another OS. Found: the D70
+    investigation, 2026-11-21 (`sljitNativeX86_common.c`, `reg_map`).
+142. **Moving the boundary silently changes which path a tail-call test takes.** Before S0015 an
+    export that `return_call`ed another instance's function went through `tail_switch` and left a
+    restore frame. With C entries the export is entered through its module's C entry, so the same
+    test now takes the later-hop path (return to the C entry, jump to the foreign one) and no
+    restore frame exists. `test_the_walk_steps_over_a_tail_switch_restore_frame` and
+    `test_one_copy_per_store_from_the_first_file` failed only on their frame counts, and adjusting
+    the counts would have left `restore` untested. Rule: when the entry shape changes, a test of a
+    first hop must enter the tail-calling function by a `call` inside its module; check which
+    path each tail-call test takes, not only its numbers. Found: S0015 step 1, 2026-11-22.
+143. **A test's hand-made callee must look foreign by the compiler's own test.** With D71 a record
+    call takes the C path only when the record's context has another `HOST_BRIDGE`; the
+    hand-assembled C entries of `test_boundary.py` were wired with a real context of this compiler
+    (or 0). The first would have been "called at its body", 16 bytes into a stub; the second read
+    word 8 of address 0. And the status tests through "one and two C entries" between real
+    instances silently stopped crossing any C entry once those calls became body calls. Rule: a
+    fake callee gets a context the fast-path test rejects, asserted in the test, and a test named
+    after a path checks that it still takes it. Found: S0015 step 1, D71, 2026-11-22.
+144. **A fixup in code that a rewind keeps must not name a label that the rewind drops.**
+    `Asm.rewind(pos)` (the far-mode recompile of one aarch64 function) drops the fixups from
+    `pos` on and unbinds every label bound there. The C entry before a body is emitted before
+    `pos`, so an `adr x16, body` written as a label fixup survives the rewind while its label does
+    not, and `finish` fails with "label never bound" for every far-mode function. No spec module
+    reaches far mode; only the far-mode tests of `test_compiler_aarch64.py` and `test_guard.py`
+    do, so they are the ones that catch it. Rule: a stub that stays across a rewind refers to the
+    code after it by a fixed offset (the `adr` word with `+8`), or rebinds its label; checked with
+    a scratch rewind before the code was written. Found: S0015 step 3, 2026-11-22.
+145. **A writer that derives a symbol from the code must survive code the reader never checked.**
+    The reader does not check code bytes (D62), so `write(read(b))` runs on a view whose stub has
+    a flipped byte. `__waboros_centry_<conv>` is found by decoding the first C-entry stub's jump;
+    on garbage the first version gave a negative `st_size` and `struct.error` in the byte-flip
+    loop of `test_strict.py`, which only that loop catches. Rule: a symbol the writer derives
+    answers "not found" (a size 0 at `data_start`), never an exception or an assert, and the
+    round trip stays idempotent because the derivation is a function of the code. Found: S0015
+    step 4, 2026-11-23.
+146. **sljit's getters are `static inline`, so ctypes cannot call them.** `sljit_get_label_addr`,
+    `sljit_get_const_addr`, `sljit_get_generated_code_size` and `sljit_get_compiler_error` live in
+    `sljitLir.h` and are absent from the shared library's symbols (`nm -D`); the PoC reached them
+    through its own `lib2.c`. `native/`'s translation unit exports them as `waboros_sljit_*`.
+    After `sljit_generate_code` the compiler's error is `SLJIT_ERR_COMPILED` (1), not 0: check
+    the error before generating. Found: S0016 step 1, 2026-11-24.
+147. **A table copied at import time does not see a target registered later.** `artifact.py`
+    kept its own `TARGETS` dict (name → `e_machine`, ISA name) beside `base.TARGETS`; `tests.sljit`
+    registers `jit-sljit-x86_64` after `artifact` is imported, so the spec suite through files
+    failed every module with "unknown target" while the in-process suite passed. Rule: derive such
+    tables from the registry when they are read (`artifact.targets()`, from Target attributes),
+    and run a new target through every path that names targets (files, tools), not only
+    in-process. Found: S0016 step 2, 2026-11-24.
+148. **A shadow-space test must write the home area after the host's last use of its
+    arguments.** GCC at `-O0` spills an `ms_abi` function's `rcx`/`rdx` into its own home area
+    (`[rbp + 16]`, `[rbp + 24]`) and reloads them from there, so a test host that filled the 32
+    bytes first would corrupt its own arguments, and one that never wrote them would not catch a
+    bridge keeping its locals there. `waboros_sljit_test_win64_host` writes them last; the control
+    (the `win64` bridge with its locals at `[SP + 0]`) fails the test with a wrong result.
+    Found: S0016 step 2, 2026-11-24.
+149. **Under `WABOROS_JIT_GC_STRESS=1` the first allocation of a heap does not collect.** A test
+    that wanted the first collection run from A's frames called A's `top`, whose `struct.new` was
+    the heap's first allocation; the first collection then ran in B's frames and the collector was
+    B's compiler. Rule: when a test asserts who runs the first collection, start it with at least
+    two allocations in the frames that must run it, and assert the collector before and after.
+    Found: S0016 step 3, 2026-11-24.
+150. **The compiler string's version comes from the metadata the import finds first.**
+    `waboros.__version__` is `importlib.metadata.version("waboros")`; a child process that put
+    `src/` first on `sys.path` found a stale `src/waboros.egg-info` (dev324) while the parent found
+    the venv's dist-info (dev207), so the two processes wrote different files from the same code.
+    Rule: a test comparing bytes across processes gives the children the parent's `sys.path`.
+    Found: S0016 step 3, 2026-11-24.
+151. **A register the C convention keeps hides a missing reload across compilers.** `jit-sljit`
+    holds memory 0's base in S2, callee-saved in C, so after a call through another compiler's C
+    entry the caller's base comes back even if ccall's reload is removed, and the spec suite and
+    the mixed tests passed without it (S0016 step-4 review). Only a callee that moves the memory
+    (an i64 memory past a small reservation) makes the stale base visible, as a segfault. Rule: test
+    a reload with a case where the saved value is wrong (the memory moved), not only one where
+    another value was put in the register. Found: S0016 step 4, 2026-11-24.
+152. **sljit's aarch64 label address is page-relative beyond 1 MiB.** `SLJIT_MOV_ADDR` is `adr`
+    within +-1 MiB, `adrp` + `add` up to 4 GiB (sljitNativeARM_64.c, `mov_addr_get_length`), and
+    `adrp` counts pages from the buffer sljit generated into. Our code is copied out to an address
+    = 0 mod 4096, so a buffer at a page + 16 (the old size header) would have given a wrong
+    centry return point in any module whose tail site is more than 1 MiB from centry, and no spec
+    module is that large. Rule: generate into a page-aligned buffer (`wsl_map`), refuse another
+    (`Emitter.generate`), and test with a module made that large (`tests/sljit/test_refusals.py`). Found: S0016 step 5, 2026-11-24.
+153. **One 8-byte local doubles a small sljit frame on aarch64.** sljit's aarch64 frame is the
+    16-byte frame record plus saved registers and locals, rounded to 16, so a helper with one
+    slot is 32 bytes where x86-64's is 16; `xcall` made a crossing cost 64 bytes against
+    `jit-aarch64`'s 48. Rule: count an aarch64 frame in 16-byte steps before adding a helper; the
+    body pushes S0 itself there (S0016 "aarch64 has no xcall"). Found: S0016 step 5, 2026-11-24.
+154. **QEMU user mode does not check stack-pointer alignment.** An 8-byte push around a call
+    (sp misaligned for the callee's first `stp` through sp, a fault on hardware with Linux's
+    SCTLR_EL1.SA0) passed the whole QEMU run of the mixed and boundary tests. Rule: on aarch64
+    assert sp % 16 where the code can see it (the exit record's sp at a host call,
+    `test_boundary.py`), since only the native runner would fault. Found: S0016 step 5,
+    2026-11-24.
+155. **sljit `REG_ARG` functions are not C entries.** A function entered with `SLJIT_ARG_TYPE_...`
+    in the `REG_ARG` convention takes its arguments in sljit's own registers and returns its
+    result there, so a C caller (another compiler, the host, ctypes) cannot call it, and an
+    attempt to make every Wasm function one gave a second ABI to maintain. Rule: a sljit compiler
+    exports a stub plus one shared C function (`centry`) and calls its own bodies in `REG_ARG`
+    (S0016 "The compiler"). Found: S0016 steps 0-1, 2026-11-24.
+156. **sljit shortens a jump within +-128 bytes, so fixed-size stubs need a pad (x86-64).**
+    `detect_near_jump_type` turns a `jmp rel32` into `jmp rel8` when the target is near, so a
+    stub that ends in a sljit jump to `centry` is 16 bytes only when `centry` is far. Rule: put
+    128 bytes (`int3`) before `centry`, and check every stub's bytes after generation (the
+    backend refuses a module where one differs). Found: S0016 step 1, 2026-11-24.
+157. **sljit's aarch64 return address is at `[sp + 8]` at every frame size.** The PoC's `lib2.c`
+    puts `x30` at `size - 8` above 512 bytes, which is wrong for sljit 39c508d (measured up to
+    4096 bytes of locals, 90 shapes per architecture). Rule: take `ret_at` and `up` from
+    `waboros_sljit_frame` (checked by ctest against the real return address and stack pointer),
+    not from a formula in Python. Found: S0016 step 0, 2026-11-24.
+158. **sljit's first `sljit_create_compiler` overwrites a `cpu_feature_list` preset.** It runs
+    `init_compiler()` and cpuid unconditionally, so a baseline set before the first create is
+    lost and sljit emits `lzcnt` (above x86-64-v1). Measured: a preset before create gives
+    `lzcnt`, after create the `bsr` + `cmov` baseline. Rule: set the baseline after every create
+    (`waboros_sljit_create` wraps it), and create compilers only through it. Found: S0016
+    step 0, 2026-11-24.
+159. **`uv run` follows `.python-version`, not the venv that `uv sync --python X` made.** With
+    `.python-version` at 3.13, `uv sync --python 3.14` then `uv run python -V` recreates `.venv`
+    and prints 3.13 (uv 0.13.9 and 0.13.10 alike; `--no-sync` names the cause: "does not satisfy
+    the request: Python 3.13"). So the CI matrix rows of `test` ran 3.13 (seen in the logs of the
+    3.15 row: "Using CPython 3.13.18"). Rule: a CI job that wants another Python sets
+    `UV_PYTHON`, which wins over `.python-version`. Found: 2026-11-25.
+160. **PyPy refuses a ctypes array as a `struct.pack_into` buffer, and enters native code from a
+    slightly different sp.** `struct.pack_into(fmt, (c_char * n).from_address(a), ...)` raises
+    `TypeError: a read-write bytes-like object is required` on PyPy 8.0.1 (CPython accepts it):
+    it broke every GC test (heap.py). Rule: write native memory with `ctypes.memmove` of
+    packed bytes. Also, the native stack limit is measured by the sp stub's entry and the run
+    enters again from another sp; on PyPy the two differ by up to ~0.5 KiB (recursion depth under
+    a 64 KiB budget: 4093 on CPython, 4123-4126 on PyPy), so a test bound on that depth has 1 KiB
+    of slack. A test that needs `tracemalloc` skips on PyPy (`_tracemalloc` is missing), and
+    "only stdlib is imported" counts PyPy's `_lzma_cffi` by its file in the stdlib directory.
+    Found: first real PyPy CI run, 2026-11-25.
+161. **The CPython Android testbed fixes the emulator and targetSdk in its Gradle file.** The
+    managed devices are `minVersion` and `maxVersion` only (`aosp_atd`, 4 KiB pages, `targetSdk = 35`,
+    `compileSdk = 35`; the API level of `maxVersion` is its `targetSdk`); cibuildwheel 4.3.5 passes
+    `--managed maxVersion` unless `test-runtime` has `--managed`/`--connected`. A 16 KiB image
+    (`google_apis_ps16k`, API 35-37.x) therefore needs our own emulator and `--connected`, and
+    `targetSdk` is changed by a Gradle init script (`finalizeDsl`), not by a `-P` property.
+    Written before the first CI run of the cell: not yet confirmed. Found: 2026-11-25.
+162. **A target method that accepts a flag and drops it fails silently.** `JitAarch64Target.
+    fault_handler` took `bionic=` (the common signature, for x86-64's Android row) and never passed
+    it to the emitter, so on Android arm64 the handler would have chained through the first word
+    of bionic's `struct sigaction`, its `sa_flags`, as a code address. Nothing showed it while the
+    row was refused. Rule: a per-row flag reaches the emitter or the method raises for it; the
+    fabricated-context test runs every row on each architecture that claims it. Found: S0006
+    Android arm64 opt-in, 2026-11-25.
+163. **No `__clear_cache` is reachable at run time on bionic arm64 (nor on musl without
+    libgcc).** bionic's `libc.map.txt` exports only arm's `cacheflush`; compiler-rt's builtins
+    are hidden in every library that links them; no library of python.org's Android aarch64
+    build has the symbol. A JIT that looks the flush up with `dlsym` fails its probe there, so
+    jit-aarch64 never ran on Android arm64 until our own routine (S0004, 2026-11-25). Rule: on
+    a new aarch64 row, check where the flush comes from before anything else. Found: 2026-11-25.
+
+164. **Maven Central rate-limits CI runners (HTTP 429).** The CPython Android testbed resolves the
+    Android Gradle plugin and Kotlin from Maven Central on every run; from GitHub's shared runner
+    addresses it answers 429 Too Many Requests often enough to fail a required cell before any
+    test runs (`platforms` on bc16405). Rule: cache what a build tool downloads (`~/.gradle/caches`,
+    `~/.gradle/wrapper`), keyed on what pins it (`uv.lock` pins cibuildwheel and so the testbed).
+    Found: 2026-11-26.
+
+165. **Editing `native/CMakeLists.txt` makes `tests/sljit` refuse a stale library.** `tests/sljit/__init__.py`
+    compares the library's mtime with `CMakeLists.txt`, but a rebuild relinks nothing when only the
+    CMake file changed, so the check keeps failing. Rule: after editing `native/CMakeLists.txt`,
+    remove `build/native` and configure again. Found: 2026-11-26.
+
+166. **A C-entry stub names the third argument register of its convention.** `test_native.c`'s x86-64
+    stub was `lea rdx, [rip + 5]` (SysV's third argument); under Win64 the third argument is `r8`,
+    so centry called garbage and the test died of a stack overflow, found under Wine before any CI
+    run. Rule: every hand-written byte that places a C argument is per convention (`sysv`/`win64`),
+    as the artifact's bridges are (D23). Wine 9 in this container aborts at start (`free(): invalid
+    pointer` in ntdll) with the session's environment; `env -i HOME=… PATH=… WINEPREFIX=…` runs it,
+    so a mingw-w64 build of `native/` with that wrapper as `CMAKE_CROSSCOMPILING_EMULATOR` runs the
+    ctest. Found: 2026-11-26.
+
+167. **On an arm64 host QEMU does not emulate a test's child processes.** `qemu-aarch64 python` runs
+    the parent with BTI enforced, but its `subprocess` children are native aarch64 ELF files, which
+    the kernel runs itself (no binfmt entry for the host's architecture), on a CPU without BTI: a
+    test that expects a SIGILL in a child (`test_abi_aarch64`, `test_boundary`) fails there. On an
+    x86 host the same children do not start at all (skipped, or run through `qemu-aarch64`). Rule:
+    job `arm64-bti` makes `sys.executable` a wrapper (`qpython`, `qemu-aarch64 -0 "$0" .venv/bin/python`)
+    and checks `execmem._PROT_BTI` in a child before the tests. Found: 2026-11-26 (not yet run in CI).
+
+168. **Three quirks of the Python reader that a second reader must copy to agree on every file.**
+    The C reader (S0017 step 1) disagreed with `artifact.load` on single byte flips until it did
+    what Python does by accident. (1) `_frozen` is all or nothing: one section name that cannot be
+    read (no terminator, an offset past the table) gives "none" for the whole file, so a
+    `.waboros.wasm` found before it does not count and a flipped fat file is thin; a C lookup that
+    returns what it found so far refuses at step 1b a file that Python refuses at step 3. (2) The
+    layout step compares `.shstrtab` with the table rebuilt from names decoded with
+    `decode("utf-8", "replace")`: a section name that is not valid UTF-8 never round-trips, so it is
+    a step-3 refusal (a flipped `.waboros.wasm` name became an unknown section and C accepted it).
+    (3) The constant-expression reader's `what` is `<section> constant expression`, which becomes
+    `ArtifactError.section`; compare sections without the suffix. Rule: a second implementation of
+    a reader is checked on mutated files, accept or refuse, step and section, not on the files the
+    writer makes. Found: 2026-11-26.
+
+169. **`pyc` output does not run on MicroPython 1.29 as generated; five things break, nothing else did.**
+    `poc/mpy_pyc_probe.py` (CoreMark and a spec subset on the unix port, standard build) found:
+    (1) functions take no attributes, so `f2.s = key` (call_indirect type key) and `f2.t = f2_b` (tail
+    call body) raise `AttributeError` at import: a module dict keyed by the function works;
+    (2) `int.bit_length` and `int.bit_count` do not exist (clz, ctz, popcnt, i64 to f32): `bin(x)`;
+    (3) `struct.Struct` does not exist (the runtime builds U32, P32 and the like from it) and
+    `os.environ` does not, and `waboros/__init__.py` imports `importlib`, so the package cannot be
+    imported, only `runtime.py` can be copied; (4) the recursion limit is about 175 Python frames
+    (a fixed 40 kB C stack on the unix port) and the error is `RuntimeError`, not `RecursionError`;
+    (5) a function whose bytecode needs a jump over 32 kB fails to compile with `RuntimeError:
+    bytecode overflow` (spec br_table.wast, one 48 000 line function). Memory is a `bytearray` taken from
+    the MicroPython heap: run with `-X heapsize=1024M` or modules of a few pages raise `MemoryError`.
+    A module dict for (1) is not enough in the package: instances of `pyc` exec into their own
+    namespaces and tables and imports carry other modules' functions, so the key must be visible
+    across modules, and a shared dict keeps every instance alive (no `weakref` on MicroPython either).
+    Decision (maintainer, 2026-11-27): `pyc` stays as it is for CPython and PyPy; MicroPython is the
+    `mpy` target's question (phase 7). Rule: "valid for the MicroPython flavour" is a claim that needs
+    this run. Found: 2026-11-27.

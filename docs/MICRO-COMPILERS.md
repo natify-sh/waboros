@@ -2,7 +2,7 @@
 title: Micro-compilers - what they are and why
 kind: reference
 status: draft
-updated: 2026-11-03
+updated: 2026-11-24
 ---
 
 # Micro-compilers: what they are and why
@@ -16,7 +16,7 @@ done ("Rules for now" below).
 
 A **micro-compiler** is our JIT compiler, rewritten in a language that compiles to WebAssembly (Zig,
 C or Rust), shipped as **one small wasm module per target architecture** (`riscv64.wasm`,
-`x64.wasm`, ...). It takes wasm bytes and returns a native JIT artifact in our format (ARTIFACT.md,
+`x86_64.wasm`, ...). It takes wasm bytes and returns a native JIT artifact in our format (ARTIFACT.md,
 context ABI of [S0003](specs/S0003-jit-context-abi.md)). Wasm is the portable IR (D16), and the
 micro-compiler is a program written in that IR that translates the IR to native code, including
 itself.
@@ -57,7 +57,7 @@ source, which is why a shipped micro-compiler needs a reproducible build.
   micro-compiler is compared with, byte for byte, on every spec module and CoreMark. Any backend or
   core change lands in Python first, with tests; a byte difference is a micro-compiler bug by
   definition.
-* **They are also the short bootstrap path** on x86-64 and aarch64: our JIT compiles `x64.wasm`
+* **They are also the short bootstrap path** on x86-64 and aarch64: our JIT compiles `x86_64.wasm`
   straight to a native micro-compiler, no `pyc` step.
 * **Micro-compilers are the portable path**: architectures with no Python backend first; on x86-64
   and aarch64 they may later become the production path for speed and for other-language hosts,
@@ -83,7 +83,12 @@ Counts are non-blank lines on `phase0-skeleton` as of SIMD 5f (2026-11-02). The 
 | `jit/aarch64/{backend,encoder,abi}.py` | 1 250 |
 | `jit/aarch64/simd.py` | 416 (1 666 in all) |
 
-`abi.py` belongs to the compiler: the trampolines are bytes inside the artifact.
+`abi.py` belongs to the compiler: its bridge and `tail_switch` are bytes inside the artifact. The
+`entry` is the runtime's (`entry.py` per architecture, S0015). Every function of an artifact has a
+C entry in the boundary ABI of its architecture (D70), so a store may hold a micro-compiler's
+modules next to `jit-x86_64`'s: D64's "one compiler per store" is replaced by one boundary ABI per
+architecture (D70, D71). A mixed store is enabled in phase 6; until then the loader keeps the
+exact `compiler` string.
 
 | stays in the host (runtime / loader) | why |
 |---|---|
@@ -110,6 +115,32 @@ Zig/C/Rust (without SIMD; with it core ~2 300 + one backend ~1 700-2 000, about 
 
 Language choice is about safety and ergonomics, not architecture: Zig (already in the stack via
 `zig cc`, tiny freestanding modules), Rust (`no_std`, watch determinism), C (simplest, least safe).
+**Decided: C** (D60, maintainer, 2026-11-15): it embeds anywhere; a native runtime embeds its own
+architecture's micro-compiler compiled ahead of time and takes the others as `.wasm` for
+cross-compilation.
+
+## The main use: a fast compiler inside a pure-Python package (maintainer, 2026-11-24)
+
+The strongest reason for a micro-compiler delivered as wasm is the Python package itself, which
+stays pure Python (`py3-none-any`, never a binary wheel):
+1. The wheel carries `<arch>.wasm` (or a precompiled `.wbo`; which one is ROADMAP "Next" (6)
+   item (c)) as data.
+2. On the first use on a machine, the Python JIT compiles that wasm once to a native `.wbo` and
+   caches it (expected about a second for a few hundred KB of compiler at the Python JIT's
+   0.6-0.8 MB/s; to be measured).
+3. Every later wasm module goes through the cached native micro-compiler, many times faster than
+   the Python JIT.
+
+Shipping a ready `.wbo` saves that first second, but ties the wheel to the exact compiler string
+until phase 6. A shipped `.wbo` also emits code for the context ABI it was built against: when the runtime moves to another `ctx_abi_version` (or a GC-related `features_required` bit), its files no longer match the store's GC heap and collector and are refused, so the runtime must then rebuild the micro-compiler from the `.wasm` (an argument for shipping `.wasm` and keeping `.wbo` only as the cache; maintainer, 2026-11-24). Where no executable memory exists (Pyodide, iOS, MDWE) neither the Python JIT nor a
+micro-compiler can run and `pyc` remains. Bootstrapping through an interpreter (wasm3, `pyc`) is
+for hosts without the Python JIT but with executable memory (a C loader without an embedded
+compiler); for the Python package the bootstrap is the Python JIT. The native C variant needs no bootstrap at all: there the micro-compiler is compiled into the C loader for the loader's own architecture (ROADMAP "Next" (6) item (c)), and the wasm form matters only for the other hosts. The other reasons below
+(hosts in other languages, cross-compilation, determinism) stand as well.
+
+## The C variant
+
+(Maintainer, 2026-11-24.) One set of C sources (our core over sljit) builds two ways: to wasm, for bootstrap, precompiling and cross-compiling on any wasm runtime; and natively, statically embedded in the C loader for the architecture the loader is built for (x86-64 and aarch64 for now; no compiler `.wbo` for the C loader). The C loader has a build option without the compiler, for small memory (microcontrollers, microservices): it then runs only AOT files cross-compiled for it on a PC by the wasm build of the same compiler. The GC collector stays a wasm module and takes the same path as any module: compiled on first need by the embedded compiler, or, without the compiler, supplied as one more AOT file (or its `.wbo` linked into the binary as data); a build option without GC leaves the collector and the GC heap out for devices whose modules use no GC. When this works, a tool or written instructions help build a C loader without the compiler together with a wasm module's AOT file and the GC collector to embed.
 
 ## Bootstrap paths
 
@@ -128,14 +159,23 @@ anyone can run: [MICRO-COMPILERS-SHIPPING.md](MICRO-COMPILERS-SHIPPING.md) (main
 
 * Prerequisites: the backend interface frozen (**done**, D39), the artifact format and context ABI
   fixed with a version (**phase 5**, D36), the C reference loader in CI (phase 5).
-* **First: `arm64.wasm`, a port of the aarch64 backend** (maintainer, 2026-11-02). The Python
+* **Superseded in part by D68 (maintainer, 2026-11-17): the micro-compilers are our core in C over
+  sljit (generating code through our own thin backend interface, the C counterpart of D39, as static
+  inline functions so LTO inlining stays; sljit is its main implementation and ISAs it lacks, such as
+  Thumb-1 and Xtensa, get hand-written backends, maintainer, 2026-11-24), not hand-written ports of the Python backends; the oracle is behaviour, as for
+  `poc/sljit/sljit-be/`.** The order below is the earlier plan.
+* **First: `aarch64.wasm`, a port of the aarch64 backend** (maintainer, 2026-11-02). The Python
   `jit-aarch64` is a ready oracle: every spec module and CoreMark compared byte for byte, so the
   ported core, the backend and the toolchain are validated before anything new is written. aarch64
   is the smaller backend (~1.2k lines).
+* **The oracle depends on the code generator** (maintainer, 2026-11-17): a hand-written port is
+  compared byte for byte with the Python JIT of its architecture; a port over sljit cannot be, and
+  is compared by behaviour (the spec suite, `spec_diff` both ways, the walk check and poison), as
+  the `poc/sljit/sljit-be/` prototype already is (D60, D64, D70).
 * **Then the third architecture: `riscv64`**, written as a micro-compiler on the proven core instead
   of a third Python backend; checked by the spec suite under QEMU against `pyc` and Wasmtime (no
   byte oracle exists for it).
-* The micro-compilers are `x64.wasm`, `arm64.wasm` and `riscv64.wasm`; later candidates: none hand-written (D48); optionally, later, `sljit-<arch>.wasm` for the other architectures (D48 amendment, [SLJIT-BACKEND.md](SLJIT-BACKEND.md)). `s390x`, `armv7l`, `ppc64le`, `i686`/`x86` and the
+* The micro-compilers are `x86_64.wasm`, `aarch64.wasm` and `riscv64.wasm`; later candidates: none hand-written (D48); optionally, later, `sljit-<arch>.wasm` for the other architectures (D48 amendment, [SLJIT-BACKEND.md](SLJIT-BACKEND.md)). `s390x`, `armv7l`, `ppc64le`, `i686`/`x86` and the
   rest stay on `pyc`. *History, before D48:* they were listed as later
   candidates, and `i686` was judged costly (8 registers, i64 as register pairs, x87 vs SSE2, cdecl
   trampolines, 4 GB address space) and lowest priority.
@@ -154,6 +194,10 @@ anyone can run: [MICRO-COMPILERS-SHIPPING.md](MICRO-COMPILERS-SHIPPING.md) (main
   interface for it without the amendment process D39 describes.
 
 ## Related (not micro-compilers)
+
+* **MicroPython's native emitters** ([MICROPYTHON-NATIVE.md](MICROPYTHON-NATIVE.md), maintainer, 2026-11-19): the
+  same one-pass design; a reference for encoders on small targets, Xtensa above all (no sljit
+  backend), not a base for waboros on MicroPython.
 
 * **Pyodide**: no compiler is needed there; the browser's WebAssembly engine already JIT-compiles a
   guest module. A pass-through target (`WebAssembly.compile` via Pyodide's `js`, imports as proxies,

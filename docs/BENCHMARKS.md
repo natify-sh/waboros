@@ -2,7 +2,7 @@
 title: Benchmarks
 kind: log
 status: current
-updated: 2026-11-05
+updated: 2026-11-24
 ---
 
 # Benchmarks
@@ -204,6 +204,70 @@ nothing about hardware. The same run: spec core 20509 pass / 0 fail and `auto` s
 (The macOS and Windows legs of the `arm64` job no longer exist; those platforms run in `platforms.yml`, which does not
 measure speed. The Linux leg stays: native CoreMark, guard against explicit, below.)
 
+## Package vs Wasmtime, fresh (2026-11-27)
+
+* After S0017 step 1 (2026-11-27, branch `gc`); Intel Xeon @ 2.10 GHz, 4 vCPU, kernel 6.18; CPython 3.13.18;
+  wasmtime-py 50.0.1 (Cranelift, default config); `taskset -c 2`, the engines alternated in one
+  session, three rounds, no build running. Every run printed "Correct operation validated".
+* Commands: `uv run python tools/run_coremark_jit.py poc/in/core.wasm` (the default bounds mode,
+  guard pages on this row, D44), the same with `WABOROS_JIT_BOUNDS=explicit`,
+  `cd poc && uv run python ref_run.py in/core.wasm wasmtime`, `uv run python tools/run_coremark_pyc.py poc/in/core.wasm`.
+
+| engine | round 1 | round 2 | round 3 | of Wasmtime (median) |
+|---|---|---|---|---|
+| Wasmtime (Cranelift) | 21 124 | 20 687 | 21 103 | 100 % |
+| package `jit-x86_64`, guard (default) | 20 172 | 19 915 | 19 653 | **94.4 %** |
+| package `jit-x86_64`, explicit | 16 371 | 16 292 | 16 356 | 77.5 % |
+| package `pyc` | 159.3 (one run) | | | 0.75 % |
+
+The package JIT in its default mode is within ~6 % of Wasmtime on CoreMark here; the explicit bounds
+checks cost ~18 % (guard +21 % over explicit, more than S0006's +9.35 % of 2026-11-04: the code has
+changed since, and this is one machine and one session).
+
+## Pulley vs wasm3 (32-bit host) (2026-11-26)
+
+Conditions: cloud container, x86-64 Linux 6.18.44, Intel Xeon @ 2.10 GHz, 4 vCPU, every run pinned with
+`taskset -c 2`, runs alternated, two rounds. Workload `poc/in/core.wasm` (CoreMark 1.0), it/s as CoreMark
+prints it; every run printed "Correct operation validated" (the iteration count differs per engine, so crcfinal does).
+The i686 rows are native 32-bit processes on the x86-64 kernel (`gcc-multilib`, `i686-unknown-linux-gnu`).
+Wasmtime 50.0.1 (as in `uv.lock`), Rust 1.97.0 (`cargo build --release`, opt-level 3), crate features
+`runtime`, `cranelift`, `pulley`; Cranelift compiles the module to Pulley bytecode when the process starts,
+and the 32-bit host runs it with the interpreter. On the i686 host the default target and an explicit
+`pulley32` gave the same engine (rounds below: default 1 620 / 1 573, explicit 1 554 / 1 468). wasm3 v0.5.0
+(commit 6b8bcb1, the tag pywasm3 0.5.0 wraps), `gcc` 13.3.0 `-O3` `-m32` / `-m64`, without WASI.
+Hosts: a small Rust program (Wasmtime) and a small C program (wasm3) with `wiring.millis` (monotonic ms)
+and `wiring.print`; scratch sources were not added to the repository.
+
+| engine | host | round 1 | round 2 |
+|---|---|---|---|
+| **Pulley** (`pulley32`) | **i686** | 1 620 | 1 573 |
+| **wasm3** v0.5.0 | **i686** | 1 035 | 1 064 |
+| Pulley (`pulley64`), Rust host | x86-64 | 1 700 | 1 649 |
+| Pulley (`pulley64`), wasmtime-py | x86-64 | 1 535 | 1 570 |
+| wasm3 v0.5.0, C host | x86-64 | 2 418 | 2 393 |
+| wasm3 pywasm3 0.5.0 | x86-64 | 2 533 | 2 397 |
+| Wasmtime Cranelift, Rust host | x86-64 | 19 801 | 20 322 |
+| Wasmtime Cranelift, wasmtime-py | x86-64 | 20 919 | 20 845 |
+
+Commands (wasmtime-py rows use `ref.py`, a copy of `poc/ref_run.py`'s wasmtime branch with
+`Config().target = "pulley64"`; the Rust host takes `core.wasm [target]`):
+
+```
+cargo build --release --target i686-unknown-linux-gnu      # and without --target for x86-64
+taskset -c 2 target/i686-unknown-linux-gnu/release/host poc/in/core.wasm [pulley32]
+taskset -c 2 target/release/host poc/in/core.wasm [pulley64]
+gcc -m32 -O3 -Iw3src/source <m3_*.c without wasi/libc/tracer> w3host.c -o w3_32 -lm   # -m64 for x86-64
+taskset -c 2 ./w3_32 poc/in/core.wasm
+taskset -c 2 uv run --with pywasm3==0.5.0 python poc/ref_run.py poc/in/core.wasm wasm3
+taskset -c 2 uv run python ref.py {pulley64,default}
+```
+
+On this machine Pulley on an i686 host ran CoreMark about 1.5 times faster than wasm3 (1 573-1 620 vs
+1 035-1 064 it/s), while on x86-64 wasm3 ran about 1.4-1.5 times faster than Pulley (`pulley64`); Pulley
+(Rust host, mean of two rounds) lost 5 % and wasm3 (C host) 56 % going from x86-64 to i686. A `pulley32` module cannot be run in an x86-64
+process (Wasmtime refuses: the target does not match the host), so no proxy was used.
+
+
 ## Compile and load times (CoreMark)
 
 | step | time |
@@ -212,6 +276,75 @@ measure speed. The Linux leg stays: native CoreMark, guard against explicit, bel
 | `pyc` from a cached code object (`marshal.loads` + exec) | 0.5 ms (123 KB) |
 | `mpy`: import of source / of `.mpy` | 59 ms / 2 ms (`.mpy` 37 KB bytecode; native `.mpy` 285–312 KB) |
 | JIT `w2jit` / `w2jit2` | ~28–31 ms (3.13), ~50 ms (3.8); 71 KB / 39 KB of x86-64 |
+
+## Artifact size (S0014 step 2, 2026-11-18; trampolines from step 5, 2026-11-21)
+
+CoreMark (`poc/in/core.wasm`, 19 463 bytes of wasm) written by `artifact.write` as an ELF64 file
+(the package's `gc` branch). Thin = no `.waboros.wasm`, fat = with it. Step 5 added the trampolines
+of every convention (blobs, padding, `.waboros.trampolines`, their symbols and section header):
++1 208 bytes per x86-64 file (`sysv` 308 and `win64` 314 bytes of code), +688 (explicit) and +680
+(guard) per aarch64 one (316 bytes of code); the before column is step 4.2's commit, measured in
+the same session (it equals step 2's numbers).
+
+| target, bounds mode | thin (bytes) | fat (bytes) | thin, fat before step 5 |
+|---|---|---|---|
+| `jit-x86_64`, explicit | 56 256 | 75 792 | 55 048, 74 592 |
+| `jit-x86_64`, guard | 52 616 | 72 152 | 51 408, 70 952 |
+| `jit-aarch64`, explicit | 50 144 | 69 688 | 49 456, 69 000 |
+| `jit-aarch64`, guard | 47 400 | 66 944 | 46 720, 66 264 |
+
+The spec's estimate (about 51 KB thin, 70 KB fat, x86-64 guard) holds: 52 616 and 72 152. Step 5's
+`write` and `read` times (CPython 3.13, `taskset -c 2`, best of 7, alternated with step 4.2 twice,
+the second pair): `write` 0.18 against 0.15 ms (explicit) and 0.37 against 0.32 ms (guard), `read`
+0.33 against 0.32 ms and 0.76 against 0.78 ms (step 2's single run gave about the same: `write`
+0.2 and 0.4 ms, `read` 0.3 and 0.8 ms, 669 fault points in guard mode). Wasmtime's `.cwasm` of the
+same module is 53 608 bytes. The instantiation time through a file is step 3's.
+
+## Artifact size after S0015 (2026-11-23)
+
+The same CoreMark, thin and fat. S0015 steps 1 and 3 changed the code (the C entries); step 4
+changed the trampolines: a file carries the compiler's bridge and `tail_switch` only (28-byte
+records, a `centry` symbol, no `sp_stub`, no entry or other global symbols). "After steps 1-3" is
+the step-3 commit, "after step 4" the step-4 tree, both measured on 2026-11-23 (aarch64 compiled
+on x86-64, D35), each mode by
+
+```
+WABOROS_JIT_BOUNDS=<mode> uv run python -c "import hashlib; from waboros.frontend.binary import parse; \
+from waboros.frontend.validate import validate; from waboros.targets import base; \
+from waboros.targets.jit.common import artifact as A; w = open('poc/in/core.wasm', 'rb').read(); \
+[print(t, len(A.write(c, target=t, module_sha256=hashlib.sha256(w).digest())), len(A.write(c, target=t, wasm=w))) \
+ for t in ('jit-x86_64', 'jit-aarch64') for m in [parse(w)] if validate(m) is None for c in [base.TARGETS[t]().compile(m)]]"
+```
+
+| target, bounds mode | thin, fat after steps 1-3 (bytes) | thin, fat after step 4 (bytes) |
+|---|---|---|
+| `jit-x86_64`, explicit | 57 360, 76 896 | 56 824, 76 368 |
+| `jit-x86_64`, guard | 53 720, 73 256 | 53 184, 72 728 |
+| `jit-aarch64`, explicit | 51 032, 70 576 | 50 864, 70 400 |
+| `jit-aarch64`, guard | 48 304, 67 848 | 48 136, 67 672 |
+
+Step 4 saves 536 bytes per x86-64 file (the entry and `sp_stub` of two conventions) and 168 thin,
+176 fat per aarch64 file.
+
+## Instantiation from an artifact (S0014 step 3, 2026-11-19)
+
+`jit-x86_64`, guard mode (the default here), CPython 3.13, `taskset -c 2`, Intel Xeon @ 2.10 GHz
+(Linux 6.18); best of 7 (compile: of 3), two runs each, the second in brackets. "From the read form"
+is `JitInstance` built from `artifact.read`'s `ModuleView` (no `ValidModule`), each with a new
+store; `ref_test.1.wasm` is the largest import-free GC module (structs) of the suite's `gc/`.
+
+| module | parse + validate | compile | write (thin) | read | instantiate compiled | instantiate read form | file |
+|---|---|---|---|---|---|---|---|
+| CoreMark (19 463 B) | 9.3 ms | 35.0 (33.0) ms | 0.34 (0.32) ms | 0.77 (0.76) ms | 0.24 (0.26) ms | 0.28 (0.24) ms | 51 408 B |
+| `gc/ref_test.1.wasm` (1 014 B) | 1.2 ms | 7.5 (7.6) ms | 0.16 (0.17) ms | 0.40 (0.39) ms | 0.25 (0.23) ms | 0.22 (0.22) ms | 21 744 B |
+
+Loading a file (read + instantiate) takes about 1.1 ms against 45 ms for parse, validate and
+compile on CoreMark: about 40 times less. Instantiation is the same from either form.
+
+CoreMark run through a file (`WABOROS_JIT_ARTIFACT=1 tools/run_coremark_jit.py`, alternated with
+the direct path, same session and conditions, 6 runs each): direct 17 236, 17 030, 17 650,
+16 745, 17 296, 17 496 it/s (median 17 266); through a file 15 840, 17 376, 17 326, 17 414,
+17 499, 16 928 it/s (median 17 351). Within the spread, as expected: the code bytes are the same.
 
 ## Micro-benchmarks behind the decisions
 
@@ -1108,6 +1241,10 @@ and PyPy 3.11.17 (PyPy 8.0.1). Base and variant alternated, the order rotated ea
 | CPython 3.14.10 | 5 | 135.7 (134.1–138.5) | 144.9 (142.4–149.7) | +6.8 % |
 | PyPy 3.11.17 | 5 | 478.0 (446.0–501.5) | 463.6 (455.6–501.6) | −3.0 %, within the ~10 % spread |
 
+*The PyPy row measured generated code run in a plain dict (`run_src.py`, like `load()` then), where
+PyPy's JIT does not fold global reads: about 7 times below what the same code reaches in a module's
+`__dict__` ("`pyc` on PyPy: the module namespace", 2026-11-19). The CPython rows are unaffected.*
+
 **Per rule, CPython 3.13** (cumulative, then each rule left out of the full set). The 10-round set is the
 one that decides; the 5-round set is below it for the left-out rows:
 
@@ -1131,7 +1268,8 @@ confirmed by the 10-round set (+2.6 %). dse adds nothing beyond the noise; it on
 
 **Switch VM** (`poc/bench/switch/vm.wasm` through the package's `pyc`, million VM operations per second,
 median of 5 sets of 3 runs; every run the same result, `fb62750f`): CPython 3.11 1.11 → 2.81 (×2.5), 3.13
-1.00 → 2.28 (×2.3), 3.14 1.23 → 2.68 (×2.2), PyPy 15.2 → 15.7 (×1.03). `_br` occurrences 158 → 0.
+1.00 → 2.28 (×2.3), 3.14 1.23 → 2.68 (×2.2), PyPy 15.2 → 15.7 (×1.03). `_br` occurrences 158 → 0. (PyPy: plain-dict namespace, see
+"`pyc` on PyPy: the module namespace".)
 
 **Switch VM per rule** (follow-up, 2026-11-05, CPython 3.13.18, `taskset -c 3`; 12 configurations, one
 process each per round, 10 rounds, order rotated each round and reversed on odd rounds; a value is the
@@ -1405,7 +1543,7 @@ spread between rounds, so the effect is real on aarch64 too, but smaller than on
 Alignment to 32 is the closest to the rule (CoreMark +1.2…1.4 % at every pad, corpus +0.3…0.7 %), yet `dot`
 loses in explicit mode (0 of 4) and `nearest` in guard mode (0 of 4), for +4.5…6 % code; no alignment is a
 gain over CoreMark, the kernels and the corpus in both modes. By the rule: **not implemented** (the knobs
-stay, off by default); the decision is the maintainer's.
+stay, off by default). Decision (maintainer, 2026-11-10): not implemented, closed for aarch64.
 
 ## Exceptions: the status check after a call (S0012 Q1, 2026-11-05)
 
@@ -1467,3 +1605,908 @@ The two were alternated, three rounds, in one session.
   chain 100 deep is that slow on this machine whether or not it throws.
 * **Memory.** Each throw keeps 8·(1 + payload words) bytes until the store is dropped: 16 bytes
   here. One ctypes object per throw (the plan's first prototype) kept 137 bytes.
+
+## GC safepoints (S0013 step 3a, 2026-11-11)
+
+Step 3a adds a site record per call (data, no instruction), an exit record written by the host
+bridge (8 instructions per host call on x86-64) and saved and restored by every entry (15), and a
+frame walk that runs only with `WABOROS_JIT_WALK_CHECK=1`. Module code is byte-identical (D35 lists
+of both JITs, guard and explicit), so only compile time and the trampolines can change.
+
+Conditions: the dev VM (Intel Xeon @ 2.10 GHz, 4 vCPU), CPython 3.13.17, `jit-x86_64` in guard mode
+(the default) unless named, every process pinned with `taskset -c 2`. "Before" is the tree after
+S0013 step 2 (before 3a.1), "after" the tree after step 3a.3, both run from `git archive` copies, alternated (the order
+swapped every round) in one session, the machine just rebooted (load about 1 from the runs
+themselves). Scratch scripts, not in the tree.
+
+| measurement | rounds | before | after | change |
+|---|---|---|---|---|
+| compile, CoreMark + `hash` + `mono` + `zip`, `jit-x86_64` explicit (ms; median of each process's fastest of 10 compiles) | 30 | 217.5 | 219.8 | paired +0.9 % (slower in 19/30) |
+| the same, `jit-x86_64` guard | 30 | 196.4 | 195.8 | paired +0.3 % (17/30) |
+| the same, `jit-aarch64` explicit (cross-compiled) | 30 | 212.9 | 214.3 | paired −0.5 % (14/30) |
+| the same, `jit-aarch64` guard | 30 | 189.8 | 194.2 | paired +1.1 % (17/30) |
+| bridge round trip to a machine-code host (`mov qword [rdi+56], 0; ret`), 10⁷ calls, best of 7 (ns) | 12 | 4.42 (4.30–6.53) | 5.53 (5.41–8.38) | about +1.1 ns |
+| bare entry: the ctypes call of the entry trampoline on an empty function, 10⁶, best of 7 (ns) | 10 | 577.9 (545.0–631.6) | 554.1 (546.9–667.2) | none measurable (paired −29 ns, slower in 3/10) |
+| host call from a wasm loop to `lambda a: [a[0]]`, 2·10⁵, best of 5 (ns) | 28 | 4 977 | 5 029 | paired +1.0 % (interquartile −2.5 … +7.2 %, 16/28) |
+| libcall loop, `memory.grow 0` (ns) | 28 | 6 133 | 6 276 | paired +4.4 % (−4.1 … +6.9 %, 18/28) |
+| entry from Python, `Instance.call` of an exported `nop`, 10⁵ (ns) | 28 | 7 335 | 7 550 | paired +3.0 % (−3.3 … +5.8 %, 18/28) |
+| CoreMark (`tools/run_coremark_jit.py poc/in/core.wasm`, iterations/s, self-check passed) | 8 | 15 048 (14 039–15 722) | 14 853 (13 921–16 019) | paired −1.3 % (faster in 3/8) |
+
+* **Compile time** stays within the +3 % bound. The per-process median is too noisy on this VM (a
+  tree's own medians spanned 200-320 ms), so each process's fastest compile is compared; a profile
+  puts the new code (`site`, `_site`, `encode`) at 0.2 % of the compile. The step-3a.1 measurement
+  on a loaded VM gave the same picture (−0.2 … +1.8 % on the fastest).
+* **The trampolines** cost about 1.1 ns per host call (machine-code host); the entry's extra
+  instructions are not measurable against the ctypes call. The Python-level loops vary by ±5 %
+  between sessions with no code change: in the same comparison, step 3a.2 measured −1.5 % on host
+  calls and −3 % on entries, step 3a.3 (the walk off) −2.9 % and −0.6 %; their interquartile ranges
+  here straddle zero, so they show no change beyond the spread.
+* **CoreMark** runs the same code bytes; the difference is within the spread.
+* **Section size:** CoreMark 108 sites in 1 736 bytes (5.1 % of its 34 KB of code); every compiled
+  module now carries its table.
+
+## GC on `jit-x86_64` (S0013 step 3b, 2026-11-15)
+
+Step 3b makes `jit-x86_64` run GC on a store-lifetime heap that is **not collected yet** (the
+collector is step 5): every object stays until the store is dropped, so these loops measure
+allocation, access and casts, not collection. Wasmtime runs its default collector (DRC) on the
+same loops.
+
+Conditions: the dev VM (Intel Xeon @ 2.10 GHz, 4 vCPU), CPython 3.13.17, wasmtime-py 50.0.1, every
+process pinned with `taskset -c 2`, the machine otherwise idle.
+
+**CoreMark** (`tools/run_coremark_jit.py poc/in/core.wasm`, iterations/s, every run's self-check
+passed): the tree before step 3b (656816b) against step 3b (2d668f2 plus the 3b.4 tests), each from
+its own `git archive` copy, alternated, 5 pairs per bounds mode. The code is byte-identical (D35
+lists of both JITs, both modes, every module without GC), so no change is expected:
+
+| mode | before 3b: median (range) | after 3b: median (range) |
+|---|---|---|
+| guard | 15 770 (14 901–18 085) | 16 698 (15 829–17 598) |
+| explicit | 14 250 (13 970–15 348) | 14 542 (13 724–16 462) |
+
+The ranges overlap; this VM's CoreMark varies by ±10 % between runs of the same code.
+
+**GC loops** (`tools/bench_gc.py --rounds 5`: ns per iteration, the best of 5 rounds, the targets
+alternated round by round, a fresh instance per round; `pyc` runs 1/50 of the iterations; the
+three targets' results compared and equal):
+
+| loop | `jit-x86_64` (guard) | `pyc` | Wasmtime 50.0.1 |
+|---|---|---|---|
+| churn: `struct.new` of two i32 fields + `struct.get`, 10⁶ | 8.9 | 81.8 | 36.3 |
+| list: build 2·10⁵ nodes, then walk them (per node) | 11.8 | 403.0 | 66.6 |
+| casts: `ref.test` to a final type + `ref.cast` to a non-final type at depth 3, 10⁶ | 2.7 | 199.3 | 7.4 |
+| arrays: `array.fill` of 4 KiB of i8 + `array.copy` of 512 i64, 2·10⁴ | 602.0 | 2 550.4 | 58.8 |
+
+* The allocation loops are faster than Wasmtime's because nothing is reclaimed (no reference
+  counting, no collection); S0013's lowered-shape estimate (6.6 ns for the churn) is close. These are
+  not the numbers to compare after step 5, which adds the collections.
+* The array loop is 10× Wasmtime's: the backend's `memory_fill` and `memory_copy` (S0011 bulk
+  operators) copy 8 bytes per iteration where Wasmtime calls `memset`/`memcpy`. It is a bulk-memory
+  cost, the same for `memory.fill`/`memory.copy` of linear memory, not specific to GC; any change
+  needs its own measurement.
+
+## GC collector (S0013 step 5, 2026-11-16)
+
+Step 5 makes the JIT heap collect (D61). This section measures the collector, and answers S0013 Q2:
+Cheney (breadth-first, the to-space is the queue; `collector.wat`) or a depth-first work list.
+
+Conditions: the dev VM (Intel Xeon @ 2.10 GHz, 4 vCPU, Linux 6.18), CPython 3.13.17, wasmtime-py
+50.0.1, every process pinned with `taskset -c 2`, `WABOROS_JIT_GC_STRESS`, `_POISON` and `_VERIFY`
+unset, `jit-x86_64`. The VM is noisy: the same code differs by 20-40 % between rounds, so every
+comparison has a **control** (the same build measured twice, `cheney2`, as the code-placement
+rule of S0013 Q2 asks for).
+
+**The depth-first build** (a scratch build, `poc/gc_dfs/collector_dfs.wat`, 249 lines; not in `src`):
+the same four exports and the same checks, with an explicit stack of field addresses in the free
+end of to-space (`[sp, to_hi)`, growing down; a push that would meet the copy cursor traps). An
+object is copied when its field is popped, so the copy order is a pre-order (the first field's
+subtree first); `roots` drains the stack after each root and `finish` only returns the cursor. It is
+**not** a drop-in: the stack can need up to 4 bytes per pending field of free to-space (an array of
+10⁶ references pushes 4 MB), where Cheney needs nothing. Correct on the suite: `WABOROS_JIT_GC_STRESS=1
+WABOROS_JIT_GC_POISON=1 WABOROS_JIT_GC_VERIFY=1 python -m tests.spec.run --engine jit-x86_64 gc
+exceptions` with the variant's `.wasm` swapped into a `git archive` copy of HEAD (d4be34f): 905 pass,
+0 fail, in guard and in explicit mode (the copy's `collect.py` logged the SHA-256 of the `.wasm` it
+loaded: 14 collector instances, all the variant's); `tests/jit/test_gc_collect.py`, `_roots.py`
+and `_moving.py` also pass on it (75).
+
+**Microbenchmarks** (`tools/bench_gc_collect.py --builds cheney=DIR,dfs=DIR,cheney2=DIR --rounds 9
+--bounds guard|explicit`: three builds alternated round by round, each in its own process; median
+and the range over 9 rounds). Each heap has about 10⁶ live objects, is built, then garbage is
+allocated until six more collections have run: *pause* is the mean time of `collect()` (root
+gathering in Python plus the collector), *collector* only the calls into the collector module,
+*walk* the mutator walking the live data afterwards (median of 5 walks, per object):
+
+| bounds | measure (10⁶ live objects) | Cheney | depth-first | Cheney again (control) |
+|---|---|---|---|---|
+| guard | list: pause, ms | 25.5 (20.7-33.7) | 28.9 (20.7-41.1) | 25.3 (23.6-42.4) |
+| guard | list: walk, ns/object | 6.7 (4.5-9.5) | 6.2 (4.7-8.2) | 5.7 (3.9-8.8) |
+| guard | tree (depth 20, 2²⁰-1 nodes): pause, ms | 35.0 (31.1-45.5) | 47.7 (37.4-57.8) | 42.8 (29.8-53.8) |
+| guard | tree: walk, ns/node | 7.3 (6.0-9.5) | 10.1 (6.4-11.7) | 7.8 (5.8-10.8) |
+| guard | array of 10⁶ references to pairs: pause, ms | 27.4 (25.5-38.4) | 29.8 (20.3-50.5) | 28.6 (25.6-69.8) |
+| guard | array: scan, ns/element | 3.2 (1.9-4.8) | 2.3 (2.0-5.2) | 2.3 (1.8-5.7) |
+| explicit | list: pause, ms | 27.3 (21.2-45.0) | 35.8 (24.6-45.6) | 35.1 (24.6-40.9) |
+| explicit | list: walk, ns/object | 6.0 (4.8-7.6) | 5.7 (4.9-8.1) | 6.0 (4.8-7.0) |
+| explicit | tree: pause, ms | 44.5 (35.7-51.6) | 42.4 (39.1-67.0) | 38.4 (36.9-50.4) |
+| explicit | tree: walk, ns/node | 10.2 (6.4-11.3) | 8.5 (6.5-12.6) | 8.4 (5.5-10.1) |
+| explicit | array: pause, ms | 32.0 (28.3-41.7) | 34.1 (24.7-44.5) | 34.4 (24.4-45.5) |
+| explicit | array: scan, ns/element | 4.0 (2.5-4.7) | 3.1 (2.4-5.1) | 3.9 (2.3-4.7) |
+
+* The pause is **25-45 ns per live object**, 25-45 ms per 10⁶ live objects (the collector module's
+  own time is 99 % of it: the Python root walk is not the cost with few roots).
+* The list and the array have the same layout in both orders (one pointer per object; elements in
+  index order), so they are controls too: their differences (Cheney against Cheney again differs by up to
+  7.8 ms in the list pause and 0.9 ns in the array scan) show the noise floor. The tree is where the
+  orders differ. There the depth-first mutator is faster in one bounds mode (explicit, 8.5 against
+  10.2) and slower in the other (guard, 10.1 against 7.3), each within the spread of the control
+  (the control's own medians differ by up to 1.8 ns); its pause is 36 % longer in guard and 5 %
+  shorter in explicit. No consistent gain, in the pause or the mutator.
+* The collector module is compiled once per process and bounds mode: 5-9 ms (parse, validate and
+  compile of 1.5 kB of wasm; the table's run: 6.2 ms guard, 6.1 explicit); each store that collects
+  instantiates it in 0.3 ms (0.28-0.39 ms, the medians of the three builds in both modes). Neither
+  depends on the order.
+
+**The Kotlin program** (`gc_kotlin` of the corpus, `run` once in a fresh store, the wall time of the
+export; 36 collections in the first run; `taskset -c 2`, 7 alternated rounds of Cheney, depth-first
+and Cheney again, each in a new process; the result checked against the Python reference every run;
+"later runs" is the mean of nine further runs in the same store):
+
+| bounds | measure | Cheney | depth-first | Cheney again (control) |
+|---|---|---|---|---|
+| guard | first run, ms | 161.8 (137.5-218.5) | 184.5 (141.5-204.1) | 211.2 (135.0-241.9) |
+| guard | later runs, ms per run | 78.7 (68.5-87.6) | 78.7 (61.7-98.7) | 78.2 (60.4-83.4) |
+| explicit | first run, ms | 199.4 (182.5-296.4) | 205.1 (161.0-330.2) | 211.7 (161.0-238.4) |
+| explicit | later runs, ms per run | 77.1 (62.7-122.5) | 96.0 (88.7-109.5) | 89.9 (76.3-104.8) |
+
+Depth-first gains nowhere here: within the spread in guard, 25 % slower in explicit on the later
+runs (the control itself is 17 % away from Cheney).
+
+**The decision (S0013 Q2 rule): Cheney stays.** Depth-first would replace it only if it gained on the
+microbenchmarks **and** on the corpus program beyond the spread between rounds. It gains on neither:
+the one cell where it looks better (the tree walk in explicit mode) is within the spread and
+reversed in guard mode, the Kotlin program is equal or slower, its collection pause on the tree is
+no shorter, and it needs a stack in the free end of to-space (a trap when the stack meets the
+cursor) where Cheney needs none. Only `collector.wasm` of Cheney is committed; nothing in `src` changes.
+
+**The four loops of 3b with collections** (`tools/bench_gc.py --targets jit-x86_64,wasmtime
+--rounds 5`, ns per iteration, best of 5 rounds, the targets alternated; run three times from
+`git archive` copies, Cheney, depth-first, Cheney; the first and last are the same code):
+
+| loop | 3b (no collection) | Cheney | depth-first | Cheney again | Wasmtime (the three runs) |
+|---|---|---|---|---|---|
+| churn | 8.9 | 4.8 | 5.5 | 4.9 | 37.3 / 30.5 / 29.7 |
+| list | 11.8 | 43.2 | 42.5 | 43.4 | 70.8 / 71.4 / 64.6 |
+| casts | 2.7 | 2.8 | 2.3 | 2.2 | 6.7 / 7.6 / 6.3 |
+| arrays | 602.0 | 349.8 | 297.5 | 280.2 | 58.6 / 59.1 / 56.4 |
+
+* Churn is 1.8× faster than without a collector (the 3b heap only grew, so every object touched fresh
+  pages; now two semispaces are reused) and 6-8× faster than Wasmtime's.
+* The list loop is 3.7× slower than in 3b: building 2·10⁵ nodes collects with growth while the list
+  is live: a fresh store collects 4 times while building 2·10⁵ nodes (counted with
+  `heap.collections`), each copying the list built so far, and at the 25-45 ns per live object of
+  the pause measurements below that is about the 31 ns per node added; Wasmtime's 65-71 ns per
+  node is still 1.6× more.
+* Casts do not allocate in the loop: unchanged. The array loop is still 5-6× Wasmtime's, the
+  bulk-memory cost of the 3b section (copy of 8 bytes per iteration); it varies by 25 % between
+  the three runs here.
+* The depth-first column is within the spread of the two Cheney runs on every loop.
+
+**CoreMark** (`tools/run_coremark_jit.py poc/in/core.wasm`, iterations/s, every self-check passed):
+the tree before step 5.3 (5c0ef35, no collector) against HEAD d4be34f, each from its own `git archive`
+copy, alternated, 5 pairs per bounds mode. No JIT code of a module without GC changes, so no change is
+expected:
+
+| mode | before 5.3: median (range) | HEAD: median (range) |
+|---|---|---|
+| guard | 16 737 (15 977-17 378) | 16 982 (15 792-18 420) |
+| explicit | 14 853 (14 334-16 948) | 15 007 (14 796-15 615) |
+
+The ranges overlap, as in 3b.
+
+## Exceptions in the GC heap (S0013 step 6, 2026-11-16)
+
+Step 6 moves exception objects from the store's arena (D52: 16 bytes bumped per throw, never
+freed) into the GC heap (D63: 24 bytes for an `i32` payload, collected). This section measures
+the throw, the collection's share, the memory and the instantiation. S0012's throw-cost section
+stays as history.
+
+Conditions: the dev VM (Intel Xeon @ 2.10 GHz, 4 vCPU, Linux 6.18), CPython 3.13.17, wasmtime-py
+50.0.1, every process pinned with `taskset -c 2`, `WABOROS_JIT_GC_STRESS`, `_POISON` and `_VERIFY`
+unset, `jit-x86_64`. Other agents may have been running (the VM is noisy, S0013 step 5).
+* **arena**: the last commit before the throw moved to the heap, 7ee63ce (step 6.1: the heap
+  exists for exception modules, the throw still bumps the arena), as a `git archive` copy in a
+  fresh directory, run with `PYTHONPATH=<copy>/src:<copy>`. The venv's `waboros` is an editable
+  install of the checkout (LESSONS 121), so every run printed `waboros.__file__` first and the
+  driver checked it was the copy's.
+* **heap**: the working tree at 02c3673 plus this step (`tools/bench_throw.py --median` only).
+* **Wasmtime**: wasmtime-py 50.0.1, run by the same tool.
+* The same `tools/bench_throw.py` (the working tree's) drove all three; the module, the
+  alternation and the check that the results agree are the tool's.
+
+**Throw cost.** `tools/bench_throw.py --rounds 1 --median --targets T --frames 1,10,100` (one
+`i32` payload thrown D frames up and caught in a wasm loop; ns per throw-and-catch; 20 000
+iterations, 5 000 at D = 100), one process per call. 5 rounds, the order of the three builds
+rotated each round, in each bounds mode. Median (min-max) over the 5 rounds, ns:
+
+| bounds | D | arena | heap | Wasmtime |
+|---|---|---|---|---|
+| guard | 1 | 15 (12-16) | 14 (13-16) | 242 (160-286) |
+| guard | 10 | 24 (22-28) | 25 (24-29) | 435 (396-746) |
+| guard | 100 | 234 (222-289) | 232 (223-234) | 2 888 (2 566-5 063) |
+| explicit | 1 | 11 (10-16) | 19 (16-34) | 174 (168-308) |
+| explicit | 10 | 22 (21-27) | 26 (25-40) | 439 (418-779) |
+| explicit | 100 | 221 (215-241) | 239 (229-331) | 2 919 (2 681-4 935) |
+
+* In guard mode the arena and the heap are the same within the spread at every D. In explicit mode
+  the heap is 4-8 ns slower at D = 1 and 10 (the ranges overlap at D = 10, not at D = 1) and 8 %
+  slower at D = 100 with a wider spread. One round per process, five processes: this is the size
+  of the evidence, and nothing here shows more than a few ns.
+* A throw caught one frame up costs 14-19 ns on the heap, 9-17 times less than Wasmtime's
+  174-242 ns. The D = 100 numbers are call depth (as in S0012), not unwinding. They are lower than
+  S0012's (991 ns) on another day and with `taskset`; the cause was not looked for.
+* Each timed run allocates 20 000 objects of 24 bytes (480 kB), under one semispace, so the rows
+  above do not include a collection's cost; the collecting rows follow.
+
+**A payload that must be collected** (scratch driver, not in the tree): `loop(n)` allocates a
+struct `(struct (field i32))` per iteration and throws it as the payload of a `(tag (param anyref))`
+one frame up; the catch reads the field and adds it up. `nothrow` is the same loop without the
+throw (the struct is allocated and read: the allocation's own cost). A global holds an array of
+`anyref` with 1 or 10 000 live structs, so each collection has them to copy. 300 000 warm-up
+iterations of each loop first (the collector module is compiled once per process, 5-9 ms, S0013
+step 5), then 200 000 timed iterations of each; one process per call, 5 rounds with the two
+builds alternated; median (min-max) ns per iteration, the collections in the timed run (equal in
+all five rounds) and the heap's capacity at the end:
+
+| bounds | live structs | build | throw | collections | nothrow | collections | heap size at the end |
+|---|---|---|---|---|---|---|---|
+| guard | 1 | arena | 9 (8-12) | 0 | 5 (4-8) | 0 | 33 MiB |
+| guard | 1 | heap | 10 (9-18) | 7 | 4 (4-7) | 3 | 2 MiB |
+| guard | 10 000 | arena | 10 (9-18) | 0 | 5 (4-8) | 0 | 33 MiB |
+| guard | 10 000 | heap | 20 (19-24) | 10 | 7 (7-9) | 3 | 2 MiB |
+| explicit | 1 | arena | 11 (9-14) | 0 | 5 (5-8) | 0 | 33 MiB |
+| explicit | 1 | heap | 12 (10-16) | 7 | 4 (4-6) | 3 | 2 MiB |
+| explicit | 10 000 | arena | 10 (9-12) | 0 | 4 (4-5) | 0 | 33 MiB |
+| explicit | 10 000 | heap | 25 (23-42) | 10 | 9 (8-17) | 3 | 2 MiB |
+
+* **The arena's payloads were never freed.** Its exception chunks are roots (the arena scan in
+  `collect.py` until step 6), so every struct thrown stayed alive: the heap grew to 33 MiB during
+  the warm-up and the timed run did not collect at all. That is why the arena's throw is cheap
+  here: it avoided the collections by keeping every payload, at the price of memory. With the
+  heap the exception and its payload are garbage after the catch: the heap stays at 2 MiB, and the
+  200 000 throws (40 bytes each with the struct) collect 7 times, once per 26 000-29 000 iterations.
+* **The collection's share.** With 1 live struct the heap's throw is within the spread of the
+  arena's (10 against 9 in guard mode, 12 against 11 in explicit mode). With 10 000 live structs
+  (each collection copies an array of 10 000 references and 10 000 structs, 25-45 ns per live
+  object, S0013 step 5: 0.25-0.45 ms) it is 10 ns (guard) and 14 ns (explicit) above the same loop
+  with 1 live struct: 10 collections, so (20 - 10) ns × 200 000 / 10 = 0.2 ms and
+  (25 - 12) ns × 200 000 / 10 = 0.26 ms for one. The collection is a cost of the live set, not of
+  the throw: the exception adds 24 bytes to the struct's 16 per iteration, so the throwing loop
+  collects more often than `nothrow` (7 collections against 3 with 1 live struct).
+  The spread of single runs (up to 2×) does not allow a finer split.
+
+**Memory.** 10 M exceptions thrown, caught and dropped in one process (`i32` payload, the module
+of t12; scratch driver, `ru_maxrss` before and after, guard mode, two runs of each build, equal):
+
+| build | peak RSS growth | state at the end |
+|---|---|---|
+| arena | 153.0 MiB | 2 pages of heap; the arena's 16 bytes × 10⁷ = 152.6 MiB |
+| heap | 2.1 MiB | 1 056 pages committed, capacity 2 MiB, 228 collections |
+
+The arena's growth is linear and the heap's is flat: the same 10⁷ throws leave the committed
+pages where 10⁶ left them (with 10⁶ throws the growth was 15.2 MiB for the arena and 2.1 MiB for
+the heap). The object is 24 bytes against the arena's 16, and is collected.
+
+**Instantiation.** A module with a tag and one function that throws and catches, compiled once,
+then instantiated 1 000 times in new `StoreState`s, kept alive (scratch driver; mean µs per
+instance, 5 runs alternated, median (min-max); `ru_maxrss` after the 1 000):
+
+| build | µs per instance | RSS after 1 000 instances |
+|---|---|---|
+| arena | 385 (346-396) | 138 992-139 248 KiB |
+| heap | 271 (241-395) | 73 876-74 008 KiB |
+
+* **No new cost.** The plan expected the heap's reservation and header page to be the new cost.
+  They are not: from step 6.1 an exception module already had its heap (128 KiB committed, no
+  object space, `cap` 0), and the arena build also allocated its first 64 KiB chunk per store.
+  Removing the arena saves about 65 KiB of RSS per store ((138 992 - 73 888) KiB / 1 000), the
+  size of the chunk, and about 100 µs of the instantiation (the heap's range overlaps the
+  arena's in its slowest run; the other four are 241-375).
+
+**CoreMark** was not re-run. Its code does not change in this step (plan section 5; S0013 Changes
+6.3 for the identity check), which is the evidence for code without exceptions (S0012's rule). `jit-aarch64` throw cost is not
+measured: QEMU is not a benchmark and there is no arm64 hardware here.
+
+## Liveness (S0013 step 7, 2026-11-17)
+
+Step 7 gives each stack map a second bitmap (`live`), runs a backward liveness pass over every
+function that has a reference local and a site, and has the collection null the dead reference
+slots (D65). This section measures what it costs (compile time, instantiation, the collection) and
+what it frees (retention), as section 7 of `docs/plans/S0013-7-plan.md` lays it out. The plan
+expected reference-free compile time unchanged (the pass does not run, D4) and recorded the rest.
+
+Conditions: the dev VM (Intel Xeon @ 2.10 GHz, 4 vCPU, Linux 6.18), CPython 3.13.17, `taskset -c 2`
+for every timed process, the GC switches unset unless named, one session, the builds alternated
+(the order rotated each round; nothing else ran during the timed parts).
+* **base**: a `git archive` of 112d981 (step 6, the last commit before step 7), `src` and `tests`;
+  **HEAD**: a `git archive` of 081305e (step 7.3 and its review; `src` is the same as this step's
+  tree, the step changes tools, tests and docs). Each run had `PYTHONPATH=<copy>/src:<copy>` and
+  the driver checked `waboros.__file__` against the copy (LESSONS 52, 98, 121).
+* **NOLIVE**: HEAD with `WABOROS_JIT_NOLIVE=all` (D8: `live = refs`, no pass, the step-6 maps; the
+  code bytes are the same): the same-tree control. For the collection tool, which sets no
+  environment per build, a copy of HEAD with a `sitecustomize.py` that sets it.
+* Scratch drivers (in the session's scratch directory, not in the tree) for everything except
+  `tools/bench_gc_collect.py`, which is unchanged.
+* CoreMark is **not re-run**: its code and tables are byte-identical to step 6 (S0013 Changes 7.1
+  and 7.2, the D35 lists), so there is nothing to time; no `jit-aarch64` timings (QEMU).
+
+**Compile time, reference-free modules** (CoreMark + `hash` + `mono` + `zip`, the 3a method: each
+process's fastest of 10 compiles of the four; 30 rounds, one process per build and round; median
+(min-max) over the 30 processes in ms, and the paired change, the median of the per-round HEAD/base
+ratios, with the rounds in which HEAD was slower):
+
+| target | bounds | base | HEAD | paired |
+|---|---|---|---|---|
+| `jit-x86_64` | guard | 204.5 (197.9-295.9) | 204.4 (197.6-310.0) | +0.4 % (17/30) |
+| `jit-x86_64` | explicit | 231.4 (221.7-287.9) | 232.2 (223.2-329.0) | +0.7 % (16/30) |
+| `jit-aarch64` (cross-compiled) | guard | 201.3 (194.6-323.4) | 204.8 (195.5-333.9) | +1.3 % (17/30) |
+| `jit-aarch64` (cross-compiled) | explicit | 224.1 (213.8-296.5) | 228.5 (215.9-328.0) | −0.3 % (14/30) |
+
+Unchanged within the spread, as expected: the pass does not run for these modules (D4), and a
+profile with the pass wrapped counted 0 runs and 0.0 % for them.
+
+**Compile time, GC modules** (`jit-x86_64`; "GC suite" is the 121 modules of the spec cache's `gc/`
+and `exceptions/` that compile, summed; "Kotlin" is `poc/bench/corpus/gc_kotlin.wasm`; the same
+method and 30 rounds, three builds per round):
+
+| group | bounds | base | HEAD | NOLIVE | HEAD against base | NOLIVE against HEAD |
+|---|---|---|---|---|---|---|
+| GC suite | guard | 88.8 (83.3-129.8) | 89.0 (85.7-141.9) | 88.4 (83.2-143.0) | +2.7 % (19/30) | −1.6 % (12/30) |
+| GC suite | explicit | 92.7 (90.3-142.9) | 92.3 (86.9-140.9) | 95.4 (88.6-139.9) | +0.0 % (15/30) | +0.9 % (18/30) |
+| Kotlin | guard | 121.6 (115.5-189.8) | 130.3 (121.9-198.4) | 127.8 (116.2-194.4) | +4.7 % (24/30) | −2.0 % (12/30) |
+| Kotlin | explicit | 134.2 (126.7-230.8) | 136.4 (131.9-215.8) | 136.1 (128.5-159.5) | +2.2 % (19/30) | −2.1 % (9/30) |
+
+The pass's own share, `liveness.live` wrapped with a timer (HEAD, median of 10 compiles of the
+group; the wrapper's two clock reads per call are in it):
+
+| group | bounds | pass runs | share of the compile | passes per run |
+|---|---|---|---|---|
+| GC suite | guard | 50 | 0.45 % (0.42-0.48) | 1 (50) |
+| GC suite | explicit | 50 | 0.41 % (0.38-0.42) | 1 (50) |
+| Kotlin | guard | 135 | 3.28 % (3.14-3.56) | 1 (109), 2 (25), 3 (1) |
+| Kotlin | explicit | 135 | 2.81 % (2.72-2.94) | 1 (109), 2 (25), 3 (1) |
+
+* A compile that has the pass pays 0.4 % (the spec's GC modules, whose functions are small) to
+  3 % (the Kotlin program, 4-5 ms of 137-144 ms): the paired +4.7 % and +2.2 % of the table are the
+  pass plus the second bitmap per map; NOLIVE (no pass, the second bitmap still written) is 2 %
+  below HEAD (1.6-2.1 %) in three of the four rows. The spread of a single process is 15-50 % on this VM, so the
+  signs of single rows are weak; the shares are the sharper number.
+* **Passes**: the Kotlin program's 135 runs take at most 3 passes, the spec suite's 50 take 1, the
+  same counts as in S0013 Changes 7.2 for the Kotlin program; the plan's "loop depth + 2"
+  expectation holds (no function in either set needed more). A pathological module, the case D5's
+  fallback is for, did not appear.
+
+**Instantiation** (D2's eager, checked decode of `STACKMAPS` at every instantiation; one compile,
+then 100 or 1 000 new `StoreState`s kept alive, guard mode; mean µs per instance and the RSS growth
+of the loop, `ru_maxrss`; 7 rounds alternated, median (min-max)):
+
+| module | stores | base µs | HEAD µs | base RSS per instance | HEAD RSS per instance |
+|---|---|---|---|---|---|
+| CoreMark | 1 000 | 366 (298-456) | 491 (397-625) | 63.7 KiB | 83.1 KiB |
+| CoreMark | 100 | 380 (292-446) | 512 (366-563) | 60.2 KiB | 80.6 KiB |
+| Kotlin | 1 000 | 7 249 (5 997-8 015) | 9 690 (8 100-11 092) | 302.6 KiB | 476.7 KiB |
+| Kotlin | 100 | 7 737 (5 424-8 451) | 8 577 (7 034-11 196) | 288.0 KiB | 464.6 KiB |
+
+* **This is a cost the plan did not expect to be this size** (before step 7.5, below). Every instantiation now decodes the
+  table (the walk's lazy decode, which only a store that collected or checked paid, is gone, 7.1):
+  +125 µs (+34 %) for CoreMark and about +2.4 ms (+34 %) for the Kotlin program at 1 000 stores,
+  and +19 KiB and +174 KiB of resident memory per instance. `gc.decode` alone, timed on the
+  finished table: 54 µs for CoreMark (108 sites, 1 736 bytes, 7.4 KiB of Python objects kept) and
+  1.7 ms for the Kotlin program (907 sites, 20 332 bytes, 72 KiB): 40-70 % of the time and about
+  40 % of the memory; the rest was not attributed. The decode result depends only on the compiled
+  module, so it could be done once per `Compiled` and shared by its instances (a source change,
+  not made here: the step's scope is measurement; open question in S0013).
+* The ranges overlap in the 100-store rows (the spread is 30-50 %); the medians and the RSS growth
+  (which has no noise to speak of: 63 744 against 83 072 KiB over 1 000 CoreMark stores) agree.
+
+After step 7.5 (the table decoded once per `Compiled`, `Compiled.sites`; same driver, HEAD d2a4b4c
+as the base, 7 rounds alternated, median (min-max); the base column is the per-instance decode):
+
+| module | stores | d2a4b4c µs | 7.5 µs | d2a4b4c RSS per instance | 7.5 RSS per instance |
+|---|---|---|---|---|---|
+| CoreMark | 1 000 | 477 (446-539) | 397 (311-536) | 83.1 KiB | 63.7 KiB |
+| CoreMark | 100 | 527 (366-594) | 422 (292-459) | 79.4 KiB | 58.9 KiB |
+| Kotlin | 1 000 | 9 021 (8 155-10 318) | 6 984 (6 680-8 300) | 476.3 KiB | 302.7 KiB |
+| Kotlin | 100 | 9 413 (7 254-10 580) | 6 143 (5 418-8 015) | 465.9 KiB | 289.3 KiB |
+
+The RSS per instance is back at the 112d981 figures (63.7 and 302.6 KiB at 1 000 stores). The time
+drops by 17-35 % against d2a4b4c in the same run; against the 112d981 rows above it is lower for
+Kotlin and still higher for CoreMark (397 against 366 µs), but those rows come from another run on
+a machine that was faster then (d2a4b4c: 491 µs there, 477 µs here), so only the two columns of
+this table compare.
+
+**Collection pause** (`tools/bench_gc_collect.py --builds base=B,live=H,nolive=N,live2=H --rounds 9
+--bounds guard|explicit`: the tool of step 5.7, each heap about 10⁶ live objects, six collections
+timed; `live2` is HEAD again, the control; median (min-max) of the mean pause in ms; these
+collections have few frames, so the liveness work is the table decode per frame and nothing else):
+
+| bounds | heap | base | HEAD | NOLIVE | HEAD again (control) |
+|---|---|---|---|---|---|
+| guard | list | 36.0 (26.5-41.2) | 35.8 (26.4-45.1) | 30.7 (26.5-45.9) | 37.5 (26.5-42.4) |
+| guard | tree | 46.4 (34.7-59.7) | 41.5 (35.0-55.5) | 38.7 (34.8-51.3) | 48.6 (34.9-57.6) |
+| guard | array | 29.9 (28.2-43.3) | 32.1 (26.5-40.8) | 29.6 (26.4-42.4) | 31.4 (26.1-42.5) |
+| explicit | list | 46.9 (29.4-52.2) | 31.8 (29.7-51.9) | 40.2 (28.7-51.9) | 37.9 (29.5-48.2) |
+| explicit | tree | 49.4 (39.3-69.9) | 46.7 (39.4-68.8) | 48.7 (42.4-61.1) | 55.6 (41.8-65.8) |
+| explicit | array | 45.3 (30.1-52.9) | 39.1 (30.8-42.1) | 36.5 (29.7-50.3) | 43.7 (30.0-52.1) |
+
+No change beyond the spread: the control differs from HEAD by up to 9 ms, base from HEAD by up
+to 15 ms (explicit list, base the slower); the mutator's walk time after a collection (ns per object, not repeated here) is within the spread too.
+
+**The nulling, per frame** (scratch driver: a recursion 10 000 deep in which each frame has two
+reference locals and the first is dead at the call (its last read is before it); the leaf allocates
+10⁶ small structs, so about 20 collections walk all the frames; mean collection pause divided by
+the depth, 15 rounds alternated, HEAD pooled with a second HEAD process per round, median
+(min-max), ns per frame). **A**: the dead local holds a fresh struct per frame (HEAD copies half
+as many objects); **B**: it holds one shared struct, so the copy is the same and only the nulling
+differs:
+
+| variant | base | HEAD | NOLIVE | collections in the run |
+|---|---|---|---|---|
+| A, a fresh struct | 4 465 (2 960-5 535) | 6 256 (4 040-8 238) | 4 150 (3 207-5 996) | base 22, HEAD 18, NOLIVE 22 |
+| B, a shared struct | 4 049 (2 872-5 882) | 5 715 (4 075-7 699) | 4 490 (3 436-6 422) | 18 in all three |
+
+* **Nulling a frame's dead slot costs about 1.2-2.1 µs** in the Python gatherer (HEAD against
+  NOLIVE in B: 5 715 against 4 490; against base 4 049), a pause of 57 ms against 45 ms for 10 000
+  frames. The whole gather is 4-6 µs per frame, so the nulling adds 25-50 % to it; a collection
+  with few frames, as the table above, has no frames to pay it. The spread is large: two HEAD
+  processes of the same build differed by 25 % in the first, 9-round run.
+* In A, HEAD collects 18 times where base and NOLIVE collect 22: the dead struct of each frame is
+  not copied, so the live set is smaller and the allocation reaches the limit later.
+
+**Retention** (a scratch driver; t24's module of `tests/jit/test_gc_roots.py`: a 16 MiB array held
+only by a dead local while a loop allocates, with the test's switches `WABOROS_JIT_GC_STRESS`,
+`_POISON` and `_VERIFY` on so that each allocation collects; `go(3)` twice, then `go(100)`; four
+runs of each build, one process each):
+
+| build | collections after `go(3)` ×2 | live bytes after the last collection | collections after `go(100)` | `go(100)`, ms | heap capacity |
+|---|---|---|---|---|---|
+| base | 7 | 16 777 248 | 108 | 7 670-8 696 | 64 MiB |
+| HEAD | 7 | 16 | 108 | 150-218 | 64 MiB |
+| NOLIVE | 7 | 16 777 248 | 108 | 7 597-8 679 | 64 MiB |
+
+The array is copied by every collection without liveness (16 MiB each, so 100 collections cost
+8 s) and by none with it: 35-58 times faster, and the heap does not hold it. NOLIVE equals base
+exactly, as D8 says.
+
+**The Kotlin program** (`gc_kotlin`, `run` in a fresh store; the corpus's stub host; 9 alternated
+rounds per bounds mode, each build in a process of its own; first `run`, then the mean of nine
+more in the same store; median (min-max) ms):
+
+| bounds | build | first run | later runs, per run | collections, first run | pause in the first run |
+|---|---|---|---|---|---|
+| guard | base | 243 (209-278) | 106 (78-123) | 36 | 166 (143-194) |
+| guard | HEAD | 223 (174-278) | 92 (76-110) | 36 | 151 (113-194) |
+| guard | NOLIVE | 238 (173-302) | 95 (79-123) | 36 | 162 (120-214) |
+| explicit | base | 281 (209-304) | 116 (105-125) | 36 | 192 (143-207) |
+| explicit | HEAD | 271 (191-328) | 116 (100-137) | 36 | 185 (131-217) |
+| explicit | NOLIVE | 279 (225-309) | 118 (107-122) | 36 | 192 (157-213) |
+
+The run takes the same time on all three (the ranges overlap in every column) and makes the same 36
+collections, 7.6 per later run; the result is equal (13887334026647758917, the corpus's reference).
+At the end of the first run the heap holds **14 879 704 bytes on HEAD against 15 928 248 on base
+and on NOLIVE** (1 048 544 fewer, 6.6 %); the capacity is 32 MiB for all. So the Kotlin program
+shows the feature working (a 1 MiB object stops being retained) but its live set is mostly real,
+and the saving is small. A first draft ran the Kotlin program after t24's stress stage in the
+same process and showed HEAD 50-100 ms slower than base in the first run; with `run` as the first
+work of a fresh process, as here, it does not reproduce (the cause was not looked for; LESSONS
+129).
+
+**Summary.** Reference-free code and compile time: unchanged. GC compile time: the pass is 0.4-3 %
+of the compile. A collection with few frames: unchanged; per frame, the nulling costs 1.2-2.1 µs.
+Retention: a 16 MiB dead local freed (a stress loop 35-58 times faster), the Kotlin program's heap
+6.6 % smaller. **Instantiation: +34 % and +19 to +174 KiB per instance, the one cost larger than
+planned**; step 7.5 (a decode per `Compiled`, not per instance) removed it (the table above).
+
+## `pyc` on PyPy: the module namespace (2026-11-19)
+
+**Finding (maintainer).** The package's `pyc` ran CoreMark on PyPy about 6.5 times slower than the
+PoC (`poc/w2py.py`, loaded as a real module through `importlib`): `load()` and
+`PycTarget.instantiate()` executed the generated code in a plain dict `{"__name__": ...}`. PyPy keeps
+a module's globals in a cell dict whose lookups its JIT folds into constants; in a plain dict every
+read of `M`, `U32`, `G0` or a function `fN` is a dict lookup with guards (PyPy `jit-summary`: 34 167
+guards against the PoC's 12 732). The generated source itself was not the cause. Fix: both sites run
+the code in `ModuleType(...).__dict__` (`pyc._namespace`; `tests/test_pyc.py`
+`test_generated_code_runs_in_a_module_namespace`).
+
+**CoreMark, `tools/run_coremark_pyc.py poc/in/core.wasm`, it/s, every run "Correct operation
+validated".** Maintainer's container, x86-64, 2 vCPU, `taskset -c 1`, branch `gc` after S0014 step 1:
+
+| Python | before (plain dict) | after (module `__dict__`) | PoC `w2py`, same machine |
+|---|---|---|---|
+| PyPy 7.3.23 (3.11.15) | 526 / 534 | 3 249 / 3 281 | 3 359 / 3 363 |
+| PyPy 7.3.19 (3.10.16) | 499 / 515 | 3 240 / 3 303 | 3 390 / 3 286 |
+| CPython 3.13.17 (isolated wrapper) | 156 | 161 | — |
+
+Checked by the orchestrator (dev VM, `taskset -c 2`, PyPy 3.11.17, rounds alternated): before 400 /
+405, after 2 941 / 3 085. CPython is unaffected within the noise. Earlier PyPy rows of the package's
+`pyc` in this file (S0010 step 0, the switch VM) measured the plain dict and are low by about that
+factor; the PoC rows were right.
+
+
+## GC heap: committed bytes (S0014 step 4.2, 2026-11-20)
+
+D69 commits the GC heap's regions apart (the header page and the type area as records are written,
+the whole tid map with the first function-type record, the semispaces) instead of from its start.
+This section measures what a store commits, before and after.
+
+Conditions: the dev VM (Intel Xeon @ 2.10 GHz, 4 vCPU, Linux 6.18), CPython 3.13.17, `jit-x86_64`,
+the GC switches unset. **before**: the working tree just before the change; **after**: with it;
+one session. Committed bytes are deterministic (no timing), so the builds were not alternated.
+Linux counts what `mprotect` makes read-write in `VmData` (and against RLIMIT_DATA), as Windows
+counts `MEM_COMMIT` against the commit charge; RssAnon does not move (the pages are not touched).
+The heap's own figure is `GcHeap.committed` (after) or the reservation's contiguous commit (before).
+Scratch drivers, not committed: a store per row built through `tests.jit.test_compiler.build`,
+`VmData` read from `/proc/self/status` around the instantiation and the first call (each row's
+second run, after a warm-up).
+
+| case (`VmData` growth) | before | after |
+|---|---|---|
+| a module without GC, instantiation (its value stack; no heap) | +1.0 MiB | +1.0 MiB |
+| a struct type, no allocation: instantiation | +1.125 MiB | +1.125 MiB |
+| a non-final function type with `call_indirect`, no allocation: instantiation | +65.0 MiB | +5.125 MiB |
+| one `struct.new`: the first call | +65.875 MiB | +2.0 MiB |
+| the heap of a store with one struct (`committed`) | 66.0 MiB | 2.125 MiB |
+
+Per spec file of `gc/` and `exceptions/` (the largest heap a file makes; each makes one, `tag` and
+`binary-gc` none): before 67 584 KiB for each file that allocates, 65 536 KiB for
+`gc/type-subtyping` (function-type records, no object), 64 KiB for `gc/i31`; after 2 176 KiB,
+4 224 KiB (the tid map is 4 MiB of it) and 64 KiB. Sum over the 22 files: 1 282 112 KiB before,
+43 456 KiB after.
+
+A commit limit (the mechanism of LESSONS 135): RLIMIT_DATA set to the current `VmData` + 256 MiB,
+then live stores each allocating one struct. Before: four stores fit and the fifth failed (`OSError` ENOMEM,
+`VmData` +202 MiB; `execmem._retry` freed the dropped warm-up store once); after: all 16 fit, `VmData` +47 MiB. The test is
+`tests/jit/test_gc_commit.py::test_live_stores_fit_under_a_commit_limit` (Linux).
+
+## C-ABI boundary between instances (prototype, 2026-11-21)
+
+What a C-ABI boundary at function records (D70) costs on `jit-x86_64`, measured with a scratch
+prototype in which **every** call through a record takes the C path: a 16-byte stub before each
+body (`endbr64; lea rdx, [rip + 5]; jmp centry`) is the record's `code`; one `centry` per module
+(saves r12-r15, sets up r15/r12/r13/r14, calls the body; a site with shift 0); every
+`call_record`, `call_indirect` and `call_ref` pushes and pops rsi, rdi and r8-r11 (the pool
+registers SysV lets a callee clobber), calls `[record]` with rdi = context, rsi = frame, and
+reloads r13/r14. Tail calls: the first cross-context hop through `tail_switch`, which now saves
+those six registers (restore frame 64 bytes); later hops unwind the module's `centry` frame and
+jump to the foreign C entry.
+
+* Date: 2026-11-21. Code: branch `gc` after S0014 step 4.3; four copies of `src/waboros` on
+  `PYTHONPATH`, not committed: **base** (as is), **basepad** (base with 16 bytes of `int3` before
+  each function: the placement control for the stubs), **cabi** (the prototype), **cabi2** (cabi
+  plus a fast path: a record of the caller's own context is called at its internal body).
+* Machine: Intel Xeon @ 2.10 GHz, 4 vCPU cloud VM, Linux 6.18; CPython 3.13.17; guard mode.
+* Commands, under `taskset -c 2`, variants alternated round by round in one session: the scratch
+  driver `xcall.py` (10⁷ loop iterations with one call each, median of 5 rounds per run;
+  option 1: 10⁵), `tools/run_calls_bench.py --targets jit-x86_64 --rounds 5`,
+  `tools/run_coremark_jit.py poc/in/core.wasm`. Session 1: 5 rounds of base, cabi, cabi2;
+  session 2: 6 rounds of all four. Every CoreMark run passed its self-check.
+* Correctness of cabi: the spec suite with `WABOROS_JIT_WALK_CHECK=1` 64 229 pass, 0 fail, in guard
+  and in explicit mode; `gc` and `exceptions` with the three GC switches 905 pass, 0 fail;
+  `tests/jit/test_tail.py` passes (10⁵ cross-instance tail hops in a 256 KiB thread). 53 tests of
+  `tests/jit` fail on fixed shapes only (one more site per module, one more walk frame per
+  cross call, code offsets moved by 16).
+
+Median of the run medians (range over runs), session 1 / session 2:
+
+| case | base | basepad | cabi | cabi2 |
+|---|---|---|---|---|
+| `call` of another instance's function (ns) | 2.60 / 2.67 | – / 2.68 | 4.42 / 4.37 | 5.07 / 5.04 |
+| `call_indirect`, own table (ns) | 3.79 / 3.79 | – / 3.00 | 4.51 / 4.57 | 3.45 / 3.54 |
+| `call_indirect` to another instance's function (ns) | 3.14 / 3.45 | – / 2.93 | 4.56 / 4.53 | 5.34 / 5.86 |
+| direct call, code unchanged (ns) | 2.02 / 2.35 | – / 1.90 | 1.96 / 1.94 | 1.96 / 1.93 |
+| option 1: a host function calling into another store (µs) | 13.8 / 13.5 | – / 13.0 | 13.1 / 13.7 | 13.4 / 13.8 |
+| CoreMark (it/s) | 17 216 / 16 443 (15 620-18 437) | – / 17 054 (16 023-17 224) | 18 095 / 17 353 (16 255-18 880) | 17 676 / 17 657 (16 897-18 932) |
+| calls `leaf` (ns) | 1.96 / 1.98 | – / 1.96 | 2.11 / 1.92 | 1.86 / 1.96 |
+| calls `fib(27)` (ns) | 2.58 / 2.66 | – / 2.92 | 3.06 / 2.96 | 2.87 / 2.98 |
+
+Reading: the C path costs about **+1.7 ns per cross-instance call** and about **+1.5 ns per
+`call_indirect`** against the placement control (3.00 → 4.51-4.57 ns; against base without the
+control it looks like +0.7 ns, corrected 2026-11-21). CoreMark sorts through function pointers, yet its variants differ by less than
+one variant's own spread (about 17 %): no loss is measurable, and the apparent gain of cabi is
+placement, since basepad gains too. `fib` and `leaf` run code that did not change; their shift
+is placement as well (LESSONS 51, 139). cabi2's fast path gains nothing beyond the noise. A call
+through the host into another store (D64's only path between compilers) is about 5 000 times a
+direct cross-instance call. CoreMark code: 34 547 bytes (base), 35 011 (basepad), 35 057 (cabi),
+35 159 (cabi2). Not measured: aarch64, and a store that really mixes two compilers.
+
+## The boundary convention on `jit-x86_64` (S0015 step 1, 2026-11-22)
+
+What S0015 step 1 costs on `jit-x86_64`: every function record's `code` is a C entry (a 16-byte
+stub before each body and host thunk, one `centry` per module), every call through a record saves
+`rsi rdi r8`–`r11` around it, the runtime's `entry` calls C entries, and tail calls hop by
+return-then-jump. aarch64 is unchanged (D35 lists identical).
+
+* Date: 2026-11-22. Code: branch `gc`, the S0015 step-1 working tree against the commit before it
+  ("S0015 approved; threads section (D58)"); three copies of `src` on `PYTHONPATH`, not
+  committed: **base** (that commit), **basepad** (base with 16 bytes of `int3` before each body
+  and host thunk and 75 bytes, the size of `centry`, after the last thunk: the placement control,
+  LESSONS 139), **new** (step 1).
+* Machine: Intel Xeon @ 2.10 GHz, 4 vCPU cloud VM, Linux 6.18; CPython 3.13.17; default bounds
+  mode (guard).
+* Commands, under `taskset -c 2`, variants alternated round by round, 6 rounds in one session:
+  `tools/run_coremark_jit.py poc/in/core.wasm` (every run passed its self-check), the scratch
+  cross-call driver `xcall.py` of the prototype (10⁷ loop iterations with one call each, median of
+  5; `host_xstore` 10⁵), `tools/run_calls_bench.py --targets jit-x86_64 --rounds 5`.
+
+Median of the 6 rounds (range):
+
+| case | base | basepad (control) | new | new − basepad |
+|---|---|---|---|---|
+| `call` of another instance's function (ns) | 2.42 (2.37-2.55) | 2.38 (2.32-2.44) | 4.19 (4.13-4.81) | +1.8 ns |
+| `call_indirect`, own table (ns) | 3.31 (3.19-3.57) | 2.98 (2.85-3.03) | 4.44 (4.41-5.23) | +1.5 ns |
+| `call_indirect` to another instance's function (ns) | 2.94 (2.90-3.10) | 2.88 (2.85-3.12) | 4.56 (4.42-5.30) | +1.7 ns |
+| direct call, code unchanged (ns) | 1.75 (1.70-1.88) | 1.71 (1.67-1.72) | 1.76 (1.67-1.93) | within the spread |
+| a host function calling into another store (µs) | 12.1 (11.6-13.5) | 11.9 (11.7-12.5) | 12.3 (11.9-22.9) | within the spread |
+| CoreMark (it/s) | 17 698 (16 788-18 559) | 19 505 (18 451-19 799) | 19 406 (16 016-20 012) | within the spread |
+| calls `leaf` (ns) | 1.69 (1.67-1.92) | 1.69 (1.62-3.43) | 1.69 (1.59-3.66) | none |
+| calls `fib(27)` (ns) | 2.25 (2.20-2.73) | 2.42 (2.23-3.57) | 2.35 (2.14-4.09) | within the spread |
+
+* CoreMark code: 34 547 bytes (base), 35 118 (basepad), 35 085 (new, +1.6 %).
+* Native stack per level of a recursion until `STACK_OVERFLOW` (scratch driver, a 128 KiB
+  `max_wasm_stack`, no pinned locals): a direct call 16 bytes before and after (8 192 → 8 189
+  levels); `call_indirect` 32 → 112 bytes (4 096 → 1 170 levels), from the six saved registers,
+  the C entry's frame and its return address. With the default 512 KiB that is about 4 680
+  levels through `call_indirect`.
+
+Reading: as in the prototype, a call through a record costs about **+1.5 to +1.8 ns** against the
+placement control, and CoreMark does not move beyond the control: base to basepad is the placement
+effect alone (+10 %), and new is within basepad's spread. Single rounds of every variant (base
+included) were up to twice as slow when the VM was disturbed, which the medians absorb. The hop
+compare on every C-entry return is included in these numbers. Not measured: aarch64 (S0015
+step 3), the Win64 entry's xmm saves.
+
+**The own-context path (D71, same date, a second session).** After the step-1 review, a record of
+the caller's own context is called at its body. Same machine and commands; 6 rounds alternating
+base, basepad, **step 1** (the code above) and **fast** (step 1 with D71):
+
+| case | base | basepad | step 1 | fast |
+|---|---|---|---|---|
+| `call` of another instance's function (ns) | 2.42 (2.36-2.45) | 2.60 (2.35-3.73) | 4.25 (4.08-4.99) | 4.28 (4.21-4.63) |
+| `call_indirect`, own table (ns) | 3.40 (3.19-4.06) | 3.53 (2.98-4.32) | 4.57 (4.41-5.39) | 2.67 (2.53-3.06) |
+| `call_indirect` to another instance's function (ns) | 3.00 (2.85-3.20) | 3.17 (2.89-4.33) | 4.51 (4.46-4.91) | 4.79 (4.72-5.31) |
+| direct call (ns) | 1.71 (1.69-1.88) | 1.89 (1.69-2.87) | 1.74 (1.66-3.55) | 1.75 (1.67-2.05) |
+| a host function calling into another store (µs) | 11.9 | 13.4 | 12.8 | 12.5 |
+| CoreMark (it/s) | 17 550 (16 089-17 832) | 17 614 (16 864-19 014) | 18 636 (17 279-19 677) | 18 119 (17 337-19 436) |
+| calls `leaf` / `fib(27)` (ns) | 1.76 / 2.37 | 1.70 / 2.40 | 1.77 / 2.44 | 1.69 / 2.36 |
+
+CoreMark code: 35 187 bytes with fast (+102 over step 1, +1.9 % over base). Native stack until
+`STACK_OVERFLOW` (scratch driver `depth2.py`, levels at a 128 KiB / 512 KiB `max_wasm_stack`,
+bytes a level):
+
+| recursion | base | step 1 | fast | Wasmtime (512 KiB, the step-1 review) |
+|---|---|---|---|---|
+| direct `call` | 8 192 / 32 768 (16) | 8 189 / 32 765 (16) | 8 189 / 32 765 (16) | 32 761 |
+| `call_indirect`, own table | 4 096 / 16 384 (32) | 1 170 / 4 681 (112) | 8 189 / 32 765 (16) | 16 380 |
+| across instances, in calls (A's `call_indirect` to B, B's `call` of A's import; the review's `xdepth.py`, 512 KiB) | 16 383 calls (32 bytes a call) | 4 680 (112) | 4 680 (112) | 21 840 calls (about 24 bytes a call) |
+
+Reading: the own-table `call_indirect` is now faster than before S0015 (2.67 ns against basepad's
+3.53) and recurses as deep as a direct call, twice Wasmtime's depth; recursion across instances reaches 4 680 calls against Wasmtime's 21 840
+and 16 383 before S0015; calls into another instance
+keep the C path's cost, and a `call_indirect` to another instance pays the context compare on top
+(+0.3 ns). CoreMark stays within the spread. The cross-instance stack cost was the deviation
+D71 first proposed; the maintainer rejected it, and the next paragraph removes it.
+
+**The same-compiler path (D71 accepted, same date, a third session).** A record of another
+context whose `HOST_BRIDGE` word is the caller's (the same compiler) is called at its body with a
+context switch, as before S0015; `tail_switch` serves it too. Same machine and commands, the
+cross-call driver and CoreMark under `taskset -c 2`; 6 rounds alternating **basepad**, **fast**
+(the previous paragraph's code) and **same** (fast with this path):
+
+| case | basepad | fast | same | same − basepad |
+|---|---|---|---|---|
+| `call` of another instance's function (ns) | 2.39 (2.32-2.52) | 4.29 (4.12-4.48) | 3.09 (2.94-3.73) | +0.7 ns |
+| `call_indirect`, own table (ns) | 3.07 (2.94-3.82) | 2.59 (2.52-2.62) | 2.65 (2.61-3.11) | −0.4 ns |
+| `call_indirect` to another instance's function (ns) | 2.98 (2.89-3.52) | 4.88 (4.78-5.15) | 3.50 (3.30-3.93) | +0.5 ns |
+| direct call (ns) | 1.69 (1.67-1.87) | 1.69 (1.66-2.06) | 1.77 (1.70-1.89) | within the spread |
+| a host function calling into another store (µs) | 12.2 | 12.2 | 12.3 | within the spread |
+| CoreMark (it/s) | 18 631 (18 073-18 911) | 18 785 (18 151-19 519) | 18 802 (17 955-19 468) | within the spread |
+| calls `leaf` / `fib(27)` (ns) | 1.68 / 2.33 | 1.69 / 2.36 | 2.22 / 2.56 | noise: rounds 5 and 6 of every variant ran at up to twice the time |
+
+CoreMark code: 35 403 bytes (+216 over fast: CoreMark has record calls, each with the new path).
+Depth until `STACK_OVERFLOW` (`depth2.py`, 128 KiB / 512 KiB; `xdepth.py`, 512 KiB):
+
+| recursion | base | fast | same |
+|---|---|---|---|
+| direct `call` | 8 192 / 32 768 (16) | 8 189 / 32 765 (16) | 8 189 / 32 765 (16) |
+| `call_indirect`, own table | 4 096 / 16 384 (32) | 8 189 / 32 765 (16) | 8 189 / 32 765 (16) |
+| across instances, `depth2.py` (A → B → A pairs) | 2 048 / 8 192 (32 a call) | 585 / 2 341 (112) | 2 048 / 8 192 (32) |
+| across instances, `xdepth.py` (calls) | 16 383 | 4 680 | 16 382 (one C-entry frame at the bottom) |
+
+Reading: recursion across instances is back to the code before S0015 (32 bytes a call; Wasmtime
+21 840 calls, about 24 bytes), and a cross-instance call costs about +0.5 to +0.7 ns over the
+placement control instead of +1.9 (the compare of the two `HOST_BRIDGE` words and the
+`code + 16` computation; not optimised further). The C path's cost (112 bytes, +1.5 to +1.8 ns)
+now applies only to a callee of another compiler; no such compiler exists yet, so it is
+measured with hand-made C entries in tests only. Not measured: aarch64 (S0015 step 3).
+
+## The boundary convention on `jit-aarch64` (S0015 step 3, 2026-11-22): depth and code size
+
+What S0015 step 3 costs on `jit-aarch64` in native stack and code: 12-byte C entries and a
+per-module `centry`, record calls on D71's three paths, the 80-byte `tail_switch` restore frame.
+QEMU's timings mean nothing for native code; the native timing below is the `compare` mode of
+`.github/workflows/placement-arm.yml` (`tools/bench_compare.py`: base, the placement control
+basepad, new; CoreMark, the calls benchmark, a cross-instance call and an own-table
+`call_indirect`, alternated).
+
+* Date: 2026-11-22. Code: branch `gc`, the step-3 working tree (**new**) against commit `9599795`
+  (**base**; the commit after it, D72, changes docs only, so its code is base's); **basepad** is base with
+  `tools/bench_compare.py --pad-control` (12 bytes of `nop` before each body and host thunk, 88,
+  the size of `centry`, after the last). The control covers the stubs and `centry` only, not
+  the longer record-call and tail-call sequences: those are the +300 bytes below.
+* Depth: QEMU 8.2 user mode on the Intel Xeon host, CPython 3.13.18 aarch64; a native stack's
+  arithmetic does not depend on the emulator. The driver (scratch, not committed) builds the
+  modules `DEPTH` (own table) and `XA` + `XB` (across instances) of `tests/jit/test_boundary.py`
+  and a direct twin of `DEPTH` (`call $f` instead of the `call_indirect`) with
+  `StoreState(max_wasm_stack=128 << 10)` and `512 << 10`, calls `f(0)` until `STACK_OVERFLOW`
+  and reads the level count from the global `$n` (across instances, twice `XA`'s count: one call
+  each way); bytes a level = the stack size / the count. `test_boundary.py`'s
+  `test_recursion_*` checks are looser than these values on purpose: 40 bytes a level own-table
+  (measured 32) and 52 a call across instances (measured 48), to absorb the entry's frames. Code: CoreMark compiled
+  by `jit-aarch64` on the x86-64 host (D35: the same bytes as under QEMU), the code area without
+  the data.
+
+| recursion | base | new |
+|---|---|---|
+| direct `call` (one pin) | 4 096 / 16 384 (32) | 4 094 / 16 382 (32) |
+| `call_indirect`, own table | 2 731 / 10 923 (48) | 4 094 / 16 382 (32) |
+| across instances (A's `call_indirect` to B, B's `call` of A's import), calls | 2 732 / 10 924 (48) | 2 730 / 10 922 (48) |
+
+| CoreMark code (bytes) | base | basepad | new |
+|---|---|---|---|
+| guard | 29 284 | 29 744 | 30 044 (+2.6 %; +300 over the control) |
+| explicit | 37 372 | 37 832 | 38 132 (+2.0 %; +300 over the control) |
+
+**Native timing** (2026-11-23): GitHub `ubuntu-24.04-arm` runner (Neoverse-N2), CPython 3.13,
+`placement-arm.yml` compare run 45169731213 on the step-3 commit against base `9599795`,
+6 alternated rounds, median (min-max):
+
+| case | bounds | base | basepad | new |
+|---|---|---|---|---|
+| CoreMark (it/s) | guard | 19 465 (19 445-19 472) | 19 524 (19 430-19 564) | 19 521 (19 409-19 559) |
+| CoreMark (it/s) | explicit | 17 449 (17 437-17 462) | 17 283 (17 262-17 294) | 17 272 (17 262-17 304) |
+| calls `leaf` / `fib` (ns) | guard | 3.25 / 2.42 | 3.25 / 2.46 | 3.25 / 2.46 |
+| cross-instance call (ns) | guard | 3.29 | 3.29 | 3.30 |
+| own-table `call_indirect` (ns) | guard | 3.62 | 3.57 | **3.25** |
+| cross-instance call (ns) | explicit | 3.29 | 3.29 | 3.32 |
+| own-table `call_indirect` (ns) | explicit | 3.61 | 3.59 | **3.25** |
+
+Reading: against the placement control, CoreMark is unchanged in both modes (new within 0.1 % of
+basepad; explicit base's +1 % over both is placement, as the control shows); a cross-instance call
+of the same compiler costs the same as before S0015 (+0.01-0.03 ns, within the range); the
+own-table `call_indirect` is 0.3 ns faster (D71's fast path). The C path between compilers is not
+timed natively (no second compiler; x86-64 numbers above).
+
+Reading: as on x86-64 (D71), the own-table `call_indirect` now costs a direct call's stack (32
+bytes a level, 48 before), a call into another context of this compiler costs what it did before
+S0015, and one C-entry frame (48 bytes) sits at the bottom of each entry. The +300 bytes over the
+control are the three-path record calls (about 31 instructions each, 9 before).
+
+## `jit-sljit-x86_64` on the boundary: depth and compile time (S0016 step 1, 2026-11-24)
+* Date: 2026-11-24
+* Commit: the S0016 step-1 working tree, on top of the spec amendment "frames without a pre-pass"
+  (`tests/sljit/`, `native/` getters; no change to the core or to the Python backends)
+* Machine: Intel Xeon @ 2.10 GHz, 4 vCPU (the sandbox)
+* Python: CPython 3.13.17
+* Command (depth): a scratch driver (`depth.py`, not committed) that builds `test_boundary.py`'s
+  `DEPTH` (own-table `call_indirect`), its direct twin (`call $f`), and `XA` + `XB` (across
+  instances; across compilers with `XA` by one target and `XB` by the other) with
+  `StoreState(max_wasm_stack=128 << 10)` and `512 << 10`, calls `f(0)` until `STACK_OVERFLOW` and
+  reads the level count from `$n` (across instances: twice `XA`'s count, one call each way);
+  Wasmtime 50.0.1 through wasmtime-py with `Config.max_wasm_stack = 512 << 10` (`depth_wt.py`).
+* Command (compile time): a scratch driver (`ctime.py`) that compiles `poc/in/core.wasm` with
+  `TARGETS[t]().compile` on `jit-x86_64` and `jit-sljit-x86_64` alternately, 7 rounds after one
+  warm-up, under `taskset -c 2`, `WABOROS_JIT_BOUNDS=guard` then `explicit`; median (range).
+* Result, depth (levels at 128 KiB / 512 KiB, bytes a level):
+
+| recursion | `jit-x86_64` | `jit-sljit-x86_64` | Wasmtime 50.0.1 (512 KiB) |
+|---|---|---|---|
+| direct `call` | 8 189 / 32 765 (16) | 8 190 / 32 766 (16) | 32 762 |
+| `call_indirect`, own table | 8 189 / 32 765 (16) | 8 190 / 32 766 (16) | 16 381 |
+| across instances (calls) | 4 096 / 16 384 (32) | 4 096 / 16 384 (32) | 21 842 |
+| across compilers, either way (calls) | 1 260 / 5 042 (104) | (the same chain) | — |
+
+* Result, CoreMark compile time and code size (bytes, the code without the data area):
+
+| bounds | `jit-x86_64` | `jit-sljit-x86_64` |
+|---|---|---|
+| guard | 41 ms (40-46), 34 879 | 42 ms (38-46), 35 617 |
+| explicit | 68 ms (63-71), 43 876 | 63 ms (61-69), 47 094 |
+
+* Conditions: in-process, one store per measurement, no walk check. Across compilers a pair
+  costs `jit-x86_64`'s C path (112 bytes) plus `jit-sljit`'s (96: a 16-byte caller frame, `ccall`'s
+  48 and the callee's 32-byte centry), 104 a call on average. Reading: `jit-sljit`'s internal
+  frames cost what `jit-x86_64`'s do (S0016 "Frame size": the record helpers keep the context
+  and C-path saves out of the body frames); its compile time is within the spread of
+  `jit-x86_64`'s. No run-time speed is claimed here (CoreMark: S0016 step 6).
+
+## `jit-sljit-aarch64` on the boundary: depth (S0016 step 5, 2026-11-24)
+* Date: 2026-11-24
+* Commit: the S0016 step-5 working tree (`tests/sljit/` aarch64 paths, `native/`'s page-aligned
+  buffer and constants; no change to the core or to the Python backends)
+* Machine: QEMU 8.2.2 user mode on the Intel Xeon @ 2.10 GHz host (4 vCPU), CPython 3.13.18
+  aarch64; a native stack's arithmetic does not depend on the emulator
+* Command: `python3 tools/run_arm64.py depth.py`, step 1's scratch driver (not committed) with the
+  pair `jit-aarch64` / `jit-sljit-aarch64`: `DEPTH` (own-table `call_indirect`), its direct twin
+  and `XA` + `XB` of `tests/jit/test_boundary.py`, `StoreState(max_wasm_stack=128 << 10)` and
+  `512 << 10`, `f(0)` until `STACK_OVERFLOW`, the level count from `$n` (across instances and
+  compilers: twice `XA`'s count). Both targets in one session, the same modules. Wasmtime
+  50.0.1 (wasmtime-py for aarch64, `.cache/arm64-site`) under the same QEMU with
+  `Config.max_wasm_stack = 512 << 10` (step 1's `depth_wt.py` through `tools/run_arm64.py`).
+* Result (levels at 128 KiB / 512 KiB, bytes a level):
+
+| recursion | `jit-aarch64` | `jit-sljit-aarch64` | Wasmtime 50.0.1 (512 KiB) |
+|---|---|---|---|
+| direct `call` (one pin) | 4 094 / 16 382 (32) | 4 095 / 16 383 (32) | 32 756 |
+| `call_indirect`, own table | 4 094 / 16 382 (32) | 4 095 / 16 383 (32) | 16 378 |
+| across instances (calls) | 2 730 / 10 922 (48) | 2 730 / 10 922 (48) | 21 838 |
+| across compilers, either way (calls) | 1 092 / 4 370 (120) | (the same chains) | — |
+
+* Before the step-5 amendment ("aarch64 has no xcall"), with an `xcall` helper as on x86-64, the
+  same run gave 2 048 / 8 192 (64) across instances: sljit's aarch64 frame is a 16-byte record
+  plus locals rounded to 16, so `xcall`'s one slot made it 32 bytes (LESSONS 153). The body now
+  pushes S0 around that call (16 bytes, in the site's numbers), as `jit-aarch64` pushes x28.
+* Reading: `jit-sljit-aarch64`'s frames cost what `jit-aarch64`'s do on all three rows (one level
+  more at each size: the entry's frames differ). Across compilers one measurement covers both
+  directions. No timing is claimed (QEMU; CoreMark on the native runner: S0016 step 6).
+
+## jit-sljit CoreMark (S0016 step 6, 2026-11-24)
+* Date: 2026-11-24
+* Commit: 0fc2f30 (branch `gc`), working tree on top of it: no source change (the CI step only)
+* Machine: Intel Xeon @ 2.10 GHz, 4 vCPU (the sandbox); the run is pinned with `taskset -c 2`
+* Python: CPython 3.13.17; sljit 39c508d (`native/`, built fresh with `cmake --build build/native`)
+* Command: `WABOROS_JIT_BOUNDS=$bounds taskset -c 2 uv run python tools/run_coremark_jit.py
+  poc/in/core.wasm --target $target`, for `$bounds` in guard, explicit and `$target` in
+  `jit-x86_64`, `jit-sljit-x86_64`; 5 rounds, alternated (guard then explicit within a round, the
+  two targets alternated within each bounds mode). Raw output: the session's scratchpad
+  `s16-6/x86.txt`. Every one of the 20 runs printed "Correct operation validated".
+* Result, Iterations/Sec (CoreMark 1.0, `zig cc` wasm32 -O3 STATIC):
+
+guard:
+
+| round | `jit-x86_64` | `jit-sljit-x86_64` |
+|---|---|---|
+| 1 | 14 933.17 | 15 968.06 |
+| 2 | 16 235.52 | 15 488.27 |
+| 3 | 16 879.54 | 16 091.40 |
+| 4 | 16 687.53 | 14 504.32 |
+| 5 | 15 677.67 | 16 116.04 |
+| median | 16 235.52 | 15 968.06 |
+
+explicit:
+
+| round | `jit-x86_64` | `jit-sljit-x86_64` |
+|---|---|---|
+| 1 | 14 642.36 | 13 698.63 |
+| 2 | 13 807.39 | 14 164.31 |
+| 3 | 15 556.94 | 13 891.78 |
+| 4 | 13 986.01 | 13 212.66 |
+| 5 | 13 652.81 | 13 121.64 |
+| median | 13 986.01 | 13 698.63 |
+
+* Ratio of medians (`jit-sljit-x86_64` / `jit-x86_64`): guard 0.9835, explicit 0.9795.
+* Spread (min-max over the 5 rounds): guard `jit-x86_64` 14 933-16 880, `jit-sljit-x86_64`
+  14 504-16 116; explicit `jit-x86_64` 13 653-15 557, `jit-sljit-x86_64` 13 122-14 164.
+* aarch64: the native arm64 runner in CI (ci.yml, job arm64, ubuntu-24.04-arm, guard pages,
+  alternated, 3 rounds each; CI run 45483232518, S0016 step 6, 2026-11-24); every run passes its
+  self-check. Iterations/Sec:
+
+  | round | `jit-aarch64` | `jit-sljit-aarch64` |
+  |---|---|---|
+  | 1 | 19 579.7 | 18 500.2 |
+  | 2 | 19 499.5 | 18 494.5 |
+  | 3 | 19 560.5 | 18 496.8 |
+  | median | 19 560.5 | 18 496.8 |
+
+  Ratio of medians 0.946. The spread within a target is under 0.5 %, so on aarch64 `jit-sljit`
+  is about 5 % slower, unlike x86-64 (0.98, within noise). Not investigated in S0016 (no speed
+  goal for the development target); the code differs from `jit-aarch64`'s in sljit's instruction
+  selection, the pool (S3-S9) and the frame layout.

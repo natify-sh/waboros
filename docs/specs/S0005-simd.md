@@ -121,7 +121,7 @@ v128, a `reviewer` pass):
 
 | | scratch | never used | why |
 |---|---|---|---|
-| x86-64 | `xmm0`–`xmm5` (floats keep `xmm0`–`xmm2`, also scratch) | `xmm6`–`xmm15` | Win64: xmm6–15 are callee-saved; using them would make the `win64` entry save 160 bytes; SysV: all caller-saved. One artifact for both (D23) |
+| x86-64 | `xmm0`–`xmm5` (floats keep `xmm0`–`xmm2`, also scratch) | `xmm6`–`xmm15` | Win64: xmm6–15 are callee-saved; SysV: all caller-saved. One artifact for both (D23). From S0015 step 1 the runtime's Win64 `entry` saves them itself (160 bytes: a SysV C entry may clobber them), so the rule no longer saves the entry anything; it stays because no operator needs them and a pinned use would have to be saved around every call through a record (the boundary keeps no xmm register) |
 | aarch64 | `v0`–`v7`, `v16`–`v31` | `v8`–`v15` | AAPCS64: the low halves `d8`–`d15` are callee-saved (Linux, Apple, Windows) |
 
 So no trampoline changes and no save around host calls (the bridge saves GPRs only, as today):
@@ -296,7 +296,9 @@ operator classes above (the largest step otherwise: ~1 100 lines), each with its
 * **A vector register class now** (a vector `tos` like the integer one, or pinned v128 locals):
   fewer loads/stores per operator, but every method must then preserve it, floats would want the
   same class (not byte-identical any more), and a pinned class across calls needs the Win64 entry to
-  save `xmm6`–`xmm15` (160 bytes) and the AAPCS64 entry `d8`–`d15` (64 bytes). Without a measurement
+  save `xmm6`–`xmm15` (160 bytes; done by the runtime's Win64 `entry` from S0015 step 1) and the
+  AAPCS64 entry `d8`–`d15` (64 bytes), and, with S0015, saving around every call through a
+  record on x86-64 (the boundary keeps no xmm register). Without a measurement
   it is an optimisation before need. A vector `tos` (one caller-saved register: `xmm5`/`v7`, flushed
   before calls and edges like the integer `tos`) is the candidate if the SIMD benchmark shows the
   slot round trips cost (Q3).
@@ -496,3 +498,5 @@ Q5 (a), Q6 (a), Q7 (a), Q8 (a). Kept below with their options for the record.
   (BENCHMARKS.md, "SIMD benchmark"): `jit-x86_64` matmul 12.10 → 2.17 µs, scan 3.81 → 0.64, dot
   1.49 → 1.03; matmul and scan now beat their scalar builds.
 * 2026-11-02 (5f): status implemented. The review of the whole SIMD implementation in both JITs found no correctness defect. Fixes: `_nan_class` in the tests compared NaN lanes by the marker `1`, a real lane value, and now maps them to `"nan"` in a tuple of lanes; the x86-64 shuffle cache `_SHUF` is built in a local dict and published by one assignment, so a free-threaded reader sees it empty or full (deterministic bytes); generated code unchanged (D35 list identical). Both D39 amendments (`simd`, `move_v128`) are recorded in DECISIONS.
+* 2026-11-22: S0015 step 1: the xmm6–15 rule's reason (the runtime's Win64 `entry` now saves them;
+  the boundary keeps no xmm register).

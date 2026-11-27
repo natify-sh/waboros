@@ -2,7 +2,7 @@
 title: References
 kind: reference
 status: current
-updated: 2026-11-03
+updated: 2026-11-19
 ---
 
 # References
@@ -26,9 +26,10 @@ against wasmtime, and encodings checked against `objdump` / `llvm-mc` in CI.
 | **asmjit** | complete encoding tables for x86 and AArch64, including SIMD | encoders, SIMD |
 | **DynASM** (LuaJIT) | encoders for x86/x64, ARM, ARM64, PPC and **MIPS** | encoder ideas only: MIPS and PPC run `pyc` (D48) |
 | **Cranelift's assemblers and lowering** | encodings for x64, aarch64, riscv64, s390x; x64 and aarch64 SIMD lowering (`cranelift/codegen/src/isa/x64/lower.isle`): which operators are one SSE2 sequence and which need SSE4.1 or fall back to libcalls (read for S0005; V8 enables wasm SIMD on x64 only with SSE4.1, `CpuFeatures::SupportsSimd128`) | encoders, SIMD |
-| **MicroPython's native emitters** (`py/emitnative.c`, `py/asmthumb.c`, `py/asmxtensa.c`, `py/asmrv32.c`, …) | code generation for MCU architectures (Thumb, Xtensa, RISC-V 32); how viper types and calls work | the `mpy` target, viper code, future Thumb/Xtensa back ends |
+| **MicroPython's native emitters** (`py/emitnative.c`, `py/asmthumb.c`, `py/asmxtensa.c`, `py/asmrv32.c`, …) | code generation for MCU architectures (Thumb, Xtensa, RISC-V 32); how viper types and calls work | the `mpy` target, viper code, future Thumb/Xtensa back ends; see [MICROPYTHON-NATIVE.md](MICROPYTHON-NATIVE.md) |
 | **CPython's JIT** (`Tools/jit`) | how copy-and-patch is built: stencils, holes, relocations | if copy-and-patch is chosen (TARGETS.md) |
 | **wasm-to-asm** (calebsander, TypeScript) | a small readable wasm → x86-64 compiler: the bottom of the operand stack kept in registers, a calling convention without caller-saved registers (it has no traps: not a sandbox) | register allocation ideas |
+| **Walrus** (Samsung, C++) | a WebAssembly runtime whose JIT is built on sljit, the precedent for the D48 sljit track: how wasm operators map onto sljit's LIR on x86, x64, ARM, AArch64 and riscv64, full v128 and relaxed SIMD (hand-encoded per ISA through `sljit_emit_op_custom`), threads, i64 on 32-bit targets (register pairs), explicit bounds checks and traps; not for D56 or D59 (calls through C++, conservative GC, absolute code) | the sljit backend (SLJIT-BACKEND.md, D48) |
 | **pywasm** | a complete pure-Python interpreter (Wasm 2.0, SIMD, WASI p1) and its spec runner | the test harness, a second oracle, WASI p1 |
 
 ## Primary sources (normative)

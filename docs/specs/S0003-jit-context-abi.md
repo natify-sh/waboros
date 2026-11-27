@@ -6,7 +6,7 @@ status: implemented
 superseded_by:
 related: [D10, D14, D15, D18, D23, D24, R2, R3, R6, S0002]
 owner: maintainer
-updated: 2026-11-05
+updated: 2026-11-23
 ---
 
 # S0003 JIT context ABI and entry (phase 3, x86-64)
@@ -40,22 +40,22 @@ it is not a new format. The runtime side is [S0002](S0002-target-interface.md).
 | 7 | `HOST_ERROR` | status of the current host call: preset to 13 by the bridge, written last by the host function (step 6, D34) |
 | 8 | `HOST_BRIDGE` | address of the host-call bridge for the host's convention |
 | 9 | `TAIL_SWITCH` | address of the cross-context tail-call trampoline (step 3e, D30) |
-| 10 | `EXCEPTION` | address of the store's pending-exception word (S0012) |
-| 11 | `EXN_REFILL` | the exception arena's refill service, called through the bridge (S0012) |
-| 12, 13 | `ARENA_CURSOR`, `ARENA_LIMIT` | addresses of the store's arena cursor and limit (S0012) |
-| 14–15 | reserved | zero |
+| 10 | `EXCEPTION` | address of the store's pending-exception word (S0012; from S0013 step 6.2 it holds a heap offset and is a root) |
+| 11-13 | reserved | zero (S0013 step 6.3; the exception arena's refill service, cursor and limit until then, S0012) |
+| 14 | `EXIT_RECORD` | address of the store's exit record `{sp, pc, frame}`: written by the bridge, saved and restored by every entry (S0013) |
+| 15 | reserved | zero |
 | 16 … | memory *i*: `base`, `size_bytes` | memory 0 also in r13/r14; any other read here at each access |
 | … | table *i*: `base`, `size` | element words (record address / extern handle, 0 = null); step 3d |
 | … | global *i*: 1 word | defined: the value; imported: a pointer to the owner's word (same target, S0002) |
 | … | function import *i*: 1 word | address of a host function (signature below) |
-| … | libcall *j*: 1 word | same signature; the runtime services the module uses (`memory.grow`, `table.grow`, segment init — never computation, D25), in a fixed order |
+| … | libcall *j*: 1 word, 10 in all | same signature; the runtime services the module uses (`memory.grow`, `table.grow`, segment init — never computation, D25), in a fixed order; words 6-9 of the block reserved, zero (D58) |
 | … | signature *k*, function record *r* | step 3d: canonical type ids for `call_indirect`; `{code, type id, context}` records (ARTIFACT.md part 3) |
 | … | tag *t* | the tag's identity, imported tags first (S0012) |
 
 ### Calling conventions
 ```c
 int32_t entry(uint64_t *ctx, uint64_t *frame, const void *code);   /* per host convention */
-int32_t host (uint64_t *ctx, uint64_t *slots);                     /* imports and libcalls */
+int32_t host (uint64_t *ctx, uint64_t *slots, uint32_t word);      /* imports and libcalls; word: D75 */
 ```
 * `frame[0..n)` holds the arguments, `frame[0..m)` the results after a 0 return: one slot per value,
   i32 zero-extended, i64 as is, f32/f64 bit patterns (ARTIFACT.md).
@@ -83,15 +83,18 @@ int32_t host (uint64_t *ctx, uint64_t *slots);                     /* imports an
 * **Entry, SysV** (`rdi`, `rsi`, `rdx`): `endbr64`; push `rbx rbp r12–r15` (+ pad to 16); `r15 ← ctx`,
   `r12 ← frame`, `r13/r14 ←` memory 0 words; `call rdx`; if `eax ≠ 0` store it in `ctx[1]`; pop;
   `ret`. **Win64 shape** (`rcx`, `rdx`, `r8`): also push `rsi rdi` (callee-saved there); the same
-  body. The code itself is identical under both (D23).
+  body. The code itself is identical under both (D23). Since S0013 3a the pad is 40 bytes and
+  holds, at `[rsp, rsp + 32)` during the call, the enclosing exit record and the frame; the record
+  is put back right after the call, before the status test.
 * **Bridge**: wasm code sets `eax` = context word index of the import or libcall, `rdx` = slot
   pointer of the arguments, then `call [r15 + 8*HOST_BRIDGE]`. SysV bridge: `endbr64`; push the pool
   registers SysV lets a callee clobber (`rsi rdi r8–r11`; all of them, not only the caller's pins:
   frames above keep pins there too, LESSONS 2); push `ctx[HOST_ERROR]` (an enclosing host call's
-  preset); `ctx[HOST_ERROR] ← 13`; `rdi ← r15`, `rsi ← rdx`; `call [r15+8*rax]`; `eax ←
-  ctx[HOST_ERROR]`; pop it back into the word; pop; `ret` with the status in `eax`. Win64 bridge: saves `r8–r11` only, passes `rcx`/`rdx`, and
-  reserves the 32-byte shadow space. The wasm call site then reloads `r13`/`r14` and does
-  `test eax, eax; jnz unwind`.
+  preset); `ctx[HOST_ERROR] ← 13`; `rdi ← r15`, `rsi ← rdx`, `edx ← eax` (the word, D75); `call [r15+8*rax]`; `eax ←
+  ctx[HOST_ERROR]`; pop it back into the word; pop; `ret` with the status in `eax`. Win64 bridge: saves `r8–r11` only, passes `rcx`/`rdx`/`r8d`, and
+  reserves the 32-byte shadow space. Both write the store's exit record (word 14) through r8/r9
+  after pushing them, and clear its `sp` after the host returns (S0013 3a). The wasm call site then
+  reloads `r13`/`r14` and does `test eax, eax; jnz unwind`.
 
 ## Semantics
 
@@ -103,7 +106,7 @@ site check it (`test spl, 15; jnz` → trap) and the encoder tests run with it o
 **value stack** the runtime maps per store (frame overlap as in `w2jit`); every prologue checks
 `r12 + 8·frame_slots ≤ ctx[VSTACK_LIMIT]`. The **native stack** holds only return addresses, pushed
 pins and pads (at most 96 bytes per frame with a function-record call in flight — return address,
-eight pins, pad, the saved context — plus 16 per `tail_switch` restore frame; never more than one page at once: no stack probes on Windows,
+eight pins, pad, the saved context — plus 16 per `tail_switch` restore frame; *x86-64 from S0015 step 1:* at most 176 bytes per frame called through a function record — its own 80, the caller's six saved registers (48), the C entry's frame (40) and its return address — and 64 per restore frame, measured 112 bytes per level of a recursion through `call_indirect` into another compiler's context without pins against 32 before; a record of the caller's own context is called at its body, 16 bytes a level as a direct call, and one of another context of the same compiler at its body with `r15` and a pad saved, a direct call's bytes plus 16 (32 a level without pins; D71) (BENCHMARKS.md, "The boundary convention on `jit-x86_64` (S0015 step 1, 2026-11-22)"); the recursion depth until `STACK_OVERFLOW` at the default 512 KiB, measured: a `call_indirect` through the own table 32 765 levels on `jit-x86_64` (16 bytes a level, D71) and 16 382 on `jit-aarch64` (32 bytes, under QEMU; S0015 step 3), a call across instances 16 382 calls on x86-64 and 10 922 on aarch64 (BENCHMARKS.md, the two S0015 sections); never more than one page at once: no stack probes on Windows,
 D23; the SysV red zone is never used). Every prologue checks `rsp ≥ ctx[NSTACK_LIMIT]`. The runtime
 sets that limit at the first JIT entry of the store on the stack, whatever the store's depth:
 `limit = sp − min(max_wasm_stack, (sp − low) / 2)`, `max_wasm_stack` default 512 KiB (Wasmtime's,
@@ -182,7 +185,9 @@ it should.
 **What a second architecture defines** (phase 4), in its own table like the one above: context,
 frame, memory base/size, status, scratch and pool registers; registers no supported OS reserves
 (AArch64: never `x18`; RISC-V: never `gp`/`tp`); entry and bridge per convention (`aapcs64`,
-`win-arm64`; RISC-V psABI) with the callee-saved sets; landing pads (`bti c`) where `endbr64` is
+`win-arm64`; RISC-V psABI) with the callee-saved sets (from S0015 the boundary row is per
+architecture, and the entry is the runtime's; the bridge and `tail_switch` are the compiler's);
+landing pads (`bti c` inside the compiler, `bti jc` at the boundary, S0015 Q5) where `endbr64` is
 used here; stack alignment (16 on both); compares without flags (RISC-V); division checks (AArch64
 and RISC-V do not trap on 0: explicit checks give the wasm traps); shift-count masking; immediate
 and offset ranges; its baseline (ARTIFACT.md part 1) and the disassembler allowlist; encoder tests
@@ -392,3 +397,41 @@ uv run pytest tests/jit -k "entry or trap or reentry or host or interrupt or sta
   `cbnz w0` goes to `error`; at a landing pad only w0 (the status) and the pins are live, x27 and
   x28/x26/x25 restored before the test; a pad does `cmp w0, #14; b.ne`, and the clauses re-read
   word 10 into x9-x10. `throw` uses x9-x12 (x16/x17 for offsets no immediate takes).
+* 2026-11-11 (S0013 step 3a.2, an amendment of v1 without a bump, S0013 Q5): context word 14
+  `EXIT_RECORD`; the bridge writes the store's exit record `{sp, pc, frame}` before the host and
+  clears its `sp` after; the entry keeps the enclosing record and its frame on the native stack
+  during its call and puts the record back (x86-64: the pad 8 → 40 bytes, the block at `[rsp, rsp + 32)` in SysV and Win64). Module code is unchanged.
+* 2026-11-11 (S0013 steps 3a.3-3a.4, D56): the runtime walks a store's frames from the exit record by the per-site numbers of the `STACKMAPS` section and the trampolines' points (the entry's return point and its saved block, `tail_switch`'s 16-byte restore frame: the saved context, then the real return address); `WABOROS_JIT_WALK_CHECK=1` checks the walk at every host call. A compiled module without its site table is refused at instantiation (`ValueError`). No change of code or context words beyond step 3a.2's.
+* 2026-11-16 (S0013 step 5.6, D39 amendment, D61): the backend method `func_type(dst, rec)` loads
+  word 1, the canonical type id, of the function record at `rec`. In a module that uses GC, GC group
+  word 7 (`FUNC_SUBTYPE`) is reserved and zero, and a 3-word function record `IS_SUBTYPE` follows
+  the RTT words (the collector module's `is_subtype`); no word moves (ARTIFACT.md part 3). Only
+  modules with a function-subtype site change code.
+* 2026-11-16 (S0013 step 6.2, D63): exception objects live in the GC heap; word 10's target holds 0
+  or the u32 offset of the last exception thrown and is a root of the collection; no code reads
+  words 11-13 any more (step 6.3 makes them reserved and zero). The landing pads are lowered in the
+  shared core, so the backends' `exn_match`, `exn_field`, `exn_load` and `throw` are no longer
+  called (ARTIFACT.md part 3).
+* 2026-11-16 (S0013 step 6.3, D63, an amendment of v1 without a bump, S0013 Q5): the arena is
+  removed. Words 11-13 (`EXN_REFILL`, `ARENA_CURSOR`, `ARENA_LIMIT`) are reserved and zero in every
+  context; no word moves. The backends' `exn_match`, `exn_field`, `exn_load` and `throw` are
+  deleted (D39 interface), and so is the refill service, the only host call that did not set the
+  frame base. Module code is byte-identical (D35, both architectures and bounds modes). A test
+  checks that no compiled `exceptions/` module names or addresses words 11-13.
+* 2026-11-18 (S0014 step 0, D58, an amendment of v1 without a bump: no artifact had been
+  written): the libcall block is 10 words, the 6 libcalls, then 4 reserved words that stay zero
+  (threads' `wait32`, `wait64` and `notify` later); every word after the block (signatures,
+  records, tags, the GC group) moves by 4 (`context.LIBCALL_WORDS`). Code bytes change only in
+  modules whose code names such a word (217 of 2 527 compiled modules on each JIT, CoreMark among
+  them); the spec suite's output is identical on both JITs in both bounds modes.
+* 2026-11-22: S0015 step 1 (x86-64): the native stack's per-frame bound through function records
+  and the restore frame ("Two stacks"); the entry, records and tail calls of x86-64 follow
+  S0015's boundary convention (ARTIFACT.md part 3).
+* 2026-11-22: "Two stacks": the native stack of a record call into another context of the same
+  compiler (D71).
+* 2026-11-23: S0015 step 5 (docs): "Two stacks" gains the measured recursion depth through
+  `call_indirect` and across instances on both architectures; the second-architecture paragraph
+  names the boundary row per architecture and the `bti jc` pad. No ABI change.
+* 2026-11-25 (S0017 P1, D75): the `host` prototype gains `uint32_t word`, the context-word index
+  the host was called through (SysV `edx`, Win64 `r8d`, AAPCS64 `w2`); a working-freeze amendment
+  of v1, no version bump.

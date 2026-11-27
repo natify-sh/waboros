@@ -103,7 +103,7 @@ def test_wide_arithmetic_decodes_and_validates() -> None:
 def test_v128_type_and_constant_expression() -> None:
     glob = sec(6, b"\x01" + V + b"\x00" + CONST + b"\x0b")
     m = parse(mod(b"", b"", b"", extra=glob))
-    assert m["globals"][0][0] == 0x7B and m["globals"][0][2][0] == "v128"
+    assert m["globals"][0][0] == 0x7B and m["globals"][0][2][0][0] == "v128"
     validate(m)
     assert m["validated"]
     bad = sec(6, b"\x01\x7f\x00" + CONST + b"\x0b")  # v128.const initialising an i32

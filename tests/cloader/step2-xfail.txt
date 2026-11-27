@@ -1,0 +1,456 @@
+# S0017 step 2: expected failures of cloader-jit-x86_64 and cloader-jit-sljit-x86_64 over step2.txt
+# (written by `--write-xfail`, then checked by test_step2_files.py). Every entry is step-3 work: a
+# libcall behind `dispatch` (memory.grow, memory.init, table.grow, data.drop, table.init, elem.drop)
+# or a host reference at the shim, or a later command of the same file that reads what such a
+# command did not write. Each passes on `WABOROS_JIT_ARTIFACT=1 --engine jit-x86_64`.
+block.wast:384  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+br_table.wast:1249  NotImplementedError: cloader step 2: host references (S0017 step 3)
+br_table.wast:1250  NotImplementedError: cloader step 2: host references (S0017 step 3)
+br_table.wast:1251  NotImplementedError: cloader step 2: host references (S0017 step 3)
+bulk-memory/bulk.wast:129  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+bulk-memory/bulk.wast:130  got [0]
+bulk-memory/bulk.wast:131  got [0]
+bulk-memory/bulk.wast:135  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+bulk-memory/bulk.wast:138  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+bulk-memory/bulk.wast:140  got [0]
+bulk-memory/bulk.wast:141  got [0]
+bulk-memory/bulk.wast:144  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+bulk-memory/bulk.wast:145  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+bulk-memory/bulk.wast:148  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+bulk-memory/bulk.wast:150  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+bulk-memory/bulk.wast:168  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+bulk-memory/bulk.wast:169  RuntimeError: runtime service data.drop not implemented (S0017 step 3)
+bulk-memory/bulk.wast:170  RuntimeError: runtime service data.drop not implemented (S0017 step 3)
+bulk-memory/bulk.wast:171  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+bulk-memory/bulk.wast:172  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+bulk-memory/bulk.wast:173  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+bulk-memory/bulk.wast:174  RuntimeError: runtime service data.drop not implemented (S0017 step 3)
+bulk-memory/bulk.wast:175  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+bulk-memory/bulk.wast:176  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+bulk-memory/bulk.wast:177  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+bulk-memory/bulk.wast:219  RuntimeError: runtime service table.init not implemented (S0017 step 3)
+bulk-memory/bulk.wast:224  RuntimeError: runtime service table.init not implemented (S0017 step 3)
+bulk-memory/bulk.wast:225  Trap: trap
+bulk-memory/bulk.wast:226  Trap: trap
+bulk-memory/bulk.wast:230  RuntimeError: runtime service table.init not implemented (S0017 step 3)
+bulk-memory/bulk.wast:233  RuntimeError: runtime service table.init not implemented (S0017 step 3)
+bulk-memory/bulk.wast:234  RuntimeError: runtime service table.init not implemented (S0017 step 3)
+bulk-memory/bulk.wast:237  RuntimeError: runtime service table.init not implemented (S0017 step 3)
+bulk-memory/bulk.wast:239  RuntimeError: runtime service table.init not implemented (S0017 step 3)
+bulk-memory/bulk.wast:261  RuntimeError: runtime service table.init not implemented (S0017 step 3)
+bulk-memory/bulk.wast:262  RuntimeError: runtime service elem.drop not implemented (S0017 step 3)
+bulk-memory/bulk.wast:263  RuntimeError: runtime service elem.drop not implemented (S0017 step 3)
+bulk-memory/bulk.wast:264  RuntimeError: runtime service table.init not implemented (S0017 step 3)
+bulk-memory/bulk.wast:265  RuntimeError: runtime service table.init not implemented (S0017 step 3)
+bulk-memory/bulk.wast:266  RuntimeError: runtime service table.init not implemented (S0017 step 3)
+bulk-memory/bulk.wast:267  RuntimeError: runtime service elem.drop not implemented (S0017 step 3)
+bulk-memory/bulk.wast:268  RuntimeError: runtime service table.init not implemented (S0017 step 3)
+bulk-memory/bulk.wast:269  RuntimeError: runtime service table.init not implemented (S0017 step 3)
+bulk-memory/bulk.wast:270  RuntimeError: runtime service table.init not implemented (S0017 step 3)
+bulk-memory/memory_init.wast:105  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+bulk-memory/memory_init.wast:122  got [3]
+bulk-memory/memory_init.wast:123  got [6]
+bulk-memory/memory_init.wast:124  got [0]
+bulk-memory/memory_init.wast:157  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+bulk-memory/memory_init.wast:166  got [0]
+bulk-memory/memory_init.wast:167  got [0]
+bulk-memory/memory_init.wast:168  got [0]
+bulk-memory/memory_init.wast:169  got [0]
+bulk-memory/memory_init.wast:172  got [5]
+bulk-memory/memory_init.wast:173  got [2]
+bulk-memory/memory_init.wast:174  got [3]
+bulk-memory/memory_init.wast:175  got [6]
+bulk-memory/memory_init.wast:176  got [0]
+bulk-memory/memory_init.wast:178  got [0]
+bulk-memory/memory_init.wast:180  got [0]
+bulk-memory/memory_init.wast:182  got [0]
+bulk-memory/memory_init.wast:183  got [0]
+bulk-memory/memory_init.wast:209  RuntimeError: runtime service data.drop not implemented (S0017 step 3)
+bulk-memory/memory_init.wast:216  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+bulk-memory/memory_init.wast:224  RuntimeError: runtime service data.drop not implemented (S0017 step 3)
+bulk-memory/memory_init.wast:232  RuntimeError: runtime service data.drop not implemented (S0017 step 3)
+bulk-memory/memory_init.wast:240  RuntimeError: runtime service data.drop not implemented (S0017 step 3)
+bulk-memory/memory_init.wast:248  RuntimeError: runtime service data.drop not implemented (S0017 step 3)
+bulk-memory/memory_init.wast:256  RuntimeError: runtime service data.drop not implemented (S0017 step 3)
+bulk-memory/memory_init.wast:263  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+bulk-memory/memory_init.wast:285  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+bulk-memory/memory_init.wast:292  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+bulk-memory/memory_init.wast:299  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+bulk-memory/memory_init.wast:306  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+bulk-memory/memory_init.wast:313  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+bulk-memory/memory_init.wast:320  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+bulk-memory/memory_init.wast:327  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+bulk-memory/memory_init.wast:334  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+bulk-memory/memory_init.wast:341  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+bulk-memory/memory_init.wast:348  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+bulk-memory/memory_init.wast:61  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+bulk-memory/memory_init.wast:70  got [0]
+bulk-memory/memory_init.wast:71  got [0]
+bulk-memory/memory_init.wast:72  got [0]
+bulk-memory/memory_init.wast:73  got [0]
+bulk-memory/memory_init.wast:872  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+bulk-memory/memory_init.wast:895  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+bulk-memory/memory_init.wast:918  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+bulk-memory/memory_init.wast:941  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+bulk-memory/memory_init.wast:964  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+bulk-memory/memory_init.wast:987  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+bulk-memory/table_fill.wast:23  NotImplementedError: cloader step 2: host references (S0017 step 3)
+bulk-memory/table_fill.wast:25  got [None]
+bulk-memory/table_fill.wast:26  got [None]
+bulk-memory/table_fill.wast:27  got [None]
+bulk-memory/table_fill.wast:30  NotImplementedError: cloader step 2: host references (S0017 step 3)
+bulk-memory/table_fill.wast:31  got [None]
+bulk-memory/table_fill.wast:32  got [None]
+bulk-memory/table_fill.wast:33  got [None]
+bulk-memory/table_fill.wast:36  NotImplementedError: cloader step 2: host references (S0017 step 3)
+bulk-memory/table_fill.wast:37  got [None]
+bulk-memory/table_fill.wast:38  got [None]
+bulk-memory/table_fill.wast:39  got [None]
+bulk-memory/table_fill.wast:41  NotImplementedError: cloader step 2: host references (S0017 step 3)
+bulk-memory/table_fill.wast:43  got [None]
+bulk-memory/table_fill.wast:44  got [None]
+bulk-memory/table_fill.wast:47  got [None]
+bulk-memory/table_fill.wast:50  NotImplementedError: cloader step 2: host references (S0017 step 3)
+bulk-memory/table_fill.wast:54  NotImplementedError: cloader step 2: host references (S0017 step 3)
+bulk-memory/table_fill.wast:58  got [None]
+call.wast:359  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+call_indirect.wast:603  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+if.wast:600  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+if.wast:601  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+load.wast:211  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+local_init.wast:21  NotImplementedError: cloader step 2: host references (S0017 step 3)
+local_init.wast:22  NotImplementedError: cloader step 2: host references (S0017 step 3)
+local_init.wast:23  NotImplementedError: cloader step 2: host references (S0017 step 3)
+local_init.wast:74  NotImplementedError: cloader step 2: host references (S0017 step 3)
+local_tee.wast:345  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+loop.wast:468  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+memory64/bulk64.wast:131  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+memory64/bulk64.wast:132  got [0]
+memory64/bulk64.wast:133  got [0]
+memory64/bulk64.wast:137  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+memory64/bulk64.wast:140  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+memory64/bulk64.wast:142  got [0]
+memory64/bulk64.wast:143  got [0]
+memory64/bulk64.wast:146  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+memory64/bulk64.wast:147  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+memory64/bulk64.wast:151  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+memory64/bulk64.wast:154  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+memory64/bulk64.wast:158  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+memory64/bulk64.wast:176  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+memory64/bulk64.wast:177  RuntimeError: runtime service data.drop not implemented (S0017 step 3)
+memory64/bulk64.wast:178  RuntimeError: runtime service data.drop not implemented (S0017 step 3)
+memory64/bulk64.wast:179  RuntimeError: runtime service data.drop not implemented (S0017 step 3)
+memory64/load64.wast:211  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+memory64/memory_grow64.wast:103  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+memory64/memory_grow64.wast:105  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+memory64/memory_grow64.wast:19  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+memory64/memory_grow64.wast:20  got [0]
+memory64/memory_grow64.wast:21  Trap: trap
+memory64/memory_grow64.wast:22  Trap: trap
+memory64/memory_grow64.wast:23  Trap: trap
+memory64/memory_grow64.wast:26  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+memory64/memory_grow64.wast:27  got [0]
+memory64/memory_grow64.wast:28  Trap: trap
+memory64/memory_grow64.wast:29  Trap: trap
+memory64/memory_grow64.wast:30  Trap: trap
+memory64/memory_grow64.wast:31  Trap: trap
+memory64/memory_grow64.wast:32  Trap: trap
+memory64/memory_grow64.wast:33  Trap: trap
+memory64/memory_grow64.wast:41  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+memory64/memory_grow64.wast:42  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+memory64/memory_grow64.wast:43  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+memory64/memory_grow64.wast:44  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+memory64/memory_grow64.wast:45  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+memory64/memory_grow64.wast:46  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+memory64/memory_grow64.wast:53  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+memory64/memory_grow64.wast:54  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+memory64/memory_grow64.wast:55  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+memory64/memory_grow64.wast:56  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+memory64/memory_grow64.wast:57  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+memory64/memory_grow64.wast:58  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+memory64/memory_grow64.wast:59  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+memory64/memory_grow64.wast:60  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+memory64/memory_grow64.wast:86  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+memory64/memory_grow64.wast:87  Trap: trap
+memory64/memory_grow64.wast:88  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+memory64/memory_grow64.wast:89  Trap: trap
+memory64/memory_grow64.wast:90  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+memory64/memory_grow64.wast:91  Trap: trap
+memory64/memory_grow64.wast:92  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+memory64/memory_grow64.wast:93  Trap: trap
+memory64/memory_grow64.wast:94  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+memory64/memory_grow64.wast:95  Trap: trap
+memory64/memory_init64.wast:105  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+memory64/memory_init64.wast:122  got [3]
+memory64/memory_init64.wast:123  got [6]
+memory64/memory_init64.wast:124  got [0]
+memory64/memory_init64.wast:157  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+memory64/memory_init64.wast:166  got [0]
+memory64/memory_init64.wast:167  got [0]
+memory64/memory_init64.wast:168  got [0]
+memory64/memory_init64.wast:169  got [0]
+memory64/memory_init64.wast:172  got [5]
+memory64/memory_init64.wast:173  got [2]
+memory64/memory_init64.wast:174  got [3]
+memory64/memory_init64.wast:175  got [6]
+memory64/memory_init64.wast:176  got [0]
+memory64/memory_init64.wast:178  got [0]
+memory64/memory_init64.wast:180  got [0]
+memory64/memory_init64.wast:182  got [0]
+memory64/memory_init64.wast:183  got [0]
+memory64/memory_init64.wast:209  RuntimeError: runtime service data.drop not implemented (S0017 step 3)
+memory64/memory_init64.wast:216  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+memory64/memory_init64.wast:224  RuntimeError: runtime service data.drop not implemented (S0017 step 3)
+memory64/memory_init64.wast:232  RuntimeError: runtime service data.drop not implemented (S0017 step 3)
+memory64/memory_init64.wast:240  RuntimeError: runtime service data.drop not implemented (S0017 step 3)
+memory64/memory_init64.wast:248  RuntimeError: runtime service data.drop not implemented (S0017 step 3)
+memory64/memory_init64.wast:256  RuntimeError: runtime service data.drop not implemented (S0017 step 3)
+memory64/memory_init64.wast:263  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+memory64/memory_init64.wast:285  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+memory64/memory_init64.wast:292  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+memory64/memory_init64.wast:299  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+memory64/memory_init64.wast:306  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+memory64/memory_init64.wast:313  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+memory64/memory_init64.wast:320  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+memory64/memory_init64.wast:327  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+memory64/memory_init64.wast:334  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+memory64/memory_init64.wast:341  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+memory64/memory_init64.wast:348  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+memory64/memory_init64.wast:61  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+memory64/memory_init64.wast:70  got [0]
+memory64/memory_init64.wast:71  got [0]
+memory64/memory_init64.wast:72  got [0]
+memory64/memory_init64.wast:73  got [0]
+memory64/memory_init64.wast:872  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+memory64/memory_init64.wast:895  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+memory64/memory_init64.wast:918  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+memory64/memory_init64.wast:941  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+memory64/memory_init64.wast:964  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+memory64/memory_init64.wast:987  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+memory64/table_fill64.wast:102  NotImplementedError: cloader step 2: host references (S0017 step 3)
+memory64/table_fill64.wast:103  got [None]
+memory64/table_fill64.wast:104  got [None]
+memory64/table_fill64.wast:105  got [None]
+memory64/table_fill64.wast:107  NotImplementedError: cloader step 2: host references (S0017 step 3)
+memory64/table_fill64.wast:109  got [None]
+memory64/table_fill64.wast:110  got [None]
+memory64/table_fill64.wast:113  got [None]
+memory64/table_fill64.wast:116  NotImplementedError: cloader step 2: host references (S0017 step 3)
+memory64/table_fill64.wast:120  NotImplementedError: cloader step 2: host references (S0017 step 3)
+memory64/table_fill64.wast:124  got [None]
+memory64/table_fill64.wast:33  NotImplementedError: cloader step 2: host references (S0017 step 3)
+memory64/table_fill64.wast:35  got [None]
+memory64/table_fill64.wast:36  got [None]
+memory64/table_fill64.wast:37  got [None]
+memory64/table_fill64.wast:40  NotImplementedError: cloader step 2: host references (S0017 step 3)
+memory64/table_fill64.wast:41  got [None]
+memory64/table_fill64.wast:42  got [None]
+memory64/table_fill64.wast:43  got [None]
+memory64/table_fill64.wast:46  NotImplementedError: cloader step 2: host references (S0017 step 3)
+memory64/table_fill64.wast:47  got [None]
+memory64/table_fill64.wast:48  got [None]
+memory64/table_fill64.wast:49  got [None]
+memory64/table_fill64.wast:51  NotImplementedError: cloader step 2: host references (S0017 step 3)
+memory64/table_fill64.wast:53  got [None]
+memory64/table_fill64.wast:54  got [None]
+memory64/table_fill64.wast:57  got [None]
+memory64/table_fill64.wast:60  NotImplementedError: cloader step 2: host references (S0017 step 3)
+memory64/table_fill64.wast:64  NotImplementedError: cloader step 2: host references (S0017 step 3)
+memory64/table_fill64.wast:68  got [None]
+memory64/table_fill64.wast:89  NotImplementedError: cloader step 2: host references (S0017 step 3)
+memory64/table_fill64.wast:91  got [None]
+memory64/table_fill64.wast:92  got [None]
+memory64/table_fill64.wast:93  got [None]
+memory64/table_fill64.wast:96  NotImplementedError: cloader step 2: host references (S0017 step 3)
+memory64/table_fill64.wast:97  got [None]
+memory64/table_fill64.wast:98  got [None]
+memory64/table_fill64.wast:99  got [None]
+memory64/table_get64.wast:24  NotImplementedError: cloader step 2: host references (S0017 step 3)
+memory64/table_get64.wast:27  got [None]
+memory64/table_get64.wast:31  got [1]
+memory64/table_grow64.wast:13  NotImplementedError: cloader step 2: host references (S0017 step 3)
+memory64/table_grow64.wast:16  RuntimeError: runtime service table.grow not implemented (S0017 step 3)
+memory64/table_grow64.wast:17  got [0]
+memory64/table_grow64.wast:18  Trap: trap
+memory64/table_grow64.wast:19  NotImplementedError: cloader step 2: host references (S0017 step 3)
+memory64/table_grow64.wast:20  Trap: trap
+memory64/table_grow64.wast:21  NotImplementedError: cloader step 2: host references (S0017 step 3)
+memory64/table_grow64.wast:24  NotImplementedError: cloader step 2: host references (S0017 step 3)
+memory64/table_grow64.wast:25  got [0]
+memory64/table_grow64.wast:26  Trap: trap
+memory64/table_grow64.wast:27  NotImplementedError: cloader step 2: host references (S0017 step 3)
+memory64/table_grow64.wast:28  Trap: trap
+memory64/table_grow64.wast:29  Trap: trap
+memory64/table_grow64.wast:30  Trap: trap
+memory64/table_grow64.wast:31  NotImplementedError: cloader step 2: host references (S0017 step 3)
+memory64/table_grow64.wast:32  Trap: trap
+memory64/table_grow64.wast:33  NotImplementedError: cloader step 2: host references (S0017 step 3)
+memory64/table_grow64.wast:44  RuntimeError: runtime service table.grow not implemented (S0017 step 3)
+memory64/table_grow64.wast:46  RuntimeError: runtime service table.grow not implemented (S0017 step 3)
+memory64/table_set64.wast:30  NotImplementedError: cloader step 2: host references (S0017 step 3)
+memory64/table_set64.wast:31  got [None]
+memory64/table_set64.wast:46  NotImplementedError: cloader step 2: host references (S0017 step 3)
+memory64/table_set64.wast:48  NotImplementedError: cloader step 2: host references (S0017 step 3)
+memory64/table_size64.wast:27  RuntimeError: runtime service table.grow not implemented (S0017 step 3)
+memory64/table_size64.wast:28  got [0]
+memory64/table_size64.wast:29  RuntimeError: runtime service table.grow not implemented (S0017 step 3)
+memory64/table_size64.wast:30  got [0]
+memory64/table_size64.wast:31  RuntimeError: runtime service table.grow not implemented (S0017 step 3)
+memory64/table_size64.wast:32  got [0]
+memory64/table_size64.wast:35  RuntimeError: runtime service table.grow not implemented (S0017 step 3)
+memory64/table_size64.wast:36  got [1]
+memory64/table_size64.wast:37  RuntimeError: runtime service table.grow not implemented (S0017 step 3)
+memory64/table_size64.wast:38  got [1]
+memory64/table_size64.wast:39  RuntimeError: runtime service table.grow not implemented (S0017 step 3)
+memory64/table_size64.wast:40  got [1]
+memory64/table_size64.wast:43  RuntimeError: runtime service table.grow not implemented (S0017 step 3)
+memory64/table_size64.wast:45  RuntimeError: runtime service table.grow not implemented (S0017 step 3)
+memory64/table_size64.wast:46  got [0]
+memory64/table_size64.wast:47  RuntimeError: runtime service table.grow not implemented (S0017 step 3)
+memory64/table_size64.wast:48  got [0]
+memory64/table_size64.wast:49  RuntimeError: runtime service table.grow not implemented (S0017 step 3)
+memory64/table_size64.wast:50  got [0]
+memory64/table_size64.wast:51  RuntimeError: runtime service table.grow not implemented (S0017 step 3)
+memory64/table_size64.wast:52  got [0]
+memory64/table_size64.wast:55  RuntimeError: runtime service table.grow not implemented (S0017 step 3)
+memory64/table_size64.wast:56  got [3]
+memory64/table_size64.wast:57  RuntimeError: runtime service table.grow not implemented (S0017 step 3)
+memory64/table_size64.wast:58  got [3]
+memory64/table_size64.wast:59  RuntimeError: runtime service table.grow not implemented (S0017 step 3)
+memory64/table_size64.wast:60  got [3]
+memory64/table_size64.wast:61  RuntimeError: runtime service table.grow not implemented (S0017 step 3)
+memory64/table_size64.wast:62  got [3]
+memory64/table_size64.wast:63  RuntimeError: runtime service table.grow not implemented (S0017 step 3)
+memory64/table_size64.wast:64  got [3]
+memory_size.wast:10  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+memory_size.wast:11  got [0]
+memory_size.wast:12  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+memory_size.wast:13  got [0]
+memory_size.wast:22  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+memory_size.wast:23  got [1]
+memory_size.wast:24  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+memory_size.wast:25  got [1]
+memory_size.wast:26  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+memory_size.wast:27  got [1]
+memory_size.wast:36  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+memory_size.wast:38  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+memory_size.wast:39  got [0]
+memory_size.wast:40  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+memory_size.wast:41  got [0]
+memory_size.wast:42  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+memory_size.wast:43  got [0]
+memory_size.wast:44  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+memory_size.wast:45  got [0]
+memory_size.wast:54  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+memory_size.wast:55  got [3]
+memory_size.wast:56  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+memory_size.wast:57  got [3]
+memory_size.wast:58  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+memory_size.wast:59  got [3]
+memory_size.wast:60  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+memory_size.wast:61  got [3]
+memory_size.wast:62  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+memory_size.wast:63  got [3]
+memory_size.wast:8  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+memory_size.wast:9  got [0]
+memory_trap.wast:33  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+multi-memory/data_drop0.wast:18  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+multi-memory/data_drop0.wast:19  RuntimeError: runtime service data.drop not implemented (S0017 step 3)
+multi-memory/data_drop0.wast:20  RuntimeError: runtime service data.drop not implemented (S0017 step 3)
+multi-memory/data_drop0.wast:21  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+multi-memory/data_drop0.wast:22  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+multi-memory/data_drop0.wast:23  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+multi-memory/data_drop0.wast:24  RuntimeError: runtime service data.drop not implemented (S0017 step 3)
+multi-memory/data_drop0.wast:25  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+multi-memory/data_drop0.wast:26  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+multi-memory/data_drop0.wast:27  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+multi-memory/load2.wast:212  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+multi-memory/memory-multi.wast:22  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+multi-memory/memory-multi.wast:23  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+multi-memory/memory_init0.wast:19  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+multi-memory/memory_init0.wast:20  got [0]
+multi-memory/memory_init0.wast:21  got [0]
+multi-memory/memory_init0.wast:25  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+multi-memory/memory_init0.wast:28  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+multi-memory/memory_init0.wast:30  got [0]
+multi-memory/memory_init0.wast:31  got [0]
+multi-memory/memory_init0.wast:34  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+multi-memory/memory_init0.wast:35  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+multi-memory/memory_init0.wast:38  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+multi-memory/memory_init0.wast:40  RuntimeError: runtime service memory.init not implemented (S0017 step 3)
+multi-memory/memory_size0.wast:13  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+multi-memory/memory_size0.wast:14  got [0]
+multi-memory/memory_size0.wast:15  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+multi-memory/memory_size0.wast:16  got [0]
+multi-memory/memory_size0.wast:17  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+multi-memory/memory_size0.wast:18  got [0]
+multi-memory/memory_size1.wast:17  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+multi-memory/memory_size1.wast:18  got [0]
+multi-memory/memory_size1.wast:20  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+multi-memory/memory_size1.wast:21  got [0]
+multi-memory/memory_size1.wast:23  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+multi-memory/memory_size1.wast:24  got [0]
+multi-memory/memory_size1.wast:27  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+multi-memory/memory_size1.wast:28  got [0]
+multi-memory/memory_size1.wast:29  got [0]
+multi-memory/memory_size2.wast:16  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+multi-memory/memory_size2.wast:19  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+multi-memory/memory_size2.wast:21  got [0]
+multi-memory/memory_size2.wast:22  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+multi-memory/memory_size2.wast:24  got [0]
+multi-memory/memory_size2.wast:25  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+multi-memory/memory_size2.wast:27  got [0]
+multi-memory/memory_size2.wast:28  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+multi-memory/memory_size2.wast:30  got [0]
+multi-memory/memory_size2.wast:32  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+multi-memory/memory_size2.wast:34  got [0]
+multi-memory/memory_trap0.wast:35  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+nop.wast:380  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+nop.wast:381  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+nop.wast:382  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+ref_is_null.wast:48  NotImplementedError: cloader step 2: host references (S0017 step 3)
+ref_is_null.wast:50  NotImplementedError: cloader step 2: host references (S0017 step 3)
+ref_is_null.wast:57  got [1]
+select.wast:252  NotImplementedError: cloader step 2: host references (S0017 step 3)
+select.wast:258  NotImplementedError: cloader step 2: host references (S0017 step 3)
+select.wast:259  NotImplementedError: cloader step 2: host references (S0017 step 3)
+select.wast:330  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+select.wast:331  RuntimeError: runtime service memory.grow not implemented (S0017 step 3)
+table_get.wast:23  NotImplementedError: cloader step 2: host references (S0017 step 3)
+table_get.wast:26  got [None]
+table_get.wast:30  got [1]
+table_set.wast:30  NotImplementedError: cloader step 2: host references (S0017 step 3)
+table_set.wast:31  got [None]
+table_set.wast:46  NotImplementedError: cloader step 2: host references (S0017 step 3)
+table_set.wast:48  NotImplementedError: cloader step 2: host references (S0017 step 3)
+table_size.wast:27  RuntimeError: runtime service table.grow not implemented (S0017 step 3)
+table_size.wast:28  got [0]
+table_size.wast:29  RuntimeError: runtime service table.grow not implemented (S0017 step 3)
+table_size.wast:30  got [0]
+table_size.wast:31  RuntimeError: runtime service table.grow not implemented (S0017 step 3)
+table_size.wast:32  got [0]
+table_size.wast:35  RuntimeError: runtime service table.grow not implemented (S0017 step 3)
+table_size.wast:36  got [1]
+table_size.wast:37  RuntimeError: runtime service table.grow not implemented (S0017 step 3)
+table_size.wast:38  got [1]
+table_size.wast:39  RuntimeError: runtime service table.grow not implemented (S0017 step 3)
+table_size.wast:40  got [1]
+table_size.wast:43  RuntimeError: runtime service table.grow not implemented (S0017 step 3)
+table_size.wast:45  RuntimeError: runtime service table.grow not implemented (S0017 step 3)
+table_size.wast:46  got [0]
+table_size.wast:47  RuntimeError: runtime service table.grow not implemented (S0017 step 3)
+table_size.wast:48  got [0]
+table_size.wast:49  RuntimeError: runtime service table.grow not implemented (S0017 step 3)
+table_size.wast:50  got [0]
+table_size.wast:51  RuntimeError: runtime service table.grow not implemented (S0017 step 3)
+table_size.wast:52  got [0]
+table_size.wast:55  RuntimeError: runtime service table.grow not implemented (S0017 step 3)
+table_size.wast:56  got [3]
+table_size.wast:57  RuntimeError: runtime service table.grow not implemented (S0017 step 3)
+table_size.wast:58  got [3]
+table_size.wast:59  RuntimeError: runtime service table.grow not implemented (S0017 step 3)
+table_size.wast:60  got [3]
+table_size.wast:61  RuntimeError: runtime service table.grow not implemented (S0017 step 3)
+table_size.wast:62  got [3]
+table_size.wast:63  RuntimeError: runtime service table.grow not implemented (S0017 step 3)
+table_size.wast:64  got [3]

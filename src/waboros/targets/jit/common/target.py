@@ -6,7 +6,10 @@ fault handler's code and the host rows it has a handler for (`guard_rows`) and w
 is verified (`verified`: `auto` picks guard only there).
 
 Test-only: `WABOROS_JIT_DUMP=<dir>` writes each compiled module's code as `<dir>/<sha1>.<data>.bin`,
-where `<data>` is the offset of its data area (for tools/isa_check.py `--data`)."""
+where `<data>` is the offset of its data area (for tools/isa_check.py `--data`).
+`WABOROS_JIT_ARTIFACT=1` instantiates every module from its artifact (S0014 step 3): written thin,
+loaded back (`artifact.load`, the rules of S0014 "Semantics: the loader"), the instance built from
+the loaded form only."""
 
 import ctypes
 import hashlib
@@ -28,10 +31,18 @@ class JitTarget:
     name: str
     arch: str  # in messages: "x86-64", "aarch64"
     machines: tuple[str, ...]  # platform.machine().lower() values of this architecture
+    e_machine: int  # the ELF machine of its artifact files (S0014)
+    isa_name: str  # the name of ISA level 1 in a file's configuration (S0014)
     version = 0
     complete = True  # False: `auto` does not select it (D25, S0004)
+    development = False  # True: a development target outside the package (S0016)
     guard_rows: frozenset[str] = frozenset()  # host rows with a fault handler (S0006)
     verified: frozenset[str] = frozenset()  # rows where WABOROS_JIT_BOUNDS=auto gives guard
+
+    def digest_sources(self) -> list[Path]:
+        """Files outside the package that make this compiler's code, folded into a development
+        build's compiler string (S0016; `artifact.compiler_string`)."""
+        return []
 
     def probe_code(self) -> bytes:
         """A function `int f(void)` returning 42."""
@@ -41,6 +52,24 @@ class JitTarget:
         raise NotImplementedError
 
     def trampolines(self) -> "Trampolines":
+        raise NotImplementedError
+
+    convention: str  # the host convention this process runs (S0014 `.waboros.trampolines`)
+
+    def conventions(self) -> dict[str, tuple[bytes, tuple[int, ...], tuple[int, int]]]:
+        """The compiler's part of `.waboros.trampolines`, per convention of the architecture in
+        file order: (blob of bridge then tail_switch, (bridge, tail_switch, restore) offsets in
+        it, (restore_ret_at, restore_up)); abi.py (S0015)."""
+        raise NotImplementedError
+
+    def runtime(self) -> tuple[bytes, tuple[int, int], int]:
+        """The runtime's own trampolines for this process's convention, never in a file:
+        (blob of entry then sp_stub, (entry_ret, sp_stub) offsets in it, ENTRY_SAVED); entry.py."""
+        raise NotImplementedError
+
+    def centry(self, code: bytes, stub: int) -> int:
+        """The offset of the module's shared C entry part, from the jump of the C-entry stub at
+        `stub` (the writer's symbols; S0015), -1 if the bytes there are not a C-entry stub."""
         raise NotImplementedError
 
     def guard_backend(self) -> Any:
@@ -123,6 +152,13 @@ class JitTarget:
         why = self.foreign()
         if why:
             raise RuntimeError(f"{self.name} cannot run here: {why}")
+        if os.environ.get("WABOROS_JIT_ARTIFACT") == "1":
+            from waboros.targets.jit.common import artifact
+
+            sha = hashlib.sha256(cast(Compiled, compiled).code).digest()  # (no wasm here)
+            compiled = artifact.load(
+                artifact.write(compiled, target=self.name, module_sha256=sha), target=self.name
+            )
         if cast(Compiled, compiled).flags & guard.BOUNDS_GUARD:
             guard.install(self)  # before anything of the instance exists; raises where none
         took = store.claim()  # binds to memories no other thread may grow meanwhile (S0009)

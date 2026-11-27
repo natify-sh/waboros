@@ -2,7 +2,7 @@
 title: Shipping pre-compiled micro-compilers - bootstrap becomes a fallback and a check
 kind: reference
 status: draft
-updated: 2026-11-03
+updated: 2026-11-23
 ---
 
 # Shipping pre-compiled micro-compilers: bootstrap as a fallback, not a step
@@ -17,13 +17,15 @@ implementation**: it belongs to the micro-compiler spec, after phase 5 fixes the
 A micro-compiler compiled to native code is an **ordinary JIT artifact** ([ARTIFACT.md](ARTIFACT.md)).
 By D23 an artifact is tied to an architecture and an ISA level, **not to an operating system**: the
 same file runs on Linux, macOS, Windows and Android (the BSDs are not a target now), because our own loader maps it and
-both entry trampolines are inside. So the wheel can carry, as plain data files, one pre-compiled
+the compiler's bridge and `tail_switch` are inside (the `entry` is the runtime's, S0015; D64's
+"one compiler per store" became one boundary ABI per architecture, D70, so a store may hold
+modules of several compilers once phase 6 enables it). So the wheel can carry, as plain data files, one pre-compiled
 micro-compiler per architecture next to its `.wasm`:
 
 ```
 waboros/compilers/
-  x64.wasm      x64.jit-x86_64-v1.<ext>
-  arm64.wasm    arm64.jit-aarch64-v1.<ext>
+  x86_64.wasm      x64.jit-x86_64-v1.<ext>
+  aarch64.wasm    arm64.jit-aarch64-v1.<ext>
   riscv64.wasm  riscv64.jit-riscv64-v1.<ext>
 ```
 
@@ -106,7 +108,7 @@ So the whole chain is wasm, from source to native compiler:
 
 ```
 clang.wasm + wasm-ld.wasm   (one file each, the same bytes on every host)
-  -> x64.wasm / arm64.wasm / riscv64.wasm   (wasm32-unknown-unknown, no WASI)
+  -> x86_64.wasm / aarch64.wasm / riscv64.wasm   (wasm32-unknown-unknown, no WASI)
      -> the micro-compiler compiles itself -> a native artifact
         -> compiles everything else
 ```
@@ -161,7 +163,9 @@ only (D29).
    also v2/v3 variants (D42)? Baseline only is the default; variants are compiled locally on demand.
 2. Main wheel or an optional extra for the pre-compiled files.
 3. Where the cache lives and how it is keyed (waboros version, architecture, ISA level, format
-   version), shared with the module cache of phase 6.
+   version), shared with the module cache of phase 6. *(A proposal, maintainer 2026-11-24: ROADMAP, "The micro-compiler in the
+   Python package": an environment variable, then `<venv>/.waboros-cache`, then the user's cache
+   directory, then memory.)*
 4. Whether the Python compilers stay the default on x86-64/aarch64 once a native micro-compiler for
    them ships (MICRO-COMPILERS.md: only after arm64 and riscv64 have shown the cost of two
    implementations).

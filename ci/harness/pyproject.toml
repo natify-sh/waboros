@@ -71,7 +71,7 @@ before-build = "uv build --wheel --out-dir {project}/ci/deps {project}"
 build = "cp313-*"
 test-skip = "*-android_arm64_v8a"  # the emulator has the runner's architecture: x86_64 only
 test-requires = ["pytest"]
-test-sources = ["tests", "tools", "docs", "poc/in/core.wasm", "poc/bench/switch/vm.wasm", "poc/bench/corpus/hash.wasm", "poc/bench/corpus/mono.wasm", "poc/bench/corpus/zip.wasm"]  # docs: tests/test_features.py copies it; the wasm: tests/test_pyc_branches.py
+test-sources = ["tests", "tools", "docs", "native/loader/entry.c", "poc/in/core.wasm", "poc/bench/switch/vm.wasm", "poc/bench/corpus/hash.wasm", "poc/bench/corpus/mono.wasm", "poc/bench/corpus/zip.wasm"]  # docs: tests/test_features.py copies it; entry.c: tests/cloader/test_entry_bytes.py; the wasm: tests/test_pyc_branches.py
 test-command = "python -m pytest tests --jit-bounds=guard,explicit -q -rs -p no:cacheprovider --ignore=tests/spec"
 
 # Pyodide: pyc only, no wasmtime wheel. No pytest-xdist on Android and Pyodide: its workers are

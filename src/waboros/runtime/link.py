@@ -8,7 +8,7 @@ instantiation of the store's target, or a mapping of host functions.
 from collections.abc import Mapping, Sequence
 from typing import Any, NamedTuple, cast
 
-from waboros.frontend.validate import functype_key, valtype_key
+from waboros.frontend import types as ty
 from waboros.targets.base import Extern, HostError, HostFunc, Raw, TargetInstance, ValidModule
 
 _KINDS = {"func": 0, "table": 1, "mem": 2, "global": 3, "tag": 4}
@@ -51,16 +51,13 @@ def _tag_tidx(mod: ValidModule, index: int) -> int:
 
 
 def _key(mod: ValidModule, kind: int, index: int) -> Any:
-    """Structural identity of the type of an exported function / table / global / tag."""
-    types = mod["types"]
+    """Structural identity of the type of an exported table / global / tag."""
     if kind == 4:
-        return functype_key(types, _tag_tidx(mod, index))
-    if kind == 0:
-        return functype_key(types, _tidx(mod, index))
+        return ty.key(mod, _tag_tidx(mod, index))
     if kind == 1:
-        return valtype_key(types, mod["ttypes"][index])
+        return ty.valtype_key(mod, mod["ttypes"][index])
     gt = global_type(mod, index)
-    return (valtype_key(types, gt[0]), gt[1])
+    return (ty.valtype_key(mod, gt[0]), gt[1])
 
 
 def host_func(f: HostFunc) -> HostFunc:
@@ -96,18 +93,20 @@ def resolve(
                 if kind == "tag"
                 else src.instance.export(name)
             )
-            if kind in ("func", "global", "tag"):
-                want = (
-                    functype_key(mod["types"], desc)
-                    if kind != "global"
-                    else (valtype_key(mod["types"], desc[0]), desc[1])
+            if kind == "func":  # the exported function's type must be a subtype (S0013)
+                ok = ty.sub_key(src.module, _tidx(src.module, ex_idx), ty.key(mod, desc))
+            elif kind == "global":  # immutable: covariant; mutable: equivalent
+                et, em = global_type(src.module, ex_idx)
+                ok = em == desc[1] and (
+                    ty.match(src.module, et, desc[0], mod)
+                    if not em
+                    else ty.valtype_key(src.module, et) == ty.valtype_key(mod, desc[0])
                 )
-                ok = _key(src.module, ex_kind, ex_idx) == want
+            elif kind == "tag":
+                ok = _key(src.module, ex_kind, ex_idx) == ty.key(mod, desc)
             else:
                 if kind == "table":
-                    ok = _key(src.module, 1, ex_idx) == valtype_key(
-                        mod["types"], mod["ttypes"][ntab]
-                    )
+                    ok = _key(src.module, 1, ex_idx) == ty.valtype_key(mod, mod["ttypes"][ntab])
                 else:
                     ok = True
                 at = (

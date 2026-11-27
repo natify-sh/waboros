@@ -42,7 +42,7 @@ package-dir = { "" = "src" }
 where = ["src"]
 
 [tool.setuptools.package-data]
-waboros = ["py.typed"]
+waboros = ["py.typed", "runtime/gc/*.wasm"]
 
 [tool.setuptools_scm]
 # Until the repo has a tag (or any commit), there is nothing to derive a version from.

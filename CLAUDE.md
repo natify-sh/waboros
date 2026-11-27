@@ -19,7 +19,7 @@ The maintainer communicates in Ukrainian; code, comments, commit messages and do
   development group or CI.
 * **Wasmtime is the oracle, not the goal.** Where the spec leaves room (trap codes, NaN, limits) do
   what Wasmtime does, and test against it. The public API takes the shape of wasmtime-py in phase 6;
-  API parity is never worked on before the compiler and the spec tests need it. Record deliberate
+  the public API is worked on only through its approved spec (S0018, D77; maintainer 2026-11-25). Record deliberate
   deviations in `docs/DECISIONS.md`.
 * **One interface for all targets**, one test suite for all targets. A target never special-cases
   another; the runtime never special-cases a target beyond `Target` methods.
@@ -31,7 +31,10 @@ The maintainer communicates in Ukrainian; code, comments, commit messages and do
 * **The JIT artifact is a contract** (`docs/ARTIFACT.md`): any change to the format, the context ABI
   or the ISA policy bumps its version, updates the document and `docs/DECISIONS.md`, and adds a test
   that an old artifact is refused or still runs. Portable artifacts never use instructions above the
-  architecture's baseline without a declared level.
+  architecture's baseline without a declared level. Until the final freeze of v1 (ROADMAP "Next" (6): after
+  the micro-compiler in C over sljit, built to wasm and embedded in the C loader, and the C loader with and without it, before the merge to `main`) v1 is a working
+  freeze: a change goes through a spec or a decision and updates the documents and the tests, without
+  a version bump.
 * **The IR stays thin** (`docs/ARCHITECTURE.md`, "The IR"): HIR shared by all targets, LIR shared by
   all JIT architectures, structured, no SSA. An optimisation is added only with a measurement showing
   it pays. The shared layers stay language-neutral: the integer model is a target parameter, nothing
@@ -112,7 +115,7 @@ Report:      files changed, commands run with output, numbers before/after, docs
 * The smallest change that makes the acceptance command pass. No code "for later".
 * No new module, class, layer, plugin point or config option unless the brief names the need; no
   abstraction before its second real use.
-* Do not touch the public API, the CLI or WASI before their phase, even "while you are there".
+* Do not touch the public API outside its approved spec (S0018), nor the CLI or WASI before their specs, even "while you are there".
 * No rewrite of working code that the step does not require; no drive-by reformatting.
 * When unsure between two designs, implement neither: report both with their costs.
 
@@ -128,7 +131,8 @@ Report:      files changed, commands run with output, numbers before/after, docs
 * Every new opcode or feature: spec tests for it pass on every target that claims it, plus a
   differential run against wasmtime.
 * `pyc` codegen: keep generated code valid for the minimum Python (see `docs/ROADMAP.md`, open
-  question 1) and for the MicroPython flavour.
+  question 1), on CPython and PyPy. MicroPython is not a `pyc` platform: it is the `mpy` target's
+  question in phase 7 (maintainer, 2026-11-27; LESSONS 169).
 
 ## Commands
 ```
@@ -143,12 +147,18 @@ uv run python tools/run_coremark_jit.py poc/in/core.wasm   # CoreMark on the pac
 python3 tools/check_docs.py                # documents follow docs/STANDARDS.md
 python3 tools/features.py --check          # feature table is consistent
 uv run python tools/stack_info.py          # thread stack bounds the JIT uses
-uv run python tools/isa_all.py [--target jit-aarch64]   # ISA gate: every JIT blob of every compiled spec module has only baseline instructions (needs GNU objdump)
-uv run python tools/jit_dump.py --target jit-aarch64 OUT.txt   # sha256 list for the D35 cross-compile diff
+uv run python tools/isa_all.py [--target jit-aarch64]   # ISA gate: the code and trampolines of every compiled spec module's artifact file have only baseline instructions (needs GNU objdump)
+uv run python tools/jit_dump.py --target jit-aarch64 OUT.txt [--files DIR]   # sha256 list for the D35 cross-compile diff (DIR: one thin .wbo per module)
+WABOROS_JIT_ARTIFACT=1 uv run python -m tests.spec.run --engine jit-x86_64   # the spec suite through artifact files (written, loaded, instantiated)
+uv run python tools/artifact_dump.py OUT.txt [DIR]   # sha256 of the .wbo files of CoreMark and v1-small (OS-independence, D23)
+uv run --with pyelftools python tools/elf_readers.py   # independent ELF readers on those files (readelf, llvm-readobj, pyelftools, llvm-objdump, eu-elflint)
 uv run python tools/fuzz.py --targets pyc,jit,wasmtime --minutes 5   # differential fuzz (wasm-tools smith); tools/fuzz.py N SEED is the pyc branch-emission mode
 uv run python tools/bench_throw.py         # throw cost per target (S0012)
 uv run python tools/run_corpus.py          # corpus of real C libraries against hashlib/zlib/Wasmtime
 uv run python tools/no_exec.py -- <cmd>    # run <cmd> with executable memory forbidden (Linux >= 6.3, MDWE)
+cmake -S native -B build/native && cmake --build build/native && ctest --test-dir build/native   # native/: sljit (git submodule) + ctest (S0016)
+uv run python -m tests.spec.run --engine jit-sljit-x86_64   # the development target over sljit (needs build/native; S0016)
+uv run python -m tests.spec.run --engine cloader-jit-x86_64 --xfail tests/cloader/step2-xfail.txt $(cat tests/cloader/step2.txt)   # the C loader through the shim (S0017 step 2; also cloader-jit-sljit-x86_64)
 ```
 
 PoC (for comparisons):

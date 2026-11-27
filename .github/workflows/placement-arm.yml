@@ -3,9 +3,20 @@ name: placement-arm
 # aarch64"): tools/placement_sweep.py, a pad sweep of 0..124 bytes in 4-byte steps, then loop headers
 # aligned to 16, 32 and 64 at four pads; CoreMark, the scalar SIMD kernels and the corpus, alternated
 # rounds in one process. A measurement, not a gate: run on demand. About 15-20 min per mode.
+# Mode `compare` (S0015 step 3): `base`, the placement control `basepad` (base with nops where the
+# C entries go, tools/bench_compare.py --pad-control) and this commit, alternated round by round
+# (tools/bench_compare.py: CoreMark, the calls benchmark, record-call kernels).
 on:
   workflow_dispatch:  # by hand only (Actions tab, or gh workflow run placement-arm.yml)
     inputs:
+      mode:
+        description: "sweep (code placement) or compare (base, basepad, this commit)"
+        type: choice
+        options: [sweep, compare]
+        default: sweep
+      base:
+        description: "compare: the base git ref (default HEAD~1)"
+        default: ""
       rounds:
         description: "alternated rounds"
         default: "5"
@@ -13,6 +24,7 @@ permissions:
   contents: read
 jobs:
   sweep:
+    if: ${{ inputs.mode != 'compare' }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 50
     strategy:
@@ -45,6 +57,49 @@ jobs:
           path: |
             placement-*.csv
             placement-*.md
+            lscpu.txt
+          retention-days: 30
+          if-no-files-found: ignore
+  compare:
+    if: ${{ inputs.mode == 'compare' }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        bounds: [guard, explicit]
+    env:
+      WABOROS_JIT_BOUNDS: ${{ matrix.bounds }}
+      BASE: ${{ inputs.base || 'HEAD~1' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+      - run: uv sync --python 3.13
+      - run: |
+          git worktree add ../base "$BASE" && git worktree add ../basepad "$BASE"
+          uv run python tools/bench_compare.py --pad-control ../basepad/src
+          git -C ../base log -1 --format="base %h %s" | tee lscpu.txt
+          lscpu | tee -a lscpu.txt
+      - run: >-
+          uv run python tools/bench_compare.py --target jit-aarch64
+          --rounds ${{ inputs.rounds || '5' }}
+          --md compare-${{ matrix.bounds }}.md --json compare-${{ matrix.bounds }}.json
+          base=../base/src basepad=../basepad/src new=src
+      - if: ${{ !cancelled() }}
+        run: |
+          {
+            echo "### ${{ matrix.bounds }}"; cat compare-${{ matrix.bounds }}.md 2>/dev/null || echo "no result"
+            echo; echo '```'; grep -E "^base|Model name|Vendor|CPU part" lscpu.txt; echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: compare-${{ matrix.bounds }}
+          path: |
+            compare-*.md
+            compare-*.json
             lscpu.txt
           retention-days: 30
           if-no-files-found: ignore

@@ -4,7 +4,6 @@ The spec suite (`exceptions/`) is the metric; these cover the host boundary, tra
 nesting."""
 
 import struct
-import tracemalloc
 from typing import Any
 
 import pytest
@@ -193,6 +192,7 @@ def test_rethrow_in_a_loop_does_not_grow() -> None:
 """
     )
     ex["go"](100)
+    tracemalloc = pytest.importorskip("tracemalloc", reason="PyPy has no _tracemalloc")
     tracemalloc.start()
     ex["go"](1000)
     a = tracemalloc.get_traced_memory()[0]

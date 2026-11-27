@@ -9,10 +9,12 @@ from tests.spec import run
 from tests.spec.engine import (
     ExternRef,
     FuncRef,
+    HostRef,
     Instance,
     LinkError,
     LoadError,
     Module,
+    OpaqueRef,
     Trap,
     TrapCode,
     Unsupported,
@@ -91,8 +93,21 @@ def test_references() -> None:
     assert run.matches({"type": "externref", "value": "7"}, ExternRef(7))
     assert not run.matches({"type": "externref", "value": "7"}, ExternRef(8))
     assert not run.matches({"type": "externref", "value": "7"}, None)
+    assert run.parse_value({"type": "anyref", "value": "3"}) == HostRef(3)
+    assert run.matches({"type": "anyref", "value": "3"}, HostRef(3))
+    assert not run.matches({"type": "anyref", "value": "3"}, ExternRef(3))
+    assert run.matches({"type": "externref"}, OpaqueRef("extern"))
+    assert run.matches({"type": "externref"}, ExternRef(1))
+    assert not run.matches({"type": "externref"}, None)
+    assert run.matches({"type": "i31ref"}, OpaqueRef("i31"))
+    assert not run.matches({"type": "i31ref"}, OpaqueRef("struct"))
+    assert run.matches({"type": "eqref"}, OpaqueRef("array"))
+    assert not run.matches({"type": "eqref"}, HostRef(0))
+    assert run.matches({"type": "structref"}, OpaqueRef("struct"))
+    assert run.matches({"type": "arrayref"}, OpaqueRef("array"))
+    assert not run.matches({"type": "arrayref"}, None)
     with pytest.raises(run.Failure, match="unsupported value type"):
-        run.parse_value({"type": "anyref", "value": "3"})
+        run.parse_value({"type": "i31ref"})
 
 
 def test_either() -> None:
@@ -369,8 +384,10 @@ def _xfail_keys(engine: str, both: Sequence[str]) -> set[str]:
 def _jits(complete: bool) -> list[str]:
     from waboros.targets.base import TARGETS
 
-    jits = [n for n in TARGETS if n.startswith("jit-")]
-    return [n for n in jits if getattr(TARGETS[n](), "complete", True) == complete]
+    def parity(t: object) -> bool:  # a development target must fail what pyc fails (S0016)
+        return bool(getattr(t, "complete", True) or getattr(t, "development", False))
+
+    return [n for n in TARGETS if n.startswith("jit-") and parity(TARGETS[n]()) == complete]
 
 
 @pytest.mark.parametrize("jit", _jits(True))
@@ -402,4 +419,8 @@ def test_trap_text_is_matched_by_prefix() -> None:
     assert trap_code("uninitialized element 2") is TrapCode.INDIRECT_CALL_TO_NULL
     assert trap_code("out of bounds table access") is TrapCode.TABLE_OUT_OF_BOUNDS
     assert trap_code("null reference") is TrapCode.NULL_REFERENCE
+    assert trap_code("cast failure") is TrapCode.CAST_FAILURE
+    assert trap_code("out of bounds array access") is TrapCode.ARRAY_OUT_OF_BOUNDS
+    for t in ("null structure reference", "null array reference", "null i31 reference"):
+        assert trap_code(t) is TrapCode.NULL_REFERENCE
     assert trap_code("uninitialized") is None

@@ -2,7 +2,7 @@
 title: Features
 kind: reference
 status: current
-updated: 2026-11-05
+updated: 2026-11-16
 ---
 
 # Features
@@ -19,7 +19,7 @@ run yet. "W3C phase" is the proposal's stage in the WebAssembly Community Group 
 standardized), from the upstream data, not a waboros roadmap phase. Wasmtime's column is the upstream data. `pyc` is computed from `tests/spec/xfail/pyc.txt`
 and the command counts in `tests/spec/counts.json`; each cell shows `ok/total` commands. Proposal
 directories (`test/core/<dir>/`) count only on a target that claims the feature
-(`tests/spec/claims.py`); an unclaimed feature is "-". `jit-x86_64` and `jit-aarch64` are computed the same way from their `tests/spec/xfail/<target>.txt`; they claim the same directories as `pyc` (D25 parity) including `simd`, which `pyc` claims since S0005 step 5b, `jit-x86_64` since step 5d3 and `jit-aarch64` since step 5e2. Every registered target has a column (`tests/test_features.py`). `mpy` is not listed yet.
+(`tests/spec/claims.py`); an unclaimed feature is "-". `jit-x86_64` and `jit-aarch64` are computed the same way from their `tests/spec/xfail/<target>.txt`; they claim the same directories as `pyc` (D25 parity) (`gc`: `pyc` since S0013 step 2, `jit-x86_64` since step 3b, `jit-aarch64` since step 4), and including `simd`, which `pyc` claims since S0005 step 5b, `jit-x86_64` since step 5d3 and `jit-aarch64` since step 5e2. Every registered target has a column (`tests/test_features.py`). `mpy` is not listed yet.
 
 ## Proposals
 
@@ -29,7 +29,7 @@ directories (`test/core/<dir>/`) count only on a target that claims the feature
 | Acquire-Release Atomics (`acquireReleaseAtomics`) | 2 | - | - | - | - |
 | JS BigInt to Wasm i64 Integration (`bigInt`) | 5 | - | - | - | - |
 | Branch Hinting (`branchHinting`) | 5 | flag | - | - | - |
-| Bulk Memory Operations (`bulkMemory`) | 5 | since 0.20 | partial 7483/7485 | partial 7483/7485 | partial 7483/7485 |
+| Bulk Memory Operations (`bulkMemory`) | 5 | since 0.20 | yes 7485/7485 | yes 7485/7485 | yes 7485/7485 |
 | Compact Import Section (`compactImportSection`) | 4 | - | - | - | - |
 | Compilation Hints (`compilationHints`) | 2 | - | - | - | - |
 | Component Model (`componentModel`) | 1 | - | - | - | - |
@@ -38,19 +38,19 @@ directories (`test/core/<dir>/`) count only on a target that claims the feature
 | Custom Page Sizes (`customPageSizes`) | 3 | flag | - | - | - |
 | ESM Integration (`esmIntegration`) | 3 | - | - | - | - |
 | Legacy Exception Handling (`exceptions`) | inactive | - | - | - | - |
-| Exception Handling with exnref (`exceptionsFinal`) | 5 | since 47 | partial 102/110 | partial 102/110 | partial 102/110 |
+| Exception Handling with exnref (`exceptionsFinal`) | 5 | since 47 | yes 110/110 | yes 110/110 | yes 110/110 |
 | Extended Constant Expressions (`extendedConst`) | 5 | since 25 | yes 346/346 | yes 346/346 | yes 346/346 |
 | Extended Name Section (`extendedNameSection`) | 2 | - | - | - | - |
 | Flexible Vectors (`flexibleVectors`) | 1 | - | - | - | - |
 | Frozen Values (`frozenValues`) | 1 | - | - | - | - |
-| Garbage Collection (`gc`) | 5 | since 47 | - | - | - |
+| Garbage Collection (`gc`) | 5 | since 47 | yes 798/798 | yes 798/798 | yes 798/798 |
 | Half Precision (`halfPrecision`) | 1 | - | - | - | - |
 | Instrument and Tracing Technology (`instrumentAndTracingTechnology`) | inactive | - | - | - | - |
 | JIT Interface (`jitInterface`) | 1 | - | - | - | - |
 | JS Primitive Builtins (`jsPrimitiveBuiltins`) | 2 | - | - | - | - |
 | JS String Builtins (`jsStringBuiltins`) | 5 | - | - | - | - |
 | JS Promise Integration (`jspi`) | 5 | - | - | - | - |
-| Memory64 (`memory64`) | 5 | since 30 | partial 8717/8719 | partial 8717/8719 | partial 8717/8719 |
+| Memory64 (`memory64`) | 5 | since 30 | yes 8719/8719 | yes 8719/8719 | yes 8719/8719 |
 | Memory Control (`memoryControl`) | 1 | - | - | - | - |
 | More Array Constructors (`moreArrayConstructors`) | 1 | - | - | - | - |
 | Multibyte Array Access (`multibyteArrayAccess`) | 2 | - | - | - | - |
@@ -59,7 +59,7 @@ directories (`test/core/<dir>/`) count only on a target that claims the feature
 | Import/Export of Mutable Globals (`mutableGlobals`) | 5 | yes | yes 439/439 | yes 439/439 | yes 439/439 |
 | Numeric Values in WAT Data Segments (`numericValuesInWat`) | 2 | - | - | - | - |
 | Profiles (`profiles`) | 1 | yes | - | - | - |
-| Reference Types (`referenceTypes`) | 5 | since 0.20 | partial 397/431 | partial 397/431 | partial 397/431 |
+| Reference Types (`referenceTypes`) | 5 | since 0.20 | yes 431/431 | yes 431/431 | yes 431/431 |
 | Relaxed Dead Code Validation (`relaxedDeadCodeValidation`) | 2 | - | - | - | - |
 | Relaxed SIMD (`relaxedSimd`) | 5 | since 15 | yes 79/79 | yes 79/79 | yes 79/79 |
 | Rounding Variants (`roundingVariants`) | 2 | - | - | - | - |
@@ -82,16 +82,16 @@ directories (`test/core/<dir>/`) count only on a target that claims the feature
 **Implementation notes per proposal** (hand-written; Wasmtime's `Config.wasm_*` switch in brackets):
 
 * multi-memory (`wasm_multi_memory`): done on every target (D37); **needed for fused components** (D7).
-* memory64 (`wasm_memory64`): done and claimed on all three targets: `pyc` (S0009 step 1: front end, validator, link, four helpers), `jit-x86_64` and `jit-aarch64` (i64 memories with explicit checks in every bounds mode, steps 2a and 2b; i64 tables, step 3). 8 658 of 8 719 commands pass on each, 59 are skipped and 2 are expected failures: the two GC commands of `table_init64.wast` (S0009 implemented; `spectest.table64`, step 4).
+* memory64 (`wasm_memory64`): done and claimed on all three targets: `pyc` (S0009 step 1: front end, validator, link, four helpers), `jit-x86_64` and `jit-aarch64` (i64 memories with explicit checks in every bounds mode, steps 2a and 2b; i64 tables, step 3). 8 660 of 8 719 commands pass on each and 59 are skipped (S0009 implemented; `spectest.table64`, step 4; the two GC commands of `table_init64.wast` pass since each target claims GC, S0013).
 * SIMD (`wasm_simd`): `pyc` v128 as an int, correct first (done, claimed); JIT: two slots per v128, SSE2 / NEON at the baseline (D24, D41, S0005; `jit-x86_64` complete and claimed, step 5d3; `jit-aarch64` complete in ARMv8.0-A NEON and
   claimed, step 5e2; the SIMD benchmark and the review, 5f, are done: SIMD is complete and claimed on all three targets).
 * relaxed SIMD (`wasm_relaxed_simd`, `_deterministic`): the deterministic profile of 3.0 for 16 operators, madd/nmadd native per target as Wasmtime (fused on aarch64, unfused on x86-64 and `pyc`; D49, S0008); done and claimed on `pyc` (S0008 step 1), `jit-x86_64` and `jit-aarch64` (step 2: each JIT maps the 20 operators in its own table, baseline instructions only).
 * tail calls (`wasm_tail_call`): done; `pyc` uses a trampoline for functions with `return_call*`; the JIT replaces the frame.
 * custom page sizes (`wasm_custom_page_sizes`): a property of the `Memory` facade.
 * threads (`wasm_threads`, `Config.shared_memory`): `SharedMemory`; `pyc` atomics under the GIL, care for free-threaded builds.
-* exceptions (`wasm_exceptions`): done and claimed on all three targets (S0012, D52): `pyc` runs `try_table` as a `try`/`except` of one private class, the JITs propagate a status through frames with landing pads, objects bumped from a store arena in code. 100 of 110 `exceptions/` commands pass, 2 are skipped and 8 are expected failures that need GC (5 in `cast.wast`: `ref.test`/`ref.cast`; 3 in `tag.wast`: rec groups). The legacy proposal (`exceptions`) is not run.
+* exceptions (`wasm_exceptions`): done and claimed on all three targets (S0012, D52): `pyc` runs `try_table` as a `try`/`except` of one private class, the JITs propagate a status through frames with landing pads, objects allocated in the store's GC heap since S0013 step 6.2 (bumped from a store arena in code before; D63). `exceptions/`: 108 of 110 commands pass on `pyc` and 2 are skipped; the same on the JITs since they claim GC (S0013 steps 3b and 4; before, 5 `cast.wast` commands were expected failures there); the 3 `tag.wast` rec groups pass since S0013 step 1a. The legacy proposal (`exceptions`) is not run.
 * typed function references (`wasm_function_references`): `call_ref`, non-null types.
-* GC (`wasm_gc`, `Config.gc_support`): structs/arrays map naturally to Python objects in `pyc`.
+* GC (`wasm_gc`, `Config.gc_support`): done and claimed on `pyc` (S0013 step 2: a struct is a Python list, an array a list or a bytearray, an i31 an int, a runtime type per canonical type key; all 798 `gc/` commands, 797 pass and 1 skipped) and `jit-x86_64` (step 3b: a store's heap as a hidden i32 memory, u32 references, the lowering written once in the JIT core; the same 797 pass, 1 skipped; since step 5.3 the heap is collected by a copying collector, D61) and `jit-aarch64` (step 4: the same lowering, only its opcode set; the same 797 pass, 1 skipped, under QEMU).
 * wide arithmetic (`wasm_wide_arithmetic`): done and claimed on `pyc` (big ints; S0008 step 1), `jit-x86_64` and `jit-aarch64` (step 3: one backend method, `wide`; `add`/`adc`, `sub`/`sbb`, one-operand `mul`/`imul` on x86-64, `adds`/`adc`, `subs`/`sbc`, `mul` + `umulh`/`smulh` on aarch64).
 * stack switching (`wasm_stack_switching`): after everything else.
 * component model: out of scope; fused core modules only (D7).

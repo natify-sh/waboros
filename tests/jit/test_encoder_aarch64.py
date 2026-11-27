@@ -266,6 +266,7 @@ def forms() -> list[Form]:
             lambda a, s=signed, d=d, n=n, m=m: a.mulh(d, n, m, s))  # fmt: skip
     add("bti c", lambda a: a.bti("c"))
     add("bti j", lambda a: a.bti("j"))
+    add("bti jc", lambda a: a.bti("jc"))
     return out
 
 
@@ -427,3 +428,22 @@ def test_adrp_lo12_and_errors() -> None:
     b.b(b.label())
     with pytest.raises(ValueError, match="never bound"):
         b.finish()
+
+
+def test_func_type_matches_llvm_mc() -> None:
+    """The D39 method `func_type` (S0013 5.6): word 1 of the record in a register or a slot;
+    never xzr as the base (31 there is sp)."""
+    from waboros.targets.jit.aarch64.backend import Backend
+    from waboros.targets.jit.common.backend import Imm, Reg, Slot
+
+    need(LLVM_MC, "llvm-mc")
+    cases = [
+        (Reg(0), "ldr x0, [x0, #8]"),
+        (Reg(19), "ldr x0, [x19, #8]"),
+        (Slot(3), "ldr x0, [x27, #24]\nldr x0, [x0, #8]"),
+        (Imm(0), "mov x0, #0\nldr x0, [x0, #8]"),
+    ]
+    for rec, text in cases:
+        b = Backend()
+        b.func_type(Reg(0), rec)
+        assert b.a.finish() == b"".join(llvm_mc(text.split("\n"))), text

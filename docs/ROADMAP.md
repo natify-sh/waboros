@@ -2,7 +2,7 @@
 title: Roadmap
 kind: reference
 status: current
-updated: 2026-11-05
+updated: 2026-11-25
 ---
 
 # Roadmap
@@ -183,14 +183,52 @@ lacks a feature reports it through `Target.supports` and the module runs on anot
   (the former CI job `macos-pythonorg`, RISKS R2; now the macOS cells of `platforms.yml`).
 
 ## Phase 5 — JIT completion
-*Status: in progress (2026-11-05). Done: SIMD (5a-5f) and the rename to `waboros` (D40); guard pages (S0006 complete); platform tests through cibuildwheel; the `pyc` bits mode (D46); S0007 (implemented: steps 1 and 3, step 2 reverted); S0008 (relaxed SIMD and wide arithmetic, implemented); the reconnaissance (3b below: done, unify through [S0011](specs/S0011-jit-low-layer.md)); S0011 (implemented 2026-11-05, D53: the JIT memory semantics written once over a per-architecture low layer); S0010 (`pyc`, implemented 2026-11-05: sink at emission; CoreMark +9-10 % on 3.11/3.13, +6 % on 3.14; switch VM x2.5); memory64 is done (S0009 implemented: `pyc` and both JITs claim `memory64`); exceptions with `exnref` (S0012, implemented 2026-11-05, D52: `pyc` and both JITs claim `exceptions/`, 100 pass / 8 expected failures that need GC types; the fuzz findings triaged and fixed). Open: GC, threads and the artifact format (below).*
+*Status: in progress (2026-11-05). Done: SIMD (5a-5f) and the rename to `waboros` (D40); guard pages (S0006 complete); platform tests through cibuildwheel; the `pyc` bits mode (D46); S0007 (implemented: steps 1 and 3, step 2 reverted); S0008 (relaxed SIMD and wide arithmetic, implemented); the reconnaissance (3b below: done, unify through [S0011](specs/S0011-jit-low-layer.md)); S0011 (implemented 2026-11-05, D53: the JIT memory semantics written once over a per-architecture low layer); S0010 (`pyc`, implemented 2026-11-05: sink at emission; CoreMark +9-10 % on 3.11/3.13, +6 % on 3.14; switch VM x2.5); memory64 is done (S0009 implemented: `pyc` and both JITs claim `memory64`); exceptions with `exnref` (S0012, implemented 2026-11-05, D52: `pyc` and both JITs claim `exceptions/`, then 100 pass / 8 expected failures that needed GC types, 108 pass since S0013; the fuzz findings triaged and fixed). GC (S0013, implemented 2026-11-17; every target claims `gc`). Open: threads, and the freeze of the artifact format and the C reference loader (below).*
 
 * **SIMD** ([S0005](specs/S0005-simd.md), approved, D41), done: 5a front end (decode and validate v128); 5b `pyc` runs every operator and claims `simd/` (25 990 commands, 0 failures); 5c1 v128 in the JIT core (two slots per v128, `Layout.wide`, the `simd` method: the D39 amendment) and 5c2 every data-movement operator, on both JITs; 5d1-5d3 `jit-x86_64` compiles all 236 operators with SSE2 only and claims `simd/` at parity with `pyc` (the claimed run: 54 385 pass, 91 expected failures); 5e1-5e2 `jit-aarch64` compiles all 236 in ARMv8.0-A NEON and claims `simd/` at parity (QEMU run: the same numbers); the SIMD benchmark (BENCHMARKS.md); the speed fix of 2026-11-02 (the D39 amendment `move_v128`: v128 locals, constants, `select` and splats move as one 16-byte access, so store-to-load forwarding works; `jit-x86_64` matmul 12.10 -> 2.17 µs, scan 3.81 -> 0.64); 5f, the review of 5c-5e, found no correctness defect.
-* **Guard pages** ([S0006](specs/S0006-guard-pages.md), D44, D45), complete: steps 1-5 and 7 done, step 6 (the artifact) moved to the artifact-format spec. `auto` gives guard pages on Linux glibc x86-64 and aarch64, Linux musl x86-64, macOS x86-64 and arm64, Windows x64 and arm64 and Android x86-64 (verified by CI runs 41610392553, 41633456821, 41640149866 and 41708608127); explicit checks elsewhere (Linux musl aarch64, which needs libgcc's `__clear_cache`; Android arm64); `WABOROS_JIT_BOUNDS=explicit` opts out. Stores rely on guard pages as in Wasmtime (D45: a store split by an emulator may tear; checking them was measured and rejected). CoreMark, guard against explicit checks: x86-64 +9.35 %, native aarch64 +11.4 % (BENCHMARKS.md). Per-OS work grows by exception only (D47).
+* **Guard pages** ([S0006](specs/S0006-guard-pages.md), D44, D45), complete: steps 1-5 and 7 done, step 6 (the artifact) moved to the artifact-format spec. `auto` gives guard pages on Linux glibc x86-64 and aarch64, Linux musl x86-64, macOS x86-64 and arm64, Windows x64 and arm64 and Android x86-64 (verified by CI runs 41610392553, 41633456821, 41640149866 and 41708608127); explicit checks elsewhere (Linux musl aarch64, no handler; Android arm64, where `guard` is opt-in and unverified); `WABOROS_JIT_BOUNDS=explicit` opts out. Stores rely on guard pages as in Wasmtime (D45: a store split by an emulator may tear; checking them was measured and rejected). CoreMark, guard against explicit checks: x86-64 +9.35 %, native aarch64 +11.4 % (BENCHMARKS.md). Per-OS work grows by exception only (D47).
 * **Platform tests through cibuildwheel**, done (below): `platforms.yml` and `ci/harness/` test the installed wheel on every platform of the map in TARGETS.md that is on; `ci.yml` keeps what needs a source checkout.
 * **`pyc` bits mode** (D46), done (below): f32/f64 as int bit patterns, the default on 32-bit x86; i686 CPython 3.13 has 0 spec failures.
 * **Scalar code generation** ([S0007](specs/S0007-scalar-codegen.md), implemented 2026-11-04): step 1 done (results straight to slots 0..m on return; calls benchmark `fib` -19 %, `leaf` -4 to -6 %, within the run spread); step 2 (add/sub as one `lea` on x86-64) reverted on 2026-11-04: under the placement control it gave no kernel gain once step 3 was in, and CoreMark's +1.3 % was within the spread (BENCHMARKS.md); step 3 kept (`local + const` as one operand on both JITs; scalar `addsat` -18 %, `scan` -9 %, `nearest` -11 %; CoreMark +0.9 %, within the spread, so its acceptance item is missed: kept on the kernels' gain by the orchestrator). Step 1b (a block that ends the function writes its results to slots 0..m) was measured and dropped (correct, but `fib` not faster beyond code placement, BENCHMARKS.md); steps 5 and 7 were measured and dropped (BENCHMARKS.md); steps 4 and 6 are not done (maintainer's decision); step 8, the review, found no correctness defect.
-* **Next** (maintainer, 2026-11-03), in this order: (1) S0007 to the end, done (step 5, once-used parameters: measured and dropped, BENCHMARKS.md; step 7, R: measured and dropped, BENCHMARKS.md; step 2, L: reverted after re-measurement; steps 6 and 4 (Z): not done, maintainer's decision; step 8, the review: no defect); (2) relaxed SIMD and wide arithmetic as one small parity step, done ([S0008](specs/S0008-relaxed-simd-wide-arithmetic.md), implemented 2026-11-04, D49; `pyc` and both JITs claim both; the step-4 review found no correctness defect); (3) memory64 (with `table64`), before exceptions ([S0009](specs/S0009-memory64.md): step 1 done 2026-11-04, `pyc` claims `memory64`; JIT steps 2a, 2b and 3 done, both JITs claim `memory64`; step 4, `spectest.table64`, done: implemented, 8 658 pass / 2 xfail (GC) on each); (3b) a reconnaissance before exceptions (maintainer, 2026-11-04): a low per-architecture layer under the D39 semantics for one group (memory: loads, stores, bounds checks) on x86-64 and aarch64; if speed holds, the wasm semantics move into one shared layer before exceptions and GC are written, else the backends stay as they are and the numbers are recorded (LESSONS 76). Done 2026-11-04: a scratch prototype (the bounds checks once, about ten low-layer operations per architecture) gave byte-identical CoreMark code on both architectures in both bounds modes, 4 of 5 979 modules different (`address64.0-3`), spec parity, compile time +3-4 % (BENCHMARKS.md, "JIT low layer"); identical bytes were accepted as the speed evidence, so no timed run. Decision (maintainer, 2026-11-04): unify, as its own step under a new contract, [S0011](specs/S0011-jit-low-layer.md) "JIT low layer" (approved 2026-11-05; implemented 2026-11-05: steps 1-4; step 4 removed the switch and the per-backend bodies and moved the bulk operators' operand rules into the shared layer, in aarch64's order per operator, so aarch64 code is unchanged and x86-64 changes by a reorder in the 70 `memory.copy` modules): the memory bounds checks plus the bulk-memory and table end checks (`_end_check`) and the element check (`_element`); compile-time bound +5 %; the four `address64` differences accepted; the `thin` variant not measured. The decision is D53; (4) exceptions, which may start in parallel with S0011 (per backend, as today; [S0012](specs/S0012-exceptions.md), approved 2026-11-05: status propagation as for traps, no handler tables; steps 0-4 done 2026-11-05: the runner, the front end and validator, `pyc`, `jit-x86_64` (D52: objects bumped from a store arena in code, about 12 ns per throw caught one frame up) and `jit-aarch64`, each claiming `exceptions/` at 100 pass / 8 xfail; step 5, the review, done and the fuzz findings triaged; implemented 2026-11-05); (5) GC ([S0013](specs/S0013-gc.md), draft 2026-11-05: a per-store GC heap as a hidden i32 memory with u32 references, lowered once in the shared core over D39 methods, non-moving mark-sweep with a conservative value-stack scan, `pyc` on Python objects; awaits approval); (6) the artifact format, one LIR vocabulary and the C loader, then `arm64.wasm`; (7) threads, then the flag-only proposals (WASM-PROPOSALS.md). In parallel: the corpus. Differential fuzzing (maintainer, 2026-11-04): a nightly scheduled CI job, outside `ci` and `platforms` and never blocking, runs `tools/fuzz.py` (it exists since S0010 step 0, comparing `pyc` with `pyc` + `bropt.py`, TESTING.md; since 2026-11-05 its mode `--targets pyc,jit,wasmtime` compares `pyc`, `jit-x86_64` in guard and explicit mode and Wasmtime, and the job is `fuzz-nightly.yml`) for 1-2 hours; a divergent module is not fixed at once but kept as a run artifact with a short description (which targets differ, on which export), and the findings are triaged before each large spec closes (exceptions, GC) and before phase 5 ends. The project-wide campaign with WASI stays in phase 6.
+* **Memory of dropped stores** (maintainer, 2026-11-19; LESSONS 135): a dropped JIT store is a
+  reference cycle whose committed memory (66 MiB per GC heap until item (b), 2.1 MiB since) waits for the cyclic GC, which a
+  free-threaded build runs too rarely. Three items, in this order: (a) **done 2026-11-19** (`execmem._retry`, LESSONS 135), was: before S0014 step 3:
+  when a reservation or a commit fails, `gc.collect()` and retry once (`execmem.py`, `heap.py`; a
+  test that provokes the failure); (b) **done 2026-11-20** (S0014 step 4.2, D69): the GC heap's
+  regions are committed apart (the header page with ROOTS, the type area as records are written,
+  the whole tid map with the first function-type record, the semispaces), layout and
+  `collector.wat` unchanged; a store with one struct commits 2.1 MiB instead of 66 MiB
+  (BENCHMARKS.md, "GC heap: committed bytes"); (c) **phase 6**: `Store.close()` and a
+  context manager for deterministic release (public API, below). Open (maintainer, 2026-11-20):
+  a failed GC-heap commit escapes as `OSError` ("executable memory: Cannot allocate memory");
+  it should be `MemoryError`, as a failed reservation of a linear memory is.
+* **Next** (maintainer, 2026-11-03), in this order: (1) S0007 to the end, done (step 5, once-used parameters: measured and dropped, BENCHMARKS.md; step 7, R: measured and dropped, BENCHMARKS.md; step 2, L: reverted after re-measurement; steps 6 and 4 (Z): not done, maintainer's decision; step 8, the review: no defect); (2) relaxed SIMD and wide arithmetic as one small parity step, done ([S0008](specs/S0008-relaxed-simd-wide-arithmetic.md), implemented 2026-11-04, D49; `pyc` and both JITs claim both; the step-4 review found no correctness defect); (3) memory64 (with `table64`), before exceptions ([S0009](specs/S0009-memory64.md): step 1 done 2026-11-04, `pyc` claims `memory64`; JIT steps 2a, 2b and 3 done, both JITs claim `memory64`; step 4, `spectest.table64`, done: implemented, 8 658 pass / 2 xfail (GC) on each); (3b) a reconnaissance before exceptions (maintainer, 2026-11-04): a low per-architecture layer under the D39 semantics for one group (memory: loads, stores, bounds checks) on x86-64 and aarch64; if speed holds, the wasm semantics move into one shared layer before exceptions and GC are written, else the backends stay as they are and the numbers are recorded (LESSONS 76). Done 2026-11-04: a scratch prototype (the bounds checks once, about ten low-layer operations per architecture) gave byte-identical CoreMark code on both architectures in both bounds modes, 4 of 5 979 modules different (`address64.0-3`), spec parity, compile time +3-4 % (BENCHMARKS.md, "JIT low layer"); identical bytes were accepted as the speed evidence, so no timed run. Decision (maintainer, 2026-11-04): unify, as its own step under a new contract, [S0011](specs/S0011-jit-low-layer.md) "JIT low layer" (approved 2026-11-05; implemented 2026-11-05: steps 1-4; step 4 removed the switch and the per-backend bodies and moved the bulk operators' operand rules into the shared layer, in aarch64's order per operator, so aarch64 code is unchanged and x86-64 changes by a reorder in the 70 `memory.copy` modules): the memory bounds checks plus the bulk-memory and table end checks (`_end_check`) and the element check (`_element`); compile-time bound +5 %; the four `address64` differences accepted; the `thin` variant not measured. The decision is D53; (4) exceptions, which may start in parallel with S0011 (per backend, as today; [S0012](specs/S0012-exceptions.md), approved 2026-11-05: status propagation as for traps, no handler tables; steps 0-4 done 2026-11-05: the runner, the front end and validator, `pyc`, `jit-x86_64` (D52: objects bumped from a store arena in code, about 12 ns per throw caught one frame up) and `jit-aarch64`, each claiming `exceptions/` at 100 pass / 8 xfail; step 5, the review, done and the fuzz findings triaged; implemented 2026-11-05); (5) GC ([S0013](specs/S0013-gc.md), draft 2026-11-05: a per-store GC heap as a hidden i32 memory with u32 references, lowered once in the shared core over D39 methods, a copying (Cheney) collector with precise roots from stack maps (maintainer, 2026-11-06), `pyc` on Python objects; approved 2026-11-10, every open question decided; steps 0, 1a, 1b and 2 done 2026-11-11 (`pyc` runs GC); step 3a done 2026-11-11 (safepoints, stack maps and the frame walk for every module on both JITs, code unchanged, D56); step 3b done 2026-11-15 (`jit-x86_64` runs and claims GC on a heap that is not collected yet, D57); step 4 done 2026-11-15 (`jit-aarch64` claims GC, no backend change beyond its opcode set); step 4b done 2026-11-15 (a GC program in the corpus); step 5 done 2026-11-16 (the copying collector in wasm, D61; Cheney kept over depth-first by measurement, BENCHMARKS.md); step 6 done 2026-11-16 (exceptions in the GC heap, D63; the throw measured, BENCHMARKS.md); step 7 done 2026-11-17 (liveness: the maps null dead reference locals, D65; measured, BENCHMARKS.md); step 8 done 2026-11-17 (the review: a `pyc` typed-`select` defect and two limits fixed, no JIT finding; the fuzz run with `--refs` triaged); implemented 2026-11-17); (6) the artifact format (container: ELF64, D59; [S0014](specs/S0014-artifact-format.md) steps 0-6 and [S0015](specs/S0015-boundary-convention.md), the boundary convention of D70, are implemented (2026-11-23; the answers are D73): the writer and the strict reader, instantiation from a file, the loader's rules, the committed v1 files, trampolines in every file, file identity across six CI rows and the independent readers; S0014 step 8, the review without the implementers' reasoning, done 2026-11-23 and its findings closed; S0014 implemented. Since then the **working freeze of v1** (maintainer, 2026-11-23): the format of S0014 and the context ABI with S0015's boundary are the project's working ABI, not a release. Nothing in them changes silently: a change goes through a spec or a decision and updates the documents and the tests, without a version bump. The numbers in the file stay `format_version` 1 and `ctx_abi_version` 1 (0 in `EI_ABIVERSION` is what any ELF carries and is refused), so v1 is the current version. **The final freeze of v1** comes before the merge to `main`, once the micro-compiler from our C sources (D68) is built to wasm and natively, the C reference loader (D36) with the native compiler embedded (x86-64, aarch64) compiles and runs modules, and the same loader built without the compiler runs files cross-compiled by the wasm build and the committed files (maintainer, 2026-11-24; S0016's `jit-sljit` is a step towards it); the order after it (maintainer, 2026-11-23): (a) the sljit backend of the PoC (`poc/sljit/sljit-be`, `jit-sljit` under our Python core, spec parity and CoreMark parity, D68) moved onto the S0015 boundary, as the first real second compiler: a store mixing `jit-x86_64` and `jit-sljit` modules, sljit's own bridge and `tail_switch` (form 2b; the "none" value of word 9 left v1, S0016) and sljit's own trampolines in its files ([S0016](specs/S0016-sljit-on-the-boundary.md): steps 0-6 done, docs in step 7: `jit-sljit-x86_64` and `jit-sljit-aarch64` at spec parity in-process and through files, the store's sets of trampolines, mixed stores both ways, the depth of the Python JIT of each architecture, CoreMark at 0.98 (x86-64) and 0.95 (aarch64) of the Python JIT's, BENCHMARKS.md; D74; condition (a) is met: S0016's final review is closed (step 8), and the remaining conditions are (b) and (c) above); (b) the C reference loader (D36) in its own spec, written from the contract with the Python loader as its oracle (the spec suite through files on both loaders and the refusal corpus of S0014 step 8, both to agree), loading the files of both compilers; (riscv64, maintainer, 2026-11-24: the research under QEMU, S0016 "Toward the other sljit architectures", found no change to the v1 contract, all of it is additive (`e_machine` 243, convention id `lp64d`, `isa_level` numbering); riscv64 can go in parallel with or after the C loader and is not a prerequisite of the final freeze; about 500-550 lines of code and 150 of documents); (c) the micro-compiler the C loader embeds (D68: our core in C over sljit, generating code through our own thin backend interface, the C counterpart of D39, as static inline functions so LTO inlining stays; sljit is its main implementation, hand-written backends serve ISAs sljit lacks, maintainer, 2026-11-24) is discussed with the maintainer when it is reached, not planned now; the two options on the table (maintainer, 2026-11-23): loaded as wasm (`<arch>.wasm` of MICRO-COMPILERS.md, or several modules, e.g. a shared core with a backend per architecture; run on an interpreter or as its own precompiled `.wbo`, D60) or compiled into the loader natively for the architecture the loader is built for; still to be discussed: the maintainer first leaned to `.wbo`, then (2026-11-24) noted that shipping `.wasm` in the wheel, with `.wbo` only as the local cache, may turn out better (a shipped `.wbo` is tied to the compiler string and the context ABI it was built for). Fixed already (maintainer, 2026-11-23): the Python package stays pure Python, never a binary wheel; it may carry micro-compilers only as `.wasm` or `.wbo` data; a C loader can be built by anyone from the repository's C sources with a C99 toolchain and CMake alone (C99 as sljit; CMake so other projects can embed it through `FetchContent_MakeAvailable`), no Python, with written instructions. So the repository builds two things: one universal pure-Python wheel (`py3-none-any`) that carries the universal binaries, the micro-compilers as `.wasm`/`.wbo` (architecture-dependent, OS-independent, D23); and the native C variant, the loader with its compiler, without Python, for any other host). The C variant (maintainer, 2026-11-24). One set of C sources (our core over sljit) builds two ways: to wasm, for bootstrap, precompiling and cross-compiling on any wasm runtime; and natively, statically embedded in the C loader for the architecture the loader is built for (x86-64 and aarch64 for now; no compiler `.wbo` for the C loader). The C loader has a build option without the compiler, for small memory (microcontrollers, microservices): it then runs only AOT files cross-compiled for it on a PC by the wasm build of the same compiler. The GC collector stays a wasm module and takes the same path as any module: compiled on first need by the embedded compiler, or, without the compiler, supplied as one more AOT file (or its `.wbo` linked into the binary as data); a build option without GC leaves the collector and the GC heap out for devices whose modules use no GC. When this works, a tool or written instructions help build a C loader without the compiler together with a wasm module's AOT file and the GC collector to embed., right after GC because it freezes the kernel boundary that runtime modules rest on (ARCHITECTURE.md, "The kernel and runtime modules"; the instantiation work and the segment libcalls stay host code, a C host implements them in C (D72, maintainer 2026-11-22; RUNTIME-MODULES.md); when it is fixed, revisit the environment variables that change code bytes, `WABOROS_JIT_PAD`, `WABOROS_JIT_LOOP_ALIGN` and `WABOROS_PYC_BR`: they also change artifacts and any cache of them, D35; maintainer, 2026-11-10: they stay until then), one LIR vocabulary and the C loader, then `aarch64.wasm`; (7) threads (after the format, as an amendment inside space the format reserves for them: D58), then the flag-only proposals; statically linked AOT artifacts (user modules compiled ahead of time and linked into a native binary with the system linker, for platforms without executable memory at run time, such as an iOS app) come after threads, or after WASI, as an amendment of v1: the format spec keeps three rules for them now (a loader ignores `sh_flags` of `.waboros.*` sections; it finds entries through a payload, never by a global symbol's name, so names can take a per-artifact prefix later; unknown sections are skipped), maintainer, 2026-11-16 (D62, [STATIC-BUILDS.md](STATIC-BUILDS.md)) (WASM-PROPOSALS.md). In parallel: the corpus. Differential fuzzing (maintainer, 2026-11-04): a nightly scheduled CI job, outside `ci` and `platforms` and never blocking, runs `tools/fuzz.py` (it exists since S0010 step 0, comparing `pyc` with `pyc` + `bropt.py`, TESTING.md; since 2026-11-05 its mode `--targets pyc,jit,wasmtime` compares `pyc`, `jit-x86_64` in guard and explicit mode and Wasmtime, and the job is `fuzz-nightly.yml`) for 1-2 hours; a divergent module is not fixed at once but kept as a run artifact with a short description (which targets differ, on which export), and the findings are triaged before each large spec closes (exceptions, GC) and before phase 5 ends. The project-wide campaign with WASI stays in phase 6.
+* **The micro-compiler in the Python package** (maintainer, 2026-11-24; after (c) above, before the
+  final freeze at least as a prototype that shows the v1 contract does not block it; MICRO-COMPILERS.md,
+  "The main use"; its own spec). Pieces, none planned as a step yet:
+  * the wheel carries `<arch>.wasm` as data (or a `.wbo`, item (c)); on first use the Python JIT
+    compiles it once to a native `.wbo` and caches it; later modules go through it;
+  * the loader accepts the micro-compiler's files by the architecture rule (architecture,
+    `format_version`, `ctx_abi_version`, the GC-related `features_required` bits) instead of the exact
+    compiler string, and runs its bridge and `tail_switch` from its file (phase 6's deferred items
+    of S0015, moved here);
+  * a runtime service that runs the micro-compiler as a wasm instance and takes the `.wbo` it emits;
+  * whether it replaces the Python JITs as the default on x86-64/aarch64 ([JIT-AS-WASM.md](JIT-AS-WASM.md)).
+  * **Where the cache lives** (open; a proposal, not a decision, maintainer 2026-11-24): the first
+    usable place of (1) `WABOROS_CACHE_DIR` (`off`: in memory only); (2) the virtual environment,
+    `<venv>/.waboros-cache`, when `sys.prefix != sys.base_prefix` and it is writable (one waboros
+    version per venv, removed with it, can be warmed when an image is built); (3) the user's cache
+    directory (`$XDG_CACHE_HOME/waboros`, `~/Library/Caches/waboros`, `%LOCALAPPDATA%\waboros`,
+    computed with the standard library only); (4) the process's memory (the micro-compiler is compiled
+    on every start). Every place passes RISKS.md R1's checks (owner and permissions, checksum,
+    versions, ISA) before anything is mapped executable, so a read-only or shared venv falls through
+    to (3). The same chain may serve phase 6's module cache, with `compilers/` (never evicted) and
+    `modules/` (LRU) beside each other. A cache directory that waboros creates gets a `.gitignore`
+    containing `*` at creation (maintainer, 2026-11-25; as pytest's and ruff's caches do), so a
+    `<venv>` or `WABOROS_CACHE_DIR` inside a repository is never committed; a directory that
+    already exists is left as it is. Still to decide: the key (waboros version, architecture, ISA
+    level, `format_version`, `ctx_abi_version`, GC `features_required` bits), two processes compiling
+    the micro-compiler at once (accept the duplicate or lock), and whether caching is on by default.
 
 Order (maintainer, 2026-11-01): SIMD (S0005) -> the rename to `waboros` with the packaging for publishing (LICENSE,
 setuptools + setuptools-scm, coverage/publish workflows, dependabot; D40)
@@ -268,8 +306,8 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29; done 2026-11-03) -> 
   sessions) only if revisited. **aarch64: measured** natively on the CI arm runner (Neoverse-N2,
   2026-11-09; BENCHMARKS.md, "Code placement on aarch64"): pads move CoreMark by about 3 % and `swizzle` by
   about 12 %; alignment to 32 gives CoreMark +1.2…1.4 % but `dot` or `nearest` lose in one bounds mode each,
-  for +4.5…6 % code, so it fails the rule as on x86-64: not implemented, pending the maintainer's word. The
-  knobs `WABOROS_JIT_PAD` and `WABOROS_JIT_LOOP_ALIGN` stay, off by default; `placement-arm.yml` reruns the
+  for +4.5…6 % code, so it fails the rule as on x86-64. Decision (maintainer, 2026-11-10): **not implemented, closed for
+  aarch64**. The knobs `WABOROS_JIT_PAD` and `WABOROS_JIT_LOOP_ALIGN` stay, off by default (see item (6)); `placement-arm.yml` reruns the
   sweep by hand.
 * Trap frames, fuel and epoch checks (the interrupt word is polled already, phase 3); Ctrl+C via the
   waiting main thread.
@@ -280,14 +318,33 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29; done 2026-11-03) -> 
 * **The JIT compilers as AOT-compiled wasm modules** ([JIT-AS-WASM.md](JIT-AS-WASM.md), draft,
   maintainer 2026-11-05): port, then replace the Python backends; a decision point (Dn) once the
   artifact format below is fixed; criterion byte identity and portability to non-Python hosts.
-* **One LIR vocabulary** before porting to the micro-compilers (MICRO-COMPILERS.md): the operation
-  names that are strings today in several places become one enumerated list, defined once,
-  together with fixing the artifact format in this phase; in C or Zig they become enums anyway, so
+* **Micro-compilers on sljit: decided** (maintainer, 2026-11-17, D68): no hand-written port; the
+  micro-compilers are our core in C over sljit. History of the question (maintainer, 2026-11-16): The x86-64 experiment `poc/sljit/sljit-be/` (our core over sljit, D56
+  site records and SIMD through `sljit_emit_op_custom`) passes every directory `jit-x86_64` claims, exceptions and memory64 included (third update,
+  2026-11-16: 64 228 commands on `jit-x86_64`, `jit-sljit` x86-64, `jit-aarch64` and `jit-sljit`
+  aarch64 under QEMU, `spec_diff` 0 both ways), at CoreMark parity (99-101 %), with no process
+  address in the code. If the micro-compilers are our core in C over sljit, the
+  oracle becomes behaviour (spec suite, `spec_diff`) instead of bytes. The choice no longer blocks
+  freezing part 3: a Store uses one compiler and each compiler has its own register table (D64; *amended by D70: one boundary ABI per architecture, compilers mix in a store from phase 6, the internal register tables stay each compiler's*).
+  Deferred until the same
+  check on aarch64: done under QEMU 2026-11-16 (parity with `jit-aarch64` in both bounds modes,
+  `poc/sljit/sljit-be/`); left: native arm64 timings, BTI landing pads, and the per-function frame size (*settled for `jit-sljit` by S0016: CoreMark 0.946 of `jit-aarch64` on the arm64 runner, `bti jc` / `bti c` custom words, 16 bytes a level without a pre-pass through `xcall` / `ccall`; D67's pre-pass stays with the C core*; sljit fixes the
+  local size at `sljit_emit_enter`: 96 bytes per frame against 32, so the depth under the default
+  budget is about 5 400 against 16 400; the fix is decided: a pre-pass over the body tells `func_begin` what the function needs, D67;
+  it is implemented with the C core). Then D48,
+  MICRO-COMPILERS.md and JIT-AS-WASM.md are amended.
+* **One LIR vocabulary** before porting to the micro-compilers (MICRO-COMPILERS.md; maintainer,
+  2026-11-25: a planned step right before the micro-compiler's spec (c), checked by identical
+  `jit_dump` lists): the operation names that are strings today in several places become one enumerated list, defined once,
+  together with fixing the artifact format in this phase; in C (D60) they become enums anyway, so
   one list is ported instead of several naming schemes.
 * The contract of ARTIFACT.md (format v1, context ABI v1, baseline-ISA sequences, CPU feature
   detection) is **fixed here**, after two architectures have shaped it, together with artifact
   serialization; the C reference loader runs in CI and the runtime services are specified (D36). The
-  container (our own or ELF64, [ARTIFACT-CONTAINER.md](ARTIFACT-CONTAINER.md)) is decided in that spec first.
+  container is ELF64 (D59, [ARTIFACT-CONTAINER.md](ARTIFACT-CONTAINER.md)) and the format is written
+  and read by the package ([S0014](specs/S0014-artifact-format.md), steps 0-6 done); open: the review
+  (step 8), the freeze, the C reference loader. `Module.serialize`, the cache and `waboros compile`
+  stay in phase 6.
 * Win64 hardening (the second entry trampoline and `VirtualAlloc` exist; `platforms.yml` runs the tests and the spec suite on
   Windows x64 and ARM64 and macOS x86-64 and arm64, TARGETS.md; Windows ACG is open, RISKS R2);
   macOS arm64 and Windows on ARM are done in phase 4.
@@ -296,17 +353,49 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29; done 2026-11-03) -> 
   beside phase 5: [REAL-PROGRAMS.md](REAL-PROGRAMS.md) (maintainer's note, draft).
 
 ## Phase 6 — runtime API, WASI, CLI
-*Status: not started.*
+*Status: started (maintainer, 2026-11-25): the public Python runtime API, [S0018](specs/S0018-python-public-api.md) approved (D77), in parallel with the C loader (S0017); WASI and the CLI get their own specs later.*
 
 * `Engine`, `Config`, `Store`, `Module`, `Linker`, `Instance`, externs, `Caller`, `Trap`/`TrapCode`,
   limits, in the shape of wasmtime-py (not a drop-in), over the internal engine interface the spec
   runner has used since phase 1.
-* Choose the WASI host (open question 2); WASI 0.1 and fused 0.2 through it (needs multi-memory, planned right after
+* Choose the WASI host (open question 2), and with it whether WASI's computing part becomes a runtime module (RUNTIME-MODULES.md, item 8); WASI 0.1 and fused 0.2 through it (needs multi-memory, planned right after
   phase 3 on both targets).
 * `Module.serialize`/`deserialize` and the thin/fat files (D18) on top of the cache of phase 2 and the
   artifacts of phase 5.
 * CLI: `run`, `compile`, `wast`, `settings`/`targets`, `cache`.
 * Differential tests against wasmtime on real programs.
+* **`Store.close()` and a context manager** (maintainer, 2026-11-19, ROADMAP "Memory of dropped
+  stores" (c)): release a store's memories, GC heap, code and contexts at once, not when the cyclic
+  GC finds the cycle (LESSONS 135); after `close`, every use of the store or its instances raises.
+* **GC handles released by the host** (maintainer, 2026-11-10, with S0013 Q10; amended
+  2026-11-25 by S0017 Decision 11: the Python runtime already releases a handle when the host drops
+  it, through a weak entry whose finalizer marks the slot for release at a safe point, and the C
+  loader has `waboros_ref_release`; what stays here is scopes and the public API). One contract for every host
+  (Python, MicroPython, a C loader, the runtime as wasm), Wasmtime's model: root scopes released
+  together when they close, explicit long-lived roots released by `unroot`, generation-checked
+  handles. Host conveniences on top (Python: `with store.scope():`, optionally a finalizer that
+  marks the entry for release at a safe point), never the mechanism itself.
+* **S0015's deferred items** (D70, [S0015](specs/S0015-boundary-convention.md), "Compatibility"):
+  the per-architecture compatibility rule in the loader (architecture, `format_version`,
+  `ctx_abi_version` instead of the exact `compiler` string; thin files of other compiler versions);
+  executing a foreign compiler's blob (executable memory, W^X, instruction cache);
+  the trampoline compare moved from `read` to store attach. *(Done in-process by S0016 step 2:
+  mixed stores of several compilers of one architecture, the walk's sets of entry and restore
+  points, one compiler per bridge address checked at instantiation; the real-second-compiler test
+  is S0016 step 3, with `jit-sljit`, done on both architectures in step 5.)* The flags that must agree within a store
+  (S0015 Q4) are decided there too, together with what the shared GC heap and collector need (maintainer, 2026-11-24): every module of a store agrees on `ctx_abi_version` (the heap layout, the GC and RTT words, `IS_SUBTYPE` and the stack-map format are part of it) and on every `features_required` bit that touches the GC heap or the collector; a file compatible on its own is refused in a store whose heap it does not match. Also deferred from S0015's review (step 6):
+  * before a foreign C entry runs in a store, a C entry that takes a private hop status from its
+    body must be sure the status came from its own body (M5: true today by construction);
+  * D71's precondition: a blob copy is never shared between compiler strings, enforced at store
+    attach (in-process: at instantiation since S0016 step 2; a foreign blob's copy in phase 6);
+  * a CET/GCS test under Intel SDE or on enforcing hardware (no runner has either);
+  * the hex bytes of each reference listing of `entry` (ARTIFACT.md part 3);
+  * the cost of the Win64 `entry`'s xmm saves (not measured).
+* **JIT code visible to debuggers and profilers** (maintainer, 2026-11-10, with S0013 Q3): the GC's
+  frame walk uses return addresses and site tables, not a frame-pointer chain, so `perf`, `gdb` and
+  native profilers cannot unwind through JIT frames or name them. Options to weigh then: a perf map /
+  jitdump file (names and code ranges), GDB's JIT interface, unwind info registered for the code, or
+  frame pointers as a `Config` switch (measured first: Wasmtime always keeps them).
 
 ## Phase 7 — `mpy` target
 *Status: not started.*
@@ -318,20 +407,70 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29; done 2026-11-03) -> 
   (Thumb, Xtensa, RISC-V, …) without an encoder of ours; inline assemblers (`asm_thumb`, `asm_xtensa`)
   for the hottest functions (TARGETS.md, "MicroPython's own native emitters as JIT back ends").
 * Port the translator to run on MicroPython if on-device compilation is wanted.
+* **`pyc` output on MicroPython** (maintainer, 2026-11-27): not now. `pyc` stays as it is for
+  CPython and PyPy; running wasm as Python code on MicroPython is this phase's `mpy` question. What
+  breaks today and why a module dict is not enough is LESSONS 169; the probe is
+  `poc/mpy_pyc_probe.py` (CoreMark and 17 spec files pass on MicroPython 1.29 with its patches). The
+  design to evaluate first: functions in tables, exports and imports as small objects with
+  `__slots__` (type key, tail body, function), so the key travels with the function and nothing
+  leaks; measured against today's attributes on CPython and PyPy.
+* **A `.wbo` loader as a MicroPython module** (maintainer, 2026-11-26; a goal, no spec yet): the C
+  loader built without the compiler (S0017, `WABOROS_WITH_COMPILER=OFF`, and without GC or guard
+  where the device needs neither), as a user C module of the firmware or a dynamic native module
+  (natmod `.mpy`), so that MicroPython loads wasm compiled on a PC as machine code at run time,
+  swapped without reflashing, with host imports as MicroPython callables through D75's single
+  `host(ctx, slots, word)`; code copied into executable RAM (IRAM on ESP32; ARTIFACT's copy rule).
+  Why (the maintainer's experience on microcontrollers): wasm3 barely fits and is slow there, while
+  wasm2c is fast but needs the firmware rebuilt per module; a small loader plus `.wbo` keeps
+  compiled speed and dynamic loading. Needs the 32-bit format (v2), the Thumb/Xtensa backends behind
+  D68, explicit bounds; the loader's size per build comes from S0017's measurement step 6.1.
 
 ## Phase 8 — more architectures
 *Status: not started.*
 
-* **riscv64 only** (D48): as a micro-compiler on the proven core after `arm64.wasm`
+* **Pointer (S0016, maintainer, 2026-11-24):** [S0016](specs/S0016-sljit-on-the-boundary.md),
+  "Toward the other sljit architectures", lists per architecture what `jit-sljit` and the C
+  micro-compiler would need, riscv64 first; the size of riscv64 there (about 500-550 lines of code
+  and 150 of documents, measured under QEMU) replaces the earlier 300.
+
+* **riscv64 only** (D48): as a micro-compiler on the proven core after `aarch64.wasm`
   (MICRO-COMPILERS.md); CI under QEMU user-mode. It is added by a micro-compiler, the encoder test
   and the integer-core spec commands; the shared core does not change. s390x, armv7, mips32el,
   ppc64le, loongarch64, i686 and the rest stay on `pyc` (s390x was excluded by the maintainer; the
   reasons are in D48).
+* **Order (D48 amendment, maintainer, 2026-11-25):** riscv64; then the 32-bit PC targets i686 and
+  armv7 through sljit; then the 32-bit microcontrollers (v2). LoongArch64 is not a target; s390x,
+  ppc64le and MIPS are not a priority (a sljit backend on request only, later); Pyodide/wasm32 is
+  not a JIT priority, its CI cell stays as a cheap `pyc` check.
 * **Later, not a first priority (D48 amendment): the sljit track.** One D39 backend on sljit's API
   under the ported core, shipped as `sljit-<arch>.wasm`, may give those architectures a JIT,
   verified against `pyc` under QEMU ([SLJIT-BACKEND.md](SLJIT-BACKEND.md), `poc/sljit/`). Its first
   step (the sljit backend for x86-64 under our core) was done as a proof of concept on 2026-11-04:
-  spec parity and about 100 % of our backend on CoreMark (SLJIT-BACKEND.md).
+  spec parity and about 100 % of our backend on CoreMark (SLJIT-BACKEND.md). With it, the D25
+  question of instruction polyfills as runtime modules (RUNTIME-MODULES.md, item 7).
+* **32-bit and microcontroller targets** (maintainer, 2026-11-24; they may come only in ABI v2, and
+  v1 must not block them; the provisions are in ARTIFACT.md part 3 and the S0014/S0015 Changes).
+  Many MCU ISAs (Thumb-1 such as RP2040, Xtensa such as ESP32) are not supported by sljit and get
+  hand-written backends behind the C core's backend interface (D68). Open points:
+  * big-endian 32-bit ISAs (MIPS BE, PPC32) are accepted as v2;
+  * epochs (`EPOCH_DEADLINE`) must use a 32-bit-readable counter when they are designed;
+  * mark-compact for small memories ([GC-SMALL-MEMORY.md](GC-SMALL-MEMORY.md));
+  * a cap on the runtime's tag identities (today `range(1, 1 << 63)`, `targets/jit/common/instance.py`)
+    so that they stay below 2³², and on canonical type ids;
+  * a test switch that moves an i32 memory on every grow (explicit mode) and the GC heap at every
+    `ALLOC`, run over the spec `gc/` and `exceptions/` directories, to prove that code reloads the
+    base (code, later).
+* **Guard pages on musl aarch64** (maintainer, 2026-11-25: a v2 candidate): a fault handler on
+  this row for the Python runtime and the C loader together, so that the two loaders keep
+  agreeing (S0017 Decision 10); until then both run explicit files there (the JIT itself runs
+  there since our own I-cache flush, S0004). Android arm64 moved earlier: the handler exists,
+  opt-in (`WABOROS_JIT_BOUNDS=guard`), and a device or arm64 emulator run would make it
+  `verified`.
+* **ISA extensions above the baseline** (maintainer, 2026-11-24: after v1, in this backlog): a
+  compatible addition under v1 (an artifact already declares `isa_level`/`isa_features`), each
+  variant with its own spec and a measurement (D24, D33, D42); the candidates per level are in
+  [ISA-LEVELS.md](ISA-LEVELS.md). For `jit-sljit` a level sets sljit's `cpu_feature_list` from the
+  declared level, never from the running CPU.
 
 ## Open questions
 1. **Minimum Python.** Resolved by D19: 3.11 (the PoC's 3.8 and 3.4 `--legacy` measurements stay as
@@ -383,7 +522,7 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29; done 2026-11-03) -> 
    Shipping them pre-compiled: [MICRO-COMPILERS-SHIPPING.md](MICRO-COMPILERS-SHIPPING.md) (draft).
    The full note is [MICRO-COMPILERS.md](MICRO-COMPILERS.md) (maintainer).
    The maintainer's idea: our own compiler written in a language that compiles to wasm, shipped as one
-   module per architecture — `x64.wasm`, `arm64.wasm`, … (or a shared `core.wasm` plus a backend
+   module per architecture — `x86_64.wasm`, `aarch64.wasm`, … (or a shared `core.wasm` plus a backend
    module per architecture, linked by imports). Each runs on any wasm runtime (`pyc` first), compiles
    itself into a native artifact for its architecture, then compiles everything else natively; run on
    another architecture it is a cross-compiler (D35). It emits our context ABI directly (S0003,
@@ -393,7 +532,7 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29; done 2026-11-03) -> 
    module and CoreMark, a strong and cheap correctness check. Timing: after phase 4 freezes the
    backend interface (a stable design to port, not a moving one), with a fixed artifact format
    (phase 5); WASI (phase 6) only if the compiler needs it. **First micro-compiler (maintainer,
-   2026-11-02): `arm64.wasm`**, a port of the existing aarch64 backend (the smaller one): the Python
+   2026-11-02): `aarch64.wasm`**, a port of the existing aarch64 backend (the smaller one): the Python
    `jit-aarch64` is a ready oracle, so every spec module and CoreMark is checked byte for byte, which
    validates the ported core and the toolchain before anything new is written. **Then the third
    architecture**: riscv64 (phase 8) as a micro-compiler on the proven core instead of a third Python
@@ -404,7 +543,7 @@ as its own step (D40, done 2026-11-02) -> guard pages (D29; done 2026-11-03) -> 
    (2) cache: that artifact is kept like any cached artifact, keyed by waboros version, architecture and
    ISA level; (3) from then on the runtime loads the native micro-compiler, which compiles every other
    module in milliseconds. Short path where a Python backend exists (x86-64, aarch64): our JIT compiles
-   `x64.wasm` to native directly, no `pyc` step; the long path is only for architectures without a
+   `x86_64.wasm` to native directly, no `pyc` step; the long path is only for architectures without a
    Python backend. Cross variant (D35): on an x86-64 machine our JIT runs `riscv64.wasm` and emits a
    native riscv64 artifact of the compiler, so a slow device can receive a ready compiler and skip
    the bootstrap. **The native micro-compiler is itself an ordinary JIT artifact**, so by D36 a host

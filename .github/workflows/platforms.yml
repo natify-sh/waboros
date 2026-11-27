@@ -63,6 +63,10 @@ jobs:
           # tests on x86_64 (the emulator has the runner's architecture), arm64_v8a is built only
           # (test-skip in the config); proven: py-wasmext
           - { name: "Android (x86_64, arm64_v8a)", os: ubuntu-latest, platform: android, archs: "x86_64 arm64_v8a" }
+          # Android 17 (API 37) with 16 KiB pages and the testbed at targetSdk 37: our own emulator
+          # (the testbed's managed devices have neither), `--connected`; the Gradle init script and
+          # the page-size assertion are in the step "16 KiB emulator"
+          - { name: "Android 16 KiB pages (API 37, targetSdk 37)", os: ubuntu-latest, platform: android, archs: x86_64, ps16k: true }
           # pyc only; the build is proven by py-wasmext. ppc64le, riscv64, s390x and iOS are off
           # (maintainer, 2026-11-03): the same pyc as elsewhere, and no micro-compiler for them yet
           - { name: Pyodide, os: ubuntu-latest, platform: pyodide, archs: wasm32 }
@@ -86,6 +90,45 @@ jobs:
         run: uv run pytest tests -q -n auto -p no:cacheprovider --ignore=tests/spec
         env: { WABOROS_WAT_CACHE: "1" }
         shell: bash
+      # The testbed's managed devices are 4 KiB, aosp_atd and targetSdk 35: this cell starts its own
+      # emulator (KVM as android.py's setup_ci does, which also frees the NDK versions) and tells
+      # cibuildwheel to use it. The init script raises targetSdk (finalizeDsl: after the testbed's
+      # build.gradle.kts, before AGP locks the DSL) and writes it to a file the last step prints.
+      - if: ${{ matrix.ps16k }}
+        id: emulator
+        name: 16 KiB emulator
+        timeout-minutes: 35
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+          mkdir -p ~/.gradle/init.d
+          cat > ~/.gradle/init.d/target37.gradle <<'EOF'
+          allprojects { pluginManager.withPlugin("com.android.application") {
+            extensions.getByName("androidComponents").finalizeDsl { dsl ->
+              dsl.defaultConfig.targetSdk = 37
+              new File(System.getenv("RUNNER_TEMP"), "targetsdk.txt").text = "targetSdk=" + dsl.defaultConfig.targetSdk + " compileSdk=" + dsl.compileSdk + "\n"
+            }
+          } }
+          EOF
+          img="system-images;android-37.0;google_apis_ps16k;x86_64"
+          bin="$ANDROID_HOME/cmdline-tools/latest/bin"
+          yes | "$bin/sdkmanager" --licenses > /dev/null || true
+          "$bin/sdkmanager" emulator platform-tools "$img"
+          # one AVD directory for avdmanager and the emulator (newer cmdline-tools write elsewhere by default)
+          export ANDROID_AVD_HOME="$HOME/.android/avd"; mkdir -p "$ANDROID_AVD_HOME"
+          echo no | "$bin/avdmanager" create avd --name ps16k --package "$img" --device pixel_6 --force --path "$ANDROID_AVD_HOME/ps16k.avd"
+          "$ANDROID_HOME/emulator/emulator" -list-avds
+          nohup "$ANDROID_HOME/emulator/emulator" -avd ps16k -no-window -no-audio -no-snapshot -no-boot-anim -gpu swiftshader_indirect -accel on -memory 4096 > "$RUNNER_TEMP/emulator.log" 2>&1 &
+          adb=$ANDROID_HOME/platform-tools/adb
+          ls -l /dev/kvm; "$ANDROID_HOME/emulator/emulator" -accel-check || true
+          # bounded waits, so a failed boot prints the emulator's log instead of hitting the step timeout
+          timeout 600 "$adb" wait-for-device || { tail -n 200 "$RUNNER_TEMP/emulator.log"; exit 1; }
+          timeout 600 sh -c "until [ \"\$('$adb' shell getprop sys.boot_completed | tr -d '\r')\" = 1 ]; do sleep 5; done" || { tail -n 200 "$RUNNER_TEMP/emulator.log"; exit 1; }
+          size=$("$adb" shell getconf PAGE_SIZE | tr -d '\r')
+          echo "device page size: $size; API $("$adb" shell getprop ro.build.version.sdk | tr -d '\r')"
+          [ "$size" = 16384 ]
+          echo 'CIBW_TEST_RUNTIME=args: --connected emulator-5554' >> "$GITHUB_ENV"  # the env form is key: value, not TOML
+        shell: bash
       # cibuildwheel's download cache (CPython/PyPy installers, virtualenv, the Android and Pyodide
       # toolchains; cibuildwheel FAQ "Caching"). Linux builds in containers and does not use it.
       - if: ${{ matrix.platform != 'linux' }}
@@ -94,10 +137,67 @@ jobs:
           path: ${{ runner.temp }}/cibw-cache
           key: cibw-${{ matrix.platform }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('uv.lock', 'ci/harness/pyproject.toml') }}
           restore-keys: cibw-${{ matrix.platform }}-${{ runner.os }}-${{ runner.arch }}-
+      # the CPython Android testbed's Gradle dependencies (the Android Gradle plugin, Kotlin): without
+      # this every Android run downloads them from Maven Central, which answers 429 (LESSONS 164)
+      - if: ${{ matrix.platform == 'android' }}
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('uv.lock', 'ci/harness/pyproject.toml') }}
+          restore-keys: gradle-${{ runner.os }}-${{ runner.arch }}-
       # cibuildwheel comes from uv.lock (dev group); the host needs nothing else
       - run: uv run --only-group dev cibuildwheel ci/harness --platform ${{ matrix.platform }} --output-dir wheelhouse
         env: { CIBW_CACHE_PATH: "${{ runner.temp }}/cibw-cache" }
         shell: bash
+      - if: ${{ always() && matrix.ps16k }}
+        run: cat "$RUNNER_TEMP/targetsdk.txt" "$RUNNER_TEMP/emulator.log" 2>/dev/null | tail -n 100 || true
+        shell: bash
+  # D23/D35, S0014 step 6: a JIT artifact file is architecture-dependent and OS-independent. Each of
+  # the six hosts writes the `.wbo` files of CoreMark and the v1 module (tools/artifact_dump.py, pure
+  # standard library: no project install, so no wheel needed) and uploads the sha256 list; `artifacts-diff`
+  # compares every list with the first one and names the files that differ. One job per host, one final
+  # compare: a cross-workflow download is avoided, and a failing host does not hide the others.
+  artifacts:
+    name: artifacts ${{ matrix.os }}
+    needs: dedup
+    if: needs.dedup.outputs.skip != 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, windows-11-arm, macos-26-intel, macos-26]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+      - run: uv run --no-project python tools/artifact_dump.py wbo-${{ matrix.os }}.txt
+        shell: bash
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: wbo-${{ matrix.os }}
+          path: wbo-${{ matrix.os }}.txt
+  artifacts-diff:
+    needs: artifacts
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          pattern: wbo-*
+          path: lists
+          merge-multiple: true
+      - run: |
+          ls lists
+          n=$(ls lists | wc -l)
+          [ "$n" -eq 6 ] || { echo "expected 6 lists, got $n"; exit 1; }
+          ref=lists/wbo-ubuntu-latest.txt
+          rc=0
+          for f in lists/*.txt; do
+            diff "$ref" "$f" || { echo "::error::$f differs from $ref"; rc=1; }
+          done
+          exit $rc
   # Optional, never on push, never counts against the run: the architectures that have only pyc (no
   # micro-compiler yet). Start it from the Actions tab with `exotic` ticked. QEMU is very slow, so
   # each emulated architecture has a runner of its own (armv7l is in the main arm job, natively).

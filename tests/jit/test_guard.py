@@ -205,6 +205,7 @@ def test_auto_is_explicit_silently_where_guard_cannot_be(
     warning, and it runs; `guard` there compiles but refuses to instantiate."""
     monkeypatch.setenv("WABOROS_JIT_BOUNDS", "auto")
     tgt = type(base.TARGETS[JIT]())
+    wat(LOAD)  # wasmtime (the WAT tool) imported before `platform.machine` is patched (xdist order)
     if why == "unverified row":
         monkeypatch.setattr(tgt, "verified", frozenset())
     elif why == "unknown libc":
@@ -229,6 +230,29 @@ def test_auto_is_explicit_silently_where_guard_cannot_be(
         monkeypatch.setenv("WABOROS_JIT_BOUNDS", "guard")
         with pytest.raises((OSError, RuntimeError)):
             build(wat(LOAD))
+
+
+@pytest.mark.parametrize("row", ["android", "linux-musl"])
+def test_android_arm64_has_guard_only_when_asked(row: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """S0017 Decision 10 as amended (maintainer, 2026-11-25): jit-aarch64 has a handler on Android
+    (bionic) that `guard` selects and `auto` does not (not verified on a device, D47 rule 3);
+    none on musl aarch64. A simulated host: the row and the machine are patched, and `_handler`
+    is non-empty, so `install` stops after its row check and installs nothing."""
+    from waboros.targets.jit.aarch64 import JitAarch64Target
+
+    tgt = JitAarch64Target()
+    monkeypatch.setattr(guard, "host_row", lambda: row)
+    monkeypatch.setattr(guard.platform, "machine", lambda: "aarch64")
+    monkeypatch.setattr(guard, "_handler", {"addr": 0})
+    monkeypatch.setenv("WABOROS_JIT_BOUNDS", "auto")
+    assert not guard.wanted(tgt)
+    monkeypatch.setenv("WABOROS_JIT_BOUNDS", "guard")
+    assert guard.wanted(tgt)  # compiles guard code; instantiation installs
+    if row == "android":
+        guard.install(tgt)
+    else:
+        with pytest.raises(RuntimeError, match="no fault handler for linux-musl on aarch64"):
+            guard.install(tgt)
 
 
 # /proc/self/maps lines of CPython on Alpine 3.24 (x86-64; aarch64 differs in the name only)
@@ -326,6 +350,7 @@ def test_far_mode_drops_the_fault_points_of_the_first_attempt(
     if JIT != "jit-aarch64":
         pytest.skip("x86-64 has no far mode")
     from tests.jit.test_compiler_aarch64 import _module  # pyright: ignore[reportPrivateUsage]
+    from waboros.targets.jit.aarch64.abi import BODY
     from waboros.targets.jit.aarch64.backend import Backend
 
     rewinds: list[int] = []
@@ -340,7 +365,7 @@ def test_far_mode_drops_the_fault_points_of_the_first_attempt(
     mod = parse(_module(n, around))
     validate(mod)
     c = base.TARGETS[JIT]().compile(mod)
-    assert isinstance(c, Compiled) and len(rewinds) == 1 and (rewinds[0] > 0) == around
+    assert isinstance(c, Compiled) and len(rewinds) == 1 and (rewinds[0] > BODY) == around
     at = [p for p, _ in c.faults]
     assert len(at) == n and at == sorted(set(at)) and at[-1] < c.data_start
     inst = build(_module(n, around))
@@ -615,7 +640,7 @@ def test_broken_checks_every_signal_we_take(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(guard, "_handler", {"addr": 0x1000, "sigaction": query, "py": py})
     assert guard.broken() is None
     acts[signal.SIGBUS] = 0  # SIG_DFL
-    assert guard.broken() == "SIGBUS reset to SIG_DFL/SIG_IGN"
+    assert (guard.broken() or "").startswith("SIGBUS reset to SIG_DFL/SIG_IGN")  # Android: + a hint
     acts[signal.SIGBUS] = 0x2000
     with monkeypatch.context() as m:
         m.setattr(guard.signal, "getsignal", lambda s: print if s == signal.SIGBUS else py[s])  # pyright: ignore[reportUnknownLambdaType]

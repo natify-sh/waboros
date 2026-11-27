@@ -27,8 +27,9 @@ from waboros.targets.jit.common.compiler import Compiled
 from waboros.targets.jit.common.context import TAIL_SWITCH
 from waboros.targets.jit.common.instance import JitFunc
 from waboros.targets.jit.x86_64 import JitX86_64Target
-from waboros.targets.jit.x86_64.abi import bridge, entry, sp_stub, tail_switch
+from waboros.targets.jit.x86_64.abi import bridge, tail_switch
 from waboros.targets.jit.x86_64.encoder import Asm
+from waboros.targets.jit.x86_64.entry import entry, sp_stub
 
 __all__ = ["pins"]  # the fixture, used by name
 
@@ -131,7 +132,9 @@ def test_tail_call_loop_polls_interrupt() -> None:
     t.start()
     start = time.monotonic()
     assert trap_of(jit, "spin") is TrapCode.INTERRUPT
-    assert time.monotonic() - start < 5
+    # a bound against a missed interrupt (the loop would spin for ever), not a timing: loaded CI
+    # runners under pytest -n auto took 5.1 s (macOS x86_64)
+    assert time.monotonic() - start < 60
 
 
 SHAPES = """(module
@@ -216,9 +219,9 @@ CROSS_B = """(module
 
 
 def test_tail_calls_across_instances() -> None:
-    """A -> B -> A -> ... of return_call_indirect, 1e5 hops on a 256 KiB thread: the shared
-    tail_switch trampoline (D30) keeps the native stack constant (a restore frame per hop would
-    need 1.6 MiB). The chain ends in A (10 + 1000) or B (100 + 5000); the caller then sees its
+    """A -> B -> A -> ... of return_call_indirect, 1e5 hops on a 256 KiB thread: the hops keep
+    the native stack constant (D30; on x86-64 by the C entries, S0015; a restore frame per hop
+    would need 1.6 MiB). The chain ends in A (10 + 1000) or B (100 + 5000); the caller then sees its
     own memory and global. A chain ending in a trap or a host exception unwinds through the
     restore frame, and both instances stay usable."""
 

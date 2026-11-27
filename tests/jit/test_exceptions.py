@@ -1,30 +1,43 @@
-# pyright: reportUnknownVariableType=false, reportUnknownArgumentType=false, reportUnknownMemberType=false
+# pyright: reportUnknownVariableType=false, reportUnknownArgumentType=false, reportUnknownMemberType=false, reportUnknownLambdaType=false
 """Exception handling on the native JIT (S0012 steps 3-4; aarch64 under QEMU, tools/run_arm64.py):
-the cases of tests/test_exceptions_pyc.py, and what only the status path and the inline arena can
-get wrong (pins across unwinding, v128 payloads, clause order, nested pads, imported tags, the
-refill path, no Python on a throw). The spec suite (`exceptions/`) is the metric."""
+the cases of tests/test_exceptions_pyc.py, and what only the status path and the exception objects
+in the GC heap (S0013 step 6) can get wrong (pins across unwinding, v128 payloads, clause order,
+nested pads, imported tags, a full heap, forged identities, no Python on a throw). The spec suite
+(`exceptions/`) is the metric."""
 
+import ctypes
+import importlib.resources
+import os
+import struct
 import sys
 import threading
+from pathlib import Path
 from types import FrameType
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
 from tests.jit import native, native_jit
 from tests.jit.test_compiler import Inst, pins, wat
 from tests.jit.test_compiler import build as _build
-from tests.jit.test_tables import provider
+from tests.jit.test_tables import call, provider
 from waboros.frontend.binary import parse
+from waboros.frontend.types import key
 from waboros.frontend.validate import validate
 from waboros.runtime.store import StoreState
 from waboros.targets import base
 from waboros.targets.base import Trap, TrapCode
-from waboros.targets.jit.common import instance
-from waboros.targets.jit.common.instance import ExnRef, Tag
+from waboros.targets.jit.common import gc
+from waboros.targets.jit.common.instance import ExnRef, GcRef, Tag
 
 __all__ = ["pins"]  # the fixture, used by name
 JIT = native_jit()
+BOUNDS = ["guard", "explicit"] if JIT == "jit-x86_64" else ["explicit"]  # QEMU tears (D45)
+SWITCHES = ("WABOROS_JIT_GC_STRESS", "WABOROS_JIT_GC_POISON", "WABOROS_JIT_GC_VERIFY")
+# under the stress switch every throw collects (Python runs, and filling a heap takes minutes)
+STRESSED = pytest.mark.skipif(
+    os.environ.get("WABOROS_JIT_GC_STRESS") == "1", reason="every throw collects under STRESS"
+)
 
 
 @pytest.fixture(autouse=True)
@@ -61,8 +74,9 @@ def test_payload_words_land_in_the_label_slots(pins: None) -> None:
 
 
 def test_an_object_larger_than_an_add_immediate() -> None:
-    """520 words: the object is 4168 bytes, which no aarch64 add imm12 takes (LESSONS 83); each
-    word lands at its own position (a weighted sum), and the cursor moves by the whole object."""
+    """520 words: the object is 4176 bytes, which no aarch64 add imm12 takes (LESSONS 83); each
+    word lands at its own position (a weighted sum), and the heap's cursor moves by the whole
+    object (the first allocation grows the heap, it never collects)."""
     n, store = 520, StoreState()
     sets = "".join(f"(local.set {k})" for k in reversed(range(n)))
     acc = "".join(f"(i64.add (i64.mul (local.get {k}) (i64.const {k + 1})))" for k in range(n))
@@ -77,14 +91,16 @@ def test_an_object_larger_than_an_add_immediate() -> None:
 """,
         store=store,
     )
-    st: Any = store.target_state
-    cursor = st.exn[1]
+    heap: Any = cast(Any, store.target_state).heap
+    cursor = heap.cursor
     assert i("go") == [sum((k * k + 1) * (k + 1) for k in range(n)) % 2**64]
-    assert st.exn[1] - cursor == 8 * (1 + n)
+    assert heap.cursor - cursor == 8 * (2 + n)  # header, identity, payload
 
 
 def test_catch_ref_and_throw_ref_keep_the_object(pins: None) -> None:
-    i = build("""
+    store = StoreState()
+    i = build(
+        """
 (module
   (tag $t (param i32))
   (tag $w (param exnref i32))
@@ -108,11 +124,15 @@ def test_catch_ref_and_throw_ref_keep_the_object(pins: None) -> None:
   (func (export "null") (result i32) (throw_ref (ref.null exn)) (i32.const 0))
   (func (export "null_in_try") (result i32)
     (block (try_table (catch_all 0) (throw_ref (ref.null exn)))) (i32.const 0)))
-""")
+""",
+        store=store,
+    )
     assert i("go", 42) == [42]
     assert i("wrapped") == [8]
-    for name in ("null", "null_in_try"):  # a trap: not caught
-        assert raises(i, name).code is TrapCode.NULL_REFERENCE
+    pending = cast(Any, store.target_state).exn
+    last = pending[0]
+    for name in ("null", "null_in_try"):  # a trap before anything is stored: not caught
+        assert raises(i, name).code is TrapCode.NULL_REFERENCE and pending[0] == last
 
 
 def test_three_frames_deep_with_live_pins(pins: None) -> None:
@@ -347,66 +367,577 @@ LOOP = """
 """
 
 
+@STRESSED
 def test_a_throw_runs_no_python() -> None:
     i = build(LOOP)
     i("loop", 10)
-    calls = [0]
 
-    def count(frame: FrameType, event: str, arg: object) -> None:
-        if event == "call":
-            calls[0] += 1
+    def calls(n: int) -> int:
+        c = [0]
 
-    sys.setprofile(count)
-    try:
-        assert i("loop", 2000) == [2000 * 2001 // 2]
-    finally:
-        sys.setprofile(None)
-    assert calls[0] < 50  # the entry's own calls; per throw there would be 2000 or more
+        def count(frame: FrameType, event: str, arg: object) -> None:
+            if event == "call":
+                c[0] += 1
+
+        sys.setprofile(count)
+        try:
+            assert i("loop", n) == [n * (n + 1) // 2]
+        finally:
+            sys.setprofile(None)
+        return c[0]
+
+    # the entry's own calls are the same for 1 and 2000 throws (their number depends on the
+    # runtime and on a tracer such as coverage); per throw there would be 2000 or more
+    assert calls(2000) - calls(1) < 50
 
 
-def test_the_refill_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    """An object here is 4 words: 2048 fit a default chunk; with chunks smaller than an object
-    every throw refills with the size the code passes, then allocates again."""
+FULL = """(module (tag $t (param i32)) (table $k 0 exnref)
+  (func (export "go") (result i32) (local $i i32) (local $e exnref)
+    (block $h
+      (try_table (catch_all $h)
+        (loop $l  ;; each exception kept in the table: the heap fills up
+          (block $c (result i32 exnref)
+            (try_table (catch_ref $t $c) (throw $t (local.get $i))) unreachable)
+          (local.set $e) (drop)
+          (drop (table.grow $k (local.get $e) (i32.const 1)))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $l)))
+      (return (i32.const 1)))
+    (i32.const 2)))"""
+
+
+@STRESSED
+def test_a_full_heap_at_throw_is_an_error_no_pad_catches(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Approval note, addition 1 (Wasmtime's GcHeapOutOfMemory): a `throw` whose allocation finds
+    the heap full after collecting and growing to its limit fails with "GC heap out of memory",
+    status 13, which the enclosing `catch_all` does not catch: the entry raises it. Live
+    exceptions are kept in an exnref table (a root) until a 1 MiB semispace is full."""
+    monkeypatch.setattr(gc, "CAP_MAX", 2 << 20)
     store = StoreState()
-    i = build(LOOP, store=store)
-    st: Any = store.target_state  # the JIT's per-store state: the arena's chunks
-    first = st.chunks[0]
-    n = len(st.chunks)
-    assert i("loop", 10000) == [10000 * 10001 // 2]  # 4 words each: 2048 per 8192-word chunk
-    assert len(st.chunks) == n + 4 and st.chunks[0] is first  # chunks never move
-    monkeypatch.setattr(instance, "ARENA_WORDS", 3)  # smaller than an object: max(3, 4)
-    st.exn[2] = st.exn[1]  # the current chunk is full
-    n = len(st.chunks)
-    assert i("loop", 5) == [15]
-    assert len(st.chunks) == n + 5 and all(len(c) == 4 for c in st.chunks[n:])
-    e = raises(i, "escape")
-    assert e.exn[1] == (5, 6 | 7 << 64)
+    i = build(FULL, store=store)
+    with pytest.raises(MemoryError, match="GC heap out of memory"):
+        i("go")
+    heap = cast(Any, store.target_state).heap
+    assert heap.cap == 2 << 20 and heap.collections >= 1
 
 
-def test_a_failing_refill_is_a_host_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The refill service fails once (MemoryError): status 13 with the error pending, so the
-    catch_all does not catch it and the entry raises the error itself. Failing once only, so a
-    refill that reported 0 would retry, succeed and be caught: a result, not a hang."""
+def test_a_forged_identity_matches_no_tag() -> None:
+    """Approval note, addition 3: the pad compares the full 64-bit identity read from the heap, so
+    an object whose identity differs from the tag's in the high or the low half only (a probe
+    writes it through the host's handle) is caught by no `catch $t`: the `catch_all` takes it."""
     store = StoreState()
     i = build(
         """
-(module (tag $t)
-  (func (export "go") (result i32) (block (try_table (catch_all 0) (throw $t))) (i32.const 1)))
+(module (tag $t (param i32))
+  (func (export "make") (result exnref)
+    (block $h (result exnref) (try_table (catch_all_ref $h) (throw $t (i32.const 5))) unreachable))
+  (func (export "rethrow") (param exnref) (result i32)
+    (block $all
+      (block $h (result i32)
+        (try_table (catch $t $h) (catch_all $all) (throw_ref (local.get 0))) unreachable)
+      (return))
+    (i32.const -1)))
 """,
         store=store,
     )
     st: Any = store.target_state
-    real, calls = st.new_chunk, [0]
+    e = i("make")[0]
+    k = next(x for n, _, x in i.mod["exports"] if n == "rethrow")
 
-    def once(words: int) -> None:
-        calls[0] += 1
-        if calls[0] == 1:
-            raise MemoryError("arena")
-        real(words)
+    def rethrow() -> list[Any]:
+        return i.inst.call(k, [e])
 
-    monkeypatch.setattr(st, "new_chunk", once)
-    st.exn[2] = st.exn[1]  # the current chunk is full
-    with pytest.raises(MemoryError, match="arena"):
-        i("go")
-    assert calls[0] == 1
-    assert i("go") == [1]  # the next refill works: thrown and caught
+    assert isinstance(e, ExnRef) and rethrow() == [5]
+    at = st.heap.base + st.gc_handles[e.index] + 8
+    ident = ctypes.c_uint64.from_address(at).value
+    for forged in (ident | 1 << 32, ident ^ 1):
+        ctypes.c_uint64.from_address(at).value = forged
+        assert rethrow() == [0xFFFFFFFF]
+    ctypes.c_uint64.from_address(at).value = ident
+    assert rethrow() == [5]
+
+
+def test_a_module_that_throws_or_catches_by_tag_gets_the_heap() -> None:
+    """t5 (S0013 step 6.1, D6 (b)): a `throw` gives the store the heap, its header page and first
+    type-info page committed (128 KiB) and no object space until the first throw commits the
+    semispaces (6.2). A `catch` clause alone gets the heap and no RTT word; `throw_ref` and
+    `catch_all` get none."""
+    store, other = StoreState(), StoreState()
+    i = build(THROWS, store=store)
+    st: Any = store.target_state
+    assert st.heap.mem.pages << 16 == 128 << 10 and st.heap.cap == 0
+    assert i("go") == [7] and st.heap.cap > 0
+    lay: Any = build(CATCHES).inst.layout  # pyright: ignore[reportAttributeAccessIssue]
+    build(CLEANUP, store=other)
+    assert lay.heap and lay.rtts == 0 and cast(Any, other.target_state).heap is None
+
+
+THROWS = """(module (tag $t (param i32)) (func (export "go") (result i32)
+  (block $h (result i32) (try_table (catch $t $h) (throw $t (i32.const 7))) unreachable)))"""
+CATCHES = "(module (tag $t) (func (block $h (try_table (catch $t $h)))))"
+CLEANUP = "(module (func (param exnref) (try_table (catch_all 0) (throw_ref (local.get 0)))))"
+
+
+def test_a_thrown_tag_type_has_one_struct_record_apart_from_its_function_record() -> None:
+    """S0013 step 6.1 (D2, D3): two thrown tags of one type share one kind-1 record, final,
+    depth 0, of `gc.exn_layout` (the identity at 8, the externref traced, the funcref not), under
+    a key distinct from the type's own kind-3 record (a non-final function type, S0013 5.6)."""
+    store = StoreState()
+    a = "(i32.const 0) (ref.null extern) (f64.const 0) (ref.null func) (v128.const i64x2 0 0)"
+    t = "(module (type $f (sub (func (param i32 externref f64 funcref v128))))"
+    t += f"(tag $t (type $f)) (tag $u (type $f)) (tag $c (param i64)) (func (throw $t {a}))"
+    i = build(t + f"(func (throw $u {a})))", store=store)
+    jit, heap = cast(Any, i.inst), cast(Any, store.target_state).heap
+    assert gc.exn_layout(i.mod, i.mod["types"][0][0]) == ([16, 20, 24, 32, 48], 64)
+    r, fr = heap.records[b"exn " + key(i.mod, 0)], heap.records[key(i.mod, 0)]
+    assert jit.layout.rtts == 2 and [jit.ctx[jit.layout.rtt(k)] for k in (0, 1)] == [r, r]
+    words = struct.unpack_from("<6I", ctypes.string_at(heap.base + r, 24))
+    assert words == (gc.KIND_STRUCT | 1 << 8, 0, 64, 1, r, 20)
+    assert heap.kind[r] == gc.KIND_STRUCT and r in heap.offsets and fr not in heap.offsets
+    assert ctypes.c_uint32.from_address(heap.base + fr).value == gc.KIND_FUNC  # not final
+
+
+INLINE = """(module (tag $t (param i32))
+  (func $g (block $h (result i32) (try_table (catch $t $h) (throw $t (i32.const 5))) unreachable)
+    (drop))
+  (func (export "go") (param $n i32) (result i32)
+    (block $c (result i32)
+      (try_table (catch $t $c)
+        (block $l (result exnref)  ;; the module's only exnref type: inline
+          (try_table (catch_all_ref $l) (throw $t (i32.const 77))) unreachable)
+        (loop $lp (call $g) (br_if $lp (local.tee $n (i32.sub (local.get $n) (i32.const 1)))))
+        (throw_ref))
+      unreachable)))"""
+
+
+@pytest.mark.parametrize("switched", [False, True])
+def test_an_exnref_of_an_inline_block_type_is_in_the_maps(
+    monkeypatch: pytest.MonkeyPatch, switched: bool
+) -> None:
+    """6.2 review: an exnref whose only type is a block's inline `(result exnref)` (LLVM's cleanup
+    shape) is marked at the call sites below it, so the collections of the throws in `$g` move
+    the object it names (the masks were decided before the bodies turned them on: the old object,
+    status 14 without an exception, or another exception's payload 5)."""
+    for s in SWITCHES:
+        monkeypatch.setenv(s, "1" if switched else "0")
+    store = StoreState()
+    i = build(INLINE, store=store)
+    assert i.mod["refmasks"]
+    assert i("go", 5 if switched else 200_000) == [77]
+    assert cast(Any, store.target_state).heap.collections > 0
+
+
+def test_a_missed_clause_keeps_a_value_below_the_outer_label(pins: None) -> None:
+    """The scratch slot of a pad's identity compare is the try_table's entry height: the inner
+    clause misses, and the value under the outer pad's label (42, from a call) is still there when
+    the outer pad catches (9). With the slot at the label's own position it would be lost (M15)."""
+    i = build("""
+(module (tag $t1 (param i32)) (tag $t2 (param i32))
+  (func $id (param i32) (result i32) (local.get 0))
+  (func (export "go") (result i32)
+    (block $c (result i32)
+      (call $id (i32.const 42))
+      (block $m (result i32)
+        (try_table (catch $t2 $m) (try_table (catch $t1 $c) (throw $t2 (i32.const 9))))
+        unreachable)
+      i32.add)))
+""")
+    assert i("go") == [51]
+
+
+@pytest.mark.parametrize("bounds", BOUNDS)
+def test_a_pad_read_out_of_the_heap_traps(monkeypatch: pytest.MonkeyPatch, bounds: str) -> None:
+    """Every read of the pending object is a checked load (D1 (b)): a handle forged to an offset
+    past the heap's committed end, or near 2**32, traps MEMORY_OUT_OF_BOUNDS in both bounds
+    modes, and a trap is not caught by the `catch_all` beside the `catch $t`."""
+    monkeypatch.setenv("WABOROS_JIT_BOUNDS", bounds)
+    store = StoreState()
+    i = build(
+        """
+(module (tag $t (param i32))
+  (func (export "make") (result exnref)
+    (block $h (result exnref) (try_table (catch_all_ref $h) (throw $t (i32.const 5))) unreachable))
+  (func (export "rethrow") (param exnref) (result i32)
+    (block $all
+      (block $h (result i32)
+        (try_table (catch $t $h) (catch_all $all) (throw_ref (local.get 0))) unreachable)
+      (return))
+    (i32.const -1)))
+""",
+        store=store,
+    )
+    st: Any = store.target_state
+    k = next(x for n, _, x in i.mod["exports"] if n == "rethrow")
+    e: Any = i("make")[0]
+    old = st.gc_handles[e.index]
+    for bad in (0xFFFFFFF0, st.heap.mem.pages << 16):
+        slot = st.gcrefs.pop(st.gc_handles[e.index])
+        st.gc_handles[e.index], st.gcrefs[bad] = bad, slot
+        with pytest.raises(Trap) as t:
+            i.inst.call(k, [e])
+        assert t.value.code is TrapCode.MEMORY_OUT_OF_BOUNDS
+    slot = st.gcrefs.pop(st.gc_handles[e.index])
+    st.gc_handles[e.index], st.gcrefs[old] = old, slot
+    assert i.inst.call(k, [e]) == [5]
+
+
+@pytest.mark.parametrize("target", ["jit-x86_64", "jit-aarch64"])  # compiled only, never run
+def test_no_module_uses_the_reserved_words(monkeypatch: pytest.MonkeyPatch, target: str) -> None:
+    """t11 (S0013 steps 6.3-6.4): words 11-13 (the arena until then) are zero in every context,
+    and no code names them: in a backend call, off the context register, or off a register the
+    context was copied or added into (x86-64 `mov`/`lea`/`add`, aarch64 `mov`/`add`). Spied
+    while compiling the spec's `exceptions/` and `gc/` modules, CoreMark and the collector in
+    both bounds modes, and while assembling the trampolines and the fault handlers (the process
+    built its own before the spies). As test_gc_subtype.py checks GC group word 7."""
+    from tests.spec.fetch import CACHE_DIR
+    from waboros.targets.jit.aarch64 import abi, encoder
+    from waboros.targets.jit.aarch64 import entry as aentry
+    from waboros.targets.jit.x86_64 import abi as xabi
+    from waboros.targets.jit.x86_64 import encoder as x86
+    from waboros.targets.jit.x86_64 import entry as xentry
+
+    monkeypatch.setenv("WABOROS_JIT_GC_STRESS", "1")  # the second throw collects
+    store = StoreState()
+    assert build(THROWS, store=store)("go") == build(THROWS, store=store)("go") == [7]
+    st: Any = store.target_state
+    for c in [cast(Any, x).ctx for x in store.instances] + [st.heap.collector[0].ctx]:
+        assert c[11] == c[12] == c[13] == 0
+
+    x, M, A = target == "jit-x86_64", x86.Mem, encoder.Asm
+    C: Any = x86.R15 if x else abi.CTX
+    words, seen, alias = list[int](), set[int](), dict[Any, int]()  # register -> context + k
+
+    def spy(owner: Any, name: str, see: Any) -> None:
+        real = getattr(owner, name)
+        monkeypatch.setattr(owner, name, lambda *a, **k: see(*a, **k) or real(*a, **k))
+
+    def at(r: Any, d: int, n: int = 1) -> None:  # n words at [r + d]
+        o = 0 if r == C else alias.get(r)
+        words.extend(() if o is None else range((o + d) // 8, (o + d) // 8 + n))
+
+    def put(d: Any, r: Any = None, k: int = 0) -> None:  # d = r + k, or d = anything (no r)
+        o = 0 if r == C else alias.get(r)
+        if o is not None and k:
+            at(r, k)  # an address computed
+        if d != C:
+            alias.pop(d, None) if o is None else alias.update({d: o + k})
+
+    def imm(s: Any, op: str, d: Any, n: Any, k: int, w: bool = True) -> None:
+        put(d, n if op in ("add", "sub") else None, k if op == "add" else -k)
+
+    def pair(s: Any, ld: bool, r: int, u: int, b: int, o: int = 0, mode: str = "off") -> None:
+        at(b, o, 2 * (mode == "off"))
+        _ = ld and (put(r), put(u))
+
+    t: Any = base.TARGETS[target]()
+    for name in ("call_host", "call_record", "tail_record"):  # a word the bridge or a call reads
+        spy(t.backend().__class__, name, lambda s, f, w, *a: words.append(w))
+    if x:
+        spy(M, "__post_init__", lambda m: at(m.base, m.disp))
+        spy(
+            x86.Asm,
+            "mov",
+            lambda s, d, r, w=0: isinstance(d, M) or put(d, (r, None)[isinstance(r, M)]),
+        )
+        spy(
+            x86.Asm, "lea", lambda s, d, m, w=1: put(d, (m.base, None)[m.index is not None], m.disp)
+        )
+        spy(x86.Asm, "alu_imm", lambda s, op, d, v, w=0: isinstance(d, M) or imm(s, op, d, d, v))
+        spy(x86.Asm, "alu", lambda s, op, d, r, w=0: isinstance(d, M) or op == "cmp" or put(d))
+        spy(x86.Asm, "mov_imm", lambda s, d, v, w=0: isinstance(d, M) or put(d))
+        spy(x86.Asm, "pop", lambda s, r: put(r))
+    else:
+        spy(A, "mov", lambda s, d, n, wide=True: put(d, n))
+        spy(A, "addsub_imm", imm)
+        spy(A, "mov_imm", lambda s, d, *a, **k: put(d))
+        spy(A, "_ldst", lambda s, r, b, o, n, ld, *a: at(b, o) or ld and put(r))
+        spy(A, "_ldst_idx", lambda s, r, b, i, n, ld, *a: ld and put(r))
+        spy(A, "pair", pair)
+    if x:  # the spies see an address computed off a copy of the context
+        a = x86.Asm()
+        a.mov(x86.RCX, C, w=True)
+        a.alu_imm("add", x86.RCX, 8, w=True)
+        a.mov(x86.RCX, M(x86.RCX, 88), w=True)
+    else:
+        e = A()
+        e.addsub_imm("add", 11, C, 96)
+        e.ld(10, 11)
+    assert 12 in words
+    ROOT = Path(__file__).resolve().parents[2]
+    files = [
+        f for d in ("exceptions", "gc") for f in sorted((CACHE_DIR / "json" / d).rglob("*.wasm"))
+    ]
+    spec = len(files)
+    core = ROOT / "poc/in/core.wasm"  # not in the wheel harness's copy of the tests
+    wasm = [wat(THROWS), wat(CATCHES), wat(CLEANUP)] + [f.read_bytes() for f in files]
+    wasm += [core.read_bytes()] if core.exists() else []
+    wasm.append((importlib.resources.files("waboros.runtime") / "gc/collector.wasm").read_bytes())
+    n = 0
+    for bounds in ("guard", "explicit"):
+        monkeypatch.setenv("WABOROS_JIT_BOUNDS", bounds)
+        for w in wasm:
+            try:
+                m: Any = parse(w)
+                validate(m)
+            except Exception:  # the spec's malformed and invalid modules
+                continue
+            words.clear()
+            alias.clear()
+            t.compile(m)
+            n += 1
+            assert not {11, 12, 13} & set(words)
+            seen |= set(words)
+    # without the fetched spec suite and the PoC (the wheel harness: LESSONS 124), the local
+    # modules and the installed collector still run, 4 modules in each bounds mode
+    assert n > (250 if spec else 7) and {8, 10} <= seen  # the bridge and the pending word
+
+    def ablob() -> None:  # aarch64: the compiler's bridge and tail_switch
+        e = A()
+        abi.bridge(e)
+        abi.tail_switch(e)
+
+    def aruntime() -> None:  # the runtime's entry (ctx in x0) and sp_stub
+        alias[0] = 0
+        e = A()
+        aentry.entry(e)
+        aentry.sp_stub(e)
+
+    builds: list[Any] = [ablob, aruntime]
+    if x:  # the compiler's bridge and tail_switch, the runtime's entry and sp_stub (S0015)
+
+        def blob(win64: bool) -> None:
+            a = x86.Asm()
+            xabi.bridge(a, win64)
+            xabi.tail_switch(a)
+
+        def runtime(win64: bool, ctx: Any) -> None:  # the entry's ctx argument
+            alias[ctx] = 0
+            a = x86.Asm()
+            xentry.entry(a, win64)
+            xentry.sp_stub(a)
+
+        builds = [lambda w=w: blob(w) for w in (False, True)]
+        builds += [lambda w=w, r=r: runtime(w, r) for w, r in ((False, x86.RDI), (True, x86.RCX))]
+    for h in [{}, {"darwin": True}, {"windows": True}] + [{"bionic": True}] * x:
+        builds.append(lambda h=h: t.fault_handler(1, 2, 3, 4, **h))
+    seen.clear()
+    for make in builds:
+        words.clear()
+        alias.clear()
+        make()
+        assert not {11, 12, 13} & set(words)
+        seen |= set(words)
+    assert {7, 14} <= seen  # the bridge's HOST_ERROR, the entry's EXIT_RECORD
+    assert 1 in seen  # the runtime entry's TRAP_CODE, seen through its copies of ctx
+
+
+# ------------------------------------------------------------------ S0013 step 6.4: t1-t10
+def switched(mp: pytest.MonkeyPatch) -> None:
+    """Every allocation collects, the from-space is poisoned, every collection verified."""
+    for s in SWITCHES:
+        mp.setenv(s, "1")
+
+
+T1 = """(module (type $s (struct (field i32)))
+  (tag $t (param i32 f32 i64 f64 v128 anyref funcref exnref externref)) (tag $e)
+  (func $f) (elem declare func $f)
+  (func (export "go") (param externref) (result exnref anyref funcref exnref)
+    (local $in exnref) (local $s anyref)
+    (local.set $in (block $h (result exnref) (try_table (catch_all_ref $h) (throw $e)) unreachable))
+    (local.set $s (struct.new $s (i32.const 7)))
+    (block $c (result exnref)
+      (try_table (catch_all_ref $c)
+        (throw $t (i32.const -2) (f32.const 1.5) (i64.const 0x0102030405060708) (f64.const 2.5)
+          (v128.const i64x2 10 11) (local.get $s) (ref.func $f) (local.get $in) (local.get 0)))
+      unreachable)
+    (local.get $s) (ref.func $f) (local.get $in)))"""
+
+
+def test_the_object_and_its_record(monkeypatch: pytest.MonkeyPatch) -> None:
+    """t1: each value at its `exn_layout` offset (natural alignment), the identity at 8, the
+    header the tag type's record: kind 1, final, depth 0, 88 bytes, the anyref, exnref and
+    externref traced (not the funcref)."""
+    switched(monkeypatch)
+    store, host = StoreState(), object()
+    i = build(T1, store=store)
+    st, jit = cast(Any, store.target_state), cast(Any, i.inst)
+    e, s, f, inner = call(i, "go", host)
+    ti = i.mod["tags"][0]
+    assert gc.exn_layout(i.mod, i.mod["types"][ti][0]) == ([16, 20, 24, 32, 48, 64, 72, 80, 84], 88)
+    r = st.heap.records[b"exn " + key(i.mod, ti)]
+    obj = ctypes.string_at(st.heap.base + st.gc_handles[e.index], 88)
+    assert struct.unpack_from("<IIQifQd", obj) == (r, 0, jit.ctx[jit.layout.tag(0)], -2, 1.5,
+                                                   0x0102030405060708, 2.5)  # fmt: skip
+    *v, ext = struct.unpack_from("<QQI4xQII", obj, 48)
+    assert v == [10, 11, st.gc_handles[s.index], f.addr, st.gc_handles[inner.index]]
+    assert ext & 3 == 2 and st.externs[(ext >> 2) - 1] is host
+    rec = struct.unpack_from("<8I", ctypes.string_at(st.heap.base + r, 32))
+    assert rec == (gc.KIND_STRUCT | 1 << 8, 0, 88, 3, r, 64, 80, 84)
+
+
+T2 = """(module (type $s (struct (field i32)))
+  (tag $t (param anyref externref exnref)) (tag $e (param i32))
+  (func $thr (param anyref externref exnref) (throw $t (local.get 0) (local.get 1) (local.get 2)))
+  (func $c (param anyref externref exnref) (call $thr (local.get 0) (local.get 1) (local.get 2)))
+  (func $b (param anyref externref exnref) (call $c (local.get 0) (local.get 1) (local.get 2)))
+  (func (export "go") (param $x externref) (param $deep i32) (result i32 externref)
+    (local $s (ref null $s)) (local $in exnref) (local $k i32) (local $pa anyref) (local $pe exnref)
+    (local.set $k (i32.const 1000))  ;; an i32 local: pinned in a register across the throws
+    (local.set $in (block $h (result exnref)
+      (try_table (catch_all_ref $h) (throw $e (i32.const 31))) unreachable))
+    (local.set $s (struct.new $s (i32.const 7)))
+    (block $c (result anyref externref exnref)
+      (try_table (catch $t $c)
+        (if (local.get $deep) (then (call $b (local.get $s) (local.get $x) (local.get $in)))
+          (else (call $thr (local.get $s) (local.get $x) (local.get $in)))))
+      unreachable)
+    (local.set $pe) (local.set $x) (local.set $pa)
+    (drop (struct.new $s (i32.const 0)))
+    (block $r (result i32) (try_table (catch $e $r) (throw_ref (local.get $pe))) unreachable)
+    (i32.add (local.get $k))
+    (i32.add (i32.mul (i32.const 100)
+      (ref.eq (ref.cast (ref null eq) (local.get $pa)) (local.get $s))))
+    (i32.add (i32.mul (i32.const 10000) (struct.get $s 0 (ref.cast (ref $s) (local.get $pa)))))
+    (local.get $x)))"""
+
+
+@pytest.mark.parametrize("deep", [0, 1])
+def test_a_throw_that_collects_keeps_its_payload(
+    pins: None, monkeypatch: pytest.MonkeyPatch, deep: int
+) -> None:
+    """t2: the payload (a struct, a host value, an exnref) is read from its slots after the throw's
+    allocation collected, caught one frame up or three; every throw collects (the fast path
+    checks the limit), and the struct is the same object (`ref.eq`) after more collections."""
+    switched(monkeypatch)
+    store, host = StoreState(), object()
+    i = build(T2, store=store)
+    heap = cast(Any, store.target_state).heap
+    n = heap.collections
+    assert call(i, "go", host, deep) == [71131, host]
+    assert heap.collections - n >= 3  # two throws and two structs; the first grows the heap
+
+
+def test_t6_across_instances_under_the_switches(monkeypatch: pytest.MonkeyPatch) -> None:
+    """t6: the imported-tag aliases, every throw collecting."""
+    switched(monkeypatch)
+    test_across_instances_and_imported_tag_aliases(None)
+
+
+T7 = """(module (type $s (struct (field i32)))
+  (import "h" "f" (func $f)) (tag $t (param i32 i32 f64 v128 anyref))
+  (func (export "outer") (call $f))
+  (func (export "inner") (throw $t (i32.const -5) (i32.const 7) (f64.const 2.5)
+    (v128.const i64x2 1 2) (struct.new $s (i32.const 99))))
+  (func (export "alloc") (drop (struct.new $s (i32.const 0))))
+  (func (export "read") (param anyref) (result i32)
+    (struct.get $s 0 (ref.cast (ref $s) (local.get 0)))))"""
+
+
+def test_an_uncaught_payload_outlives_collections(monkeypatch: pytest.MonkeyPatch) -> None:
+    """t7: an inner entry's `Trap.exn` has every value at its offset, and its anyref is a handle
+    that still reads its field after the host ran wasm that collected."""
+    switched(monkeypatch)
+    store, box, seen = StoreState(), dict[str, Any](), list[Any]()
+
+    def host(_: Any) -> list[int]:
+        with pytest.raises(Trap) as t:
+            box["i"]("inner")
+        heap = cast(Any, store.target_state).heap
+        n = heap.collections
+        box["i"]("alloc")
+        box["i"]("alloc")
+        seen.extend([t.value, heap.collections - n, call(box["i"], "read", t.value.exn[1][4])])
+        return []
+
+    box["i"] = i = build(T7, {"h": {"f": host}}, store)
+    assert i("outer") == []
+    t, collected, field = seen
+    f64 = struct.unpack("<Q", struct.pack("<d", 2.5))[0]
+    assert t.code is TrapCode.UNCAUGHT_EXCEPTION and t.exn[1][:4] == (
+        2**32 - 5,
+        7,
+        f64,
+        1 | 2 << 64,
+    )
+    assert isinstance(t.exn[1][4], GcRef) and collected >= 2 and field == [99]
+
+
+T8 = """(module (type $s (struct (field i32))) (tag $t (param i32 anyref))
+  (func (export "make") (param i32) (result exnref)
+    (block $h (result exnref)
+      (try_table (catch_all_ref $h) (throw $t (local.get 0) (struct.new $s (local.get 0))))
+      unreachable))
+  (func (export "alloc") (drop (struct.new $s (i32.const 0))))
+  (func (export "rethrow") (param exnref) (result i32)
+    (block $h (result i32 anyref) (try_table (catch $t $h) (throw_ref (local.get 0))) unreachable)
+    (struct.get $s 0 (ref.cast (ref $s))) (i32.add)))"""
+
+
+def test_an_exnref_kept_by_the_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """t8: an `ExnRef` the host keeps across collections is rethrown with its tag and payload;
+    a forged handle or one of another store is a `TypeError`."""
+    switched(monkeypatch)
+    store = StoreState()
+    i = build(T8, store=store)
+    heap = cast(Any, store.target_state).heap
+    [e] = call(i, "make", 21)
+    n = heap.collections
+    for _ in range(3):
+        i("alloc")
+    assert heap.collections >= n + 3 and call(i, "rethrow", e) == [42]
+    other = call(build(T8), "make", 1)[0]
+    for bad in (ExnRef(e.index, e.store), other):
+        with pytest.raises(TypeError):
+            call(i, "rethrow", bad)
+    assert call(i, "rethrow", e) == [42]
+
+
+T9 = """(module (tag $t (param i32 i32)) (tag $x (param i32)) (tag $y)
+  (func $thr (throw $t (i32.const -1) (i32.const 5)))
+  (func $g  ;; every clause of both pads misses: on to the caller's pad
+    (block $a (result i32)
+      (try_table (catch $x $a) (block $b (try_table (catch $y $b) (call $thr)))) unreachable)
+    (drop))
+  (func (export "same") (result i64)  ;; the inner pad misses, the enclosing one catches
+    (block $c (result i32 i32)
+      (try_table (catch $t $c)
+        (block $m (result i32) (try_table (catch $x $m) (call $thr)) unreachable) (drop))
+      unreachable)
+    (drop) (i64.extend_i32_u))
+  (func (export "caller") (result i32)  ;; the payload's slot is the result, copied in 64 bits
+    (block $c (result i32 i32) (try_table (catch $t $c) (call $g)) unreachable)
+    (drop)))"""
+
+
+def test_a_miss_passes_the_exception_on(pins: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    """t9: a pad whose clauses all miss passes status 14 to the enclosing pad of its function, and
+    from the last one to the caller's; an i32 payload is zero-extended in its slot (the second
+    i32 beside it is not read with it), as a result and through `i64.extend_i32_u`. Built twice:
+    a missed tag's identity, left in the status register by a wrong pad, could be 14 by chance
+    in one of them (the full-heap test is t9's third case)."""
+    switched(monkeypatch)
+    for _ in range(2):
+        i = build(T9)
+        assert i("same") == i("caller") == [0xFFFFFFFF]
+
+
+T10 = """(module (type $s (struct (field i32))) (type $f (sub (func (param anyref))))
+  (tag $t (type $f))
+  (func (export "go") (result i32)
+    (block $h (result anyref)
+      (try_table (catch $t $h) (throw $t (struct.new $s (i32.const 3)))) unreachable)
+    (struct.get $s 0 (ref.cast (ref $s)))))"""
+
+
+def test_a_tag_type_with_a_function_record_throws(monkeypatch: pytest.MonkeyPatch) -> None:
+    """t10: the tag's type is a non-final function type, which has its own kind-3 record (S0013
+    5.6): its exception objects have the `exn` record, so a collection over them does not trap
+    (a kind-3 header would lose the store). Another module of the store writes the kind-3
+    record first."""
+    switched(monkeypatch)
+    store = StoreState()
+    build("(module (type (sub (func (param anyref)))) (type (struct)))", store=store)
+    i = build(T10, store=store)
+    st = cast(Any, store.target_state)
+    assert [i("go") for _ in range(3)] == [[3]] * 3
+    assert st.heap.collections >= 5 and not st.lost  # the first allocation grows the heap
