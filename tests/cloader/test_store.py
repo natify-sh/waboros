@@ -28,7 +28,9 @@ MOD = """(module
 
 @pytest.fixture
 def store(monkeypatch: pytest.MonkeyPatch) -> Any:
-    need(shim.LIB and shim.MACHINE == 62, "build/native's loader library on x86-64 (S0017 step 2)")
+    need(shim.LIB, "build/native's loader library (S0017)")
+    if shim.MACHINE != 62:  # execution is x86-64 only until step 6
+        pytest.skip("the C loader runs code on x86-64 only (S0017 step 2)")
     monkeypatch.setenv("WABOROS_JIT_BOUNDS", "explicit")
     eng = shim.Engine("jit-x86_64")
     w = wat2wasm(MOD)

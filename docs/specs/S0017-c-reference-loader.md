@@ -1174,3 +1174,7 @@ When approved and implemented:
   `module` command between it and its file's step-3 failure. Budget: step 2 is over its estimate, C about 1 200
   lines against 900 (the reader keeping the module and the store), Python about 560 against 300 (the engine, the
   shim, and five test files).
+* 2026-11-27: step 2, CI fix: ctest `loader_entry` checks the stack bounds after `sp_stub` only on Linux
+  (`os_stack_bounds` returns none elsewhere until steps 7-8); macOS x86-64 failed on it. cibuildwheel's
+  `test-sources` carry `native/loader/entry.c` for `test_entry_bytes.py` (Android failed without it).
+  `test_store.py` skips off x86-64 instead of failing under `WABOROS_JIT_REQUIRE=1` (the `arm64` job).

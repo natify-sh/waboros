@@ -42,7 +42,12 @@ int main(void) {
 	frame[0] = 0;
 	CHECK(waboros_enter(rt->entry, ctx, frame, rt->sp_stub) == 0);
 	CHECK(frame[0] % 16 == 8);
+#ifdef __linux__ /* stack bounds on other systems: S0017 steps 7-8 */
 	CHECK(os_stack_bounds(&lo, &hi) && lo < frame[0] && frame[0] < hi);
+#else
+	(void)lo;
+	(void)hi;
+#endif
 	os_unmap(add, n);
 	os_unmap(trap, n);
 	os_unmap(clob, n);
