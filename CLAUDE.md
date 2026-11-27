@@ -131,7 +131,8 @@ Report:      files changed, commands run with output, numbers before/after, docs
 * Every new opcode or feature: spec tests for it pass on every target that claims it, plus a
   differential run against wasmtime.
 * `pyc` codegen: keep generated code valid for the minimum Python (see `docs/ROADMAP.md`, open
-  question 1) and for the MicroPython flavour.
+  question 1), on CPython and PyPy. MicroPython is not a `pyc` platform: it is the `mpy` target's
+  question in phase 7 (maintainer, 2026-11-27; LESSONS 169).
 
 ## Commands
 ```
