@@ -293,6 +293,8 @@ typedef struct {
 int waboros_engine_new(const waboros_compiler *c /* NULL: none */, waboros_engine **, waboros_error *);
 int waboros_engine_set_collector(waboros_engine *, const uint8_t *wbo, size_t n, waboros_error *);
 int waboros_module_load(waboros_engine *, const uint8_t *b, size_t n, waboros_module **, waboros_error *);
+void waboros_engine_free(waboros_engine *);
+void waboros_module_free(waboros_module *);
 int waboros_module_dump(const waboros_module *, char *buf, size_t *n);
 int waboros_store_new(waboros_engine *, const waboros_store_config *, waboros_store **, waboros_error *);
 /* host-made externs (spectest's, a host's own) */
@@ -550,7 +552,10 @@ command or a runtime test could see the difference:
 * The records are checked where Python checks them: in `read`, while reading `.waboros.funcs`
   (after `data_start` and `start`, before its entries), each convention in format order. So a file
   that fails both the trampolines and a later payload is refused on `.waboros.trampolines` by
-  both loaders.
+  both loaders, for the **running** convention (the compare with the copy). A non-running
+  convention that differs is class E2: C accepts it, so with a later broken payload Python refuses
+  at step 6 on `.waboros.trampolines` and C at the later section (the same kind of two-change file as
+  E1's, outside the classes; no single-change file is one).
 * The copy is adopted from the first file of its string, and only after the whole file has passed
   steps 1-6. It is mapped under the row's W^X, with the instruction cache invalidated and
   `PROT_BTI` on aarch64.
@@ -588,7 +593,8 @@ deliberate difference, named here:
 * **`fat`**: a fat file that fails steps 2-6 for both loaders, at the same step (Python's is the
   `ArtifactError.step` that `load` catches before it compiles). Python compiles it; its dump is `dump(read(write(c)))` of the compiled result `c` (a thin file written by the
   same process). C with the test compiler compiles it too, and its dump must be equal; C without
-  a compiler gives `WABOROS_E_NEEDS_COMPILER` with that step as `check`. The corpus runs both
+  a compiler gives `WABOROS_E_NEEDS_COMPILER` with that step as `check` (and, at step 6, that
+  section). The corpus runs both
   ways. Example: `test_review.py::test_compiler_string_tokens` writes fat files whose strings
   fail step 4 (a space, a long fourth token).
 * A file Python refuses with `cannot load: …` fails the corpus as a Python defect (Decision 6).
@@ -632,7 +638,18 @@ results=<valtypes>`, `struct fields=<fields>` or `array field=<field>`, with `<f
 `<wasm name>` or `<wasm name>:<immediate>[:<immediate>]` (v128 as 32 hex digits), joined by `,`;
 `<items>` is function indices or cexprs joined by `;`; any list is joined by `,`, `-` when empty.
 The Python dumper is written by the implementer in step 1 (about 150 lines); the C one in step 1
-too (about 250).
+too (about 250). *Fixed in step 1* where the format above leaves a choice: `<g>` is the type index of
+the group's first member; `func`, `table`, `memory`, `global` and `tag` numbers count the imports
+(`import` lines are numbered by import order, as the file lists them); `trampolines` prints the
+record's `.text` offsets as written; `text size` is the length of the code and data area (up to the
+first blob); `v128` is the value as 32 hex digits, highest byte first; `\xNN` is lowercase hex.
+`waboros_module_dump` writes the text and a NUL when `*n` bytes are enough, sets `*n` to its length,
+and returns `WABOROS_E_ARG` otherwise (`buf` NULL: the length). `waboros_run --check FILE...` loads
+the files in one engine and prints one verdict line each (`accepted`, `refused check=S section=...`
+or `needs a compiler check=S`); its exit status is 0 for any clean verdict, 2 for a file it cannot
+read or an internal failure, so a sweep over the corpus under sanitizers needs no accepted-only
+filter, and ctest checks the verdict text. `--dump FILE...` prints the dump of each file (1 when one
+is refused).
 
 ### Instantiation (S0014 step 7; D72)
 The order of `JitInstance.__init__`:
@@ -1121,3 +1138,6 @@ When approved and implemented:
 * 2026-11-26: step 0 done: `native/CMakeLists.txt` restructured (`WABOROS_LOADER`, `WABOROS_LOADER_SHARED`, `WABOROS_SLJIT`, and the inert `WABOROS_WITH_COMPILER`, `_WITH_GC`, `_GUARD`, `_COLLECTOR_WBO`); `waboros_loader`, `waboros_loader_shared`, `waboros_run` (usage, `--version`); ctest `loader_smoke`, `loader_run_version`, `consumer_nosljit`; a `cloader` CI job on the six runners (the Windows rows build with `-DWABOROS_SLJIT=OFF`: `waboros_sljit.c` and `test_native.c` are POSIX (mmap, fork); the macOS rows build sljit too, see the next entry). MSVC: `C_STANDARD 99` is passed unchanged and CMake adds no flag for it (MSVC compiles C as C11/17 by default); not yet confirmed by CI, the fallback is `-T ClangCL`. A multi-config generator needs `--build-config`/`-C` in the consumer tests, added.
 * 2026-11-26: the macOS rows (`macos-26`, `macos-26-intel`) build and ctest `waboros_sljit` (`sljit: "ON"`). The first run failed on macos-26: Apple Clang's arm64 default (apple-m1) defines `__ARM_FEATURE_ATOMICS`, which `waboros_sljit.c` refuses; `native/CMakeLists.txt` now adds `-march=armv8-a` to `waboros_sljit` on Apple arm64 (S0016 baseline: ARMv8.0-A). `test_native.c` `test_baseline` on aarch64 asserts: CAS refused by sljit, an atomic pair is `ldxr`/`stxr`, no CAS or LDADD-class word (checked here under qemu-aarch64 and with `-march=armv8.1-a` still hitting the `#error`); `test_native.c` no longer needs `sys/auxv.h`/`PROT_BTI` off Linux. Not yet confirmed by CI: that `-march=armv8-a` drops `__ARM_FEATURE_ATOMICS` on Apple Clang (else the `#error` shows it; fallback `-mcpu=generic`). Windows stays OFF.
 * 2026-11-26: the Windows rows (`windows-latest`, `windows-11-arm`) build and ctest `waboros_sljit` under MSVC (`sljit: "ON"`; unverified until CI runs): `test_native.c` maps its code with `VirtualAlloc`/`VirtualProtect`/`FlushInstructionCache`, the BTI ping-pong and control (`fork`) are not registered on Windows, `waboros_sljit` exports all symbols from its DLL (`WINDOWS_EXPORT_ALL_SYMBOLS`).
+* 2026-11-26: step 1 done: the reader (`native/loader/read.c`, `sha256.c`, `compiler.h`; about 1 480 lines of C in `read.c`, 1 730 with `sha256.c`, the headers and `waboros_run.c`): the frozen lookup and step 1b, steps 2-6 with the Python reader's checks (canonical type keys, subtyping for the constant expressions' typing, the stack maps, the trampolines against the engine's per-compiler-string copy, kept as bytes), the inventory dump in C and in Python (`tests/cloader/dump.py`), `waboros_run --dump`/`--check`, the ctypes shim with the test compiler, `tests/cloader/cases.py` and `test_corpus.py` (about 860 lines of Python, 43 % over the 600 estimated: the modules family, the subtyping modules and the thin flips were added; the C side, 1 730 lines with the headers and `waboros_run.c`, is 28 % over its 1 350), ctest `loader_check_committed` and `loader_check_other_architecture`, the corpus in CI (`sljit`, `arm64`). Item 4 on explicit files: 0 files outside their class on Linux x86-64 (173 whole-file cases, 2 529 module files, 31 424 prefixes, 9 000 flips of fat and thin files, 16 committed files). Points the text left open, settled by the oracle: Python's `ArtifactError.section` of a constant-expression error is `<section> constant expression` (its reader's `what`), so the corpus compares the section without that suffix and C reports the payload's name; the corpus compares sections only at step 6; the test compiler compiles for the host for a case loaded with the other architecture's target; a file with two changes (a compiler string that differs and a broken payload) is refused by C at step 6 and by Python at step 5, which is outside the classes (the designed exception E1 covers C's acceptance of a file only), and no single-change file is one. Where the C reader had to copy a Python wart to agree (LESSONS 168): `_frozen` returns none for the whole file when any section name is unreadable; a section name that is not valid UTF-8 is refused at step 3 (Python decodes with `replace`, so its canonical `.shstrtab` never equals the file's). Not done: guard files (step 4), executable memory (step 2), the aarch64 shim run (the shim needs an aarch64 Python: the aarch64 reader was compared under `qemu-aarch64` on the dumps and verdicts of 4 098 files, not in the repository), libFuzzer (not installed here), MSVC/Apple Clang builds (CI).
+
+* 2026-11-27: step 1 review fixes: `ABOVE[none]` lacked `eq` (valid modules such as an `eqref` global initialised from a `(ref null none)` global were refused; `cases.py` now has 160 subtyping modules, every abstract heap type and a concrete type against each supertype in a global, a table initial value and an element item, which fail with the old constant); the running convention is Win64's record on Windows x64 and the first one elsewhere (as `JitX86_64Target.convention`); the `fat` class compares the step-6 section too; the corpus asserts that its source loads; `test_accepted_modules` needs the spec cache (a failure under `WABOROS_JIT_REQUIRE=1`); the `arm64` CI step runs after the spec fetch; `waboros_run` keeps the larger status and checks read and print errors; sums of counts are checked (`add32`).

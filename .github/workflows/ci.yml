@@ -310,6 +310,10 @@ jobs:
           path: .cache/spec
           key: spec-${{ runner.os }}-${{ hashFiles('tests/spec/fetch.py', 'tests/spec/spectest.wat') }}
       - run: uv run python tests/spec/fetch.py
+      # S0017 step 1, item 4 on explicit files: the C reader (the shim over build/native) against the Python
+      # loader on the refusal corpus, the committed files and every spec module's file
+      - run: uv run pytest -q tests/cloader
+        env: { WABOROS_JIT_REQUIRE: "1" }
       - run: uv run python -m tests.spec.run --engine jit-x86_64 --in-process --json spec-jit-x86_64.json
       # in-process, the walk check and poison, both bounds modes; parity both ways on the reports
       - run: |
@@ -453,6 +457,9 @@ jobs:
           path: .cache/spec
           key: spec-${{ runner.os }}-${{ hashFiles('tests/spec/fetch.py', 'tests/spec/spectest.wat') }}
       - run: uv run python tests/spec/fetch.py
+      # S0017 step 1, item 4 on explicit files, on aarch64 (after the spec cache, whose modules it also reads): the C reader against the Python loader
+      - run: uv run pytest -q tests/cloader
+        env: { WABOROS_JIT_REQUIRE: "1" }
       - run: uv run python -m tests.spec.run --engine jit-aarch64 --json spec-jit-aarch64.json
       - run: uv run python -m tests.spec.run --engine auto
       # S0014 test plan: the same through artifact files, natively (written thin, loaded)

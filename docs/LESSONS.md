@@ -1316,3 +1316,17 @@ What went wrong or surprised us while building the PoC, so it is not found again
     x86 host the same children do not start at all (skipped, or run through `qemu-aarch64`). Rule:
     job `arm64-bti` makes `sys.executable` a wrapper (`qpython`, `qemu-aarch64 -0 "$0" .venv/bin/python`)
     and checks `execmem._PROT_BTI` in a child before the tests. Found: 2026-11-26 (not yet run in CI).
+
+168. **Three quirks of the Python reader that a second reader must copy to agree on every file.**
+    The C reader (S0017 step 1) disagreed with `artifact.load` on single byte flips until it did
+    what Python does by accident. (1) `_frozen` is all or nothing: one section name that cannot be
+    read (no terminator, an offset past the table) gives "none" for the whole file, so a
+    `.waboros.wasm` found before it does not count and a flipped fat file is thin; a C lookup that
+    returns what it found so far refuses at step 1b a file that Python refuses at step 3. (2) The
+    layout step compares `.shstrtab` with the table rebuilt from names decoded with
+    `decode("utf-8", "replace")`: a section name that is not valid UTF-8 never round-trips, so it is
+    a step-3 refusal (a flipped `.waboros.wasm` name became an unknown section and C accepted it).
+    (3) The constant-expression reader's `what` is `<section> constant expression`, which becomes
+    `ArtifactError.section`; compare sections without the suffix. Rule: a second implementation of
+    a reader is checked on mutated files, accept or refuse, step and section, not on the files the
+    writer makes. Found: 2026-11-26.

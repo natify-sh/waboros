@@ -116,6 +116,24 @@ tools installed on CPython 3.11, 3.15 and 3.15t; PyPy 3.11 is checked in CI).
   refused on their bridge bytes (`read`, and `load` of the thin one with the compiler string
   patched to the file's); the fat one is regenerated from its wasm and runs (S0017 Decision 7).
   The pre-S0015 record layout (40-byte records) is refused by `test_trampolines.py`.
+  `tests/cloader/` (S0017 step 1): `test_corpus.py` drives the C reader (`native/loader/read.c`, through
+  `shim.py`, a ctypes shim over `build/native/libwaboros_loader_shared.so`; the library is found by its ELF
+  machine and refused when older than a `native/` source) and the Python loader over the refusal corpus
+  of `cases.py` (the whole-file cases of `test_refuse.py`, `test_strict.py`, `test_review.py` and the
+  payload table of `test_format.py`, every prefix of the committed small file and of a GC module, 3 000
+  byte flips each of CoreMark, a GC module and the small module, the 16 committed files, and the file
+  of every spec module the JIT compiles) and fails on any file outside its class (`agree`, `E1`, `E2`,
+  `E1-fat`, `E2-fat`, `fat`: S0017 "Designed exceptions to Decision 6"): per file, accept or refuse, the
+  S0014 step (the section at step 6), and the inventory dump of an accepted file (`dump.py` and the C
+  dumper print the same text). Each file runs in a fresh engine that holds the unmutated file of its
+  compiler string, with the test compiler (a callback into the Python compiler) and without one. Explicit
+  files only (the guard handler is step 4); `WABOROS_CLOADER_FLIPS` sets the flips per module (3 000), and
+  the files are also written to `build/cloader-seeds` (`WABOROS_CLOADER_SEEDS`; the first 3 of each
+  family, class, step and section, and every whole-file case: 11 MB, not committed) for `waboros_run
+  --check` under sanitizers and, later, as fuzzer seeds. CI: jobs `sljit` (Linux x86-64) and `arm64`
+  (Linux aarch64). ctest (`native/CMakeLists.txt`) runs `waboros_run --check` on the committed explicit
+  files of the host's architecture (accepted) and of the other one (refused at step 5, or a fat file that
+  needs a compiler) on every `cloader` row.
   `tests/jit/test_host_word.py` (D75): the word a host receives, per import (`call`,
   `call_indirect`, `return_call`), libcall and nested entry, on the machine's JIT and each
   development compiler of its architecture, in-process and through files; the Win64 bridges of the
