@@ -204,6 +204,26 @@ nothing about hardware. The same run: spec core 20509 pass / 0 fail and `auto` s
 (The macOS and Windows legs of the `arm64` job no longer exist; those platforms run in `platforms.yml`, which does not
 measure speed. The Linux leg stays: native CoreMark, guard against explicit, below.)
 
+## Package vs Wasmtime, fresh (2026-11-27)
+
+* After S0017 step 1 (2026-11-27, branch `gc`); Intel Xeon @ 2.10 GHz, 4 vCPU, kernel 6.18; CPython 3.13.18;
+  wasmtime-py 50.0.1 (Cranelift, default config); `taskset -c 2`, the engines alternated in one
+  session, three rounds, no build running. Every run printed "Correct operation validated".
+* Commands: `uv run python tools/run_coremark_jit.py poc/in/core.wasm` (the default bounds mode,
+  guard pages on this row, D44), the same with `WABOROS_JIT_BOUNDS=explicit`,
+  `cd poc && uv run python ref_run.py in/core.wasm wasmtime`, `uv run python tools/run_coremark_pyc.py poc/in/core.wasm`.
+
+| engine | round 1 | round 2 | round 3 | of Wasmtime (median) |
+|---|---|---|---|---|
+| Wasmtime (Cranelift) | 21 124 | 20 687 | 21 103 | 100 % |
+| package `jit-x86_64`, guard (default) | 20 172 | 19 915 | 19 653 | **94.4 %** |
+| package `jit-x86_64`, explicit | 16 371 | 16 292 | 16 356 | 77.5 % |
+| package `pyc` | 159.3 (one run) | | | 0.75 % |
+
+The package JIT in its default mode is within ~6 % of Wasmtime on CoreMark here; the explicit bounds
+checks cost ~18 % (guard +21 % over explicit, more than S0006's +9.35 % of 2026-11-04: the code has
+changed since, and this is one machine and one session).
+
 ## Pulley vs wasm3 (32-bit host) (2026-11-26)
 
 Conditions: cloud container, x86-64 Linux 6.18.44, Intel Xeon @ 2.10 GHz, 4 vCPU, every run pinned with
